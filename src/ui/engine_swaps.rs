@@ -11,9 +11,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     ui.add_space(8.0);
 
     ui.horizontal(|ui| {
-        ui.label("🔍 Search:");
+        ui.label(format!("{} Search:", crate::icons::SEARCH));
         ui.text_edit_singleline(&mut app.engine_search);
-        if ui.small_button("✕").clicked() {
+        if ui.small_button(crate::icons::TIMES).clicked() {
             app.engine_search.clear();
         }
         ui.label(

@@ -56,6 +56,24 @@ pub struct ForzaApp {
 
 impl ForzaApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        // Load Hack Nerd Font as the primary typeface so NF icon codepoints render.
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "hack_nerd".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/HackNerdFont-Regular.ttf")).into(),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "hack_nerd".to_owned());
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "hack_nerd".to_owned());
+        _cc.egui_ctx.set_fonts(fonts);
+
         let config = AppConfig::load();
         let car_settings = AllCarSettings::load();
         let engines = load_engines();
@@ -162,37 +180,46 @@ impl eframe::App for ForzaApp {
         egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.current_tab, Tab::Dashboard, "📊 Dashboard");
+                use crate::icons;
+                ui.selectable_value(
+                    &mut self.current_tab,
+                    Tab::Dashboard,
+                    format!("{} Dashboard", icons::DASHBOARD),
+                );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Acceleration,
-                    "🚀 Acceleration",
+                    format!("{} Acceleration", icons::BOLT),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::Deceleration,
-                    "🛑 Deceleration",
+                    format!("{} Deceleration", icons::STOP),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::PowerCurve,
-                    "⚡ Power Curve",
+                    format!("{} Power Curve", icons::LINE_CHART),
                 );
                 ui.selectable_value(
                     &mut self.current_tab,
                     Tab::EngineSwaps,
-                    "🔧 Engine Swaps",
+                    format!("{} Engine Swaps", icons::WRENCH),
                 );
-                ui.selectable_value(&mut self.current_tab, Tab::Settings, "⚙ Settings");
+                ui.selectable_value(
+                    &mut self.current_tab,
+                    Tab::Settings,
+                    format!("{} Settings", icons::COG),
+                );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (color, label) = if self.telemetry.is_connected {
-                        (egui::Color32::from_rgb(60, 200, 90), "● Connected")
+                    let (color, icon, text) = if self.telemetry.is_connected {
+                        (egui::Color32::from_rgb(60, 200, 90), icons::PLUG, "Connected")
                     } else {
-                        (egui::Color32::from_rgb(200, 60, 60), "● Disconnected")
+                        (egui::Color32::from_rgb(200, 60, 60), icons::NO_SIGNAL, "Disconnected")
                     };
-                    ui.colored_label(color, label);
-                    ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
+                    ui.colored_label(color, format!("{icon} {text}"));
+                    ui.label(format!("{:.0} pps", self.telemetry.packets_per_sec));
                 });
             });
             ui.add_space(2.0);

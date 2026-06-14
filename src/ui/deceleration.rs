@@ -40,7 +40,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     let test = &app.perf_test.decel;
     if test.running {
-        ui.label(RichText::new("⏱ Running…").color(Color32::YELLOW));
+        ui.label(
+            RichText::new(format!("{} Running…", crate::icons::CLOCK))
+                .color(Color32::YELLOW),
+        );
         ui.add(
             egui::ProgressBar::new(test.progress)
                 .fill(Color32::from_rgb(220, 60, 60))
@@ -49,7 +52,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.label(format!("Decel: {:.2} g", test.current_g));
     } else if let Some(t) = test.result_secs {
         ui.label(
-            RichText::new(format!("✅  {t:.3} s"))
+            RichText::new(format!("{}  {t:.3} s", crate::icons::CHECK))
                 .size(28.0)
                 .strong()
                 .color(Color32::from_rgb(60, 210, 100)),

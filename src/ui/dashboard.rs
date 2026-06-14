@@ -197,8 +197,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             ui.label(format!("{:.0}%", pkt.normalized_suspension_travel_rr * 100.0));
             ui.end_row();
 
-            let puddle = |v: i32| if v != 0 { "💧" } else { "  " };
-            let rumble = |v: i32| if v != 0 { "〰" } else { "  " };
+            let puddle = |v: i32| if v != 0 { crate::icons::TINT } else { "  " };
+            let rumble = |v: i32| if v != 0 { crate::icons::CIRCLE } else { "  " };
             ui.label("Puddle");
             ui.label(puddle(pkt.wheel_in_puddle_fl));
             ui.label(puddle(pkt.wheel_in_puddle_fr));

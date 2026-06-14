@@ -32,7 +32,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         if app.telemetry.is_connected {
             ui.add_space(8.0);
             ui.label(
-                RichText::new("● Full-throttle to capture")
+                RichText::new(format!("{} Full-throttle to capture", crate::icons::CIRCLE))
                     .color(Color32::from_rgb(60, 200, 90)),
             );
         }

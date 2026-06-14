@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod engines;
+mod icons;
 mod listeners;
 mod network;
 mod packet;

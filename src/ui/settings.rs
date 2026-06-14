@@ -141,7 +141,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         // ── Save ─────────────────────────────────────────────────
         ui.horizontal(|ui| {
             if ui
-                .button(RichText::new("💾  Save Settings").size(16.0))
+                .button(RichText::new(format!("{}  Save Settings", crate::icons::FLOPPY)).size(16.0))
                 .clicked()
             {
                 app.config.save();
