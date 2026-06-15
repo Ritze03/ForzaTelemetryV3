@@ -1,4 +1,4 @@
-use egui::{Color32, RichText, Stroke, Ui, Vec2, pos2};
+use egui::{Align, Color32, Layout, Rect, RichText, Stroke, Ui, UiBuilder, Vec2, pos2};
 
 use crate::app::{ForzaApp, GForceStats};
 use crate::config::{GameMode, SprintType, TireDisplayStyle, TireSlipStyle};
@@ -145,24 +145,42 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         let row_end = (row_start + per_row).min(NUM_BLOCKS);
 
         let row = ui.horizontal(|ui| {
+            // Zero out automatic inter-widget spacing so block_w = (avail-(N-1)*gap)/N
+            // is exact. Spacing inside each pane is restored to normal.
+            let orig_spacing = ui.spacing().item_spacing;
+            ui.spacing_mut().item_spacing.x = 0.0;
+
             let mut sep_xs: Vec<f32> = Vec::new();
             for block_idx in row_start..row_end {
-                let resp = ui.vertical(|ui| {
-                    ui.set_width(block_w);
-                    match block_idx {
-                        0 => show_inputs_block(ui, app, &pkt),
-                        1 => show_car_block(ui, app, &pkt),
-                        2 => show_race_block(ui, app, &pkt),
-                        3 => show_tires_block(ui, app, &pkt, block_w),
-                        4 => show_gforce_block(ui, app, &pkt),
-                        5 => show_suspension_block(ui, app, &pkt),
-                        _ => {}
-                    }
-                }).response;
-                sep_xs.push(resp.rect.right() + gap / 2.0);
-                if block_idx + 1 < row_end {
+                if block_idx > row_start {
                     ui.add_space(gap);
                 }
+
+                // True bounded pane: clips painter and bounds available_width().
+                let pane_rect = Rect::from_min_size(
+                    ui.cursor().min,
+                    Vec2::new(block_w, ui.available_height()),
+                );
+                ui.scope_builder(
+                    UiBuilder::new()
+                        .max_rect(pane_rect)
+                        .layout(Layout::top_down(Align::LEFT)),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = orig_spacing;
+                        ui.set_min_width(block_w);
+                        match block_idx {
+                            0 => show_inputs_block(ui, app, &pkt),
+                            1 => show_car_block(ui, app, &pkt),
+                            2 => show_race_block(ui, app, &pkt),
+                            3 => show_tires_block(ui, app, &pkt),
+                            4 => show_gforce_block(ui, app, &pkt),
+                            5 => show_suspension_block(ui, app, &pkt),
+                            _ => {}
+                        }
+                    },
+                );
+
+                sep_xs.push(pane_rect.right() + gap / 2.0);
             }
             sep_xs
         });
@@ -291,12 +309,12 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     }
 }
 
-fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, block_w: f32) {
+fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.heading("Tires");
     ui.add_space(4.0);
     match app.config.tire_display_style {
         TireDisplayStyle::Separate => show_tires_separate(ui, app, pkt),
-        TireDisplayStyle::Combined => show_tires_combined(ui, app, pkt, block_w),
+        TireDisplayStyle::Combined => show_tires_combined(ui, app, pkt),
     }
 }
 
@@ -357,15 +375,14 @@ fn show_tires_separate(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         });
 }
 
-fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, block_w: f32) {
+fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let use_f = app.config.use_fahrenheit;
 
     let n       = 4_f32;
     let gap     = 6.0_f32;
-    // egui inserts item_spacing.x before each widget in the parent horizontal row,
-    // so block_w slightly over-estimates the available space per block. Absorb that here.
-    let margin  = ui.spacing().item_spacing.x + 4.0;
-    let cell    = (block_w - margin - (n - 1.0) * gap) / n;
+    let margin  = 4.0_f32;
+    let avail_w = ui.available_width();  // correctly bounded by the pane's max_rect
+    let cell    = (avail_w - margin - (n - 1.0) * gap) / n;
     let outer_r = cell / 2.0;
     let inner_r = outer_r * 0.55;
     let total_w = n * cell + (n - 1.0) * gap;
