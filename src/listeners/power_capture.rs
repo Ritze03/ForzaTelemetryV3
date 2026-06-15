@@ -2,6 +2,13 @@ use crate::packet::ForzaPacket;
 
 const FULL_THROTTLE_THRESHOLD: u8 = 245;
 
+#[derive(Clone, Default)]
+pub struct PowerCurveSnapshot {
+    pub power_series: Vec<[f64; 2]>,
+    pub torque_series: Vec<[f64; 2]>,
+    pub boost_series: Vec<[f64; 2]>,
+}
+
 /// Captures live power / torque / boost curves during full-throttle runs.
 pub struct PowerCapture {
     /// [rpm_bucket, ps] sorted by rpm
@@ -33,6 +40,14 @@ impl PowerCapture {
         self.torque_series.clear();
         self.boost_series.clear();
         self.was_full_throttle = false;
+    }
+
+    pub fn snapshot(&self) -> PowerCurveSnapshot {
+        PowerCurveSnapshot {
+            power_series: self.power_series.clone(),
+            torque_series: self.torque_series.clone(),
+            boost_series: self.boost_series.clone(),
+        }
     }
 
     pub fn update(&mut self, pkt: &ForzaPacket, step_rpm: f32) {

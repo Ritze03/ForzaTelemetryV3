@@ -18,7 +18,18 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         );
 
         ui.add_space(8.0);
-        if ui.button("Clear").clicked() {
+        let has_live_curve = !app.power_capture.power_series.is_empty();
+        if ui
+            .add_enabled(has_live_curve, egui::Button::new("Save reference"))
+            .clicked()
+        {
+            app.saved_power_curve = Some(app.power_capture.snapshot());
+            app.power_capture.clear();
+            app.power_plot_auto_bounds = true;
+        }
+
+        ui.add_space(8.0);
+        if ui.button("Clear live").clicked() {
             app.power_capture.clear();
             app.power_plot_auto_bounds = true;
         }
@@ -29,6 +40,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             RichText::new(format!("{pt_count} points captured"))
                 .color(Color32::GRAY),
         );
+
+        if let Some(saved) = &app.saved_power_curve {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("{} saved reference points", saved.power_series.len()))
+                    .color(Color32::GRAY),
+            );
+        }
 
         if app.telemetry.is_connected {
             ui.add_space(8.0);
@@ -47,8 +66,13 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     // Detection ON  → show boost only when positive pressure was actually captured.
     // Detection OFF → always show boost (no filtering).
+    let saved_curve = app.saved_power_curve.as_ref();
+
     let has_boost_data = if app.config.power_curve_forced_induction {
         app.power_capture.boost_series.iter().any(|&[_, v]| v > 0.05)
+            || saved_curve
+                .map(|curve| curve.boost_series.iter().any(|&[_, v]| v > 0.05))
+                .unwrap_or(false)
     } else {
         true
     };
@@ -76,10 +100,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     // ── Power & Torque chart ─────────────────────────────────────
     ui.group(|ui| {
         ui.label(RichText::new("Power & Torque vs RPM").strong());
-        let power_pts: PlotPoints =
-            PlotPoints::new(app.power_capture.power_series.clone());
-        let torque_pts: PlotPoints =
-            PlotPoints::new(app.power_capture.torque_series.clone());
+        let saved_power_series = saved_curve.map(|curve| curve.power_series.clone());
+        let saved_torque_series = saved_curve.map(|curve| curve.torque_series.clone());
+        let power_pts: PlotPoints = PlotPoints::new(app.power_capture.power_series.clone());
+        let torque_pts: PlotPoints = PlotPoints::new(app.power_capture.torque_series.clone());
 
         let power_resp = Plot::new("power_plot")
             .legend(Legend::default().position(egui_plot::Corner::RightBottom))
@@ -92,15 +116,29 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 if apply_auto_bounds {
                     plot_ui.set_auto_bounds([true, true]);
                 }
+                if let Some(saved_power_series) = saved_power_series.as_ref() {
+                    plot_ui.line(
+                        Line::new("Saved Power (PS)", saved_power_series.clone())
+                            .color(Color32::from_rgba_unmultiplied(80, 160, 240, 90))
+                            .width(1.5),
+                    );
+                }
+                if let Some(saved_torque_series) = saved_torque_series.as_ref() {
+                    plot_ui.line(
+                        Line::new("Saved Torque (Nm)", saved_torque_series.clone())
+                            .color(Color32::from_rgba_unmultiplied(240, 140, 40, 90))
+                            .width(1.5),
+                    );
+                }
                 plot_ui.line(
                     Line::new("Power (PS)", power_pts)
                         .color(Color32::from_rgb(80, 160, 240))
-                        .width(2.0),
+                        .width(2.5),
                 );
                 plot_ui.line(
                     Line::new("Torque (Nm)", torque_pts)
                         .color(Color32::from_rgb(240, 140, 40))
-                        .width(2.0),
+                        .width(2.5),
                 );
             });
         if power_resp.response.clicked_by(egui::PointerButton::Middle) {
@@ -115,18 +153,43 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.group(|ui| {
             ui.label(RichText::new("Boost vs RPM").strong());
             let use_bar = app.config.use_bar;
-            let max_boost = app
+            let live_max_boost = app
                 .power_capture
                 .boost_series
                 .iter()
                 .map(|&[_, psi]| if use_bar { psi * 0.0689476 } else { psi })
-                .fold(f64::NEG_INFINITY, f64::max);
+                .fold(0.0_f64, f64::max);
+            let saved_max_boost = saved_curve
+                .map(|curve| {
+                    curve
+                        .boost_series
+                        .iter()
+                        .map(|&[_, psi]| if use_bar { psi * 0.0689476 } else { psi })
+                        .fold(0.0_f64, f64::max)
+                })
+                .unwrap_or(0.0);
+            let max_boost = live_max_boost.max(saved_max_boost);
             let min_headroom = if use_bar { 0.25 } else { 3.0 };
             let boost_top = if max_boost.is_finite() {
                 max_boost + (max_boost.abs() * 0.15).max(min_headroom)
             } else {
                 min_headroom
             };
+
+            let saved_bars: Vec<Bar> = saved_curve
+                .map(|curve| {
+                    curve
+                        .boost_series
+                        .iter()
+                        .map(|&[rpm, psi]| {
+                            let val = if use_bar { psi * 0.0689476 } else { psi };
+                            Bar::new(rpm, val)
+                                .fill(Color32::from_rgba_unmultiplied(180, 80, 220, 90))
+                                .width(app.config.power_curve_step as f64 * 0.65)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
             let bars: Vec<Bar> = app
                 .power_capture
@@ -149,6 +212,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 .show(ui, |plot_ui| {
                     if apply_auto_bounds {
                         plot_ui.set_auto_bounds([true, true]);
+                    }
+                    if !saved_bars.is_empty() {
+                        plot_ui.bar_chart(BarChart::new("Saved Boost", saved_bars.clone()));
                     }
                     plot_ui.bar_chart(BarChart::new("Boost", bars));
                 });

@@ -7,7 +7,7 @@ use egui::Context;
 use crate::config::{AllCarSettings, AppConfig, SpeedDeltaMode, Theme};
 use crate::engines::{load_engines, EngineRecord};
 use crate::listeners::perf_test::PerfTest;
-use crate::listeners::power_capture::PowerCapture;
+use crate::listeners::power_capture::{PowerCapture, PowerCurveSnapshot};
 use crate::listeners::sprint_timer::SprintTimer;
 use crate::network::{start_receiver, NetworkHandle};
 use crate::packet::ForzaPacket;
@@ -127,6 +127,7 @@ pub struct ForzaApp {
 
     pub sprint_timer: SprintTimer,
     pub power_capture: PowerCapture,
+    pub saved_power_curve: Option<PowerCurveSnapshot>,
     pub perf_test: PerfTest,
 
     // Acceleration test config
@@ -167,7 +168,7 @@ pub struct ForzaApp {
     last_track_instant: Option<Instant>,
     speed_history: VecDeque<(Instant, f32)>,
 
-    // Power curve plot: request auto-fit on next frame (set by Clear or middle-click)
+    // Power curve plot: request auto-fit on next frame (set by clear, save, or middle-click)
     pub power_plot_auto_bounds: bool,
 
     // Page-specific settings popup
@@ -215,6 +216,7 @@ impl ForzaApp {
             current_tab: Tab::Dashboard,
             sprint_timer: SprintTimer::new(),
             power_capture: PowerCapture::new(),
+            saved_power_curve: None,
             perf_test: PerfTest::new(),
             accel_start_kmh: 0.0,
             accel_end_kmh: 100.0,
@@ -269,6 +271,7 @@ impl ForzaApp {
                 self.last_car_ordinal = pkt.car_ordinal;
                 self.sprint_timer.reset();
                 self.power_capture.on_car_changed();
+                self.saved_power_curve = None;
                 self.perf_test.reset();
                 self.max_power_ps = 0.0;
                 self.max_torque_nm = 0.0;
