@@ -50,7 +50,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 let zeros  = 3 - digits;
                 let gray_str  = "0".repeat(zeros) + &" ".repeat(digits);
                 let white_str = format!("{:>3.0}", speed);
-                p.text(speed_anchor, egui::Align2::CENTER_TOP, gray_str,  speed_font.clone(), legend_color);
+                p.text(speed_anchor, egui::Align2::CENTER_TOP, gray_str,  speed_font.clone(), Color32::from_rgb(70, 70, 70));
                 p.text(speed_anchor, egui::Align2::CENTER_TOP, white_str, speed_font,         Color32::WHITE);
             }
         }
@@ -248,7 +248,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         pkt.torque_nm().max(0.0), app.max_torque_nm
     ));
     ui.label(format!(
-        "Boost:  {:05.2} {boost_unit}  (max {:05.2})",
+        "Boost:  {:5.2} {boost_unit}  (max {:5.2})",
         boost_cur.max(0.0), boost_max.max(0.0)
     ));
 
@@ -378,14 +378,15 @@ fn show_tires_separate(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let use_f = app.config.use_fahrenheit;
 
-    let n       = 4_f32;
-    let gap     = 6.0_f32;
-    let margin  = 4.0_f32;
-    let avail_w = ui.available_width();  // correctly bounded by the pane's max_rect
-    let cell    = (avail_w - margin - (n - 1.0) * gap) / n;
-    let outer_r = cell / 2.0;
-    let inner_r = outer_r * 0.55;
-    let total_w = n * cell + (n - 1.0) * gap;
+    let n        = 4_f32;
+    let gap      = 6.0_f32;
+    let left_pad = 3.0_f32;
+    let right_pad = 2.0_f32;
+    let avail_w  = ui.available_width();  // correctly bounded by the pane's max_rect
+    let cell     = (avail_w - left_pad - right_pad - (n - 1.0) * gap) / n;
+    let outer_r  = cell / 2.0;
+    let inner_r  = outer_r * 0.55;
+    let total_w  = left_pad + n * cell + (n - 1.0) * gap;
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total_w, cell), egui::Sense::hover());
     let hole_bg = ui.visuals().panel_fill;  // actual window background, not the donut dark bg
@@ -404,7 +405,7 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let line_h    = 12.0_f32;
 
     for (i, &(label, temp_f, slip, puddle)) in tires.iter().enumerate() {
-        let cx = rect.left() + i as f32 * (cell + gap) + outer_r;
+        let cx = rect.left() + left_pad + i as f32 * (cell + gap) + outer_r;
         let cy = rect.center().y;
         let center = pos2(cx, cy);
 
@@ -458,9 +459,26 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let lon  = pkt.acceleration_z / 9.81;
     let vert = pkt.acceleration_y / 9.81;
 
+    let avail_w   = ui.available_width();
+    let left_pad  = 3.0_f32;
+    let right_pad = 2.0_f32;
+    let gap       = 8.0_f32;
+
+    // Compute the exact pixel height of the text panel from font metrics so the
+    // circle never grows taller than the labels sitting next to it.
+    // Content: 2 small headers (12px) + 6 body labels + add_space(4) + 8 inter-item gaps.
+    let body_h = ui.text_style_height(&egui::TextStyle::Body);
+    let sp_y   = ui.spacing().item_spacing.y;
+    let text_h = 2.0 * 12.0 + 6.0 * body_h + 8.0 * sp_y + 4.0;
+
+    let plot_size = ((avail_w - left_pad - right_pad) / 2.0 - gap)
+        .min(text_h)
+        .clamp(40.0, 200.0);
+
     ui.horizontal(|ui| {
-        draw_gforce_plot(ui, lat, lon, &app.gforce_stats);
-        ui.add_space(8.0);
+        ui.add_space(left_pad);
+        draw_gforce_plot(ui, lat, lon, &app.gforce_stats, plot_size);
+        ui.add_space(gap);
         ui.vertical(|ui| {
             ui.label(RichText::new("Current:").size(12.0).color(Color32::GRAY));
             ui.label(format!("  Lat:  {:+.2} g", lat));
@@ -566,8 +584,7 @@ fn draw_steering(ui: &mut Ui, steer: i8) {
     );
 }
 
-fn draw_gforce_plot(ui: &mut Ui, lat: f32, lon: f32, stats: &GForceStats) {
-    let size = 110.0_f32;
+fn draw_gforce_plot(ui: &mut Ui, lat: f32, lon: f32, stats: &GForceStats, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
     let painter = ui.painter();
     let center = rect.center();

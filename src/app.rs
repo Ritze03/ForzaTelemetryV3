@@ -231,7 +231,7 @@ impl ForzaApp {
             gforce_stats: GForceStats::default(),
             cached_car_class_str:  String::new(),
             cached_car_pi:         0,
-            cached_drivetrain_str: String::new(),
+            cached_drivetrain_str: "XWD".to_string(),
             cached_num_cylinders:  0,
             speed_delta_kmh: 0.0,
             last_tracked_speed: 0.0,

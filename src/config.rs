@@ -98,7 +98,7 @@ impl Default for AppConfig {
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             game_mode: GameMode::ForzaHorizon6,
-            dashboard_block_width: 360.0,
+            dashboard_block_width: 460.0,
             speed_align: TextAlign::Right,
             gear_align: TextAlign::Right,
             show_speed_delta: false,
