@@ -115,6 +115,19 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.group(|ui| {
             ui.label(RichText::new("Boost vs RPM").strong());
             let use_bar = app.config.use_bar;
+            let max_boost = app
+                .power_capture
+                .boost_series
+                .iter()
+                .map(|&[_, psi]| if use_bar { psi * 0.0689476 } else { psi })
+                .fold(f64::NEG_INFINITY, f64::max);
+            let min_headroom = if use_bar { 0.25 } else { 3.0 };
+            let boost_top = if max_boost.is_finite() {
+                max_boost + (max_boost.abs() * 0.15).max(min_headroom)
+            } else {
+                min_headroom
+            };
+
             let bars: Vec<Bar> = app
                 .power_capture
                 .boost_series
@@ -132,6 +145,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 .height(boost_h)
                 .x_axis_label("RPM")
                 .y_axis_label(boost_label)
+                .include_y(boost_top)
                 .show(ui, |plot_ui| {
                     if apply_auto_bounds {
                         plot_ui.set_auto_bounds([true, true]);
