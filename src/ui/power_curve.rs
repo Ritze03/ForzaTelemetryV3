@@ -52,7 +52,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             PlotPoints::new(app.power_capture.torque_series.clone());
 
         Plot::new("power_plot")
-            .legend(Legend::default())
+            .legend(Legend::default().position(egui_plot::Corner::RightBottom))
             .height(chart_h * 0.55)
             .x_axis_label("RPM")
             .y_axis_label("PS / Nm")
@@ -75,21 +75,24 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     // ── Boost bar chart ──────────────────────────────────────────
     ui.group(|ui| {
         ui.label(RichText::new("Boost vs RPM").strong());
+        let use_bar = app.config.use_bar;
         let bars: Vec<Bar> = app
             .power_capture
             .boost_series
             .iter()
             .map(|&[rpm, psi]| {
-                Bar::new(rpm, psi)
+                let val = if use_bar { psi * 0.0689476 } else { psi };
+                Bar::new(rpm, val)
                     .fill(Color32::from_rgb(180, 80, 220))
                     .width(app.config.power_curve_step as f64 * 0.8)
             })
             .collect();
 
+        let boost_label = if use_bar { "Boost (bar)" } else { "Boost (PSI)" };
         Plot::new("boost_plot")
             .height(chart_h * 0.35)
             .x_axis_label("RPM")
-            .y_axis_label("Boost (PSI)")
+            .y_axis_label(boost_label)
             .show(ui, |plot_ui| {
                 plot_ui.bar_chart(BarChart::new("Boost", bars));
             });

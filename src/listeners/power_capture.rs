@@ -4,14 +4,13 @@ const FULL_THROTTLE_THRESHOLD: u8 = 245;
 
 /// Captures live power / torque / boost curves during full-throttle runs.
 pub struct PowerCapture {
-    /// [rpm, ps] sorted by rpm
+    /// [rpm_bucket, ps] sorted by rpm
     pub power_series: Vec<[f64; 2]>,
-    /// [rpm, nm] sorted by rpm
+    /// [rpm_bucket, nm] sorted by rpm
     pub torque_series: Vec<[f64; 2]>,
-    /// [rpm, psi_gauge] sorted by rpm
+    /// [rpm_bucket, psi_gauge] sorted by rpm
     pub boost_series: Vec<[f64; 2]>,
 
-    last_captured_rpm: f32,
     was_full_throttle: bool,
 }
 
@@ -21,7 +20,6 @@ impl PowerCapture {
             power_series: Vec::new(),
             torque_series: Vec::new(),
             boost_series: Vec::new(),
-            last_captured_rpm: 0.0,
             was_full_throttle: false,
         }
     }
@@ -34,7 +32,6 @@ impl PowerCapture {
         self.power_series.clear();
         self.torque_series.clear();
         self.boost_series.clear();
-        self.last_captured_rpm = 0.0;
         self.was_full_throttle = false;
     }
 
@@ -44,33 +41,34 @@ impl PowerCapture {
         }
 
         let full_throttle = pkt.accel >= FULL_THROTTLE_THRESHOLD;
-
         if !full_throttle {
             self.was_full_throttle = false;
             return;
         }
+        self.was_full_throttle = true;
 
-        if !self.was_full_throttle {
-            // Fresh throttle press — anchor the first capture threshold
-            self.last_captured_rpm = pkt.current_engine_rpm - step_rpm;
-            self.was_full_throttle = true;
-        }
-
-        let rpm = pkt.current_engine_rpm;
-        if rpm < self.last_captured_rpm + step_rpm {
+        let rpm = pkt.current_engine_rpm as f64;
+        let step = step_rpm as f64;
+        if step <= 0.0 || rpm <= 0.0 {
             return;
         }
 
-        let rpm64 = rpm as f64;
-        let ps = pkt.power_ps() as f64;
-        let nm = pkt.torque_nm() as f64;
-        let boost = pkt.boost as f64;
+        // Snap to step-aligned bucket so each bucket has one entry with the max value.
+        let bucket = (rpm / step).floor() * step;
 
-        upsert_max(&mut self.power_series, rpm64, ps);
-        upsert_max(&mut self.torque_series, rpm64, nm);
-        upsert_max(&mut self.boost_series, rpm64, boost);
+        upsert_max(&mut self.power_series, bucket, pkt.power_ps() as f64);
+        upsert_max(&mut self.torque_series, bucket, pkt.torque_nm() as f64);
 
-        self.last_captured_rpm = rpm;
+        let max_slip = [
+            pkt.tire_combined_slip_fl, pkt.tire_combined_slip_fr,
+            pkt.tire_combined_slip_rl, pkt.tire_combined_slip_rr,
+        ]
+        .iter()
+        .map(|s| s.abs())
+        .fold(0.0_f32, f32::max);
+        if max_slip < 1.0 {
+            upsert_max(&mut self.boost_series, bucket, pkt.boost as f64);
+        }
     }
 }
 
@@ -80,7 +78,6 @@ fn upsert_max(series: &mut Vec<[f64; 2]>, rpm: f64, val: f64) {
             pt[1] = val;
         }
     } else {
-        // Insert in sorted order
         let pos = series.partition_point(|p| p[0] < rpm);
         series.insert(pos, [rpm, val]);
     }

@@ -1,6 +1,7 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
+use crate::config::GameMode;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     let connected = app.telemetry.is_connected;
@@ -13,17 +14,37 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             ui.label(RichText::new("Auto-triggered on speed crossings").color(Color32::GRAY));
             ui.add_space(8.0);
 
+            let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
+            let st = &app.sprint_timer;
+
             egui::Grid::new("sprint_grid")
-                .num_columns(2)
-                .spacing([24.0, 8.0])
+                .num_columns(3)
+                .spacing([16.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label(RichText::new("0 → 100 km/h").size(15.0).strong());
-                    sprint_result(ui, app.sprint_timer.zero_to_hundred, connected);
+                    sprint_row(ui, "0 → 100 km/h",   st.zero_to_hundred, None, connected);
                     ui.end_row();
 
-                    ui.label(RichText::new("100 → 200 km/h").size(15.0).strong());
-                    sprint_result(ui, app.sprint_timer.hundred_to_two, connected);
+                    sprint_row(ui, "100 → 200 km/h", st.hundred_to_two,
+                        cumulative_time(&[st.zero_to_hundred, st.hundred_to_two]),
+                        connected);
                     ui.end_row();
+
+                    if is_fh6 {
+                        sprint_row(ui, "200 → 300 km/h", st.two_to_three,
+                            cumulative_time(&[st.zero_to_hundred, st.hundred_to_two, st.two_to_three]),
+                            connected);
+                        ui.end_row();
+
+                        sprint_row(ui, "300 → 400 km/h", st.three_to_four,
+                            cumulative_time(&[st.zero_to_hundred, st.hundred_to_two, st.two_to_three, st.three_to_four]),
+                            connected);
+                        ui.end_row();
+
+                        sprint_row(ui, "400 → 500 km/h", st.four_to_five,
+                            cumulative_time(&[st.zero_to_hundred, st.hundred_to_two, st.two_to_three, st.three_to_four, st.four_to_five]),
+                            connected);
+                        ui.end_row();
+                    }
                 });
 
             ui.add_space(12.0);
@@ -89,8 +110,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     });
 }
 
-fn sprint_result(ui: &mut Ui, result: Option<f32>, connected: bool) {
-    match result {
+fn sprint_row(ui: &mut Ui, label: &str, segment: Option<f32>, cumulative: Option<f32>, connected: bool) {
+    ui.label(RichText::new(label).size(15.0).strong());
+    match segment {
         Some(t) => {
             ui.label(
                 RichText::new(format!("{t:.3} s"))
@@ -98,12 +120,23 @@ fn sprint_result(ui: &mut Ui, result: Option<f32>, connected: bool) {
                     .strong()
                     .color(Color32::from_rgb(60, 210, 100)),
             );
+            if let Some(c) = cumulative {
+                ui.label(RichText::new(format!("({c:.3} s)")).color(Color32::GRAY));
+            } else {
+                ui.label("");
+            }
         }
         None if connected => {
             ui.label(RichText::new("Waiting…").color(Color32::GRAY));
+            ui.label("");
         }
         None => {
             ui.label(RichText::new("—").color(Color32::GRAY));
+            ui.label("");
         }
     }
+}
+
+fn cumulative_time(splits: &[Option<f32>]) -> Option<f32> {
+    splits.iter().copied().collect::<Option<Vec<_>>>().map(|v| v.iter().sum())
 }

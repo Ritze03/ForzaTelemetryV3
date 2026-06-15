@@ -8,16 +8,25 @@ pub enum Theme {
     Light,
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub enum GameMode {
+    ForzaHorizon6,
+    ForzaMotorsport7,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub listen_port: u16,
     pub fps_limit: f32,
     pub use_mph: bool,
     pub use_fahrenheit: bool,
+    pub use_bar: bool,
     pub theme: Theme,
     pub always_on_top: bool,
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
+    pub game_mode: GameMode,
+    pub dashboard_block_width: f32,
 }
 
 impl Default for AppConfig {
@@ -27,10 +36,13 @@ impl Default for AppConfig {
             fps_limit: 60.0,
             use_mph: false,
             use_fahrenheit: false,
+            use_bar: false,
             theme: Theme::Dark,
             always_on_top: false,
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
+            game_mode: GameMode::ForzaHorizon6,
+            dashboard_block_width: 360.0,
         }
     }
 }
