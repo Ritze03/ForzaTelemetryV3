@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use egui::Context;
 
-use crate::config::{AllCarSettings, AppConfig, Theme};
+use crate::config::{AllCarSettings, AppConfig, SpeedDeltaMode, Theme};
 use crate::engines::{load_engines, EngineRecord};
 use crate::listeners::perf_test::PerfTest;
 use crate::listeners::power_capture::PowerCapture;
@@ -14,31 +15,44 @@ use crate::telemetry::TelemetryState;
 
 // ── Session stats ──────────────────────────────────────────────────
 
-#[derive(Default)]
 pub struct SuspensionStats {
-    pub min: [f32; 4],   // FL, FR, RL, RR — normalized 0..1
+    history: VecDeque<(Instant, [f32; 4])>,
+    pub min: [f32; 4],
     pub max: [f32; 4],
-    initialized: bool,
+    pub initialized: bool,
+}
+
+impl Default for SuspensionStats {
+    fn default() -> Self {
+        Self {
+            history: VecDeque::new(),
+            min: [1.0; 4],
+            max: [0.0; 4],
+            initialized: false,
+        }
+    }
 }
 
 impl SuspensionStats {
     pub fn update(&mut self, vals: [f32; 4]) {
-        if !self.initialized {
-            self.min = vals;
-            self.max = vals;
-            self.initialized = true;
-        } else {
-            for i in 0..4 {
-                self.min[i] = self.min[i].min(vals[i]);
-                self.max[i] = self.max[i].max(vals[i]);
+        let now = Instant::now();
+        self.history.push_back((now, vals));
+        while let Some(&(t, _)) = self.history.front() {
+            if now.duration_since(t) > Duration::from_secs(5) {
+                self.history.pop_front();
+            } else {
+                break;
             }
         }
-    }
-    pub fn initialized(&self) -> bool {
-        self.initialized
-    }
-    pub fn reset(&mut self) {
-        *self = Self::default();
+        self.min = [1.0; 4];
+        self.max = [0.0; 4];
+        for &(_, v) in &self.history {
+            for i in 0..4 {
+                self.min[i] = self.min[i].min(v[i]);
+                self.max[i] = self.max[i].max(v[i]);
+            }
+        }
+        self.initialized = !self.history.is_empty();
     }
 }
 
@@ -49,33 +63,33 @@ pub struct GForceStats {
     pub max_vertical:      f32,
     pub peak_lateral:      f32,
     pub peak_longitudinal: f32,
-    pub peak_fade_start:   Option<Instant>,
+    pub peak_reset_timer:  Option<Instant>,
 }
 
 impl GForceStats {
     pub fn update(&mut self, lat: f32, lon: f32, vert: f32) {
-        self.max_lateral      = self.max_lateral.max(lat.abs());
-        self.max_longitudinal = self.max_longitudinal.max(lon.abs());
-        self.max_vertical     = self.max_vertical.max(vert.abs());
+        let cur_mag  = (lat * lat + lon * lon).sqrt();
+        let peak_mag = (self.peak_lateral.powi(2) + self.peak_longitudinal.powi(2)).sqrt();
 
-        let mag_sq = lat * lat + lon * lon;
-        let peak_sq = self.peak_lateral * self.peak_lateral
-            + self.peak_longitudinal * self.peak_longitudinal;
-        if mag_sq > peak_sq {
+        if cur_mag > peak_mag {
             self.peak_lateral = lat;
             self.peak_longitudinal = lon;
+            self.peak_reset_timer = None;
+        } else if peak_mag > 0.01 {
+            if self.peak_reset_timer.is_none() {
+                self.peak_reset_timer = Some(Instant::now());
+            }
+            if let Some(t) = self.peak_reset_timer {
+                if t.elapsed() >= Duration::from_secs(5) {
+                    *self = GForceStats::default();
+                    return;
+                }
+            }
         }
 
-        let peak_mag = peak_sq.sqrt();
-        let cur_mag  = mag_sq.sqrt();
-        if cur_mag >= peak_mag - 0.3 {
-            self.peak_fade_start = None;
-        } else if self.peak_fade_start.is_none() {
-            self.peak_fade_start = Some(Instant::now());
-        }
-    }
-    pub fn reset(&mut self) {
-        *self = Self::default();
+        if lat.abs()  >= 0.5 { self.max_lateral      = self.max_lateral.max(lat.abs()); }
+        if lon.abs()  >= 0.1 { self.max_longitudinal = self.max_longitudinal.max(lon.abs()); }
+        if vert.abs() >= 0.2 { self.max_vertical     = self.max_vertical.max(vert.abs()); }
     }
 }
 
@@ -89,6 +103,17 @@ pub enum Tab {
     PowerCurve,
     EngineSwaps,
     Settings,
+}
+
+#[derive(PartialEq, Clone, Copy, Default)]
+pub enum DashboardSubTab {
+    #[default]
+    General,
+    Kmh,
+    Gear,
+    SprintTimes,
+    Tires,
+    Shift,
 }
 
 // ── App ────────────────────────────────────────────────────────────
@@ -126,7 +151,7 @@ pub struct ForzaApp {
     pub max_torque_nm: f32,
     pub max_boost_psi: f32,
 
-    // Session stats (reset by Brake+HandBrake @ 100%)
+    // Session stats
     pub suspension_stats: SuspensionStats,
     pub gforce_stats: GForceStats,
 
@@ -136,9 +161,20 @@ pub struct ForzaApp {
     pub cached_drivetrain_str: String,
     pub cached_num_cylinders:  i32,
 
+    // Speed delta tracking
+    pub speed_delta_kmh: f32,
+    last_tracked_speed: f32,
+    last_track_instant: Option<Instant>,
+    speed_history: VecDeque<(Instant, f32)>,
+
+    // Power curve plot: request auto-fit on next frame (set by Clear or middle-click)
+    pub power_plot_auto_bounds: bool,
+
     // Page-specific settings popup
     pub page_settings_open: bool,
+    pub page_settings_opacity: f32,
     pub page_settings_tab: Tab,
+    pub page_dashboard_sub_tab: DashboardSubTab,
 
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
@@ -146,7 +182,6 @@ pub struct ForzaApp {
 
 impl ForzaApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Load Hack Nerd Font as the primary typeface so NF icon codepoints render.
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "hack_nerd".to_owned(),
@@ -198,14 +233,20 @@ impl ForzaApp {
             cached_car_pi:         0,
             cached_drivetrain_str: String::new(),
             cached_num_cylinders:  0,
+            speed_delta_kmh: 0.0,
+            last_tracked_speed: 0.0,
+            last_track_instant: None,
+            speed_history: VecDeque::new(),
+            power_plot_auto_bounds: false,
             page_settings_open: false,
+            page_settings_opacity: 0.5,
             page_settings_tab: Tab::Dashboard,
+            page_dashboard_sub_tab: DashboardSubTab::default(),
             receiver,
             _network: network,
         }
     }
 
-    /// Restart the UDP receiver on a new port (called from Settings).
     pub fn restart_receiver(&mut self, port: u16) {
         let (sender, receiver) = mpsc::channel();
         let network = start_receiver(port, sender);
@@ -234,23 +275,17 @@ impl ForzaApp {
                 self.max_boost_psi = 0.0;
             }
 
-            // Update per-car max RPM
-            if pkt.car_ordinal != 0 && pkt.is_race_on != 0 {
-                let car = self.car_settings.get_or_default(pkt.car_ordinal);
-                if pkt.current_engine_rpm > car.max_rpm_measured {
-                    car.max_rpm_measured = pkt.current_engine_rpm;
-                }
-            }
-
             // Session maxima + cache car identity
             if pkt.is_race_on != 0 {
                 self.cached_car_class_str  = pkt.car_class_str().to_string();
                 self.cached_car_pi         = pkt.car_performance_index;
                 self.cached_drivetrain_str = pkt.drivetrain_str().to_string();
                 self.cached_num_cylinders  = pkt.num_cylinders;
-                self.max_power_ps  = self.max_power_ps.max(pkt.power_ps());
-                self.max_torque_nm = self.max_torque_nm.max(pkt.torque_nm());
-                self.max_boost_psi = self.max_boost_psi.max(pkt.boost);
+                if pkt.speed >= 0.1 {
+                    self.max_power_ps  = self.max_power_ps.max(pkt.power_ps());
+                    self.max_torque_nm = self.max_torque_nm.max(pkt.torque_nm());
+                    self.max_boost_psi = self.max_boost_psi.max(pkt.boost);
+                }
 
                 let lat  = pkt.acceleration_x / 9.81;
                 let lon  = pkt.acceleration_z / 9.81;
@@ -263,12 +298,39 @@ impl ForzaApp {
                     pkt.normalized_suspension_travel_rl,
                     pkt.normalized_suspension_travel_rr,
                 ]);
+
+                // Speed delta tracking — maintain 1-second rolling history
+                let cur_kmh = pkt.speed * 3.6;
+                let now = Instant::now();
+                self.speed_history.push_back((now, cur_kmh));
+                while let Some(&(t, _)) = self.speed_history.front() {
+                    if now.duration_since(t) > Duration::from_secs(1) {
+                        self.speed_history.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+                match self.config.speed_delta_mode {
+                    SpeedDeltaMode::Calculate => {
+                        if let Some(&(_, oldest)) = self.speed_history.front() {
+                            self.speed_delta_kmh = cur_kmh - oldest;
+                        }
+                    }
+                    SpeedDeltaMode::Track => {
+                        if self.last_track_instant
+                            .map(|t| t.elapsed() >= Duration::from_secs(1))
+                            .unwrap_or(true)
+                        {
+                            self.speed_delta_kmh = cur_kmh - self.last_tracked_speed;
+                            self.last_tracked_speed = cur_kmh;
+                            self.last_track_instant = Some(now);
+                        }
+                    }
+                }
             }
 
-            // Brake + HandBrake both at 100% → reset session stats & power curve
+            // Brake + HandBrake both at 100% → clear power curve only
             if pkt.brake >= 255 && pkt.hand_brake >= 255 {
-                self.gforce_stats.reset();
-                self.suspension_stats.reset();
                 self.power_capture.clear();
             }
 
@@ -308,37 +370,18 @@ impl eframe::App for ForzaApp {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 use crate::icons;
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Dashboard,
-                    format!("{} Dashboard", icons::DASHBOARD),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Acceleration,
-                    format!("{} Acceleration", icons::BOLT),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Deceleration,
-                    format!("{} Deceleration", icons::STOP),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::PowerCurve,
-                    format!("{} Power Curve", icons::LINE_CHART),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::EngineSwaps,
-                    format!("{} Engine Swaps", icons::WRENCH),
-                );
-                ui.selectable_value(
-                    &mut self.current_tab,
-                    Tab::Settings,
-                    format!("{} Settings", icons::COG),
-                );
-
+                ui.selectable_value(&mut self.current_tab, Tab::Dashboard,
+                    format!("{} Dashboard", icons::DASHBOARD));
+                ui.selectable_value(&mut self.current_tab, Tab::Acceleration,
+                    format!("{} Acceleration", icons::BOLT));
+                ui.selectable_value(&mut self.current_tab, Tab::Deceleration,
+                    format!("{} Deceleration", icons::STOP));
+                ui.selectable_value(&mut self.current_tab, Tab::PowerCurve,
+                    format!("{} Power Curve", icons::LINE_CHART));
+                ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
+                    format!("{} Engine Swaps", icons::WRENCH));
+                ui.selectable_value(&mut self.current_tab, Tab::Settings,
+                    format!("{} Settings", icons::COG));
             });
             ui.add_space(2.0);
         });
@@ -363,30 +406,40 @@ impl eframe::App for ForzaApp {
                     } else {
                         egui::Color32::GRAY
                     };
-                    if ui.add(
+                    let resp = ui.add(
                         egui::Label::new(
                             egui::RichText::new(icons::COG).color(cog_color).size(16.0),
                         )
                         .sense(egui::Sense::click()),
-                    )
-                    .clicked()
-                    {
+                    );
+                    if resp.clicked() {
                         self.page_settings_open = !self.page_settings_open;
                         self.page_settings_tab = self.current_tab;
+                        if !self.page_settings_open {
+                            self.config.save();
+                            self.car_settings.save();
+                        }
                     }
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 });
             });
         });
 
         // ── Page settings floating window ──────────────────────────
         if self.page_settings_open {
-            egui::Window::new("page_settings_win")
+            let opacity = self.page_settings_opacity;
+            let win_resp = egui::Window::new("page_settings_win")
                 .title_bar(false)
                 .resizable(false)
-                .fixed_size([400.0, 400.0])
+                .fixed_size([600.0, 600.0])
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -36.0))
+                .frame(egui::Frame::window(&ctx.style()).multiply_with_opacity(opacity))
                 .show(ctx, |ui| {
+                    ui.set_opacity(opacity);
+                    use crate::config::{SpeedDeltaMode, SprintType, TextAlign, TireSlipStyle};
                     use crate::icons;
+
+                    // Main tab row (no Settings tab here)
                     ui.horizontal(|ui| {
                         for (tab, lbl) in [
                             (Tab::Dashboard,    "Dashboard"),
@@ -394,24 +447,180 @@ impl eframe::App for ForzaApp {
                             (Tab::Deceleration, "Decel"),
                             (Tab::PowerCurve,   "Power"),
                             (Tab::EngineSwaps,  "Engines"),
-                            (Tab::Settings,     "Settings"),
                         ] {
                             ui.selectable_value(&mut self.page_settings_tab, tab, lbl);
                         }
                     });
                     ui.separator();
 
+                    ui.set_min_height(540.0);
+
                     match self.page_settings_tab {
                         Tab::Dashboard => {
+                            // Sub-tab row
+                            ui.horizontal(|ui| {
+                                for (sub, lbl) in [
+                                    (DashboardSubTab::General,     "General"),
+                                    (DashboardSubTab::Kmh,         "Km/h"),
+                                    (DashboardSubTab::Gear,        "Gear"),
+                                    (DashboardSubTab::SprintTimes, "Sprint Times"),
+                                    (DashboardSubTab::Tires,       "Tires"),
+                                    (DashboardSubTab::Shift,       "Shift"),
+                                ] {
+                                    ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, lbl);
+                                }
+                            });
+                            ui.separator();
                             ui.add_space(8.0);
-                            ui.label("Block width:");
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut self.config.dashboard_block_width,
-                                    200.0..=800.0,
+
+                            match self.page_dashboard_sub_tab {
+                                DashboardSubTab::General => {
+                                    ui.checkbox(&mut self.config.dynamic_width, "Dynamic width");
+                                    ui.add_space(4.0);
+                                    let lbl = if self.config.dynamic_width {
+                                        "Minimum module width:"
+                                    } else {
+                                        "Module width:"
+                                    };
+                                    ui.label(lbl);
+                                    ui.add(
+                                        egui::Slider::new(
+                                            &mut self.config.dashboard_block_width,
+                                            200.0..=800.0,
+                                        )
+                                        .step_by(10.0)
+                                        .suffix(" px"),
+                                    );
+                                }
+                                DashboardSubTab::Kmh => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Alignment:");
+                                        egui::ComboBox::from_id_salt("speed_align")
+                                            .selected_text(match self.config.speed_align {
+                                                TextAlign::Right            => "Right",
+                                                TextAlign::Center           => "Center",
+                                                TextAlign::RightPlaceholder => "Right w/ Placeholder",
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::Right,            "Right");
+                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::Center,           "Center");
+                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::RightPlaceholder, "Right w/ Placeholder");
+                                            });
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.checkbox(&mut self.config.show_speed_delta, "Show Accel/Decel Tracker");
+                                    if self.config.show_speed_delta {
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label("Mode:");
+                                            egui::ComboBox::from_id_salt("speed_delta_mode")
+                                                .selected_text(match self.config.speed_delta_mode {
+                                                    SpeedDeltaMode::Track     => "Track (1s comparison)",
+                                                    SpeedDeltaMode::Calculate => "Calculate (frame-to-frame)",
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut self.config.speed_delta_mode, SpeedDeltaMode::Track,     "Track (1s comparison)");
+                                                    ui.selectable_value(&mut self.config.speed_delta_mode, SpeedDeltaMode::Calculate, "Calculate (frame-to-frame)");
+                                                });
+                                        });
+                                    }
+                                }
+                                DashboardSubTab::Gear => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Alignment:");
+                                        egui::ComboBox::from_id_salt("gear_align")
+                                            .selected_text(match self.config.gear_align {
+                                                TextAlign::Right | TextAlign::RightPlaceholder => "Right",
+                                                TextAlign::Center => "Center",
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut self.config.gear_align, TextAlign::Right,  "Right");
+                                                ui.selectable_value(&mut self.config.gear_align, TextAlign::Center, "Center");
+                                            });
+                                    });
+                                }
+                                DashboardSubTab::SprintTimes => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Type:");
+                                        egui::ComboBox::from_id_salt("sprint_type")
+                                            .selected_text(match self.config.sprint_type {
+                                                SprintType::Incremental => "Incremental (segment times)",
+                                                SprintType::Absolute    => "Absolute (0 to X times)",
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut self.config.sprint_type, SprintType::Incremental, "Incremental (segment times)");
+                                                ui.selectable_value(&mut self.config.sprint_type, SprintType::Absolute,    "Absolute (0 to X times)");
+                                            });
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.checkbox(&mut self.config.sprint_show_other,
+                                        "Show other type in parentheses");
+                                }
+                                DashboardSubTab::Tires => {
+                                    use crate::config::TireDisplayStyle;
+                                    ui.horizontal(|ui| {
+                                        ui.label("Style:");
+                                        egui::ComboBox::from_id_salt("tire_display_style")
+                                            .selected_text(match self.config.tire_display_style {
+                                                TireDisplayStyle::Separate => "Separate",
+                                                TireDisplayStyle::Combined => "Combined",
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Separate, "Separate");
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Combined, "Combined");
+                                            });
+                                    });
+                                    if self.config.tire_display_style == TireDisplayStyle::Separate {
+                                        ui.add_space(8.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label("Slip display style:");
+                                            egui::ComboBox::from_id_salt("tire_slip_style")
+                                                .selected_text(match self.config.tire_slip_style {
+                                                    TireSlipStyle::Values => "Values",
+                                                    TireSlipStyle::Graph  => "Graph",
+                                                    TireSlipStyle::Both   => "Both",
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Values, "Values");
+                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Graph,  "Graph");
+                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Both,   "Both");
+                                                });
+                                        });
+                                    }
+                                }
+                                DashboardSubTab::Shift => {
+                                    ui.label("Shift indicator thresholds (% of engine max RPM):");
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label("Low (warn):");
+                                        ui.add(
+                                            egui::Slider::new(&mut self.config.shift_low_pct, 50.0..=99.0)
+                                                .suffix("%"),
+                                        );
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("High (shift):");
+                                        ui.add(
+                                            egui::Slider::new(&mut self.config.shift_high_pct, 51.0..=100.0)
+                                                .suffix("%"),
+                                        );
+                                    });
+                                }
+                            }
+                        }
+                        Tab::PowerCurve => {
+                            ui.checkbox(
+                                &mut self.config.power_curve_forced_induction,
+                                "Forced induction detection",
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "ON: hide boost graph if no positive pressure was captured.\n\
+                                     OFF: always show the boost graph."
                                 )
-                                .step_by(10.0)
-                                .suffix(" px"),
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
                             );
                         }
                         _ => {
@@ -423,7 +632,32 @@ impl eframe::App for ForzaApp {
                             });
                         }
                     }
+                    // Always fill the full window height
+                    let rem = ui.available_height();
+                    if rem > 0.0 { ui.add_space(rem); }
+                    let _ = icons::COG;
                 });
+            let hovered = win_resp
+                .map(|r| {
+                    let mut rect = r.response.rect;
+                    rect.set_bottom(ctx.screen_rect().bottom());
+                    ctx.input(|i| i.pointer.hover_pos().map(|p| rect.contains(p)).unwrap_or(false))
+                })
+                .unwrap_or(false);
+
+            // Fade over 0.25 s: range is 0.5 units, rate = 0.5 / 0.25 s = 2.0 /s
+            let target = if hovered { 1.0_f32 } else { 0.5_f32 };
+            let dt = ctx.input(|i| i.unstable_dt).min(0.1);
+            let diff = target - self.page_settings_opacity;
+            let step = 2.0_f32 * dt;
+            self.page_settings_opacity = if diff.abs() <= step {
+                target
+            } else {
+                self.page_settings_opacity + diff.signum() * step
+            };
+            if (self.page_settings_opacity - target).abs() > 0.001 {
+                ctx.request_repaint();
+            }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {

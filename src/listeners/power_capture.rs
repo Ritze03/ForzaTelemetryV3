@@ -39,6 +39,10 @@ impl PowerCapture {
         if pkt.is_race_on == 0 {
             return;
         }
+        // Skip stationary — neutral-revving produces falsely high power figures
+        if pkt.speed < 0.1 {
+            return;
+        }
 
         let full_throttle = pkt.accel >= FULL_THROTTLE_THRESHOLD;
         if !full_throttle {

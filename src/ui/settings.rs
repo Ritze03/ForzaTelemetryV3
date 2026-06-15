@@ -134,33 +134,18 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.text_edit_singleline(&mut car.name);
             });
 
-            ui.horizontal(|ui| {
-                ui.label("Shift indicator:");
-                ui.add(
-                    egui::Slider::new(&mut car.shift_low_pct, 50.0..=99.0)
-                        .suffix("%")
-                        .text("low"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut car.shift_high_pct, 50.0..=100.0)
-                        .suffix("%")
-                        .text("high"),
-                );
-            });
-
+            let engine_max_rpm = app.telemetry.latest.as_ref()
+                .map(|p| p.engine_max_rpm)
+                .unwrap_or(0.0);
+            let low_rpm  = engine_max_rpm * app.config.shift_low_pct  / 100.0;
+            let high_rpm = engine_max_rpm * app.config.shift_high_pct / 100.0;
             ui.label(
                 RichText::new(format!(
-                    "Max measured RPM: {:.0}  →  shift at {:.0} / {:.0}",
-                    car.max_rpm_measured,
-                    car.shift_low_rpm(),
-                    car.shift_high_rpm()
+                    "Engine max RPM: {:.0}  →  shift at {:.0} / {:.0}",
+                    engine_max_rpm, low_rpm, high_rpm,
                 ))
                 .color(Color32::GRAY),
             );
-
-            if ui.small_button("Reset max RPM").clicked() {
-                car.max_rpm_measured = 0.0;
-            }
         });
 
         ui.add_space(8.0);
