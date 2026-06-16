@@ -796,7 +796,10 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let bg = Color32::from_rgb(20, 20, 20);
     let puddle_c = Color32::from_rgb(80, 160, 220);
     let rim_c = Color32::from_rgb(80, 80, 80);
-    let line_h = 12.0_f32;
+
+    let font_size = ((inner_r / 1.8) * 0.8).max(8.0);
+    let line_h = font_size * 1.1;
+    let fid = egui::FontId::proportional(font_size);
 
     for (i, &(label, temp_f, slip, puddle)) in tires.iter().enumerate() {
         let cx = rect.left() + left_pad + i as f32 * (cell + gap) + outer_r;
@@ -820,37 +823,15 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let outline = if puddle != 0 { puddle_c } else { rim_c };
         p.circle_stroke(center, outer_r, Stroke::new(1.5, outline));
 
-        let temp_val = if use_f {
-            temp_f
-        } else {
-            ForzaPacket::tire_temp_celsius(temp_f)
-        };
+        let temp_val = if use_f { temp_f } else { ForzaPacket::tire_temp_celsius(temp_f) };
         let temp_unit = if use_f { "°F" } else { "°C" };
         let temp_str = format!("{:.0}{temp_unit}", temp_val);
         let temp_c = temp_color(temp_val, use_f);
         let slip_str = format!("{:.2}", slip);
 
-        p.text(
-            pos2(cx, cy - line_h),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::FontId::proportional(11.0),
-            Color32::WHITE,
-        );
-        p.text(
-            pos2(cx, cy),
-            egui::Align2::CENTER_CENTER,
-            temp_str,
-            egui::FontId::proportional(10.0),
-            temp_c,
-        );
-        p.text(
-            pos2(cx, cy + line_h),
-            egui::Align2::CENTER_CENTER,
-            slip_str,
-            egui::FontId::proportional(10.0),
-            grip_color,
-        );
+        p.text(pos2(cx, cy - line_h), egui::Align2::CENTER_CENTER, label,    fid.clone(), Color32::WHITE);
+        p.text(pos2(cx, cy),          egui::Align2::CENTER_CENTER, temp_str,  fid.clone(), temp_c);
+        p.text(pos2(cx, cy + line_h), egui::Align2::CENTER_CENTER, slip_str,  fid.clone(), grip_color);
     }
 }
 
