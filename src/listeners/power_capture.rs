@@ -78,16 +78,7 @@ impl PowerCapture {
         upsert_max(&mut self.power_series, bucket, pkt.power_ps() as f64);
         upsert_max(&mut self.torque_series, bucket, pkt.torque_nm() as f64);
 
-        let max_slip = [
-            pkt.tire_combined_slip_fl, pkt.tire_combined_slip_fr,
-            pkt.tire_combined_slip_rl, pkt.tire_combined_slip_rr,
-        ]
-        .iter()
-        .map(|s| s.abs())
-        .fold(0.0_f32, f32::max);
-        if max_slip < 1.0 {
-            upsert_max(&mut self.boost_series, bucket, pkt.boost as f64);
-        }
+        upsert_max(&mut self.boost_series, bucket, pkt.boost as f64);
     }
 }
 

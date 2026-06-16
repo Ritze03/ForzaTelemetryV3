@@ -6,16 +6,10 @@ use crate::app::ForzaApp;
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     // Controls row
     ui.horizontal(|ui| {
-        ui.heading("Power Curve");
-        ui.add_space(16.0);
-
-        ui.label("Step:");
-        ui.add(
-            egui::DragValue::new(&mut app.config.power_curve_step)
-                .range(50.0..=500.0)
-                .speed(10.0)
-                .suffix(" rpm"),
-        );
+        if ui.button("Clear live").clicked() {
+            app.power_capture.clear();
+            app.power_plot_auto_bounds = true;
+        }
 
         ui.add_space(8.0);
         let has_live_curve = !app.power_capture.power_series.is_empty();
@@ -29,24 +23,12 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         }
 
         ui.add_space(8.0);
-        if ui.button("Clear live").clicked() {
-            app.power_capture.clear();
-            app.power_plot_auto_bounds = true;
-        }
-
-        let pt_count = app.power_capture.power_series.len();
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!("{pt_count} points captured"))
-                .color(Color32::GRAY),
-        );
-
-        if let Some(saved) = &app.saved_power_curve {
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!("{} saved reference points", saved.power_series.len()))
-                    .color(Color32::GRAY),
-            );
+        let has_saved = app.saved_power_curve.is_some();
+        if ui
+            .add_enabled(has_saved, egui::Button::new("Clear reference"))
+            .clicked()
+        {
+            app.saved_power_curve = None;
         }
 
         if app.telemetry.is_connected {
@@ -60,9 +42,11 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     ui.add_space(4.0);
 
-    let engine_max_rpm = app.telemetry.latest.as_ref()
-        .map(|p| p.engine_max_rpm as f64)
-        .unwrap_or(8000.0);
+    let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
+        app.cached_engine_max_rpm
+    } else {
+        8000.0
+    };
 
     // Detection ON  → show boost only when positive pressure was actually captured.
     // Detection OFF → always show boost (no filtering).
@@ -73,6 +57,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             || saved_curve
                 .map(|curve| curve.boost_series.iter().any(|&[_, v]| v > 0.05))
                 .unwrap_or(false)
+            || (app.config.power_curve_save_fi_state && app.fi_detected)
     } else {
         true
     };
@@ -84,10 +69,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     let gap = 4.0_f32;
 
     let (power_h, boost_h) = if has_boost_data {
-        let total = (avail_h - 2.0 * group_oh - gap).max(200.0);
+        let total = avail_h - 2.0 * group_oh - gap;
         (total * 2.0 / 3.0, total / 3.0)
     } else {
-        ((avail_h - group_oh).max(200.0), 0.0)
+        (avail_h - group_oh, 0.0)
     };
 
     // Snapshot the flag NOW (before any plot renders).
@@ -208,6 +193,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 .height(boost_h)
                 .x_axis_label("RPM")
                 .y_axis_label(boost_label)
+                .include_x(0.0)
+                .include_x(engine_max_rpm)
                 .include_y(boost_top)
                 .show(ui, |plot_ui| {
                     if apply_auto_bounds {
@@ -230,4 +217,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     if apply_auto_bounds {
         app.power_plot_auto_bounds = false;
     }
+
+    ui.add_space(6.0);
 }

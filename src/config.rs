@@ -83,6 +83,7 @@ pub struct AppConfig {
     pub shift_high_pct: f32,
     // Power curve
     pub power_curve_forced_induction: bool,
+    pub power_curve_save_fi_state: bool,
 }
 
 impl Default for AppConfig {
@@ -111,6 +112,7 @@ impl Default for AppConfig {
             shift_low_pct: 85.0,
             shift_high_pct: 95.0,
             power_curve_forced_induction: true,
+            power_curve_save_fi_state: false,
         }
     }
 }

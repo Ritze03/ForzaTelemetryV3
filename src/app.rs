@@ -151,6 +151,8 @@ pub struct ForzaApp {
     pub max_power_ps:  f32,
     pub max_torque_nm: f32,
     pub max_boost_psi: f32,
+    pub cached_engine_max_rpm: f64,
+    pub fi_detected: bool,
 
     // Session stats
     pub suspension_stats: SuspensionStats,
@@ -229,6 +231,8 @@ impl ForzaApp {
             max_power_ps: 0.0,
             max_torque_nm: 0.0,
             max_boost_psi: 0.0,
+            cached_engine_max_rpm: 0.0,
+            fi_detected: false,
             suspension_stats: SuspensionStats::default(),
             gforce_stats: GForceStats::default(),
             cached_car_class_str:  String::new(),
@@ -271,11 +275,12 @@ impl ForzaApp {
                 self.last_car_ordinal = pkt.car_ordinal;
                 self.sprint_timer.reset();
                 self.power_capture.on_car_changed();
-                self.saved_power_curve = None;
                 self.perf_test.reset();
                 self.max_power_ps = 0.0;
                 self.max_torque_nm = 0.0;
                 self.max_boost_psi = 0.0;
+                self.cached_engine_max_rpm = 0.0;
+                self.fi_detected = false;
             }
 
             // Session maxima + cache car identity
@@ -284,6 +289,12 @@ impl ForzaApp {
                 self.cached_car_pi         = pkt.car_performance_index;
                 self.cached_drivetrain_str = pkt.drivetrain_str().to_string();
                 self.cached_num_cylinders  = pkt.num_cylinders;
+                if pkt.engine_max_rpm > 0.0 {
+                    self.cached_engine_max_rpm = pkt.engine_max_rpm as f64;
+                }
+                if pkt.boost > 0.05 {
+                    self.fi_detected = true;
+                }
                 if pkt.speed >= 0.1 {
                     self.max_power_ps  = self.max_power_ps.max(pkt.power_ps());
                     self.max_torque_nm = self.max_torque_nm.max(pkt.torque_nm());
@@ -397,7 +408,7 @@ impl eframe::App for ForzaApp {
                 let (color, icon, text) = if self.telemetry.is_connected {
                     (egui::Color32::from_rgb(60, 200, 90), icons::PLUG, "Connected")
                 } else {
-                    (egui::Color32::from_rgb(200, 60, 60), icons::NO_SIGNAL, "Disconnected")
+                    (egui::Color32::from_rgb(200, 60, 60), icons::NO_SIGNAL, " Disconnected")
                 };
                 ui.colored_label(color, format!("{icon} {text}"));
                 ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
@@ -612,6 +623,15 @@ impl eframe::App for ForzaApp {
                             }
                         }
                         Tab::PowerCurve => {
+                            ui.horizontal(|ui| {
+                                ui.label("RPM step size:");
+                                ui.add(
+                                    egui::Slider::new(&mut self.config.power_curve_step, 25.0..=500.0)
+                                        .step_by(25.0)
+                                        .suffix(" rpm"),
+                                );
+                            });
+                            ui.add_space(8.0);
                             ui.checkbox(
                                 &mut self.config.power_curve_forced_induction,
                                 "Forced induction detection",
@@ -625,6 +645,22 @@ impl eframe::App for ForzaApp {
                                 .size(11.0)
                                 .color(egui::Color32::GRAY),
                             );
+                            if self.config.power_curve_forced_induction {
+                                ui.add_space(8.0);
+                                ui.checkbox(
+                                    &mut self.config.power_curve_save_fi_state,
+                                    "Save Forced Induction State",
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Keep the boost graph visible after clearing data,\n\
+                                         if FI was detected at least once for this car."
+                                    )
+                                    .size(11.0)
+                                    .color(egui::Color32::GRAY),
+                                );
+                            }
                         }
                         _ => {
                             ui.centered_and_justified(|ui| {

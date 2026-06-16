@@ -150,21 +150,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
         ui.add_space(8.0);
 
-        // ── Power curve ──────────────────────────────────────────
-        ui.group(|ui| {
-            ui.heading("Power Curve");
-            ui.horizontal(|ui| {
-                ui.label("RPM step size:");
-                ui.add(
-                    egui::Slider::new(&mut app.config.power_curve_step, 25.0..=500.0)
-                        .step_by(25.0)
-                        .suffix(" rpm"),
-                );
-            });
-        });
-
-        ui.add_space(8.0);
-
         // ── Save ─────────────────────────────────────────────────
         ui.horizontal(|ui| {
             if ui
