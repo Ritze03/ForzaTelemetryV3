@@ -17,7 +17,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Forza Telemetry V3")
             .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([800.0, 600.0]),
+            .with_min_inner_size([800.0, 660.0]),
         ..Default::default()
     };
 

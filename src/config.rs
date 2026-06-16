@@ -51,6 +51,65 @@ pub enum TireDisplayStyle {
     Combined,
 }
 
+// ── Widget grid system ─────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
+pub enum WidgetKind {
+    #[default]
+    Empty,
+    Speed,
+    Gear,
+    Rpm,
+    Inputs,
+    Car,
+    Race,
+    Tires,
+    GForce,
+    Suspension,
+}
+
+impl WidgetKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            WidgetKind::Empty      => "Empty",
+            WidgetKind::Speed      => "Speed",
+            WidgetKind::Gear       => "Gear",
+            WidgetKind::Rpm        => "RPM",
+            WidgetKind::Inputs     => "Inputs",
+            WidgetKind::Car        => "Car",
+            WidgetKind::Race       => "Race / Sprint",
+            WidgetKind::Tires      => "Tires",
+            WidgetKind::GForce     => "G-Forces",
+            WidgetKind::Suspension => "Suspension",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WidgetLayout {
+    pub kind: WidgetKind,
+    pub col: usize,
+    pub row: usize,
+    pub col_span: usize,
+    pub row_span: usize,
+}
+
+pub fn default_widget_layout() -> Vec<WidgetLayout> {
+    vec![
+        WidgetLayout { kind: WidgetKind::Speed,      col: 0, row: 0, col_span: 1, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Gear,       col: 1, row: 0, col_span: 1, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Rpm,        col: 2, row: 0, col_span: 3, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Inputs,     col: 0, row: 1, col_span: 2, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Car,        col: 2, row: 1, col_span: 2, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Race,       col: 0, row: 2, col_span: 2, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Tires,      col: 2, row: 2, col_span: 2, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::GForce,     col: 0, row: 3, col_span: 2, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Suspension, col: 2, row: 3, col_span: 2, row_span: 1 },
+    ]
+}
+
+// ──────────────────────────────────────────────────────────────────
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub listen_port: u16,
@@ -63,7 +122,6 @@ pub struct AppConfig {
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
     pub game_mode: GameMode,
-    pub dashboard_block_width: f32,
     // Alignment
     pub speed_align: TextAlign,
     pub gear_align: TextAlign,
@@ -76,14 +134,19 @@ pub struct AppConfig {
     // Tires
     pub tire_display_style: TireDisplayStyle,
     pub tire_slip_style: TireSlipStyle,
-    // Dashboard layout
-    pub dynamic_width: bool,
     // Shift indicator (global, % of engine_max_rpm)
     pub shift_low_pct: f32,
     pub shift_high_pct: f32,
     // Power curve
     pub power_curve_forced_induction: bool,
     pub power_curve_save_fi_state: bool,
+    // Dashboard widget grid
+    pub grid_cols: usize,
+    pub grid_rows: usize,
+    pub dashboard_widgets: Vec<WidgetLayout>,
+    pub dashboard_edit_mode: bool,
+    pub dashboard_show_grid: bool,
+    pub dashboard_show_outlines: bool,
 }
 
 impl Default for AppConfig {
@@ -99,7 +162,6 @@ impl Default for AppConfig {
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             game_mode: GameMode::ForzaHorizon6,
-            dashboard_block_width: 460.0,
             speed_align: TextAlign::Right,
             gear_align: TextAlign::Right,
             show_speed_delta: false,
@@ -108,11 +170,16 @@ impl Default for AppConfig {
             sprint_show_other: true,
             tire_display_style: TireDisplayStyle::Combined,
             tire_slip_style: TireSlipStyle::Values,
-            dynamic_width: true,
             shift_low_pct: 85.0,
             shift_high_pct: 95.0,
             power_curve_forced_induction: true,
             power_curve_save_fi_state: false,
+            grid_cols: 6,
+            grid_rows: 4,
+            dashboard_widgets: default_widget_layout(),
+            dashboard_edit_mode: false,
+            dashboard_show_grid: false,
+            dashboard_show_outlines: false,
         }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use egui::Context;
+use egui::{Context, Pos2, Vec2};
 
 use crate::config::{AllCarSettings, AppConfig, SpeedDeltaMode, Theme};
 use crate::engines::{load_engines, EngineRecord};
@@ -93,6 +93,30 @@ impl GForceStats {
     }
 }
 
+// ── Dashboard drag / resize state ─────────────────────────────────
+
+pub struct DashboardDragState {
+    pub widget_idx: usize,
+    pub pointer_offset: Vec2,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ResizeEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+pub struct DashboardResizeState {
+    pub widget_idx: usize,
+    pub edge: ResizeEdge,
+    pub origin_col: usize,
+    pub origin_row: usize,
+    pub origin_span: (usize, usize),
+    pub origin_ptr: Pos2,
+}
+
 // ── Tabs ───────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone, Copy)]
@@ -179,6 +203,10 @@ pub struct ForzaApp {
     pub page_settings_tab: Tab,
     pub page_dashboard_sub_tab: DashboardSubTab,
 
+    // Dashboard widget drag / resize state
+    pub dashboard_drag: Option<DashboardDragState>,
+    pub dashboard_resize: Option<DashboardResizeState>,
+
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
 }
@@ -248,6 +276,8 @@ impl ForzaApp {
             page_settings_opacity: 0.5,
             page_settings_tab: Tab::Dashboard,
             page_dashboard_sub_tab: DashboardSubTab::default(),
+            dashboard_drag: None,
+            dashboard_resize: None,
             receiver,
             _network: network,
         }
@@ -373,7 +403,7 @@ impl eframe::App for ForzaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.drain_packets();
 
-        // Apply theme
+        // Apply theme + scale
         match self.config.theme {
             Theme::Dark  => ctx.set_visuals(egui::Visuals::dark()),
             Theme::Light => ctx.set_visuals(egui::Visuals::light()),
@@ -489,22 +519,46 @@ impl eframe::App for ForzaApp {
 
                             match self.page_dashboard_sub_tab {
                                 DashboardSubTab::General => {
-                                    ui.checkbox(&mut self.config.dynamic_width, "Dynamic width");
-                                    ui.add_space(4.0);
-                                    let lbl = if self.config.dynamic_width {
-                                        "Minimum module width:"
-                                    } else {
-                                        "Module width:"
-                                    };
-                                    ui.label(lbl);
-                                    ui.add(
-                                        egui::Slider::new(
-                                            &mut self.config.dashboard_block_width,
-                                            200.0..=800.0,
+                                    // Edit Mode toggle
+                                    let active = self.config.dashboard_edit_mode;
+                                    let btn = ui.add(
+                                        egui::Button::new(
+                                            egui::RichText::new(format!("{}  Edit Mode", crate::icons::PENCIL))
+                                                .color(if active {
+                                                    egui::Color32::from_rgb(80, 150, 255)
+                                                } else {
+                                                    egui::Color32::GRAY
+                                                }),
                                         )
-                                        .step_by(10.0)
-                                        .suffix(" px"),
+                                        .fill(if active {
+                                            egui::Color32::from_rgba_premultiplied(30, 70, 180, 70)
+                                        } else {
+                                            egui::Color32::TRANSPARENT
+                                        }),
                                     );
+                                    if btn.clicked() {
+                                        self.config.dashboard_edit_mode = !self.config.dashboard_edit_mode;
+                                    }
+                                    ui.add_space(8.0);
+
+                                    ui.label("Grid columns:");
+                                    ui.add(
+                                        egui::Slider::new(&mut self.config.grid_cols, 1..=20_usize),
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.label("Grid rows (minimum):");
+                                    ui.add(
+                                        egui::Slider::new(&mut self.config.grid_rows, 1..=20_usize),
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.checkbox(&mut self.config.dashboard_show_grid, "Show grid");
+                                    ui.checkbox(&mut self.config.dashboard_show_outlines, "Show widget outlines");
+                                    ui.add_space(8.0);
+                                    if ui.button("Reset Layout").clicked() {
+                                        self.config.dashboard_widgets =
+                                            crate::config::default_widget_layout();
+                                        self.config.save();
+                                    }
                                 }
                                 DashboardSubTab::Kmh => {
                                     ui.horizontal(|ui| {
