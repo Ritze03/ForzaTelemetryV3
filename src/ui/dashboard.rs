@@ -41,6 +41,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     let num_rows = widgets
         .iter()
+        .filter(|w| !app.config.disabled_modules.contains(&w.kind))
         .map(|w| w.row + w.row_span)
         .max()
         .unwrap_or(1)
@@ -81,7 +82,12 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     // ── Empty-cell background ─────────────────────────────────────
     if show_grid {
-        let occupied = compute_occupied(&widgets);
+        let active_widgets: Vec<WidgetLayout> = widgets
+            .iter()
+            .filter(|w| !app.config.disabled_modules.contains(&w.kind))
+            .cloned()
+            .collect();
+        let occupied = compute_occupied(&active_widgets);
         let empty_stroke = Stroke::new(1.0, Color32::from_rgb(38, 38, 38));
         for row in 0..num_rows {
             for col in 0..grid_cols {
@@ -102,7 +108,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     // ── Render each widget ─────────────────────────────────────────
     for (idx, widget) in widgets.iter().enumerate() {
-        if widget.kind == WidgetKind::Empty {
+        if widget.kind == WidgetKind::Empty
+            || app.config.disabled_modules.contains(&widget.kind)
+        {
             continue;
         }
 
@@ -157,22 +165,27 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             const HOVER_A: u8  = 85;
             const ACTIVE_A: u8 = 120;
 
-            // 4 edge strips forming a transparent outline for resize
-            let edge_defs: [(ResizeEdge, Rect, egui::CursorIcon); 4] = [
+            // 4 edge strips: full-width rect for grabbing, half-width rect for painting
+            const VISUAL_STRIP: f32 = RESIZE_STRIP * 0.5;
+            let edge_defs: [(ResizeEdge, Rect, Rect, egui::CursorIcon); 4] = [
                 (ResizeEdge::Left,
                  Rect::from_min_max(wrect.min, pos2(wrect.left() + RESIZE_STRIP, wrect.bottom())),
+                 Rect::from_min_max(wrect.min, pos2(wrect.left() + VISUAL_STRIP, wrect.bottom())),
                  egui::CursorIcon::ResizeWest),
                 (ResizeEdge::Right,
                  Rect::from_min_max(pos2(wrect.right() - RESIZE_STRIP, wrect.top()), wrect.max),
+                 Rect::from_min_max(pos2(wrect.right() - VISUAL_STRIP, wrect.top()), wrect.max),
                  egui::CursorIcon::ResizeEast),
                 (ResizeEdge::Top,
                  Rect::from_min_max(wrect.min, pos2(wrect.right(), wrect.top() + RESIZE_STRIP)),
+                 Rect::from_min_max(wrect.min, pos2(wrect.right(), wrect.top() + VISUAL_STRIP)),
                  egui::CursorIcon::ResizeNorth),
                 (ResizeEdge::Bottom,
                  Rect::from_min_max(pos2(wrect.left(), wrect.bottom() - RESIZE_STRIP), wrect.max),
+                 Rect::from_min_max(pos2(wrect.left(), wrect.bottom() - VISUAL_STRIP), wrect.max),
                  egui::CursorIcon::ResizeSouth),
             ];
-            for (edge_i, (edge, strip_rect, cursor)) in edge_defs.into_iter().enumerate() {
+            for (edge_i, (edge, strip_rect, visual_rect, cursor)) in edge_defs.into_iter().enumerate() {
                 let is_active = app.dashboard_resize.as_ref()
                     .map_or(false, |r| r.widget_idx == idx && r.edge == edge);
                 let strip_resp = ui.interact(
@@ -181,7 +194,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     egui::Sense::drag(),
                 );
                 let alpha = if is_active { ACTIVE_A } else if strip_resp.hovered() { HOVER_A } else { BASE_A };
-                p.rect_filled(strip_rect, 0.0, Color32::from_rgba_premultiplied(200, 200, 200, alpha));
+                p.rect_filled(visual_rect, 0.0, Color32::from_rgba_premultiplied(200, 200, 200, alpha));
                 if strip_resp.hovered() || is_active {
                     ui.ctx().set_cursor_icon(cursor);
                 }
@@ -208,11 +221,11 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             let ma = if move_resp.is_pointer_button_down_on() { ACTIVE_A }
                      else if move_resp.hovered() { HOVER_A }
                      else { BASE_A };
-            p.rect_filled(move_rect, 6.0, Color32::from_rgba_premultiplied(255, 255, 255, ma));
+            p.rect_filled(move_rect, 6.0, Color32::from_rgba_premultiplied(180, 180, 180, ma));
             p.rect_stroke(
                 move_rect,
                 6.0,
-                Stroke::new(1.5, Color32::from_rgba_premultiplied(255, 255, 255, ma.saturating_add(40))),
+                Stroke::new(1.5, Color32::from_rgba_premultiplied(180, 180, 180, ma.saturating_add(40))),
                 egui::StrokeKind::Middle,
             );
             if move_resp.hovered() {
@@ -400,6 +413,7 @@ fn commit_drag(
         .find(|(i, w)| {
             *i != drag.widget_idx
                 && w.kind != WidgetKind::Empty
+                && !app.config.disabled_modules.contains(&w.kind)
                 && new_col < w.col + w.col_span
                 && new_col + dragged.col_span > w.col
                 && new_row < w.row + w.row_span
@@ -432,6 +446,7 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::Tires      => show_tires_block(ui, app, pkt),
         WidgetKind::GForce     => show_gforce_block(ui, app, pkt),
         WidgetKind::Suspension => show_suspension_block(ui, app, pkt),
+        WidgetKind::MiniMap    => show_minimap_widget(ui, app),
     }
 }
 
@@ -558,7 +573,8 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             .size((rpm_font * 0.45).max(9.0)).color(Color32::GRAY));
     });
 
-    let bar_size = Vec2::new(ui.available_width(), 28.0);
+    let bar_h = (ui.available_height() - 4.0).max(4.0);
+    let bar_size = Vec2::new(ui.available_width(), bar_h);
     let (rect, _) = ui.allocate_exact_size(bar_size, egui::Sense::hover());
     draw_shift_bar(
         ui,
@@ -590,15 +606,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.heading("Car");
     ui.add_space(4.0);
 
-    let car_ord = app.last_car_ordinal;
-    let car_cfg = app.car_settings.cars.get(&car_ord).cloned().unwrap_or_default();
-    let name = if car_cfg.name.is_empty() {
-        format!("Ordinal #{}", pkt.car_ordinal)
-    } else {
-        car_cfg.name.clone()
-    };
-
-    ui.label(RichText::new(name).size(16.0).strong());
+    ui.label(RichText::new(format!("Ordinal #{}", pkt.car_ordinal)).size(16.0).strong());
     ui.label(format!("Class {} — PI {}", app.cached_car_class_str, app.cached_car_pi));
     ui.label(format!("{} | {} cyl", app.cached_drivetrain_str, app.cached_num_cylinders));
 
@@ -635,13 +643,29 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 .desired_width(160.0),
         );
     }
+
+    if app.config.car_widget_show_position {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Position").size(11.0).color(Color32::GRAY));
+        ui.label(format!("X: {:>10.2} m", pkt.position_x));
+        ui.label(format!("Y: {:>10.2} m", pkt.position_y));
+        ui.label(format!("Z: {:>10.2} m", pkt.position_z));
+    }
+
+    if app.config.car_widget_show_rotation {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Rotation").size(11.0).color(Color32::GRAY));
+        ui.label(format!("Yaw:   {:>8.2}°", pkt.yaw.to_degrees()));
+        ui.label(format!("Pitch: {:>8.2}°", pkt.pitch.to_degrees()));
+        ui.label(format!("Roll:  {:>8.2}°", pkt.roll.to_degrees()));
+    }
 }
 
 fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
 
     if is_fh6 && pkt.race_position == 0 {
-        ui.heading("Sprint Times");
+        ui.heading("Sprint");
         ui.add_space(4.0);
 
         let st = &app.sprint_timer;
@@ -972,8 +996,9 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 // ── Visual widgets ─────────────────────────────────────────────────
 
 fn draw_steering(ui: &mut Ui, steer: i8) {
-    let desired = Vec2::new(ui.available_width(), 18.0);
+    let desired = Vec2::new(ui.available_width(), (ui.available_height() - 4.0).max(4.0));
     let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let rect = rect.shrink2(vec2(3.0, 0.0));
     let painter = ui.painter();
 
     painter.rect_filled(rect, 4.0, Color32::from_rgb(40, 40, 40));
@@ -1159,6 +1184,125 @@ fn sub_rect(r: egui::Rect, start: f32, end: f32) -> egui::Rect {
         pos2(r.left() + r.width() * start, r.top()),
         pos2(r.left() + r.width() * end, r.bottom()),
     )
+}
+
+// ── Mini Map ───────────────────────────────────────────────────────
+
+fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
+    let rect = ui.available_rect_before_wrap();
+    ui.allocate_space(rect.size());
+
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+
+    let Some(texture) = &app.minimap_texture else {
+        ui.ctx().request_repaint();
+        let center = rect.center();
+        // Spinner — identical position to the regular "Loading map…" screen
+        ui.put(
+            egui::Rect::from_center_size(center + vec2(0.0, -16.0), Vec2::splat(32.0)),
+            egui::Spinner::new().size(24.0),
+        );
+        let p = ui.painter_at(rect);
+        let (label, sub) = match &app.minimap_cache_progress {
+            Some(in_progress) if !in_progress.is_empty() => {
+                let names = in_progress.join(", ");
+                ("Creating Map Cache", Some(format!("Processing: {}…", names)))
+            }
+            _ => ("Loading map…", None),
+        };
+        p.text(
+            center + vec2(0.0, 12.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(13.0),
+            Color32::GRAY,
+        );
+        if let Some(sub_text) = sub {
+            p.text(
+                center + vec2(0.0, 28.0),
+                egui::Align2::CENTER_CENTER,
+                sub_text,
+                egui::FontId::proportional(11.0),
+                Color32::from_gray(100),
+            );
+        }
+        return;
+    };
+
+    let cfg = &app.config;
+    let px_per_m  = cfg.minimap_px_per_m;
+    let origin_wx = cfg.minimap_world_origin_x;
+    let origin_wz = cfg.minimap_world_origin_z;
+
+    let car_x = app.minimap_cached_car_x;
+    let car_z = app.minimap_cached_car_z;
+    let yaw   = app.minimap_smoothed_yaw;
+
+    // Metres visible from widget centre to nearest edge
+    let zoom  = app.minimap_current_zoom.max(1.0);
+    let scale = rect.width().min(rect.height()) / (2.0 * zoom);
+
+    // World-space coverage always based on original (pre-quality-resize) image dims
+    let [orig_w, orig_h] = app.minimap_orig_size;
+    let map_world_w = orig_w as f32 / px_per_m;
+    let map_world_h = orig_h as f32 / px_per_m;
+    let corners_world: [(f32, f32); 4] = [
+        (origin_wx,               origin_wz              ),  // TL → uv(0,0)
+        (origin_wx + map_world_w, origin_wz              ),  // TR → uv(1,0)
+        (origin_wx + map_world_w, origin_wz - map_world_h),  // BR → uv(1,1)
+        (origin_wx,               origin_wz - map_world_h),  // BL → uv(0,1)
+    ];
+
+    // Rotate world displacement into car-relative screen space.
+    // Assumes yaw=0 → car faces +Z (north); positive yaw clockwise viewed from above.
+    let cos_yaw = yaw.cos();
+    let sin_yaw = yaw.sin();
+
+    let screen_corners: [Pos2; 4] = std::array::from_fn(|i| {
+        let (wx, wz) = corners_world[i];
+        let dx = wx - car_x;
+        let dz = wz - car_z;
+        let sx =  (dx * cos_yaw - dz * sin_yaw) * scale;
+        let sy = -(dx * sin_yaw + dz * cos_yaw) * scale;
+        pos2(cx + sx, cy + sy)
+    });
+
+    let uvs: [Pos2; 4] = [
+        pos2(0.0, 0.0),
+        pos2(1.0, 0.0),
+        pos2(1.0, 1.0),
+        pos2(0.0, 1.0),
+    ];
+
+    let mut mesh = egui::Mesh::with_texture(texture.id());
+    mesh.indices = vec![0, 1, 2, 0, 2, 3];
+    for i in 0..4 {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos:   screen_corners[i],
+            uv:    uvs[i],
+            color: Color32::WHITE,
+        });
+    }
+
+    let painter = ui.painter_at(rect);
+    painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
+
+    // Car indicator: triangle rotated to show actual car heading relative to map orientation
+    let s = 7.0_f32;
+    let arrow_angle = app.minimap_cached_raw_yaw - app.minimap_smoothed_yaw;
+    let (sin_a, cos_a) = arrow_angle.sin_cos();
+    let rot = |vx: f32, vy: f32| -> Pos2 {
+        pos2(cx + vx * cos_a - vy * sin_a, cy + vx * sin_a + vy * cos_a)
+    };
+    let tip   = rot(0.0,      -s * 1.4);
+    let left  = rot(-s,        s * 0.6);
+    let right = rot( s,        s * 0.6);
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, right, left],
+        Color32::WHITE,
+        Stroke::new(1.5, Color32::BLACK),
+    ));
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

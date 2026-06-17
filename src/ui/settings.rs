@@ -102,50 +102,17 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             });
 
             ui.horizontal(|ui| {
-                ui.label("FPS limit:");
-                ui.add(
-                    egui::Slider::new(&mut app.config.fps_limit, 15.0..=165.0)
-                        .step_by(1.0)
-                        .suffix(" fps"),
-                );
+                ui.checkbox(&mut app.config.fps_limit_enabled, "FPS limit:");
+                if app.config.fps_limit_enabled {
+                    ui.add(
+                        egui::Slider::new(&mut app.config.fps_limit, 5.0..=120.0)
+                            .step_by(1.0)
+                            .suffix(" fps"),
+                    );
+                }
             });
 
             ui.checkbox(&mut app.config.always_on_top, "Always on top");
-        });
-
-        ui.add_space(8.0);
-
-        // ── Per-car (active car) ─────────────────────────────────
-        ui.group(|ui| {
-            let ordinal = app.last_car_ordinal;
-            ui.heading("Current Car");
-            if ordinal == 0 {
-                ui.label(
-                    RichText::new("No car detected yet — drive to load car settings.")
-                        .color(Color32::GRAY),
-                );
-                return;
-            }
-
-            let car = app.car_settings.get_or_default(ordinal);
-
-            ui.horizontal(|ui| {
-                ui.label("Name:");
-                ui.text_edit_singleline(&mut car.name);
-            });
-
-            let engine_max_rpm = app.telemetry.latest.as_ref()
-                .map(|p| p.engine_max_rpm)
-                .unwrap_or(0.0);
-            let low_rpm  = engine_max_rpm * app.config.shift_low_pct  / 100.0;
-            let high_rpm = engine_max_rpm * app.config.shift_high_pct / 100.0;
-            ui.label(
-                RichText::new(format!(
-                    "Engine max RPM: {:.0}  →  shift at {:.0} / {:.0}",
-                    engine_max_rpm, low_rpm, high_rpm,
-                ))
-                .color(Color32::GRAY),
-            );
         });
 
         ui.add_space(8.0);
@@ -157,7 +124,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 .clicked()
             {
                 app.config.save();
-                app.car_settings.save();
             }
             ui.label(
                 RichText::new("Settings are also auto-saved on exit.")

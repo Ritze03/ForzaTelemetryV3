@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,7 @@ pub enum WidgetKind {
     Tires,
     GForce,
     Suspension,
+    MiniMap,
 }
 
 impl WidgetKind {
@@ -81,6 +82,7 @@ impl WidgetKind {
             WidgetKind::Tires      => "Tires",
             WidgetKind::GForce     => "G-Forces",
             WidgetKind::Suspension => "Suspension",
+            WidgetKind::MiniMap    => "Map",
         }
     }
 }
@@ -96,15 +98,16 @@ pub struct WidgetLayout {
 
 pub fn default_widget_layout() -> Vec<WidgetLayout> {
     vec![
-        WidgetLayout { kind: WidgetKind::Speed,      col: 0, row: 0, col_span: 1, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Gear,       col: 1, row: 0, col_span: 1, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Rpm,        col: 2, row: 0, col_span: 3, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Inputs,     col: 0, row: 1, col_span: 2, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Car,        col: 2, row: 1, col_span: 2, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Race,       col: 0, row: 2, col_span: 2, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Tires,      col: 2, row: 2, col_span: 2, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::GForce,     col: 0, row: 3, col_span: 2, row_span: 1 },
-        WidgetLayout { kind: WidgetKind::Suspension, col: 2, row: 3, col_span: 2, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Speed,      col:  0, row: 0, col_span:  1, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Gear,       col:  1, row: 0, col_span:  1, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Rpm,        col:  2, row: 0, col_span: 14, row_span: 1 },
+        WidgetLayout { kind: WidgetKind::Suspension, col:  0, row: 1, col_span:  3, row_span: 3 },
+        WidgetLayout { kind: WidgetKind::Tires,      col:  3, row: 1, col_span:  9, row_span: 3 },
+        WidgetLayout { kind: WidgetKind::Car,        col: 12, row: 1, col_span:  4, row_span: 3 },
+        WidgetLayout { kind: WidgetKind::Inputs,     col:  0, row: 4, col_span:  3, row_span: 2 },
+        WidgetLayout { kind: WidgetKind::MiniMap,    col:  3, row: 4, col_span: 13, row_span: 6 },
+        WidgetLayout { kind: WidgetKind::Race,       col:  0, row: 6, col_span:  3, row_span: 2 },
+        WidgetLayout { kind: WidgetKind::GForce,     col:  0, row: 8, col_span:  3, row_span: 2 },
     ]
 }
 
@@ -147,6 +150,30 @@ pub struct AppConfig {
     pub dashboard_edit_mode: bool,
     pub dashboard_show_grid: bool,
     pub dashboard_show_outlines: bool,
+    // Car widget
+    pub car_widget_show_position: bool,
+    pub car_widget_show_rotation: bool,
+    // Mini map calibration (world coords → image pixel transform)
+    // pixel_x = (world_x - minimap_world_origin_x) * minimap_px_per_m
+    // pixel_y = (minimap_world_origin_z - world_z) * minimap_px_per_m
+    pub minimap_px_per_m: f32,
+    pub minimap_world_origin_x: f32,
+    pub minimap_world_origin_z: f32,
+    // Mini map zoom (metres visible from centre to edge)
+    pub minimap_zoom_driving_m: f32,
+    pub minimap_zoom_stopped_m: f32,
+    // Mini map image quality (20–100 %; 100 = raw image, lower = resized on load)
+    pub minimap_quality: f32,
+    // Mini map render FPS limit (independent of global FPS)
+    pub minimap_fps_limit: f32,
+    pub minimap_fps_limit_enabled: bool,
+    // Mini map rotation options
+    pub minimap_smooth_rotation: bool,
+    pub minimap_use_movement_dir: bool,
+    // Global FPS limiter toggle
+    pub fps_limit_enabled: bool,
+    // Disabled widget modules (empty = all enabled)
+    pub disabled_modules: Vec<WidgetKind>,
 }
 
 impl Default for AppConfig {
@@ -156,30 +183,71 @@ impl Default for AppConfig {
             fps_limit: 60.0,
             use_mph: false,
             use_fahrenheit: false,
-            use_bar: false,
+            use_bar: true,
             theme: Theme::Dark,
             always_on_top: false,
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             game_mode: GameMode::ForzaHorizon6,
-            speed_align: TextAlign::Right,
-            gear_align: TextAlign::Right,
-            show_speed_delta: false,
-            speed_delta_mode: SpeedDeltaMode::Track,
-            sprint_type: SprintType::Incremental,
+            speed_align: TextAlign::RightPlaceholder,
+            gear_align: TextAlign::Center,
+            show_speed_delta: true,
+            speed_delta_mode: SpeedDeltaMode::Calculate,
+            sprint_type: SprintType::Absolute,
             sprint_show_other: true,
             tire_display_style: TireDisplayStyle::Combined,
-            tire_slip_style: TireSlipStyle::Values,
+            tire_slip_style: TireSlipStyle::Both,
             shift_low_pct: 85.0,
             shift_high_pct: 95.0,
             power_curve_forced_induction: true,
-            power_curve_save_fi_state: false,
-            grid_cols: 6,
-            grid_rows: 4,
+            power_curve_save_fi_state: true,
+            grid_cols: 16,
+            grid_rows: 10,
             dashboard_widgets: default_widget_layout(),
             dashboard_edit_mode: false,
-            dashboard_show_grid: false,
-            dashboard_show_outlines: false,
+            dashboard_show_grid: true,
+            dashboard_show_outlines: true,
+            car_widget_show_position: true,
+            car_widget_show_rotation: true,
+            minimap_px_per_m: 0.3722,
+            minimap_world_origin_x: -12540.0,
+            minimap_world_origin_z: 10738.0,
+            minimap_zoom_driving_m: 1500.0,
+            minimap_zoom_stopped_m: 3000.0,
+            minimap_quality: 100.0,
+            minimap_fps_limit: 30.0,
+            minimap_fps_limit_enabled: true,
+            minimap_smooth_rotation: true,
+            minimap_use_movement_dir: true,
+            fps_limit_enabled: true,
+            disabled_modules: vec![],
+        }
+    }
+}
+
+fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
+    // Widget kinds that should always exist in the layout (skip Empty).
+    // If a kind is absent from the saved list, append it off to the side so
+    // the user can drag it into place from edit mode.
+    let all_kinds = [
+        WidgetKind::Speed, WidgetKind::Gear, WidgetKind::Rpm,
+        WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Race,
+        WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
+        WidgetKind::MiniMap,
+    ];
+    // Find highest row used so we can park new widgets below everything.
+    let max_row = widgets.iter().map(|w| w.row + w.row_span).max().unwrap_or(0);
+    let mut col_cursor = 0usize;
+    for kind in all_kinds {
+        if !widgets.iter().any(|w| w.kind == kind) {
+            widgets.push(WidgetLayout {
+                kind,
+                col: col_cursor,
+                row: max_row,
+                col_span: 2,
+                row_span: 2,
+            });
+            col_cursor += 2;
         }
     }
 }
@@ -202,7 +270,11 @@ impl AppConfig {
                 }
             }
         }
-        serde_json::from_value(val).unwrap_or(default)
+        let mut cfg: AppConfig = serde_json::from_value(val).unwrap_or(default);
+        // Ensure every widget kind has at least one entry in the layout.
+        // New kinds added to WidgetKind won't appear in old saved configs otherwise.
+        inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
+        cfg
     }
 
     pub fn save(&self) {
@@ -216,52 +288,14 @@ impl AppConfig {
     }
 
     fn path() -> PathBuf {
-        exe_dir().join("config.json")
+        app_data_dir().join("config.json")
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-pub struct CarSettings {
-    pub name: String,
-}
 
-#[derive(Serialize, Deserialize, Default)]
-pub struct AllCarSettings {
-    pub cars: HashMap<i32, CarSettings>,
-}
-
-impl AllCarSettings {
-    pub fn load() -> Self {
-        if let Ok(data) = std::fs::read_to_string(Self::path()) {
-            if let Ok(s) = serde_json::from_str(&data) {
-                return s;
-            }
-        }
-        Self::default()
-    }
-
-    pub fn save(&self) {
-        let path = Self::path();
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).ok();
-        }
-        if let Ok(data) = serde_json::to_string_pretty(self) {
-            std::fs::write(&path, data).ok();
-        }
-    }
-
-    pub fn get_or_default(&mut self, ordinal: i32) -> &mut CarSettings {
-        self.cars.entry(ordinal).or_default()
-    }
-
-    fn path() -> PathBuf {
-        exe_dir().join("car_settings.json")
-    }
-}
-
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(PathBuf::from))
+pub fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
+        .join("ForzaTelemetryV3")
 }
+
