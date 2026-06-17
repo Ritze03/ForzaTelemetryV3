@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
 use egui::{
     Align, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
@@ -442,6 +443,8 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::Rpm        => show_rpm_widget(ui, app, pkt),
         WidgetKind::Inputs     => show_inputs_block(ui, app, pkt),
         WidgetKind::Car        => show_car_block(ui, app, pkt),
+        WidgetKind::Engine     => show_engine_block(ui, app, pkt),
+        WidgetKind::Position   => show_position_block(ui, pkt),
         WidgetKind::Race       => show_race_block(ui, app, pkt),
         WidgetKind::Tires      => show_tires_block(ui, app, pkt),
         WidgetKind::GForce     => show_gforce_block(ui, app, pkt),
@@ -602,15 +605,45 @@ fn show_inputs_block(ui: &mut Ui, _app: &ForzaApp, pkt: &ForzaPacket) {
     draw_steering(ui, pkt.steer);
 }
 
-fn show_car_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
+    // Capture the full widget rect before the heading consumes any space.
+    let full_rect = ui.available_rect_before_wrap();
+
     ui.heading("Car");
     ui.add_space(4.0);
 
-    ui.label(RichText::new(format!("Ordinal #{}", pkt.car_ordinal)).size(16.0).strong());
-    ui.label(format!("Class {} — PI {}", app.cached_car_class_str, app.cached_car_pi));
-    ui.label(format!("{} | {} cyl", app.cached_drivetrain_str, app.cached_num_cylinders));
+    let no_data = app.cached_car_class_str.is_empty();
+    let line1 = if no_data {
+        "Class -- [---]".to_string()
+    } else {
+        format!("Class {} [{}]", app.cached_car_class_str, app.cached_car_pi)
+    };
+    let line2 = if no_data {
+        "XWD | ---".to_string()
+    } else if app.cached_num_cylinders == 0 {
+        format!("{} | Electric", app.cached_drivetrain_str)
+    } else {
+        format!("{} | {} cyl", app.cached_drivetrain_str, app.cached_num_cylinders)
+    };
 
-    ui.add_space(8.0);
+    // Center data lines in the full widget rect so they sit at the widget's
+    // true vertical midpoint, independent of how tall the heading is.
+    let line_h  = ui.text_style_height(&egui::TextStyle::Body);
+    let block_h = 2.0 * line_h + ui.spacing().item_spacing.y;
+    let top_pad = ((full_rect.height() - block_h) * 0.5
+        - (ui.next_widget_position().y - full_rect.min.y)
+        + line_h * 0.5)
+        .max(0.0);
+    ui.add_space(top_pad);
+    ui.vertical_centered(|ui| {
+        ui.label(&line1);
+        ui.label(&line2);
+    });
+}
+
+fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    ui.heading("Engine");
+    ui.add_space(4.0);
 
     let (boost_cur, boost_max, boost_unit) = if app.config.use_bar {
         (pkt.boost * 0.0689476, app.max_boost_psi * 0.0689476, "bar")
@@ -643,22 +676,21 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 .desired_width(160.0),
         );
     }
+}
 
-    if app.config.car_widget_show_position {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Position").size(11.0).color(Color32::GRAY));
-        ui.label(format!("X: {:>10.2} m", pkt.position_x));
-        ui.label(format!("Y: {:>10.2} m", pkt.position_y));
-        ui.label(format!("Z: {:>10.2} m", pkt.position_z));
-    }
-
-    if app.config.car_widget_show_rotation {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Rotation").size(11.0).color(Color32::GRAY));
-        ui.label(format!("Yaw:   {:>8.2}°", pkt.yaw.to_degrees()));
-        ui.label(format!("Pitch: {:>8.2}°", pkt.pitch.to_degrees()));
-        ui.label(format!("Roll:  {:>8.2}°", pkt.roll.to_degrees()));
-    }
+fn show_position_block(ui: &mut Ui, pkt: &ForzaPacket) {
+    ui.heading("Position");
+    ui.add_space(4.0);
+    ui.columns(2, |cols| {
+        cols[0].label(RichText::new("Position").size(11.0).color(Color32::GRAY));
+        cols[0].label(format!("X: {:>10.2} m", pkt.position_x));
+        cols[0].label(format!("Y: {:>10.2} m", pkt.position_y));
+        cols[0].label(format!("Z: {:>10.2} m", pkt.position_z));
+        cols[1].label(RichText::new("Rotation").size(11.0).color(Color32::GRAY));
+        cols[1].label(format!("Yaw:   {:>6.2}°", pkt.yaw.to_degrees()));
+        cols[1].label(format!("Pitch: {:>6.2}°", pkt.pitch.to_degrees()));
+        cols[1].label(format!("Roll:  {:>6.2}°", pkt.roll.to_degrees()));
+    });
 }
 
 fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
@@ -1196,7 +1228,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let cy = rect.center().y;
 
     let Some(texture) = &app.minimap_texture else {
-        ui.ctx().request_repaint();
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
         let center = rect.center();
         // Spinner — identical position to the regular "Loading map…" screen
         ui.put(
@@ -1243,46 +1275,53 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let zoom  = app.minimap_current_zoom.max(1.0);
     let scale = rect.width().min(rect.height()) / (2.0 * zoom);
 
-    // World-space coverage always based on original (pre-quality-resize) image dims
     let [orig_w, orig_h] = app.minimap_orig_size;
-    let map_world_w = orig_w as f32 / px_per_m;
-    let map_world_h = orig_h as f32 / px_per_m;
-    let corners_world: [(f32, f32); 4] = [
-        (origin_wx,               origin_wz              ),  // TL → uv(0,0)
-        (origin_wx + map_world_w, origin_wz              ),  // TR → uv(1,0)
-        (origin_wx + map_world_w, origin_wz - map_world_h),  // BR → uv(1,1)
-        (origin_wx,               origin_wz - map_world_h),  // BL → uv(0,1)
-    ];
 
     // Rotate world displacement into car-relative screen space.
     // Assumes yaw=0 → car faces +Z (north); positive yaw clockwise viewed from above.
     let cos_yaw = yaw.cos();
     let sin_yaw = yaw.sin();
 
-    let screen_corners: [Pos2; 4] = std::array::from_fn(|i| {
-        let (wx, wz) = corners_world[i];
-        let dx = wx - car_x;
-        let dz = wz - car_z;
-        let sx =  (dx * cos_yaw - dz * sin_yaw) * scale;
-        let sy = -(dx * sin_yaw + dz * cos_yaw) * scale;
-        pos2(cx + sx, cy + sy)
-    });
-
-    let uvs: [Pos2; 4] = [
-        pos2(0.0, 0.0),
-        pos2(1.0, 0.0),
-        pos2(1.0, 1.0),
-        pos2(0.0, 1.0),
-    ];
-
     let mut mesh = egui::Mesh::with_texture(texture.id());
     mesh.indices = vec![0, 1, 2, 0, 2, 3];
-    for i in 0..4 {
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos:   screen_corners[i],
-            uv:    uvs[i],
-            color: Color32::WHITE,
-        });
+
+    if cfg.minimap_mirror_edges {
+        // Mesh covers the full widget rect; UVs are derived via the inverse world→screen
+        // transform and may exceed [0,1] near map edges — MirroredRepeat fills those
+        // regions with a reflected copy of the map.
+        let half_w = rect.width()  * 0.5;
+        let half_h = rect.height() * 0.5;
+        let inv_scale = 1.0 / scale;
+        for (sx, sy) in [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)] {
+            let wx = car_x + (sx * cos_yaw - sy * sin_yaw) * inv_scale;
+            let wz = car_z - (sx * sin_yaw + sy * cos_yaw) * inv_scale;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos:   pos2(cx + sx, cy + sy),
+                uv:    pos2((wx - origin_wx) * px_per_m / orig_w as f32,
+                            (origin_wz - wz) * px_per_m / orig_h as f32),
+                color: Color32::WHITE,
+            });
+        }
+    } else {
+        // Mesh covers exactly the map image; UVs are always [0,1] so no mirroring occurs.
+        let map_world_w = orig_w as f32 / px_per_m;
+        let map_world_h = orig_h as f32 / px_per_m;
+        let corners = [
+            (origin_wx,               origin_wz,               pos2(0.0, 0.0)),
+            (origin_wx + map_world_w, origin_wz,               pos2(1.0, 0.0)),
+            (origin_wx + map_world_w, origin_wz - map_world_h, pos2(1.0, 1.0)),
+            (origin_wx,               origin_wz - map_world_h, pos2(0.0, 1.0)),
+        ];
+        for (wx, wz, uv) in corners {
+            let dx = wx - car_x;
+            let dz = wz - car_z;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos:   pos2(cx + (dx * cos_yaw - dz * sin_yaw) * scale,
+                            cy - (dx * sin_yaw + dz * cos_yaw) * scale),
+                uv,
+                color: Color32::WHITE,
+            });
+        }
     }
 
     let painter = ui.painter_at(rect);

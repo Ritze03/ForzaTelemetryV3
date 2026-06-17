@@ -8,7 +8,7 @@ pub struct EngineRecord {
     pub horsepower: u32,
 }
 
-static ENGINES_CSV: &str = include_str!("../engines.csv");
+static ENGINES_CSV: &str = include_str!("../assets/engines.csv");
 
 pub fn load_engines() -> Vec<EngineRecord> {
     let mut reader = csv::ReaderBuilder::new()

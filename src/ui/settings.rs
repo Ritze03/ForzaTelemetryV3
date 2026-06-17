@@ -1,123 +1,179 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
-use crate::config::{GameMode, Theme};
+use crate::config::{DashboardPreset, GameMode};
+
+static PRESET_ALE:   &str = include_str!("../../assets/configs/ale.json");
+static PRESET_RITZE: &str = include_str!("../../assets/configs/ritze.json");
+
+const PRESET_NAMES: &[&str] = &["Ale (halb)", "Ritze (ganz)"];
+const PRESET_DATA:  &[&str] = &[PRESET_ALE, PRESET_RITZE];
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
-        // ── Game ─────────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.heading("Game");
-            ui.add_space(4.0);
+        ui.columns(2, |cols| {
+            // ── LEFT COLUMN ──────────────────────────────────────────
+            let left = &mut cols[0];
 
-            egui::ComboBox::from_label("Target game")
-                .selected_text(match app.config.game_mode {
-                    GameMode::ForzaHorizon6    => "Forza Horizon 6",
-                    GameMode::ForzaMotorsport7 => "Forza Motorsport 7 (Untested)",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut app.config.game_mode,
-                        GameMode::ForzaHorizon6,
-                        "Forza Horizon 6",
-                    );
-                    ui.selectable_value(
-                        &mut app.config.game_mode,
-                        GameMode::ForzaMotorsport7,
-                        "Forza Motorsport 7 (Untested)",
-                    );
-                });
+            // ── Game ─────────────────────────────────────────────────
+            left.group(|ui| {
+                ui.heading("Game");
+                ui.add_space(4.0);
 
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new(
-                    "FH6: hides fuel, shows sprint times when not in race.\n\
-                     FM7: shows all fields.",
-                )
-                .size(11.0)
-                .color(Color32::GRAY),
-            );
-        });
+                egui::ComboBox::from_label("Target game")
+                    .selected_text(match app.config.game_mode {
+                        GameMode::ForzaHorizon6    => "Forza Horizon 6",
+                        GameMode::ForzaMotorsport7 => "Forza Motorsport 7 (Untested)",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.config.game_mode,
+                            GameMode::ForzaHorizon6,
+                            "Forza Horizon 6",
+                        );
+                        ui.selectable_value(
+                            &mut app.config.game_mode,
+                            GameMode::ForzaMotorsport7,
+                            "Forza Motorsport 7 (Untested)",
+                        );
+                    });
 
-        ui.add_space(8.0);
-
-        // ── Network ─────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.heading("Network");
-            ui.add_space(4.0);
-
-            ui.horizontal(|ui| {
-                ui.label("Listen port:");
-                ui.add(
-                    egui::DragValue::new(&mut app.pending_port)
-                        .range(1024..=65535),
-                );
-                let changed = app.pending_port != app.config.listen_port;
-                let btn = egui::Button::new("Apply").fill(if changed {
-                    Color32::from_rgb(60, 120, 200)
-                } else {
-                    Color32::TRANSPARENT
-                });
-                if ui.add(btn).clicked() && changed {
-                    let port = app.pending_port;
-                    app.restart_receiver(port);
-                }
-            });
-            ui.label(
-                RichText::new("Avoid ports 5200–5300 (used by the game).")
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(
+                        "FH6: hides fuel, shows sprint times when not in race.\n\
+                         FM7: shows all fields.",
+                    )
                     .size(11.0)
                     .color(Color32::GRAY),
-            );
-        });
-
-        ui.add_space(8.0);
-
-        // ── Display ─────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.heading("Display");
-            ui.add_space(4.0);
-
-            ui.horizontal(|ui| {
-                ui.label("Speed unit:");
-                ui.radio_value(&mut app.config.use_mph, false, "km/h");
-                ui.radio_value(&mut app.config.use_mph, true, "mph");
+                );
             });
 
-            ui.horizontal(|ui| {
-                ui.label("Tire temp unit:");
-                ui.radio_value(&mut app.config.use_fahrenheit, false, "°C");
-                ui.radio_value(&mut app.config.use_fahrenheit, true, "°F");
-            });
+            left.add_space(8.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Boost / pressure:");
-                ui.radio_value(&mut app.config.use_bar, false, "PSI");
-                ui.radio_value(&mut app.config.use_bar, true, "bar");
-            });
+            // ── Network ──────────────────────────────────────────────
+            left.group(|ui| {
+                ui.heading("Network");
+                ui.add_space(4.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Theme:");
-                ui.radio_value(&mut app.config.theme, Theme::Dark, "Dark");
-                ui.radio_value(&mut app.config.theme, Theme::Light, "Light");
-            });
-
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut app.config.fps_limit_enabled, "FPS limit:");
-                if app.config.fps_limit_enabled {
+                ui.horizontal(|ui| {
+                    ui.label("Listen port:");
                     ui.add(
-                        egui::Slider::new(&mut app.config.fps_limit, 5.0..=120.0)
-                            .step_by(1.0)
-                            .suffix(" fps"),
+                        egui::DragValue::new(&mut app.pending_port)
+                            .range(1024..=65535),
                     );
-                }
+                    let changed = app.pending_port != app.config.listen_port;
+                    let btn = egui::Button::new("Apply").fill(if changed {
+                        Color32::from_rgb(60, 120, 200)
+                    } else {
+                        Color32::TRANSPARENT
+                    });
+                    if ui.add(btn).clicked() && changed {
+                        let port = app.pending_port;
+                        app.restart_receiver(port);
+                    }
+                });
+                ui.label(
+                    RichText::new("Avoid ports 5200–5300 (used by the game).")
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
             });
 
-            ui.checkbox(&mut app.config.always_on_top, "Always on top");
+            left.add_space(8.0);
+
+            // ── Display ──────────────────────────────────────────────
+            left.group(|ui| {
+                ui.heading("Display");
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Speed unit:");
+                    ui.radio_value(&mut app.config.use_mph, false, "km/h");
+                    ui.radio_value(&mut app.config.use_mph, true, "mph");
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Tire temp unit:");
+                    ui.radio_value(&mut app.config.use_fahrenheit, false, "°C");
+                    ui.radio_value(&mut app.config.use_fahrenheit, true, "°F");
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Boost / pressure:");
+                    ui.radio_value(&mut app.config.use_bar, true, "bar");
+                    ui.radio_value(&mut app.config.use_bar, false, "PSI");
+                });
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut app.config.fps_limit_enabled, "FPS limit:");
+                    if app.config.fps_limit_enabled {
+                        ui.add(
+                            egui::Slider::new(&mut app.config.fps_limit, 5.0..=120.0)
+                                .step_by(1.0)
+                                .suffix(" fps"),
+                        );
+                    }
+                });
+
+                ui.checkbox(&mut app.config.always_on_top, "Always on top");
+            });
+
+            // ── RIGHT COLUMN ─────────────────────────────────────────
+            let right = &mut cols[1];
+
+            // GitHub link
+            right.group(|ui| {
+                ui.heading("Repository");
+                ui.add_space(4.0);
+                ui.hyperlink_to(
+                    "github.com/Ritze03/ForzaTelemetryV3",
+                    "https://github.com/Ritze03/ForzaTelemetryV3",
+                );
+            });
+
+            right.add_space(8.0);
+
+            // ── Load Preset ───────────────────────────────────────────
+            right.group(|ui| {
+                ui.heading("Load Preset");
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    let selected_label = app.pending_preset
+                        .map(|i| PRESET_NAMES[i])
+                        .unwrap_or("— select —");
+
+                    egui::ComboBox::from_id_salt("preset_combo")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in PRESET_NAMES.iter().enumerate() {
+                                ui.selectable_value(&mut app.pending_preset, Some(i), *name);
+                            }
+                        });
+
+                    if ui.button("Load Preset").clicked() {
+                        if let Some(idx) = app.pending_preset {
+                            if let Ok(preset) = serde_json::from_str::<DashboardPreset>(PRESET_DATA[idx]) {
+                                preset.apply_to(&mut app.config);
+                            }
+                            app.pending_preset = None;
+                        }
+                    }
+                });
+
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new("Applies dashboard layout only. Other settings unchanged.")
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
+            });
         });
 
         ui.add_space(8.0);
 
-        // ── Save ─────────────────────────────────────────────────
+        // ── Save (full width, below columns) ─────────────────────────
         ui.horizontal(|ui| {
             if ui
                 .button(RichText::new(format!("{}  Save Settings", crate::icons::FLOPPY)).size(16.0))

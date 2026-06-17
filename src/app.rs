@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{Context, Pos2, Vec2};
 
-use crate::config::{AppConfig, SpeedDeltaMode, Theme};
+use crate::config::{AppConfig, SpeedDeltaMode};
 use crate::engines::{load_engines, EngineRecord};
 use crate::listeners::perf_test::PerfTest;
 use crate::listeners::power_capture::{PowerCapture, PowerCurveSnapshot};
@@ -35,12 +35,12 @@ pub fn current_season() -> Season {
     }
 }
 
-fn season_map_path(season: Season) -> &'static str {
+fn season_map_bytes(season: Season) -> &'static [u8] {
     match season {
-        Season::Spring => "assets/maps/spring.jpg",
-        Season::Summer => "assets/maps/summer.jpg",
-        Season::Autumn => "assets/maps/autumn.jpg",
-        Season::Winter => "assets/maps/winter.jpg",
+        Season::Spring => include_bytes!("../assets/maps/spring.jpg"),
+        Season::Summer => include_bytes!("../assets/maps/summer.jpg"),
+        Season::Autumn => include_bytes!("../assets/maps/autumn.jpg"),
+        Season::Winter => include_bytes!("../assets/maps/winter.jpg"),
     }
 }
 
@@ -98,8 +98,8 @@ fn decode_and_cache_season(season: Season, quality: f32) {
     let quality_pct = quality.round() as u32;
     let cache_file = map_cache_path(season, quality_pct);
     if cache_file.exists() { return; }
-    let Ok(bytes) = std::fs::read(season_map_path(season)) else { return; };
-    let Ok(img) = image::load_from_memory(&bytes) else { return; };
+    let bytes = season_map_bytes(season);
+    let Ok(img) = image::load_from_memory(bytes) else { return; };
     let orig_size = [img.width(), img.height()];
     let rgba = if quality >= 99.9 {
         img.into_rgba8()
@@ -299,7 +299,6 @@ pub enum DashboardSubTab {
     SprintTimes,
     Tires,
     Shift,
-    Car,
     MiniMap,
 }
 
@@ -383,6 +382,9 @@ pub struct ForzaApp {
     pub minimap_smoothed_yaw: f32,        // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
+
+    // Preset loader selected index (None = nothing selected)
+    pub pending_preset: Option<usize>,
 
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
@@ -478,6 +480,7 @@ impl ForzaApp {
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
             minimap_cache_progress: None,
+            pending_preset: None,
             receiver,
             _network: network,
         }
@@ -498,8 +501,10 @@ impl ForzaApp {
         let decel_s = self.decel_start_kmh;
         let decel_e = self.decel_end_kmh;
 
-        let mut drained = 0;
+        let mut received = 0;
         while let Ok(pkt) = self.receiver.try_recv() {
+            self.last_packet_time = Some(Instant::now());
+
             // Car change: reset per-car state
             if pkt.car_ordinal != 0 && pkt.car_ordinal != self.last_car_ordinal {
                 self.last_car_ordinal = pkt.car_ordinal;
@@ -581,13 +586,11 @@ impl ForzaApp {
             self.sprint_timer.update(&pkt);
             self.power_capture.update(&pkt, step);
             self.perf_test.update(&pkt, accel_s, accel_e, decel_s, decel_e);
-            self.telemetry.update(pkt);
-            self.last_packet_time = Some(Instant::now());
 
-            drained += 1;
-            if drained >= 200 {
-                break;
-            }
+            self.telemetry.update(pkt);
+
+            received += 1;
+            if received >= 200 { break; }
         }
 
         // Mark disconnected after 2 s without a packet
@@ -621,7 +624,12 @@ impl eframe::App for ForzaApp {
                         if let Some((img, orig_size)) = result {
                             self.minimap_orig_size = orig_size;
                             self.minimap_texture = Some(
-                                ctx.load_texture("minimap", img, egui::TextureOptions::LINEAR),
+                                ctx.load_texture("minimap", img, egui::TextureOptions {
+                                    magnification: egui::TextureFilter::Linear,
+                                    minification:  egui::TextureFilter::Linear,
+                                    wrap_mode:     egui::TextureWrapMode::MirroredRepeat,
+                                    mipmap_mode:   None,
+                                }),
                             );
                         }
                         self.minimap_img_receiver = None;
@@ -715,11 +723,15 @@ impl eframe::App for ForzaApp {
             }
         }
 
-        // Apply theme + scale
-        match self.config.theme {
-            Theme::Dark  => ctx.set_visuals(egui::Visuals::dark()),
-            Theme::Light => ctx.set_visuals(egui::Visuals::light()),
+        // F11 fullscreen toggle (Windows only)
+        #[cfg(target_os = "windows")]
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+            let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
         }
+
+        // Always dark — Light mode removed
+        ctx.set_visuals(egui::Visuals::dark());
 
         // Tab bar
         egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
@@ -827,7 +839,6 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::SprintTimes, "Sprint"),
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
-                                    (DashboardSubTab::Car,         "Car"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, lbl);
@@ -883,7 +894,8 @@ impl eframe::App for ForzaApp {
                                     use crate::config::WidgetKind;
                                     for kind in [
                                         WidgetKind::Speed, WidgetKind::Gear, WidgetKind::Rpm,
-                                        WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Race,
+                                        WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Engine,
+                                        WidgetKind::Position, WidgetKind::Race,
                                         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
                                         WidgetKind::MiniMap,
                                     ] {
@@ -1028,10 +1040,6 @@ impl eframe::App for ForzaApp {
                                         );
                                     });
                                 }
-                                DashboardSubTab::Car => {
-                                    ui.checkbox(&mut self.config.car_widget_show_position, "Show Position (X, Y, Z)");
-                                    ui.checkbox(&mut self.config.car_widget_show_rotation, "Show Rotation (Yaw, Pitch, Roll)");
-                                }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {
                                         ui.checkbox(&mut self.config.minimap_fps_limit_enabled, "Render FPS limit:");
@@ -1045,6 +1053,7 @@ impl eframe::App for ForzaApp {
                                     });
                                     ui.checkbox(&mut self.config.minimap_smooth_rotation, "Smooth rotation");
                                     ui.checkbox(&mut self.config.minimap_use_movement_dir, "Use movement direction as rotation");
+                                    ui.checkbox(&mut self.config.minimap_mirror_edges, "Mirror map at edges");
                                     ui.add_space(4.0);
                                     ui.label("Zoom when driving (radius, metres):");
                                     ui.add(

@@ -303,4 +303,5 @@ impl ForzaPacket {
     pub fn tire_temp_celsius(temp_f: f32) -> f32 {
         (temp_f - 32.0) * 5.0 / 9.0
     }
+
 }

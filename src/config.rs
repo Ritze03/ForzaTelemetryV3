@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub enum Theme {
     Dark,
-    Light,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
@@ -62,6 +61,8 @@ pub enum WidgetKind {
     Rpm,
     Inputs,
     Car,
+    Engine,
+    Position,
     Race,
     Tires,
     GForce,
@@ -78,6 +79,8 @@ impl WidgetKind {
             WidgetKind::Rpm        => "RPM",
             WidgetKind::Inputs     => "Inputs",
             WidgetKind::Car        => "Car",
+            WidgetKind::Engine     => "Engine",
+            WidgetKind::Position   => "Position",
             WidgetKind::Race       => "Race / Sprint",
             WidgetKind::Tires      => "Tires",
             WidgetKind::GForce     => "G-Forces",
@@ -103,7 +106,8 @@ pub fn default_widget_layout() -> Vec<WidgetLayout> {
         WidgetLayout { kind: WidgetKind::Rpm,        col:  2, row: 0, col_span: 14, row_span: 1 },
         WidgetLayout { kind: WidgetKind::Suspension, col:  0, row: 1, col_span:  3, row_span: 3 },
         WidgetLayout { kind: WidgetKind::Tires,      col:  3, row: 1, col_span:  9, row_span: 3 },
-        WidgetLayout { kind: WidgetKind::Car,        col: 12, row: 1, col_span:  4, row_span: 3 },
+        WidgetLayout { kind: WidgetKind::Car,        col: 12, row: 1, col_span:  4, row_span: 2 },
+        WidgetLayout { kind: WidgetKind::Engine,     col: 12, row: 3, col_span:  4, row_span: 1 },
         WidgetLayout { kind: WidgetKind::Inputs,     col:  0, row: 4, col_span:  3, row_span: 2 },
         WidgetLayout { kind: WidgetKind::MiniMap,    col:  3, row: 4, col_span: 13, row_span: 6 },
         WidgetLayout { kind: WidgetKind::Race,       col:  0, row: 6, col_span:  3, row_span: 2 },
@@ -150,9 +154,6 @@ pub struct AppConfig {
     pub dashboard_edit_mode: bool,
     pub dashboard_show_grid: bool,
     pub dashboard_show_outlines: bool,
-    // Car widget
-    pub car_widget_show_position: bool,
-    pub car_widget_show_rotation: bool,
     // Mini map calibration (world coords → image pixel transform)
     // pixel_x = (world_x - minimap_world_origin_x) * minimap_px_per_m
     // pixel_y = (minimap_world_origin_z - world_z) * minimap_px_per_m
@@ -170,6 +171,7 @@ pub struct AppConfig {
     // Mini map rotation options
     pub minimap_smooth_rotation: bool,
     pub minimap_use_movement_dir: bool,
+    pub minimap_mirror_edges: bool,
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -207,31 +209,31 @@ impl Default for AppConfig {
             dashboard_edit_mode: false,
             dashboard_show_grid: true,
             dashboard_show_outlines: true,
-            car_widget_show_position: true,
-            car_widget_show_rotation: true,
             minimap_px_per_m: 0.3722,
             minimap_world_origin_x: -12540.0,
             minimap_world_origin_z: 10738.0,
             minimap_zoom_driving_m: 1500.0,
             minimap_zoom_stopped_m: 3000.0,
             minimap_quality: 100.0,
-            minimap_fps_limit: 30.0,
+            minimap_fps_limit: 60.0,
             minimap_fps_limit_enabled: true,
             minimap_smooth_rotation: true,
             minimap_use_movement_dir: true,
-            fps_limit_enabled: true,
-            disabled_modules: vec![],
+            minimap_mirror_edges: true,
+            fps_limit_enabled: false,
+            disabled_modules: vec![WidgetKind::Position],
         }
     }
 }
 
-fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
+pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
     // Widget kinds that should always exist in the layout (skip Empty).
     // If a kind is absent from the saved list, append it off to the side so
     // the user can drag it into place from edit mode.
     let all_kinds = [
         WidgetKind::Speed, WidgetKind::Gear, WidgetKind::Rpm,
-        WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Race,
+        WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Engine,
+        WidgetKind::Position, WidgetKind::Race,
         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
         WidgetKind::MiniMap,
     ];
@@ -252,6 +254,40 @@ fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
     }
 }
 
+// ── Dashboard preset (dashboard fields only) ───────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct DashboardPreset {
+    pub grid_cols:                 Option<usize>,
+    pub grid_rows:                 Option<usize>,
+    pub dashboard_widgets:         Option<Vec<WidgetLayout>>,
+    pub dashboard_edit_mode:       Option<bool>,
+    pub dashboard_show_grid:       Option<bool>,
+    pub dashboard_show_outlines:   Option<bool>,
+    pub minimap_fps_limit:         Option<f32>,
+    pub minimap_fps_limit_enabled: Option<bool>,
+    pub disabled_modules:          Option<Vec<WidgetKind>>,
+}
+
+impl DashboardPreset {
+    pub fn apply_to(&self, cfg: &mut AppConfig) {
+        if let Some(v) = self.grid_cols               { cfg.grid_cols = v; }
+        if let Some(v) = self.grid_rows               { cfg.grid_rows = v; }
+        if let Some(ref v) = self.dashboard_widgets {
+            cfg.dashboard_widgets = v.clone();
+            inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
+        }
+        if let Some(v) = self.dashboard_edit_mode     { cfg.dashboard_edit_mode = v; }
+        if let Some(v) = self.dashboard_show_grid     { cfg.dashboard_show_grid = v; }
+        if let Some(v) = self.dashboard_show_outlines { cfg.dashboard_show_outlines = v; }
+        if let Some(v) = self.minimap_fps_limit       { cfg.minimap_fps_limit = v; }
+        if let Some(v) = self.minimap_fps_limit_enabled { cfg.minimap_fps_limit_enabled = v; }
+        if let Some(ref v) = self.disabled_modules    { cfg.disabled_modules = v.clone(); }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────
+
 impl AppConfig {
     pub fn load() -> Self {
         let default = Self::default();
@@ -268,6 +304,12 @@ impl AppConfig {
                 for (k, v) in defaults {
                     saved.entry(k).or_insert(v);
                 }
+            }
+        }
+        // If theme is the now-removed "Light" value, fall back to Dark gracefully
+        if let serde_json::Value::Object(ref mut map) = val {
+            if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
+                map.insert("theme".to_string(), serde_json::json!("Dark"));
             }
         }
         let mut cfg: AppConfig = serde_json::from_value(val).unwrap_or(default);
@@ -298,4 +340,3 @@ pub fn app_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ForzaTelemetryV3")
 }
-
