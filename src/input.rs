@@ -11,7 +11,6 @@ mod linux {
         Key { key: Key, hold_ms: u64 },
     }
 
-    /// Non-blocking synthetic key sender backed by a uinput virtual device on a background thread.
     #[derive(Clone)]
     pub struct InputSender(SyncSender<Cmd>);
 
@@ -65,25 +64,81 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::sync::mpsc::{self, SyncSender};
+    use std::thread;
+    use std::time::Duration;
+
+    use enigo::{Enigo, Key, Keyboard, Settings, Direction};
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct KeyCode(pub Key);
+
+    enum Cmd {
+        Press { key: Key, hold_ms: u64 },
+    }
+
+    #[derive(Clone)]
+    pub struct InputSender(SyncSender<Cmd>);
+
+    impl InputSender {
+        pub fn new() -> Self {
+            let (tx, rx) = mpsc::sync_channel::<Cmd>(64);
+            thread::spawn(move || {
+                let mut enigo = match Enigo::new(&Settings::default()) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("enigo: could not initialise input: {e}");
+                        return;
+                    }
+                };
+                for cmd in rx {
+                    let Cmd::Press { key, hold_ms } = cmd;
+                    enigo.key(key, Direction::Press).ok();
+                    thread::sleep(Duration::from_millis(hold_ms));
+                    enigo.key(key, Direction::Release).ok();
+                }
+            });
+            Self(tx)
+        }
+
+        pub fn press(&self, key: KeyCode, hold_ms: u64) {
+            self.0.send(Cmd::Press { key: key.0, hold_ms }).ok();
+        }
+    }
+
+    pub fn char_to_key(c: char) -> Option<KeyCode> {
+        match c {
+            'w' | 'W' => Some(KeyCode(Key::Unicode('w'))),
+            'e' | 'E' => Some(KeyCode(Key::Unicode('e'))),
+            'q' | 'Q' => Some(KeyCode(Key::Unicode('q'))),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod stub {
-    /// No-op input sender for non-Linux platforms.
+    #[derive(Clone, Copy)]
+    pub struct KeyCode;
+
     #[derive(Clone)]
     pub struct InputSender;
 
     impl InputSender {
         pub fn new() -> Self { Self }
-        pub fn press(&self, _key: Key, _hold_ms: u64) {}
+        pub fn press(&self, _key: KeyCode, _hold_ms: u64) {}
     }
 
-    #[derive(Clone, Copy)]
-    pub struct Key;
-
-    pub fn char_to_key(_c: char) -> Option<Key> { None }
+    pub fn char_to_key(_c: char) -> Option<KeyCode> { None }
 }
 
 #[cfg(target_os = "linux")]
 pub use linux::{InputSender, char_to_key};
 
-#[cfg(not(target_os = "linux"))]
-pub use stub::{InputSender, Key, char_to_key};
+#[cfg(target_os = "windows")]
+pub use windows::{InputSender, KeyCode, char_to_key};
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub use stub::{InputSender, KeyCode, char_to_key};
