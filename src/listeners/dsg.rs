@@ -2,11 +2,10 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::config::AppConfig;
-use crate::input::{InputSender, char_to_key};
+use crate::input::{char_to_key, InputSender};
 use crate::packet::ForzaPacket;
 
 const TRANSMISSION_DELAY_MS: u64 = 70;
-const UPSHIFT_RPM_BEFORE_MAX: f32 = 500.0;
 const UPSHIFT_ALLOWED_TIRE_SLIP: f32 = 1.3;
 const DOWNSHIFT_RPM: f32 = 2000.0;
 const DOWNSHIFT_RPM_ACCEL_FACTOR: f32 = 1000.0;
@@ -14,7 +13,10 @@ const KICKDOWN_SPEED_THRESHOLD: f32 = 20.0;
 const KICKDOWN_BLOCK_SECS: u64 = 10;
 
 pub struct DsgListener {
+    /// Max speed recorded per gear index (index 0 unused; gears 1–10).
     pub gear_max_speeds: [f32; 11],
+    /// Set to true whenever a new calibration value is written — caller should persist & reset.
+    pub calibration_dirty: bool,
     accel_history: VecDeque<f32>,
     last_shift: Option<Instant>,
     kickdown_blocked_until: Option<Instant>,
@@ -25,6 +27,7 @@ impl DsgListener {
     pub fn new(gear_max_speeds: [f32; 11]) -> Self {
         Self {
             gear_max_speeds,
+            calibration_dirty: false,
             accel_history: VecDeque::new(),
             last_shift: None,
             kickdown_blocked_until: None,
@@ -33,12 +36,8 @@ impl DsgListener {
     }
 
     pub fn update(&mut self, pkt: &ForzaPacket, cfg: &AppConfig, input: &InputSender) {
-        if !cfg.dsg_enabled || pkt.is_race_on == 0 {
-            return;
-        }
-
         let gear = pkt.gear as i32;
-        if gear <= 0 {
+        if pkt.is_race_on == 0 || gear <= 0 {
             return;
         }
 
@@ -47,31 +46,30 @@ impl DsgListener {
         let rpm = pkt.current_engine_rpm;
         let max_rpm = pkt.engine_max_rpm;
 
+        // Always auto-calibrate: record max speed per gear when near redline
+        if max_rpm > 0.0 && rpm >= (max_rpm - 100.0) && gear >= 1 && gear <= 10 {
+            let idx = gear as usize;
+            let kmh_floor = kmh.floor();
+            if kmh_floor > self.gear_max_speeds[idx] {
+                self.gear_max_speeds[idx] = kmh_floor;
+                self.calibration_dirty = true;
+            }
+        }
+
+        if !cfg.dsg_enabled {
+            return;
+        }
+
         self.accel_history.push_back(accel_f);
         while self.accel_history.len() > 20 {
             self.accel_history.pop_front();
-        }
-
-        // Calibration mode: record max speed per gear, don't shift
-        if cfg.dsg_calibration_mode {
-            if max_rpm > 0.0 && rpm >= (max_rpm - 100.0) && gear >= 1 && gear <= 10 {
-                let idx = gear as usize;
-                let kmh_floor = kmh.floor();
-                if kmh_floor > self.gear_max_speeds[idx] {
-                    self.gear_max_speeds[idx] = kmh_floor;
-                }
-            }
-            return;
         }
 
         let now = Instant::now();
         let transmission_ready = self.last_shift
             .map(|t| now.duration_since(t) >= Duration::from_millis(TRANSMISSION_DELAY_MS))
             .unwrap_or(true);
-
-        let kickdown_blocked = self.kickdown_blocked_until
-            .map(|t| now < t)
-            .unwrap_or(false);
+        let kickdown_blocked = self.kickdown_blocked_until.map(|t| now < t).unwrap_or(false);
 
         let avg_slip = (pkt.tire_slip_ratio_fl.abs()
             + pkt.tire_slip_ratio_fr.abs()
@@ -79,17 +77,16 @@ impl DsgListener {
             + pkt.tire_slip_ratio_rr.abs())
             / 4.0;
 
+        let upshift_threshold = max_rpm * (cfg.dsg_shift_rpm_pct / 100.0);
         let mut target_gear = gear;
 
         // Upshift
-        let upshift_rpm_hit = rpm > (max_rpm - UPSHIFT_RPM_BEFORE_MAX);
-        let can_upshift = upshift_rpm_hit
+        if rpm > upshift_threshold
             && avg_slip < UPSHIFT_ALLOWED_TIRE_SLIP
             && kmh > 0.0
             && transmission_ready
-            && (!kickdown_blocked || self.accel_has_been_pressed(0.5));
-
-        if can_upshift {
+            && (!kickdown_blocked || self.accel_has_been_pressed(0.5))
+        {
             target_gear = gear + 1;
         }
 
@@ -102,16 +99,14 @@ impl DsgListener {
             if self.kickdown_activation_delay.is_none() {
                 self.kickdown_activation_delay = Some(now);
             }
-            let kickdown_ready = self
-                .kickdown_activation_delay
+            if self.kickdown_activation_delay
                 .map(|t| now.duration_since(t) >= Duration::from_millis(100))
-                .unwrap_or(false);
-            if kickdown_ready {
+                .unwrap_or(false)
+            {
                 let optimal = self.get_optimal_gear(kmh);
                 if optimal > 0 && optimal < gear {
                     target_gear = optimal;
-                    self.kickdown_blocked_until =
-                        Some(now + Duration::from_secs(KICKDOWN_BLOCK_SECS));
+                    self.kickdown_blocked_until = Some(now + Duration::from_secs(KICKDOWN_BLOCK_SECS));
                     self.kickdown_activation_delay = None;
                 }
             }

@@ -19,3 +19,4 @@ pub const CHECK:      &str = "\u{F00C}"; // fa-check
 pub const TIMES:      &str = "\u{F00D}"; // fa-times     (clear/close)
 pub const CLOCK:      &str = "\u{F017}"; // fa-clock-o   (timer)
 pub const TINT:       &str = "\u{F043}"; // fa-tint      (water droplet / puddle)
+pub const GAMEPAD:    &str = "\u{F11B}"; // fa-gamepad   (fun / game features)

@@ -176,6 +176,18 @@ pub struct AppConfig {
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
     pub disabled_modules: Vec<WidgetKind>,
+    // Backfire
+    pub backfire_enabled: bool,
+    pub backfire_dynamic_rpm: bool,
+    pub backfire_max_rpm: f32,
+    pub backfire_min_rpm: f32,
+    pub backfire_interval_rpm: f32,
+    pub backfire_accel_time_ms: u64,
+    pub backfire_test_mode: bool,
+    // DSG automatic gearbox
+    pub dsg_enabled: bool,
+    pub dsg_shift_rpm_pct: f32,    // upshift when rpm > max_rpm * (pct/100)
+    pub dsg_gear_max_speeds: [f32; 11],
 }
 
 impl Default for AppConfig {
@@ -222,6 +234,16 @@ impl Default for AppConfig {
             minimap_mirror_edges: true,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
+            backfire_enabled: false,
+            backfire_dynamic_rpm: true,
+            backfire_max_rpm: 8000.0,
+            backfire_min_rpm: 4000.0,
+            backfire_interval_rpm: 100.0,
+            backfire_accel_time_ms: 8,
+            backfire_test_mode: false,
+            dsg_enabled: false,
+            dsg_shift_rpm_pct: 95.0,
+            dsg_gear_max_speeds: [0.0; 11],
         }
     }
 }

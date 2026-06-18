@@ -1,13 +1,13 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::packet::ForzaPacket;
 
-/// Configurable acceleration test (e.g. 0→60 or 80→120 km/h).
+/// Configurable acceleration test (e.g. 0→100 or 80→120 km/h).
 #[derive(Default)]
 pub struct AccelTest {
     pub result_secs: Option<f32>,
     pub running: bool,
-    pub progress: f32, // 0.0..=1.0
+    pub progress: f32,
     pub current_g: f32,
     start_time: Option<Instant>,
     start_speed: f32,
@@ -51,7 +51,6 @@ impl AccelTest {
                 self.progress = 1.0;
             }
 
-            // Abort if speed drops back below start
             if speed < self.start_speed - 5.0 {
                 self.running = false;
                 self.progress = 0.0;
@@ -61,18 +60,22 @@ impl AccelTest {
 }
 
 /// Configurable braking/deceleration test.
+/// Dynamic mode: starts on any speed decrease above the start threshold;
+/// aborts if the car re-accelerates for more than 500 ms or exceeds the
+/// run-start speed by more than 5 km/h (matches V2.0 behaviour).
 #[derive(Default)]
 pub struct DecelTest {
     pub result_secs: Option<f32>,
     pub running: bool,
     pub progress: f32,
     pub current_g: f32,
-    /// Dynamic mode: auto-starts when braking hard above start speed.
     pub dynamic_mode: bool,
+    pub dynamic_start: f32,
     start_time: Option<Instant>,
     start_speed: f32,
     end_speed: f32,
     last_speed: f32,
+    accel_start: Option<Instant>,
 }
 
 impl DecelTest {
@@ -88,7 +91,6 @@ impl DecelTest {
         }
 
         let speed = pkt.speed_kmh();
-        let braking = pkt.brake > 200; // heavy brake input
 
         if self.start_speed != start_kmh || self.end_speed != end_kmh {
             self.start_speed = start_kmh;
@@ -99,15 +101,18 @@ impl DecelTest {
 
         if !self.running {
             let arm = if self.dynamic_mode {
-                speed > self.start_speed && braking && self.last_speed > speed
+                // Any deceleration while above the configured start speed
+                speed > self.start_speed && self.last_speed > speed
             } else {
                 speed >= self.start_speed && self.last_speed < self.start_speed
             };
 
             if arm {
                 self.running = true;
+                self.dynamic_start = speed;
                 self.start_time = Some(Instant::now());
                 self.result_secs = None;
+                self.accel_start = None;
             }
         } else {
             let range = (self.start_speed - self.end_speed).max(1.0);
@@ -122,8 +127,27 @@ impl DecelTest {
                 self.progress = 1.0;
             }
 
-            // Abort if speed climbs back above start
-            if speed > self.start_speed + 5.0 {
+            if self.dynamic_mode {
+                // Abort: speed jumped more than 5 km/h above where the run started
+                if speed > self.dynamic_start + 5.0 {
+                    self.running = false;
+                    self.progress = 0.0;
+                }
+                // Abort: re-accelerating for more than 500 ms
+                if speed > self.last_speed {
+                    if self.accel_start.is_none() {
+                        self.accel_start = Some(Instant::now());
+                    } else if self.accel_start
+                        .map(|t| t.elapsed() > Duration::from_millis(500))
+                        .unwrap_or(false)
+                    {
+                        self.running = false;
+                        self.progress = 0.0;
+                    }
+                } else {
+                    self.accel_start = None;
+                }
+            } else if speed > self.start_speed + 5.0 {
                 self.running = false;
                 self.progress = 0.0;
             }

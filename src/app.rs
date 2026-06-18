@@ -6,6 +6,9 @@ use egui::{Context, Pos2, Vec2};
 
 use crate::config::{AppConfig, SpeedDeltaMode};
 use crate::engines::{load_engines, EngineRecord};
+use crate::input::InputSender;
+use crate::listeners::backfire::BackfireListener;
+use crate::listeners::dsg::DsgListener;
 use crate::listeners::perf_test::PerfTest;
 use crate::listeners::power_capture::{PowerCapture, PowerCurveSnapshot};
 use crate::listeners::sprint_timer::SprintTimer;
@@ -284,6 +287,7 @@ pub enum Tab {
     Dashboard,
     Acceleration,
     Deceleration,
+    Fun,
     PowerCurve,
     EngineSwaps,
     Settings,
@@ -311,6 +315,9 @@ pub struct ForzaApp {
     pub current_tab: Tab,
 
     pub sprint_timer: SprintTimer,
+    pub backfire: BackfireListener,
+    pub dsg: DsgListener,
+    input: InputSender,
     pub power_capture: PowerCapture,
     pub saved_power_curve: Option<PowerCurveSnapshot>,
     pub perf_test: PerfTest,
@@ -428,12 +435,16 @@ impl ForzaApp {
         };
 
         let initial_zoom = config.minimap_zoom_stopped_m;
+        let dsg_gear_max_speeds = config.dsg_gear_max_speeds;
         Self {
             config,
             engines,
             telemetry: TelemetryState::new(),
             current_tab: Tab::Dashboard,
             sprint_timer: SprintTimer::new(),
+            backfire: BackfireListener::new(),
+            dsg: DsgListener::new(dsg_gear_max_speeds),
+            input: InputSender::new(),
             power_capture: PowerCapture::new(),
             saved_power_curve: None,
             perf_test: PerfTest::new(),
@@ -500,6 +511,7 @@ impl ForzaApp {
         let accel_e = self.accel_end_kmh;
         let decel_s = self.decel_start_kmh;
         let decel_e = self.decel_end_kmh;
+        let fun_cfg = self.config.clone();
 
         let mut received = 0;
         while let Ok(pkt) = self.receiver.try_recv() {
@@ -586,11 +598,20 @@ impl ForzaApp {
             self.sprint_timer.update(&pkt);
             self.power_capture.update(&pkt, step);
             self.perf_test.update(&pkt, accel_s, accel_e, decel_s, decel_e);
+            self.backfire.update(&pkt, &fun_cfg, &self.input);
+            self.dsg.update(&pkt, &fun_cfg, &self.input);
 
             self.telemetry.update(pkt);
 
             received += 1;
             if received >= 200 { break; }
+        }
+
+        // Persist DSG calibration data whenever new gear speeds were recorded
+        if self.dsg.calibration_dirty {
+            self.config.dsg_gear_max_speeds = self.dsg.gear_max_speeds;
+            self.config.save();
+            self.dsg.calibration_dirty = false;
         }
 
         // Mark disconnected after 2 s without a packet
@@ -744,6 +765,8 @@ impl eframe::App for ForzaApp {
                     format!("{} Acceleration", icons::BOLT));
                 ui.selectable_value(&mut self.current_tab, Tab::Deceleration,
                     format!("{} Deceleration", icons::STOP));
+                ui.selectable_value(&mut self.current_tab, Tab::Fun,
+                    format!("{}  Fun", icons::GAMEPAD));
                 ui.selectable_value(&mut self.current_tab, Tab::PowerCurve,
                     format!("{} Power Curve", icons::LINE_CHART));
                 ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
@@ -817,6 +840,7 @@ impl eframe::App for ForzaApp {
                             (Tab::Dashboard,    "Dashboard"),
                             (Tab::Acceleration, "Accel"),
                             (Tab::Deceleration, "Decel"),
+                            (Tab::Fun,          "Fun"),
                             (Tab::PowerCurve,   "Power"),
                             (Tab::EngineSwaps,  "Engines"),
                         ] {
@@ -1224,11 +1248,12 @@ impl eframe::App for ForzaApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_tab {
-                Tab::Dashboard   => crate::ui::dashboard::show(ui, self),
+                Tab::Dashboard    => crate::ui::dashboard::show(ui, self),
                 Tab::Acceleration => crate::ui::acceleration::show(ui, self),
                 Tab::Deceleration => crate::ui::deceleration::show(ui, self),
-                Tab::PowerCurve  => crate::ui::power_curve::show(ui, self),
-                Tab::EngineSwaps => crate::ui::engine_swaps::show(ui, self),
+                Tab::Fun          => crate::ui::fun::show(ui, self),
+                Tab::PowerCurve   => crate::ui::power_curve::show(ui, self),
+                Tab::EngineSwaps  => crate::ui::engine_swaps::show(ui, self),
                 Tab::Settings    => crate::ui::settings::show(ui, self),
             }
         });

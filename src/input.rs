@@ -9,8 +9,8 @@ enum Cmd {
     Key { key: Key, hold_ms: u64 },
 }
 
-/// Sends synthetic key events to a uinput virtual device running in a background thread.
-/// Clone-able so it can be shared between listeners.
+/// Non-blocking synthetic key sender backed by a uinput virtual device on a background thread.
+/// Clone-able — both Backfire and DSG hold their own copy of the same sender.
 #[derive(Clone)]
 pub struct InputSender(SyncSender<Cmd>);
 
@@ -30,12 +30,13 @@ impl InputSender {
             let mut device = match device {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("uinput: failed to create virtual device: {e} (is /dev/uinput accessible?)");
+                    eprintln!("uinput: could not create virtual device: {e}");
+                    eprintln!("uinput: ensure the current user is in the 'input' group or /dev/uinput is accessible");
                     return;
                 }
             };
 
-            // Let udev register the new device before sending events
+            // Give udev a moment to register the new device
             thread::sleep(Duration::from_millis(200));
 
             for cmd in rx {

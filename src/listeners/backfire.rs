@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::input::{InputSender, char_to_key};
+use crate::input::{char_to_key, InputSender};
 use crate::packet::ForzaPacket;
 
 pub struct BackfireListener {
