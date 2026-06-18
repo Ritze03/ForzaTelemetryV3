@@ -27,8 +27,15 @@ impl BackfireListener {
         let kmh = pkt.speed_kmh();
         let rpm = pkt.current_engine_rpm;
 
+        if cfg.backfire_disable_standstill && kmh == 0.0 {
+            return;
+        }
+
         let (min_rpm, max_rpm) = if cfg.backfire_dynamic_rpm {
-            (pkt.engine_max_rpm * 0.6, pkt.engine_max_rpm - 500.0)
+            (
+                pkt.engine_max_rpm * (cfg.backfire_dynamic_min_pct / 100.0),
+                pkt.engine_max_rpm * (cfg.backfire_dynamic_max_pct / 100.0),
+            )
         } else {
             (cfg.backfire_min_rpm, cfg.backfire_max_rpm)
         };

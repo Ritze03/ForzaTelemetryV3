@@ -13,6 +13,66 @@ pub enum GameMode {
     ForzaMotorsport7,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum MaxRpmSource {
+    GameProvided,
+    #[default]
+    DetectDynamically,
+}
+
+impl MaxRpmSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            MaxRpmSource::GameProvided => "Game Data",
+            MaxRpmSource::DetectDynamically => "Auto Detect",
+        }
+    }
+}
+
+/// Max-RPM source for the automatic gearbox (has a Manual brake-stand option too).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum DsgMaxRpmSource {
+    GameData,
+    #[default]
+    AutoDetect,
+    Manual,
+}
+
+impl DsgMaxRpmSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            DsgMaxRpmSource::GameData => "Game Data",
+            DsgMaxRpmSource::AutoDetect => "Auto Detect",
+            DsgMaxRpmSource::Manual => "Manual",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum GearboxMode {
+    Street,
+    #[default]
+    Sport,
+    Race,
+}
+
+impl GearboxMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GearboxMode::Street => "Street",
+            GearboxMode::Sport  => "Sport",
+            GearboxMode::Race   => "Race",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub struct GearboxTuning {
+    pub cruise_rpm_pct: f32,      // low-throttle upshift target, % of Shift RPM
+    pub brake_downshift_pct: f32, // brake → target add, % (0 = off)
+    pub upshift_delay_ms: u64,    // upshift hysteresis
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum TextAlign {
     #[default]
@@ -179,15 +239,33 @@ pub struct AppConfig {
     // Backfire
     pub backfire_enabled: bool,
     pub backfire_dynamic_rpm: bool,
+    pub backfire_dynamic_min_pct: f32,  // % of engine_max_rpm for dynamic min
+    pub backfire_dynamic_max_pct: f32,  // % of engine_max_rpm for dynamic max
     pub backfire_max_rpm: f32,
     pub backfire_min_rpm: f32,
     pub backfire_interval_rpm: f32,
     pub backfire_accel_time_ms: u64,
     pub backfire_test_mode: bool,
+    pub backfire_disable_standstill: bool,
     // DSG automatic gearbox
     pub dsg_enabled: bool,
-    pub dsg_shift_rpm_pct: f32,    // upshift when rpm > max_rpm * (pct/100)
-    pub dsg_gear_max_speeds: [f32; 11],
+    pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
+    pub dsg_max_rpm_type: DsgMaxRpmSource,
+    pub dsg_gearbox_mode: GearboxMode,
+    pub dsg_tuning_street: GearboxTuning,
+    pub dsg_tuning_sport: GearboxTuning,
+    pub dsg_tuning_race: GearboxTuning,
+    pub dsg_kickdown_cooldown_secs: f32,
+    pub dsg_downshift_deadzone_pct: f32, // hold gear while cruising until revs drop below this % of shift RPM
+    pub dsg_debug: bool,
+    // Max-RPM source for the dashboard RPM widget
+    pub max_rpm_mode: MaxRpmSource,
+    // Acceleration / deceleration test parameters
+    pub accel_start_kmh: f32,
+    pub accel_end_kmh: f32,
+    pub decel_start_kmh: f32,
+    pub decel_end_kmh: f32,
+    pub decel_dynamic_mode: bool,
 }
 
 impl Default for AppConfig {
@@ -236,14 +314,42 @@ impl Default for AppConfig {
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,
             backfire_dynamic_rpm: true,
+            backfire_dynamic_min_pct: 60.0,
+            backfire_dynamic_max_pct: 95.0,
             backfire_max_rpm: 8000.0,
             backfire_min_rpm: 4000.0,
             backfire_interval_rpm: 100.0,
             backfire_accel_time_ms: 8,
             backfire_test_mode: false,
+            backfire_disable_standstill: true,
             dsg_enabled: false,
             dsg_shift_rpm_pct: 95.0,
-            dsg_gear_max_speeds: [0.0; 11],
+            dsg_max_rpm_type: DsgMaxRpmSource::AutoDetect,
+            dsg_gearbox_mode: GearboxMode::Sport,
+            dsg_tuning_street: GearboxTuning {
+                cruise_rpm_pct: 35.0,
+                brake_downshift_pct: 0.0,
+                upshift_delay_ms: 600,
+            },
+            dsg_tuning_sport: GearboxTuning {
+                cruise_rpm_pct: 50.0,
+                brake_downshift_pct: 40.0,
+                upshift_delay_ms: 300,
+            },
+            dsg_tuning_race: GearboxTuning {
+                cruise_rpm_pct: 85.0,
+                brake_downshift_pct: 70.0,
+                upshift_delay_ms: 120,
+            },
+            dsg_kickdown_cooldown_secs: 5.0,
+            dsg_downshift_deadzone_pct: 60.0,
+            dsg_debug: false,
+            max_rpm_mode: MaxRpmSource::GameProvided,
+            accel_start_kmh: 0.0,
+            accel_end_kmh: 100.0,
+            decel_start_kmh: 100.0,
+            decel_end_kmh: 0.0,
+            decel_dynamic_mode: false,
         }
     }
 }
@@ -311,6 +417,24 @@ impl DashboardPreset {
 // ──────────────────────────────────────────────────────────────────
 
 impl AppConfig {
+    /// Tuning parameters for the currently selected gearbox mode.
+    pub fn dsg_active_tuning(&self) -> GearboxTuning {
+        match self.dsg_gearbox_mode {
+            GearboxMode::Street => self.dsg_tuning_street,
+            GearboxMode::Sport  => self.dsg_tuning_sport,
+            GearboxMode::Race   => self.dsg_tuning_race,
+        }
+    }
+
+    /// Mutable tuning for the currently selected mode (for the advanced sliders).
+    pub fn dsg_active_tuning_mut(&mut self) -> &mut GearboxTuning {
+        match self.dsg_gearbox_mode {
+            GearboxMode::Street => &mut self.dsg_tuning_street,
+            GearboxMode::Sport  => &mut self.dsg_tuning_sport,
+            GearboxMode::Race   => &mut self.dsg_tuning_race,
+        }
+    }
+
     pub fn load() -> Self {
         let default = Self::default();
         let Ok(data) = std::fs::read_to_string(Self::path()) else { return default; };

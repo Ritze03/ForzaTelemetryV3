@@ -300,6 +300,7 @@ pub enum DashboardSubTab {
     Modules,
     Kmh,
     Gear,
+    Rpm,
     SprintTimes,
     Tires,
     Shift,
@@ -322,14 +323,6 @@ pub struct ForzaApp {
     pub saved_power_curve: Option<PowerCurveSnapshot>,
     pub perf_test: PerfTest,
 
-    // Acceleration test config
-    pub accel_start_kmh: f32,
-    pub accel_end_kmh: f32,
-
-    // Deceleration test config
-    pub decel_start_kmh: f32,
-    pub decel_end_kmh: f32,
-
     // Engine swaps search filter
     pub engine_search: String,
 
@@ -345,6 +338,8 @@ pub struct ForzaApp {
     pub max_boost_psi: f32,
     pub cached_engine_max_rpm: f64,
     pub fi_detected: bool,
+    /// Highest RPM seen while making power (>0 W) — the dynamically detected redline. Per-car.
+    pub dynamic_max_rpm: f32,
 
     // Session stats
     pub suspension_stats: SuspensionStats,
@@ -435,7 +430,6 @@ impl ForzaApp {
         };
 
         let initial_zoom = config.minimap_zoom_stopped_m;
-        let dsg_gear_max_speeds = config.dsg_gear_max_speeds;
         Self {
             config,
             engines,
@@ -443,15 +437,11 @@ impl ForzaApp {
             current_tab: Tab::Dashboard,
             sprint_timer: SprintTimer::new(),
             backfire: BackfireListener::new(),
-            dsg: DsgListener::new(dsg_gear_max_speeds),
+            dsg: DsgListener::new(),
             input: InputSender::new(),
             power_capture: PowerCapture::new(),
             saved_power_curve: None,
             perf_test: PerfTest::new(),
-            accel_start_kmh: 0.0,
-            accel_end_kmh: 100.0,
-            decel_start_kmh: 100.0,
-            decel_end_kmh: 0.0,
             engine_search: String::new(),
             pending_port,
             last_car_ordinal: 0,
@@ -461,6 +451,7 @@ impl ForzaApp {
             max_boost_psi: 0.0,
             cached_engine_max_rpm: 0.0,
             fi_detected: false,
+            dynamic_max_rpm: 0.0,
             suspension_stats: SuspensionStats::default(),
             gforce_stats: GForceStats::default(),
             cached_car_class_str:  String::new(),
@@ -507,10 +498,11 @@ impl ForzaApp {
 
     pub fn drain_packets(&mut self) {
         let step = self.config.power_curve_step;
-        let accel_s = self.accel_start_kmh;
-        let accel_e = self.accel_end_kmh;
-        let decel_s = self.decel_start_kmh;
-        let decel_e = self.decel_end_kmh;
+        let accel_s = self.config.accel_start_kmh;
+        let accel_e = self.config.accel_end_kmh;
+        let decel_s = self.config.decel_start_kmh;
+        let decel_e = self.config.decel_end_kmh;
+        self.perf_test.decel.dynamic_mode = self.config.decel_dynamic_mode;
         let fun_cfg = self.config.clone();
 
         let mut received = 0;
@@ -523,11 +515,14 @@ impl ForzaApp {
                 self.sprint_timer.reset();
                 self.power_capture.on_car_changed();
                 self.perf_test.reset();
+                self.dsg.reset_calibration();
+                self.dsg.reset_state();
                 self.max_power_ps = 0.0;
                 self.max_torque_nm = 0.0;
                 self.max_boost_psi = 0.0;
                 self.cached_engine_max_rpm = 0.0;
                 self.fi_detected = false;
+                self.dynamic_max_rpm = 0.0;
             }
 
             // Session maxima + cache car identity
@@ -541,6 +536,18 @@ impl ForzaApp {
                 }
                 if pkt.boost > 0.05 {
                     self.fi_detected = true;
+                }
+                // Dynamic redline: highest RPM seen while the engine is making power, ignoring
+                // moments where the handbrake is pulled or a tyre is slipping (>0.5) — those
+                // inflate RPM without real road speed.
+                if pkt.power > 0.0
+                    && pkt.hand_brake == 0
+                    && pkt.tire_slip_ratio_fl.abs() <= 0.5
+                    && pkt.tire_slip_ratio_fr.abs() <= 0.5
+                    && pkt.tire_slip_ratio_rl.abs() <= 0.5
+                    && pkt.tire_slip_ratio_rr.abs() <= 0.5
+                {
+                    self.dynamic_max_rpm = self.dynamic_max_rpm.max(pkt.current_engine_rpm);
                 }
                 if pkt.speed >= 0.1 {
                     self.max_power_ps  = self.max_power_ps.max(pkt.power_ps());
@@ -599,7 +606,7 @@ impl ForzaApp {
             self.power_capture.update(&pkt, step);
             self.perf_test.update(&pkt, accel_s, accel_e, decel_s, decel_e);
             self.backfire.update(&pkt, &fun_cfg, &self.input);
-            self.dsg.update(&pkt, &fun_cfg, &self.input);
+            self.dsg.update(&pkt, &fun_cfg, &self.input, self.dynamic_max_rpm);
 
             self.telemetry.update(pkt);
 
@@ -607,12 +614,6 @@ impl ForzaApp {
             if received >= 200 { break; }
         }
 
-        // Persist DSG calibration data whenever new gear speeds were recorded
-        if self.dsg.calibration_dirty {
-            self.config.dsg_gear_max_speeds = self.dsg.gear_max_speeds;
-            self.config.save();
-            self.dsg.calibration_dirty = false;
-        }
 
         // Mark disconnected after 2 s without a packet
         if let Some(t) = self.last_packet_time {
@@ -860,6 +861,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Modules,     "Modules"),
                                     (DashboardSubTab::Kmh,         "Km/h"),
                                     (DashboardSubTab::Gear,        "Gear"),
+                                    (DashboardSubTab::Rpm,         "RPM"),
                                     (DashboardSubTab::SprintTimes, "Sprint"),
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
@@ -1045,6 +1047,32 @@ impl eframe::App for ForzaApp {
                                                 });
                                         });
                                     }
+                                }
+                                DashboardSubTab::Rpm => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Max RPM:");
+                                        egui::ComboBox::from_id_salt("page_max_rpm_mode_combo")
+                                            .selected_text(self.config.max_rpm_mode.label())
+                                            .show_ui(ui, |ui| {
+                                                for mode in [
+                                                    crate::config::MaxRpmSource::GameProvided,
+                                                    crate::config::MaxRpmSource::DetectDynamically,
+                                                ] {
+                                                    ui.selectable_value(
+                                                        &mut self.config.max_rpm_mode,
+                                                        mode,
+                                                        mode.label(),
+                                                    );
+                                                }
+                                            });
+                                    });
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Max RPM used for the RPM widget and shift indicator.",
+                                        )
+                                        .size(11.0)
+                                        .color(egui::Color32::GRAY),
+                                    );
                                 }
                                 DashboardSubTab::Shift => {
                                     ui.label("Shift indicator thresholds (% of engine max RPM):");

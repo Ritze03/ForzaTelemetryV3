@@ -19,14 +19,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     ui.horizontal(|ui| {
         ui.label("From:");
-        if app.perf_test.decel.dynamic_mode {
+        if app.config.decel_dynamic_mode {
             ui.label(
                 RichText::new(format!("{:.0} km/h (current speed)", current_kmh))
                     .color(Color32::GRAY),
             );
         } else {
             ui.add(
-                egui::DragValue::new(&mut app.decel_start_kmh)
+                egui::DragValue::new(&mut app.config.decel_start_kmh)
                     .range(0.0..=400.0)
                     .speed(1.0)
                     .suffix(" km/h"),
@@ -34,7 +34,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         }
         ui.label("To:");
         ui.add(
-            egui::DragValue::new(&mut app.decel_end_kmh)
+            egui::DragValue::new(&mut app.config.decel_end_kmh)
                 .range(0.0..=400.0)
                 .speed(1.0)
                 .suffix(" km/h"),
@@ -42,7 +42,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.perf_test.decel.dynamic_mode, "Dynamic mode");
+        ui.checkbox(&mut app.config.decel_dynamic_mode, "Dynamic mode");
         ui.label(
             RichText::new("(auto-starts on deceleration, aborts if re-accelerating for >500 ms)")
                 .size(11.0)

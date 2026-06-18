@@ -561,7 +561,13 @@ fn show_gear_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    let max_rpm = pkt.engine_max_rpm.max(1.0);
+    let max_rpm = match app.config.max_rpm_mode {
+        crate::config::MaxRpmSource::GameProvided => pkt.engine_max_rpm,
+        crate::config::MaxRpmSource::DetectDynamically => {
+            if app.dynamic_max_rpm > 0.0 { app.dynamic_max_rpm } else { pkt.engine_max_rpm }
+        }
+    }
+    .max(1.0);
     let avail_h = ui.available_rect_before_wrap().height();
     let rpm_font = (avail_h * 0.20).min(28.0).max(12.0);
 
