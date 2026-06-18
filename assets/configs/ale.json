@@ -1,0 +1,23 @@
+{
+  "grid_cols": 16,
+  "grid_rows": 18,
+  "dashboard_widgets": [
+    { "kind": "Speed",      "col": 12, "row":  0, "col_span": 3, "row_span": 2 },
+    { "kind": "Gear",       "col": 15, "row":  0, "col_span": 1, "row_span": 2 },
+    { "kind": "Rpm",        "col":  0, "row":  0, "col_span": 12, "row_span": 2 },
+    { "kind": "Suspension", "col":  0, "row":  2, "col_span": 4, "row_span": 7 },
+    { "kind": "Tires",      "col":  3, "row": 17, "col_span": 8, "row_span": 4 },
+    { "kind": "Car",        "col":  0, "row": 17, "col_span": 3, "row_span": 2 },
+    { "kind": "Engine",     "col":  0, "row": 19, "col_span": 3, "row_span": 2 },
+    { "kind": "Inputs",     "col":  0, "row": 13, "col_span": 4, "row_span": 4 },
+    { "kind": "MiniMap",    "col":  4, "row":  2, "col_span": 12, "row_span": 15 },
+    { "kind": "Race",       "col":  0, "row":  9, "col_span": 4, "row_span": 4 },
+    { "kind": "GForce",     "col": 11, "row": 17, "col_span": 5, "row_span": 4 }
+  ],
+  "dashboard_edit_mode": false,
+  "dashboard_show_grid": true,
+  "dashboard_show_outlines": true,
+  "minimap_fps_limit": 60.0,
+  "minimap_fps_limit_enabled": true,
+  "disabled_modules": ["Position"]
+}

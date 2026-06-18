@@ -1,0 +1,75 @@
+engine_label,source_vehicle,engine_name,horsepower
+I4 Motorbike Engine,Suzuki Hayabusa,Suzuki 1340cc Hayabusa I4,197
+1.6L I4 VVT,Honda Civic Type R EK9,Honda B16B,185
+1.6L I4 Turbo Rally,Ford Fiesta RS WRC,Ford EcoBoost Rally Engine,300
+1.8L I4,Volkswagen Golf GTI Mk1,VW EA827 Inline-4,139
+1.8L I4 Turbo,Peugeot 205 T16,Peugeot XU8T Turbo,350
+2.0L I4 VVT,Honda Civic Type R EP3,Honda K20A,215
+2.0L I4 Turbo,Ford Escort RS Cosworth,Ford YBT Cosworth,227
+2.0L I4 Turbo,Nissan Silvia Spec-R S15,Nissan SR20DET,250
+2.0L I4 Turbo,Mitsubishi Lancer Evolution VI,Mitsubishi 4G63T,276
+2.0L F4 Turbo,Subaru Impreza WRX STI (2004),Subaru EJ20,300
+2.0L F4 Turbo Rally,Subaru Rally Car,Subaru EJ-based Rally Engine,300
+2.0L Turbo VVT,Honda Civic Type R FK8,Honda K20C1,306
+2.1L I4 Turbo,Ford RS200 Evolution,Ford-Cosworth BDT-E,450
+2.5L F4 Turbo,Subaru WRX STI (2011),Subaru EJ25,305
+2.6L I6 TT,Nissan Skyline GT-R R34,Nissan RB26DETT,276
+2.7L F6,Porsche 911 Carrera RS,Porsche Flat-6,210
+2.8L V6,Volkswagen Golf VR6,VW VR6,174
+2.8L V6,Volkswagen Corrado VR6,VW VR6,178
+3.0L I6 Turbo Racing,Toyota Race Car,Toyota Racing Inline-6,600
+3.2L I6,BMW M3 E36,BMW S50B32,321
+3.3L F6 Turbo,Porsche 911 Turbo (1982),Porsche Turbo Flat-6,300
+3.5L V6 TT Hybrid,Acura NSX (2017),Honda JNC1 Hybrid V6,573
+3.5L V6 TT,Ford F-150 Raptor,Ford EcoBoost V6,450
+3.5L V6 TT,Jaguar XJ220,Jaguar JV6 Twin Turbo,542
+3.5L V6 TT,Ford GT (2017),Ford EcoBoost GT LMH,647
+Racing V6 TT,Ford Hoonitruck,Roush-Yates Twin Turbo V6,914
+3.8L V6 TT,Nissan GT-R R35,Nissan VR38DETT,565
+3.8L F6 TT,Porsche 911 GT2 RS,Porsche Twin-Turbo Flat-6,700
+4.0L F6,Porsche 911 GT3 RS,Porsche MA1 Flat-6,518
+12.8L I6T Diesel,Volvo Iron Knight,Volvo D13 Turbo Diesel,2400
+3.0L V8 Racing,Ariel Atom V8,Hartley V8,500
+3.5L V8 (NA),Ferrari F355,Ferrari Tipo F129B,375
+3.5L V8 TT,Nissan R390 GT1,Nissan VRH35L,550
+3.9L V8 TT,Ferrari 488 GTB,Ferrari F154CB,661
+4.0L V8,BMW M3 E92,BMW S65,414
+4.5L V8,Ferrari 458 Italia,Ferrari F136FB,562
+4.6L V8 Hybrid,Porsche 918 Spyder,Porsche 918 Hybrid V8,887
+5.0L V8 DSC,Jaguar/Land Rover,AJ-V8 Supercharged,550
+5.1L V8 TT,Koenigsegg One:1,Koenigsegg Twin-Turbo V8,1341
+5.2L V8 (Voodoo),Ford Shelby GT350R,Ford Voodoo,526
+5.5L V8 TT,Mercedes-AMG E63,Mercedes M157,577
+5.8L V8 DSC,Shelby GT500,Ford Trinity V8,662
+6.2L V8,Chevrolet Corvette/Camaro,GM LS3,430
+6.2L V8,Mercedes-AMG C63 Black Series,Mercedes M156,510
+6.2L V8 DSC,Dodge Challenger Hellcat,Hellcat HEMI,707
+6.7L V8 Turbo Diesel,Ford Super Duty,6.7L Powerstroke Diesel,400
+7.0L V8,Ford GT40,Ford 427 FE,485
+7.0L V8 H,Classic Mopar,Chrysler 426 HEMI,425
+7.0L V8 (LS7),Chevrolet Camaro Z/28,GM LS7,505
+7.2L V8,Ford Mustang RTR,RTR Spec V8,700
+Racing 7.2L V8,RJ Anderson Pro 2 Truck,Racing V8,900
+7.4L V8 TT,Funco F9,Funco Twin-Turbo V8,1750
+8.9L V8 DSC,Hot Wheels Boneshaker,Boneshaker Engine,1500
+4.8L V10,Lexus LFA,Yamaha/Lexus 1LR-GUE,552
+5.0L V10,BMW M5 E60,BMW S85,500
+5.2L V10,Lamborghini Huracán,Lamborghini V10,631
+8.4L V10,Dodge Viper,Chrysler VIPER V10,645
+3.0L DSC V12 Vintage,Mercedes-Benz W154,M154 V12,468
+Racing V12,Ferrari F50 GT lineage,Ferrari Racing V12,750
+5.2L V12 TT,Aston Martin DB11,Aston Martin AE31,600
+6.0L V12,Ferrari V12,Ferrari Tipo F140,651
+6.1L V12,McLaren F1,BMW S70/2,618
+6.3L V12 Hybrid,Ferrari LaFerrari,Ferrari F140FE Hybrid,950
+6.5L V12,Lamborghini Aventador,Lamborghini L539,730
+6.9L V12 TT,Mercedes CLK GTR,Mercedes M297 Twin Turbo,720
+7.0L V12,Aston Martin One-77,Aston Martin V12,750
+7.7L V12,TVR Cerbera Speed 12,TVR Speed Twelve,800
+2.5L I5 Turbo,Audi RS3 & TTRS,2.5 TFSI "Straight Five",335
+8.0L W16 Quad Turbo,Bugatti Veyron/Chiron,Bugatti W16,1500
+1.3L 2 Rotor,Mazda RX-8,Mazda 13B-REW,232
+1.3L 2 Rotor TT,Mazda RX-7 Formula Drift,Mazda 13B-REW,276
+2.0L 3 Rotor,Mazda Eunos Cosmo,Mazda 20B-REW,458
+2.0L 3 Rotor TT,Mazda RX-8 Formula Drift,Mazda 20B-REW,1000
+2.6L 4 Rotor Racing,Mazda 787B,Mazda R26B,700

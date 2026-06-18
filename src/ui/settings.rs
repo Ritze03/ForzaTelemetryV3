@@ -51,6 +51,44 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             left.add_space(8.0);
 
+            // ── Load Preset ───────────────────────────────────────────
+            left.group(|ui| {
+                ui.heading("Load Preset");
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    let selected_label = app.pending_preset
+                        .map(|i| PRESET_NAMES[i])
+                        .unwrap_or("— select —");
+
+                    egui::ComboBox::from_id_salt("preset_combo")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in PRESET_NAMES.iter().enumerate() {
+                                ui.selectable_value(&mut app.pending_preset, Some(i), *name);
+                            }
+                        });
+
+                    if ui.button("Load Preset").clicked() {
+                        if let Some(idx) = app.pending_preset {
+                            if let Ok(preset) = serde_json::from_str::<DashboardPreset>(PRESET_DATA[idx]) {
+                                preset.apply_to(&mut app.config);
+                            }
+                            app.pending_preset = None;
+                        }
+                    }
+                });
+
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new("Applies dashboard layout only. Other settings unchanged.")
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
+            });
+
+            left.add_space(8.0);
+
             // ── Network ──────────────────────────────────────────────
             left.group(|ui| {
                 ui.heading("Network");
@@ -130,45 +168,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     "github.com/Ritze03/ForzaTelemetryV3",
                     "https://github.com/Ritze03/ForzaTelemetryV3",
                 );
-            });
-
-            right.add_space(8.0);
-
-            // ── Load Preset ───────────────────────────────────────────
-            right.group(|ui| {
-                ui.heading("Load Preset");
                 ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    let selected_label = app.pending_preset
-                        .map(|i| PRESET_NAMES[i])
-                        .unwrap_or("— select —");
-
-                    egui::ComboBox::from_id_salt("preset_combo")
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in PRESET_NAMES.iter().enumerate() {
-                                ui.selectable_value(&mut app.pending_preset, Some(i), *name);
-                            }
-                        });
-
-                    if ui.button("Load Preset").clicked() {
-                        if let Some(idx) = app.pending_preset {
-                            if let Ok(preset) = serde_json::from_str::<DashboardPreset>(PRESET_DATA[idx]) {
-                                preset.apply_to(&mut app.config);
-                            }
-                            app.pending_preset = None;
-                        }
-                    }
-                });
-
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new("Applies dashboard layout only. Other settings unchanged.")
-                        .size(11.0)
-                        .color(Color32::GRAY),
+                ui.label("Credits:");
+                ui.hyperlink_to(
+                    "Le0_X8 — seasonal map images",
+                    "https://www.reddit.com/r/ForzaHorizon/comments/1td6qzb/8096x_hires_seasonal_maps_of_fh6_from_the_early/",
                 );
             });
+
         });
 
         ui.add_space(8.0);

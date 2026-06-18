@@ -1,4 +1,5 @@
 /target
+/old_versions
 CLAUDE.md
 Cargo.lock
 docs/
