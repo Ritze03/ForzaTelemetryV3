@@ -256,6 +256,7 @@ pub struct AppConfig {
     pub dsg_tuning_sport: GearboxTuning,
     pub dsg_tuning_race: GearboxTuning,
     pub dsg_kickdown_cooldown_secs: f32,
+    pub dsg_kickdown_on_full_throttle: bool, // also arm cooldown on any full-throttle event, not just downshifts
     pub dsg_downshift_deadzone_pct: f32, // hold gear while cruising until revs drop below this % of shift RPM
     pub dsg_debug: bool,
     // Max-RPM source for the dashboard RPM widget
@@ -323,7 +324,7 @@ impl Default for AppConfig {
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             dsg_enabled: false,
-            dsg_shift_rpm_pct: 95.0,
+            dsg_shift_rpm_pct: 98.0,
             dsg_max_rpm_type: DsgMaxRpmSource::AutoDetect,
             dsg_gearbox_mode: GearboxMode::Sport,
             dsg_tuning_street: GearboxTuning {
@@ -342,6 +343,7 @@ impl Default for AppConfig {
                 upshift_delay_ms: 120,
             },
             dsg_kickdown_cooldown_secs: 5.0,
+            dsg_kickdown_on_full_throttle: true,
             dsg_downshift_deadzone_pct: 60.0,
             dsg_debug: false,
             max_rpm_mode: MaxRpmSource::GameProvided,

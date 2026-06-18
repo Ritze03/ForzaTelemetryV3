@@ -229,6 +229,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                                 .step_by(0.5),
                         );
                     });
+                    ui.checkbox(
+                        &mut app.config.dsg_kickdown_on_full_throttle,
+                        "Apply cooldown for full throttle",
+                    );
                     ui.horizontal(|ui| {
                         ui.label("Downshift deadzone:");
                         ui.add(
@@ -339,11 +343,17 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                         ui.end_row();
 
                         ui.label("Kickdown cooldown:");
-                        ui.label(if app.dsg.dbg_kickdown_cooldown {
-                            "active"
-                        } else {
-                            "\u{2014}"
-                        });
+                        {
+                            let secs = app.dsg.dbg_kickdown_secs_left;
+                            let txt = if secs < 0.0 {
+                                "waiting for release".to_string()
+                            } else if secs > 0.0 {
+                                format!("{:.1}s", secs)
+                            } else {
+                                "\u{2014}".to_string()
+                            };
+                            ui.label(txt);
+                        }
                         ui.end_row();
 
                         ui.label("Desyncs:");

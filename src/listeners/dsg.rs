@@ -45,6 +45,7 @@ pub struct DsgListener {
     phase: ShiftPhase,
     last_shift_done: Option<Instant>,
     upshift_pending_since: Option<Instant>,
+    kickdown_triggered: bool,
     kickdown_cooldown_until: Option<Instant>,
     /// After a desync timeout, suppress new commands until this instant (absorbs late shifts).
     resync_until: Option<Instant>,
@@ -52,7 +53,8 @@ pub struct DsgListener {
     pub dbg_desired_gear: i32,
     pub dbg_effective_max_rpm: f32,
     pub dbg_shift_threshold: f32,
-    pub dbg_kickdown_cooldown: bool,
+    /// Seconds left on the cooldown countdown; negative = waiting for throttle release; 0 = inactive.
+    pub dbg_kickdown_secs_left: f32,
     pub desync_count: u32,
     pub last_desync: Option<Instant>,
 }
@@ -66,12 +68,13 @@ impl DsgListener {
             phase: ShiftPhase::Idle,
             last_shift_done: None,
             upshift_pending_since: None,
+            kickdown_triggered: false,
             kickdown_cooldown_until: None,
             resync_until: None,
             dbg_desired_gear: 0,
             dbg_effective_max_rpm: 0.0,
             dbg_shift_threshold: 0.0,
-            dbg_kickdown_cooldown: false,
+            dbg_kickdown_secs_left: 0.0,
             desync_count: 0,
             last_desync: None,
         }
@@ -88,6 +91,7 @@ impl DsgListener {
         self.phase = ShiftPhase::Idle;
         self.last_shift_done = None;
         self.upshift_pending_since = None;
+        self.kickdown_triggered = false;
         self.kickdown_cooldown_until = None;
         self.resync_until = None;
         self.desync_count = 0;
@@ -194,6 +198,8 @@ impl DsgListener {
             return;
         }
 
+        let now = Instant::now();
+
         // ── Shift execution state machine ───────────────────────────────────────
         // While a shift is in flight, send nothing until the expected gear appears or we time
         // out. The 500 ms timeout applies regardless of a transitional "N" (so a stuck N can't
@@ -240,19 +246,30 @@ impl DsgListener {
         let desired = self.select_desired_gear(pkt, cfg, gear, effective_max_rpm);
         self.dbg_desired_gear = desired;
 
-        let now = Instant::now();
-
         // ── Kickdown detection + cooldown ──────────────────────────────────────
         // Throttle only counts when the engine is actually making power (hp > 0).
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
         let in_cooldown = self.kickdown_cooldown_until.map(|t| now < t).unwrap_or(false);
-        self.dbg_kickdown_cooldown = in_cooldown;
 
-        if desired < gear && throttle >= KICKDOWN_THROTTLE {
-            // Full-throttle downshift to a power gear → (re)arm the cooldown.
+        if throttle >= KICKDOWN_THROTTLE && (desired < gear || cfg.dsg_kickdown_on_full_throttle) {
+            // Full-throttle event (downshift, or any full-throttle when option enabled) →
+            // wait for throttle release before starting cooldown.
+            self.kickdown_triggered = true;
+        } else if self.kickdown_triggered && pkt.accel == 0 {
+            // Throttle back to zero → start the cooldown countdown now.
             self.kickdown_cooldown_until =
                 Some(now + Duration::from_secs_f32(cfg.dsg_kickdown_cooldown_secs.max(0.0)));
+            self.kickdown_triggered = false;
         }
+
+        self.dbg_kickdown_secs_left = if self.kickdown_triggered {
+            -1.0
+        } else {
+            self.kickdown_cooldown_until
+                .and_then(|t| t.checked_duration_since(now))
+                .map(|d| d.as_secs_f32())
+                .unwrap_or(0.0)
+        };
 
         // Resolve the gear we will actually move toward this frame.
         let mut target_gear = desired;
