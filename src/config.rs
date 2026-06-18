@@ -239,7 +239,7 @@ impl Default for AppConfig {
             backfire_max_rpm: 8000.0,
             backfire_min_rpm: 4000.0,
             backfire_interval_rpm: 100.0,
-            backfire_accel_time_ms: 8,
+            backfire_accel_time_ms: 10,
             backfire_test_mode: false,
             dsg_enabled: false,
             dsg_shift_rpm_pct: 95.0,
