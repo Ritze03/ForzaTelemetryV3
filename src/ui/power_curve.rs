@@ -200,10 +200,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     if apply_auto_bounds {
                         plot_ui.set_auto_bounds([true, true]);
                     }
+                    plot_ui.bar_chart(BarChart::new("Boost", bars));
                     if !saved_bars.is_empty() {
                         plot_ui.bar_chart(BarChart::new("Saved Boost", saved_bars.clone()));
                     }
-                    plot_ui.bar_chart(BarChart::new("Boost", bars));
                 });
             if boost_resp.response.clicked_by(egui::PointerButton::Middle) {
                 app.power_plot_auto_bounds = true;
