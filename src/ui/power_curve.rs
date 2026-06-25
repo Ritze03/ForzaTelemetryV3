@@ -91,7 +91,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         let torque_pts: PlotPoints = PlotPoints::new(app.power_capture.torque_series.clone());
 
         let power_resp = Plot::new("power_plot")
-            .legend(Legend::default().position(egui_plot::Corner::RightBottom))
+            .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
             .height(power_h)
             .x_axis_label("RPM")
             .y_axis_label("PS / Nm")
