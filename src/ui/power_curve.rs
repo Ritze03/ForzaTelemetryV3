@@ -161,32 +161,54 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 min_headroom
             };
 
-            let saved_bars: Vec<Bar> = saved_curve
+            let step = app.config.power_curve_step as f64;
+            let live_color = Color32::from_rgb(180, 80, 220);
+            let saved_bg_color = Color32::from_rgba_unmultiplied(180, 80, 220, 90);
+            let saved_fg_color = Color32::from_rgb(0x47, 0x23, 0x55);
+
+            // RPM→value maps for per-bar comparison
+            let saved_map: std::collections::HashMap<i32, f64> = saved_curve
                 .map(|curve| {
-                    curve
-                        .boost_series
-                        .iter()
+                    curve.boost_series.iter()
                         .map(|&[rpm, psi]| {
                             let val = if use_bar { psi * 0.0689476 } else { psi };
-                            Bar::new(rpm, val)
-                                .fill(Color32::from_rgba_unmultiplied(180, 80, 220, 90))
-                                .width(app.config.power_curve_step as f64 * 0.65)
+                            (rpm.round() as i32, val)
                         })
                         .collect()
                 })
                 .unwrap_or_default();
-
-            let bars: Vec<Bar> = app
-                .power_capture
-                .boost_series
-                .iter()
+            let live_map: std::collections::HashMap<i32, f64> = app.power_capture.boost_series.iter()
                 .map(|&[rpm, psi]| {
                     let val = if use_bar { psi * 0.0689476 } else { psi };
-                    Bar::new(rpm, val)
-                        .fill(Color32::from_rgb(180, 80, 220))
-                        .width(app.config.power_curve_step as f64 * 0.8)
+                    (rpm.round() as i32, val)
                 })
                 .collect();
+
+            // Per-bar: higher value → background, lower value → foreground
+            let mut bg_live: Vec<Bar> = Vec::new();
+            let mut fg_live: Vec<Bar> = Vec::new();
+            let mut bg_saved: Vec<Bar> = Vec::new();
+            let mut fg_saved: Vec<Bar> = Vec::new();
+
+            for &[rpm, psi] in &app.power_capture.boost_series {
+                let val = if use_bar { psi * 0.0689476 } else { psi };
+                let bar = Bar::new(rpm, val).fill(live_color).width(step * 0.8);
+                if saved_map.get(&(rpm.round() as i32)).is_some_and(|&sv| val < sv) {
+                    fg_live.push(bar);
+                } else {
+                    bg_live.push(bar);
+                }
+            }
+            if let Some(curve) = saved_curve {
+                for &[rpm, psi] in &curve.boost_series {
+                    let val = if use_bar { psi * 0.0689476 } else { psi };
+                    if live_map.get(&(rpm.round() as i32)).is_some_and(|&lv| val < lv) {
+                        fg_saved.push(Bar::new(rpm, val).fill(saved_fg_color).width(step * 0.8));
+                    } else {
+                        bg_saved.push(Bar::new(rpm, val).fill(saved_bg_color).width(step * 0.8));
+                    }
+                }
+            }
 
             let boost_label = if use_bar { "Boost (bar)" } else { "Boost (PSI)" };
             let boost_resp = Plot::new("boost_plot")
@@ -200,9 +222,18 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     if apply_auto_bounds {
                         plot_ui.set_auto_bounds([true, true]);
                     }
-                    plot_ui.bar_chart(BarChart::new("Boost", bars));
-                    if !saved_bars.is_empty() {
-                        plot_ui.bar_chart(BarChart::new("Saved Boost", saved_bars.clone()));
+                    // Background (higher) bars drawn first, foreground (lower) bars on top
+                    if !bg_live.is_empty() {
+                        plot_ui.bar_chart(BarChart::new("Boost", bg_live));
+                    }
+                    if !bg_saved.is_empty() {
+                        plot_ui.bar_chart(BarChart::new("Saved Boost", bg_saved));
+                    }
+                    if !fg_live.is_empty() {
+                        plot_ui.bar_chart(BarChart::new("Boost", fg_live));
+                    }
+                    if !fg_saved.is_empty() {
+                        plot_ui.bar_chart(BarChart::new("Saved Boost", fg_saved));
                     }
                 });
             if boost_resp.response.clicked_by(egui::PointerButton::Middle) {
