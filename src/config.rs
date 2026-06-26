@@ -231,7 +231,7 @@ pub struct AppConfig {
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
     pub dsg_upshift_speed_pct: f32,  // upshift only once speed reaches this % of the gear's redline speed
     pub dsg_gearbox_mode: GearboxMode,
-    pub dsg_auto_race_mode: bool, // force Race mode whenever IsRaceOn (in an actual race)
+    pub dsg_auto_race_mode: bool, // force Race mode whenever in an actual race (race position > P0)
     pub dsg_tuning_street: GearboxTuning,
     pub dsg_tuning_sport: GearboxTuning,
     pub dsg_tuning_race: GearboxTuning,
@@ -410,10 +410,11 @@ impl AppConfig {
         }
     }
 
-    /// The mode the gearbox actually drives with: Race whenever an actual race is on and the
-    /// auto-switch is enabled, otherwise the manually selected mode.
-    pub fn dsg_effective_mode(&self, is_race_on: bool) -> GearboxMode {
-        if self.dsg_auto_race_mode && is_race_on {
+    /// The mode the gearbox actually drives with: Race whenever we're in an actual race and the
+    /// auto-switch is enabled, otherwise the manually selected mode. Race is detected from the race
+    /// position (P0 = free roam, P1+ = an actual race) — `IsRaceOn` stays 1 while free-roaming too.
+    pub fn dsg_effective_mode(&self, in_race: bool) -> GearboxMode {
+        if self.dsg_auto_race_mode && in_race {
             GearboxMode::Race
         } else {
             self.dsg_gearbox_mode

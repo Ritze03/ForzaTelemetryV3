@@ -176,14 +176,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             ui.checkbox(
                 &mut app.config.dsg_auto_race_mode,
-                "Auto Race mode in races (IsRaceOn)",
+                "Auto Race mode in races",
             );
             if app.config.dsg_auto_race_mode {
                 let in_race = app
                     .telemetry
                     .latest
                     .as_ref()
-                    .map(|p| p.is_race_on != 0)
+                    .map(|p| p.race_position != 0)
                     .unwrap_or(false);
                 let active = app.config.dsg_effective_mode(in_race);
                 ui.label(

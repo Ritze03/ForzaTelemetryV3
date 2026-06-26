@@ -57,6 +57,9 @@ pub struct DsgListener {
     /// False until the driver manually shifts out of 1st. While false the box stays hands-off so
     /// the driver can do a clean first-gear redline pull (calibrates gear 1 + nails the redline).
     pub engaged: bool,
+    /// Whether we've actually seen 1st gear this session — engagement requires a real 1st→up shift,
+    /// not merely starting in a high gear (e.g. spawning in 4th).
+    seen_first_gear: bool,
     phase: ShiftPhase,
     last_shift_done: Option<Instant>,
     kickdown_triggered: bool,
@@ -81,6 +84,7 @@ impl DsgListener {
             gear_redline_speeds: [0.0; 11],
             gear_samples: std::array::from_fn(|_| VecDeque::new()),
             engaged: false,
+            seen_first_gear: false,
             phase: ShiftPhase::Idle,
             last_shift_done: None,
             kickdown_triggered: false,
@@ -104,6 +108,7 @@ impl DsgListener {
     /// Clear the shift state machine (e.g. on car change).
     pub fn reset_state(&mut self) {
         self.engaged = false;
+        self.seen_first_gear = false;
         self.phase = ShiftPhase::Idle;
         self.last_shift_done = None;
         self.kickdown_triggered = false;
@@ -144,8 +149,13 @@ impl DsgListener {
         let gear = pkt.gear as i32;
         let in_drive_gear = (1..=10).contains(&gear);
 
-        // Once the driver shifts up out of 1st, take over (and stay engaged for this car).
-        if gear >= 2 {
+        // Engage only after a real first-gear pull: the car must have actually been in 1st and then
+        // shifted up. Starting already in a high gear (e.g. spawning in 4th) must NOT engage — that
+        // previously made the box take over and force a downshift to 1st without any calibration.
+        if gear == 1 {
+            self.seen_first_gear = true;
+        }
+        if self.seen_first_gear && gear >= 2 {
             self.engaged = true;
         }
 
@@ -348,7 +358,8 @@ impl DsgListener {
         // Race whenever an actual race is on (auto-switch) or it's the selected mode. Race ignores
         // the cruise target entirely — it always wants the full powerband, so it holds the low gear
         // and only upshifts at the redline (the cruise upshift below never fires when cruise = 1.0).
-        let is_race = cfg.dsg_effective_mode(pkt.is_race_on != 0) == GearboxMode::Race;
+        // In an actual race iff we have a race position (P0 = free roam, P1+ = race).
+        let is_race = cfg.dsg_effective_mode(pkt.race_position != 0) == GearboxMode::Race;
 
         // Throttle-demanded target RPM. Throttle only counts when the engine is making power.
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
