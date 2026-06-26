@@ -208,21 +208,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
             });
             ui.label(
                 RichText::new(format!(
-                    "Pedal response for {} mode — >1 softens initial throttle, <1 sharpens it.",
+                    "Pedal response for {} mode — >1 softens initial throttle, <1 sharpens it. \
+                     Curve + gear-selection overlay is on the right.",
                     app.config.dsg_gearbox_mode.label()
                 ))
                 .size(10.0)
                 .color(Color32::GRAY),
             );
-            // Sizeable visualization (input → output). Pass any side length to resize.
-            let viz_size = ui.available_width().min(200.0);
-            let cur_accel = app
-                .telemetry
-                .latest
-                .as_ref()
-                .map(|p| p.accel as f32 / 255.0)
-                .unwrap_or(0.0);
-            gamma_curve_viz(ui, app.config.dsg_active_tuning().accel_gamma, viz_size, cur_accel);
 
             egui::CollapsingHeader::new("Advanced")
                 .id_salt("dsg_advanced")
@@ -474,47 +466,124 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     });
 }
 
-/// Square input→output plot of the accelerator gamma curve (`y = x^gamma`). Sizeable: pass any
-/// side length and the curve fills the box, so the layout can place/resize it freely later.
-fn gamma_curve_viz(ui: &mut Ui, gamma: f32, size: f32, input: f32) {
-    let size = size.max(40.0);
-    let (resp, painter) = ui.allocate_painter(egui::vec2(size, size), egui::Sense::hover());
-    let rect = resp.rect;
-    painter.rect_filled(rect, 3.0, Color32::from_gray(24));
-    // Inside so the full border is drawn within the rect (Middle clips the right/bottom edge).
-    painter.rect_stroke(
-        rect,
-        3.0,
-        egui::Stroke::new(1.0, Color32::from_gray(70)),
-        egui::StrokeKind::Inside,
-    );
+/// Accelerator gamma curve (X = pedal, Y = output) with a gear-selection overlay: a translucent
+/// stepped line shows which gear the box selects at the current speed for each pedal position,
+/// each plateau labelled with the gear and meeting the curve at its kickdown point. Two dots track
+/// the live pedal (raw on the diagonal, gamma'd on the curve). Sizeable via `size`.
+fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
+    let size = size.max(60.0);
+    let (resp, p) = ui.allocate_painter(egui::vec2(size, size), egui::Sense::hover());
+    let r = resp.rect;
+    p.rect_filled(r, 3.0, VIZ_BG);
     let at = |px: f32, py: f32| {
         egui::pos2(
-            rect.left() + px.clamp(0.0, 1.0) * rect.width(),
-            rect.bottom() - py.clamp(0.0, 1.0) * rect.height(),
+            r.left() + px.clamp(0.0, 1.0) * r.width(),
+            r.bottom() - py.clamp(0.0, 1.0) * r.height(),
         )
     };
-    // Linear reference (faint diagonal).
-    painter.line_segment(
-        [rect.left_bottom(), rect.right_top()],
-        egui::Stroke::new(1.0, Color32::from_gray(55)),
-    );
-    // The gamma curve itself.
-    let g = gamma.max(0.05);
-    let pts: Vec<egui::Pos2> = (0..=40)
-        .map(|i| {
-            let x = i as f32 / 40.0;
-            at(x, x.powf(g))
-        })
-        .collect();
-    painter.add(egui::Shape::line(
-        pts,
-        egui::Stroke::new(2.0, Color32::from_rgb(60, 210, 100)),
-    ));
-    // Current position: raw pedal on the linear reference, and the gamma'd output on the curve.
-    let x = input.clamp(0.0, 1.0);
-    painter.circle_filled(at(x, x), 3.5, Color32::from_gray(170));
-    painter.circle_filled(at(x, x.powf(g)), 4.0, Color32::from_rgb(255, 210, 60));
+    p.line_segment([r.left_bottom(), r.right_top()], egui::Stroke::new(1.0, Color32::from_gray(55)));
+
+    let pkt = app.telemetry.latest.as_ref();
+    let accel = pkt.map(|q| q.accel as f32 / 255.0).unwrap_or(0.0);
+    let speed = pkt.map(|q| q.speed_kmh()).unwrap_or(0.0);
+    let in_race = pkt.map(|q| q.race_position != 0).unwrap_or(false);
+    let mode = app.config.dsg_effective_mode(in_race);
+    let is_race = mode == GearboxMode::Race;
+    let gamma = app.config.dsg_effective_tuning(in_race).accel_gamma.max(0.05);
+    let redlines = app.dsg.gear_redline_speeds;
+    let max_rpm = app.dsg.dbg_effective_max_rpm.max(1.0);
+    let shift = app.dsg.dbg_shift_threshold.max(1.0);
+    let cruise = if is_race { 1.0 } else { app.config.dsg_effective_tuning(in_race).cruise_rpm_pct / 100.0 };
+    let deadzone = app.config.dsg_downshift_deadzone_pct / 100.0;
+    let full_thr = (app.config.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
+    let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
+
+    // ── Gear-selection step overlay (translucent, towards the background) ──
+    if maxg > 0 && speed > 1.0 {
+        let pred = |g: i32| max_rpm * speed / redlines[g as usize];
+        // Throttle-demanded target RPM as a function of effective throttle (mirrors the box).
+        let target_of = |th: f32| {
+            if is_race || th >= full_thr {
+                shift
+            } else {
+                shift * (cruise + (deadzone - cruise).max(0.0) * (th / full_thr))
+            }
+        };
+        // Gear chosen at effective throttle `th`: tallest gear that won't over-rev and still meets
+        // the target; if even the lowest available gear lugs, hold that lowest one.
+        let select = |th: f32| -> i32 {
+            let tg = target_of(th);
+            let (mut best, mut lowest) = (0, 0);
+            for g in 1..=maxg {
+                if redlines[g as usize] > 0.0 && pred(g) <= shift * 1.002 {
+                    if lowest == 0 {
+                        lowest = g;
+                    }
+                    if pred(g) >= tg {
+                        best = g;
+                    }
+                }
+            }
+            if best == 0 {
+                lowest
+            } else {
+                best
+            }
+        };
+
+        // Build constant-gear runs across the pedal axis.
+        let n = 64;
+        let mut runs: Vec<(f32, f32, i32)> = Vec::new();
+        let mut run_lo = 0.0_f32;
+        let mut prev_g = select(0.0);
+        for i in 1..=n {
+            let x = i as f32 / n as f32;
+            let g = select(x.powf(gamma));
+            if g != prev_g {
+                runs.push((run_lo, x, prev_g));
+                run_lo = x;
+                prev_g = g;
+            }
+        }
+        runs.push((run_lo, 1.0, prev_g));
+
+        let line_c = Color32::from_rgba_unmultiplied(240, 100, 90, 170);
+        let fill_c = Color32::from_rgba_unmultiplied(240, 100, 90, 26);
+        let lbl_c = Color32::from_rgba_unmultiplied(245, 140, 130, 230);
+        let mut prev_h = 0.0;
+        for (i, &(xlo, xhi, g)) in runs.iter().enumerate() {
+            let h = xhi.powf(gamma); // plateau meets the curve at its right edge (the kickdown point)
+            let xr = at(xhi, 0.0).x;
+            p.rect_filled(
+                egui::Rect::from_min_max(at(xlo, h), egui::pos2(xr, r.bottom())),
+                0.0,
+                fill_c,
+            );
+            p.line_segment([at(xlo, h), at(xhi, h)], egui::Stroke::new(2.0, line_c));
+            if i > 0 {
+                p.line_segment([at(xlo, prev_h), at(xlo, h)], egui::Stroke::new(2.0, line_c));
+            }
+            p.text(
+                at((xlo + xhi) * 0.5, h * 0.5),
+                egui::Align2::CENTER_CENTER,
+                g.to_string(),
+                egui::FontId::monospace(13.0),
+                lbl_c,
+            );
+            prev_h = h;
+        }
+    }
+
+    // ── Gamma curve ──
+    let curve: Vec<egui::Pos2> = (0..=48).map(|i| { let x = i as f32 / 48.0; at(x, x.powf(gamma)) }).collect();
+    p.add(egui::Shape::line(curve, egui::Stroke::new(2.0, VIZ_GREEN)));
+
+    // ── Live pedal dots ──
+    let x = accel.clamp(0.0, 1.0);
+    p.circle_filled(at(x, x), 3.5, Color32::from_gray(170));
+    p.circle_filled(at(x, x.powf(gamma)), 4.0, Color32::from_rgb(255, 210, 60));
+
+    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, Color32::from_gray(70)), egui::StrokeKind::Inside);
 }
 
 // ── Live gearbox visualization (right half of the tab) ───────────────────────
@@ -600,6 +669,16 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
             .color(VIZ_DIM),
     );
     viz_gear_map(ui, &redlines, shift_pct, down0_frac, is_race_mode, kmh, gear, desired);
+
+    // ── Accelerator gamma curve + gear-selection overlay ──
+    ui.label(
+        RichText::new("ACCEL \u{2192} GEAR \u{2014} gamma curve + selected gear at this speed")
+            .monospace()
+            .size(11.0)
+            .color(VIZ_DIM),
+    );
+    let gsize = ui.available_width().min(240.0);
+    viz_gamma_gears(ui, app, gsize);
 
     // ── Inputs (gamma'd throttle over raw ghost, brake) ──
     viz_input_bar(ui, "THR", eff_thr, accel, VIZ_GREEN);
