@@ -197,6 +197,25 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 );
             }
 
+            ui.add_space(8.0);
+            // ── Accelerator gamma curve (per mode) ──────────────────────
+            ui.horizontal(|ui| {
+                ui.label("Accelerator gamma:");
+                let tuning = app.config.dsg_active_tuning_mut();
+                ui.add(egui::Slider::new(&mut tuning.accel_gamma, 0.3..=3.0).step_by(0.05));
+            });
+            ui.label(
+                RichText::new(format!(
+                    "Pedal response for {} mode — >1 softens initial throttle, <1 sharpens it.",
+                    app.config.dsg_gearbox_mode.label()
+                ))
+                .size(10.0)
+                .color(Color32::GRAY),
+            );
+            // Sizeable visualization (input → output). Pass any side length to resize.
+            let viz_size = ui.available_width().min(200.0);
+            gamma_curve_viz(ui, app.config.dsg_active_tuning().accel_gamma, viz_size);
+
             egui::CollapsingHeader::new("Advanced")
                 .id_salt("dsg_advanced")
                 .show(ui, |ui| {
@@ -441,4 +460,37 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     });
             }
         });
+}
+
+/// Square input→output plot of the accelerator gamma curve (`y = x^gamma`). Sizeable: pass any
+/// side length and the curve fills the box, so the layout can place/resize it freely later.
+fn gamma_curve_viz(ui: &mut Ui, gamma: f32, size: f32) {
+    let size = size.max(40.0);
+    let (resp, painter) = ui.allocate_painter(egui::vec2(size, size), egui::Sense::hover());
+    let rect = resp.rect;
+    painter.rect_filled(rect, 3.0, Color32::from_gray(24));
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, Color32::from_gray(70)),
+        egui::StrokeKind::Middle,
+    );
+    // Linear reference (faint diagonal).
+    painter.line_segment(
+        [rect.left_bottom(), rect.right_top()],
+        egui::Stroke::new(1.0, Color32::from_gray(55)),
+    );
+    // The gamma curve itself.
+    let g = gamma.max(0.05);
+    let pts: Vec<egui::Pos2> = (0..=40)
+        .map(|i| {
+            let x = i as f32 / 40.0;
+            let y = x.powf(g);
+            egui::pos2(rect.left() + x * rect.width(), rect.bottom() - y * rect.height())
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        pts,
+        egui::Stroke::new(2.0, Color32::from_rgb(60, 210, 100)),
+    ));
 }

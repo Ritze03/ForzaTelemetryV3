@@ -258,7 +258,7 @@ impl DsgListener {
         // upshift is suppressed) both WHILE the throttle is still pressed after a kickdown and for
         // the cooldown window after release — so easing off mid-pull doesn't immediately upshift
         // out of the gear we just grabbed. The hard redline upshift still fires for protection.
-        let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
+        let throttle = curved_throttle(pkt, cfg);
         if throttle >= KICKDOWN_THROTTLE {
             self.kickdown_triggered = true;
         } else if self.kickdown_triggered && pkt.accel == 0 {
@@ -385,8 +385,9 @@ impl DsgListener {
         // In an actual race iff we have a race position (P0 = free roam, P1+ = race).
         let is_race = cfg.dsg_effective_mode(pkt.race_position != 0) == GearboxMode::Race;
 
-        // Throttle-demanded target RPM. Throttle only counts when the engine is making power.
-        let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
+        // Throttle-demanded target RPM, with the per-mode accelerator gamma curve applied. Throttle
+        // only counts when the engine is making power.
+        let throttle = curved_throttle(pkt, cfg);
         let full_thr = (cfg.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
         let target_rpm = if is_race || throttle >= full_thr {
             // Full powerband: Race always, or any mode once the throttle reaches the full-throttle
@@ -508,6 +509,18 @@ fn write_shift_log(log: &PendingLog, rpm_post: f32, speed_post: f32) {
         log.accel_pct,
         log.brake_pct,
     );
+}
+
+/// Accelerator position (0..1) shaped by the active mode's gamma curve, or 0 when off-power.
+/// `effective = raw^gamma` — gamma > 1 softens the initial throttle, < 1 sharpens it. The endpoints
+/// (0 and full pedal) are unchanged, so flooring it always reads as full throttle.
+fn curved_throttle(pkt: &ForzaPacket, cfg: &AppConfig) -> f32 {
+    if pkt.power <= 0.0 {
+        return 0.0;
+    }
+    let raw = pkt.accel as f32 / 255.0;
+    let gamma = cfg.dsg_effective_tuning(pkt.race_position != 0).accel_gamma.max(0.05);
+    raw.powf(gamma)
 }
 
 /// Median of the samples (mean of the two middle values for an even count). 0.0 if empty.

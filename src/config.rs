@@ -50,6 +50,7 @@ impl GearboxMode {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct GearboxTuning {
     pub cruise_rpm_pct: f32,      // low-throttle target, % of Shift RPM
+    pub accel_gamma: f32,         // accelerator response curve: effective = raw^gamma (1.0 = linear)
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -311,9 +312,9 @@ impl Default for AppConfig {
             dsg_upshift_speed_pct: 80.0,
             dsg_gearbox_mode: GearboxMode::Sport,
             dsg_auto_race_mode: true,
-            dsg_tuning_street: GearboxTuning { cruise_rpm_pct: 35.0 },
-            dsg_tuning_sport:  GearboxTuning { cruise_rpm_pct: 50.0 },
-            dsg_tuning_race:   GearboxTuning { cruise_rpm_pct: 85.0 },
+            dsg_tuning_street: GearboxTuning { cruise_rpm_pct: 35.0, accel_gamma: 1.0 },
+            dsg_tuning_sport:  GearboxTuning { cruise_rpm_pct: 50.0, accel_gamma: 1.0 },
+            dsg_tuning_race:   GearboxTuning { cruise_rpm_pct: 85.0, accel_gamma: 1.0 },
             dsg_kickdown_cooldown_secs: 5.0,
             dsg_downshift_deadzone_pct: 60.0,
             dsg_full_throttle_pct: 95.0,
@@ -420,6 +421,15 @@ impl AppConfig {
             GearboxMode::Race
         } else {
             self.dsg_gearbox_mode
+        }
+    }
+
+    /// Tuning for the mode actually in effect (Race when auto-switched in a race).
+    pub fn dsg_effective_tuning(&self, in_race: bool) -> GearboxTuning {
+        match self.dsg_effective_mode(in_race) {
+            GearboxMode::Street => self.dsg_tuning_street,
+            GearboxMode::Sport  => self.dsg_tuning_sport,
+            GearboxMode::Race   => self.dsg_tuning_race,
         }
     }
 
