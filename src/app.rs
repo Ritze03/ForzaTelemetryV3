@@ -285,9 +285,8 @@ pub struct DashboardResizeState {
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tab {
     Dashboard,
-    Acceleration,
-    Deceleration,
-    Fun,
+    Backfire,
+    Gearbox,
     PowerCurve,
     EngineSwaps,
     Settings,
@@ -762,12 +761,10 @@ impl eframe::App for ForzaApp {
                 use crate::icons;
                 ui.selectable_value(&mut self.current_tab, Tab::Dashboard,
                     format!("{} Dashboard", icons::DASHBOARD));
-                ui.selectable_value(&mut self.current_tab, Tab::Acceleration,
-                    format!("{} Acceleration", icons::BOLT));
-                ui.selectable_value(&mut self.current_tab, Tab::Deceleration,
-                    format!("{} Deceleration", icons::STOP));
-                ui.selectable_value(&mut self.current_tab, Tab::Fun,
-                    format!("{}  Fun", icons::GAMEPAD));
+                ui.selectable_value(&mut self.current_tab, Tab::Backfire,
+                    format!("{} Backfire", icons::BOLT));
+                ui.selectable_value(&mut self.current_tab, Tab::Gearbox,
+                    format!("{}  Automatic Gearbox", icons::GAMEPAD));
                 ui.selectable_value(&mut self.current_tab, Tab::PowerCurve,
                     format!("{} Power Curve", icons::LINE_CHART));
                 ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
@@ -839,9 +836,8 @@ impl eframe::App for ForzaApp {
                     ui.horizontal(|ui| {
                         for (tab, lbl) in [
                             (Tab::Dashboard,    "Dashboard"),
-                            (Tab::Acceleration, "Accel"),
-                            (Tab::Deceleration, "Decel"),
-                            (Tab::Fun,          "Fun"),
+                            (Tab::Backfire,     "Backfire"),
+                            (Tab::Gearbox,      "Gearbox"),
                             (Tab::PowerCurve,   "Power"),
                             (Tab::EngineSwaps,  "Engines"),
                         ] {
@@ -1277,9 +1273,8 @@ impl eframe::App for ForzaApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_tab {
                 Tab::Dashboard    => crate::ui::dashboard::show(ui, self),
-                Tab::Acceleration => crate::ui::acceleration::show(ui, self),
-                Tab::Deceleration => crate::ui::deceleration::show(ui, self),
-                Tab::Fun          => crate::ui::fun::show(ui, self),
+                Tab::Backfire     => crate::ui::fun::show_backfire(ui, self),
+                Tab::Gearbox      => crate::ui::fun::show_gearbox(ui, self),
                 Tab::PowerCurve   => crate::ui::power_curve::show(ui, self),
                 Tab::EngineSwaps  => crate::ui::engine_swaps::show(ui, self),
                 Tab::Settings    => crate::ui::settings::show(ui, self),

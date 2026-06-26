@@ -1,6 +1,4 @@
-pub mod acceleration;
 pub mod dashboard;
-pub mod deceleration;
 pub mod engine_swaps;
 pub mod fun;
 pub mod power_curve;

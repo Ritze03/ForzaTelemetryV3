@@ -3,11 +3,11 @@ use egui::{Color32, RichText, Ui};
 use crate::app::ForzaApp;
 use crate::config::GearboxMode;
 
-pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    ui.columns(2, |cols| {
-        // ── Left: Backfire ───────────────────────────────────────────
-        {
-            let ui = &mut cols[0];
+pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .id_salt("backfire_scroll")
+        .show(ui, |ui| {
             ui.heading("Backfire");
             ui.label(
                 RichText::new("Triggers Backfire by spamming 'W'")
@@ -90,14 +90,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 &mut app.config.backfire_test_mode,
                 "Test mode (ignores throttle/RPM conditions)",
             );
-        }
+        });
+}
 
-        // ── Right: Automatic Gearbox (DSG) — scrolls within its own column ──
-        {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .id_salt("gearbox_scroll")
-                .show(&mut cols[1], |ui| {
+pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .id_salt("gearbox_scroll")
+        .show(ui, |ui| {
             ui.heading("Automatic Gearbox");
             ui.add_space(8.0);
 
@@ -441,6 +441,4 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     });
             }
         });
-        }
-    });
 }
