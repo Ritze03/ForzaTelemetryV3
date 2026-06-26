@@ -26,6 +26,9 @@ const CALIB_RPM_FRAC: f32 = 0.60;
 const CALIB_SLIP: f32 = 0.8;
 /// Tyre slip (abs) at or above which an upshift is suppressed (don't shift on a redline spike).
 const UPSHIFT_SLIP: f32 = 1.0;
+/// Cruise hysteresis: the cruise downshift point sits this fraction of the shift point below the
+/// upshift target, so a just-completed cruise upshift can't immediately bounce back down.
+const CRUISE_HYSTERESIS: f32 = 0.10;
 
 /// Shift execution state. While `Shifting` we wait for `expected` to appear (or time out)
 /// before commanding anything else — this avoids key spam and tolerates the brief "N" flash
@@ -408,13 +411,14 @@ impl DsgListener {
         // Race ignores the cruise deadzone: it always wants the powerband, so the trigger is the
         // shift point and the powerband buffer provides the hunt protection. Street and Sport stay
         // lazy — hold the gear until revs fall below the deadzone hysteresis.
-        let deadzone_rpm = shift_threshold * (cfg.dsg_downshift_deadzone_pct / 100.0);
-        // Race and any full-throttle kickdown ignore the deadzone, so the downshift keeps walking
-        // into the powerband instead of parking one gear high the moment a step lands above it.
+        // Race and any full-throttle kickdown drop straight into the powerband. Otherwise the
+        // cruise downshift sits a fixed band BELOW the upshift target so a just-completed cruise
+        // upshift (which lands at ≥ target) can't instantly trigger a downshift back — that
+        // boundary coincidence (down point == up target) was the up/down/up hunt on acceleration.
         let down_point = if is_race || throttle >= full_thr {
             target_rpm
         } else {
-            target_rpm.min(deadzone_rpm)
+            (target_rpm - CRUISE_HYSTERESIS * shift_threshold).max(0.0)
         };
         if rpm < down_point && current_gear > 1 {
             if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
