@@ -214,7 +214,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
             );
             // Sizeable visualization (input → output). Pass any side length to resize.
             let viz_size = ui.available_width().min(200.0);
-            gamma_curve_viz(ui, app.config.dsg_active_tuning().accel_gamma, viz_size);
+            let cur_accel = app
+                .telemetry
+                .latest
+                .as_ref()
+                .map(|p| p.accel as f32 / 255.0)
+                .unwrap_or(0.0);
+            gamma_curve_viz(ui, app.config.dsg_active_tuning().accel_gamma, viz_size, cur_accel);
 
             egui::CollapsingHeader::new("Advanced")
                 .id_salt("dsg_advanced")
@@ -464,17 +470,24 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
 /// Square input→output plot of the accelerator gamma curve (`y = x^gamma`). Sizeable: pass any
 /// side length and the curve fills the box, so the layout can place/resize it freely later.
-fn gamma_curve_viz(ui: &mut Ui, gamma: f32, size: f32) {
+fn gamma_curve_viz(ui: &mut Ui, gamma: f32, size: f32, input: f32) {
     let size = size.max(40.0);
     let (resp, painter) = ui.allocate_painter(egui::vec2(size, size), egui::Sense::hover());
     let rect = resp.rect;
     painter.rect_filled(rect, 3.0, Color32::from_gray(24));
+    // Inside so the full border is drawn within the rect (Middle clips the right/bottom edge).
     painter.rect_stroke(
         rect,
         3.0,
         egui::Stroke::new(1.0, Color32::from_gray(70)),
-        egui::StrokeKind::Middle,
+        egui::StrokeKind::Inside,
     );
+    let at = |px: f32, py: f32| {
+        egui::pos2(
+            rect.left() + px.clamp(0.0, 1.0) * rect.width(),
+            rect.bottom() - py.clamp(0.0, 1.0) * rect.height(),
+        )
+    };
     // Linear reference (faint diagonal).
     painter.line_segment(
         [rect.left_bottom(), rect.right_top()],
@@ -485,12 +498,15 @@ fn gamma_curve_viz(ui: &mut Ui, gamma: f32, size: f32) {
     let pts: Vec<egui::Pos2> = (0..=40)
         .map(|i| {
             let x = i as f32 / 40.0;
-            let y = x.powf(g);
-            egui::pos2(rect.left() + x * rect.width(), rect.bottom() - y * rect.height())
+            at(x, x.powf(g))
         })
         .collect();
     painter.add(egui::Shape::line(
         pts,
         egui::Stroke::new(2.0, Color32::from_rgb(60, 210, 100)),
     ));
+    // Current position: raw pedal on the linear reference, and the gamma'd output on the curve.
+    let x = input.clamp(0.0, 1.0);
+    painter.circle_filled(at(x, x), 3.5, Color32::from_gray(170));
+    painter.circle_filled(at(x, x.powf(g)), 4.0, Color32::from_rgb(255, 210, 60));
 }
