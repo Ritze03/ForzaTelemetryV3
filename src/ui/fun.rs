@@ -653,16 +653,19 @@ fn viz_rpm_bar(ui: &mut Ui, rpm: f32, redline: f32, down: f32, target: f32, shif
     p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Inside);
 }
 
-/// Horizontal speed axis with one band per calibrated gear (band edge = that gear's calibrated
-/// shift-point speed). Current gear is highlighted, the desired gear outlined, and the live road
-/// speed marked — so you can read which gear the box maps each speed to.
+/// Stacked gear-range chart: one row per calibrated gear (a staircase up-right), each row's bar
+/// spanning that gear's speed range [previous shift point .. this gear's calibrated shift point] on
+/// a shared speed axis. Current gear is highlighted, desired outlined, and the live road speed is a
+/// full-height marker — so you read which gear the box maps each speed to.
 fn viz_gear_map(ui: &mut Ui, redlines: &[f32; 11], shift_pct: f32, kmh: f32, cur_gear: i32, desired: i32) {
-    let (resp, p) = ui.allocate_painter(egui::vec2(ui.available_width(), 60.0), egui::Sense::hover());
+    let border = egui::Stroke::new(1.0, Color32::from_gray(60));
+    let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
+    let row_h = 16.0;
+    let h = maxg.max(1) as f32 * row_h + 16.0; // + bottom speed-axis label strip
+    let (resp, p) = ui.allocate_painter(egui::vec2(ui.available_width(), h), egui::Sense::hover());
     let r = resp.rect;
     p.rect_filled(r, 3.0, VIZ_BG);
-    let border = egui::Stroke::new(1.0, Color32::from_gray(60));
 
-    let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
     if maxg == 0 {
         p.text(
             r.center(),
@@ -677,55 +680,57 @@ fn viz_gear_map(ui: &mut Ui, redlines: &[f32; 11], shift_pct: f32, kmh: f32, cur
 
     // Each gear's upshift (shift-point) speed = redline_speed * shift_rpm_pct.
     let up = |g: i32| redlines[g as usize] * shift_pct / 100.0;
-    let max_speed = (up(maxg) * 1.04).max(1.0);
-    let band_top = r.top() + 13.0;
-    let band_bot = r.bottom() - 12.0;
-    let sx = |speed: f32| r.left() + (speed / max_speed).clamp(0.0, 1.0) * r.width();
+    let max_speed = (up(maxg) * 1.12).max(1.0); // headroom so the top gear's label fits
+    let gutter = 18.0;
+    let axis_l = r.left() + gutter;
+    let axis_r = r.right() - 4.0;
+    let sx = |s: f32| axis_l + (s / max_speed).clamp(0.0, 1.0) * (axis_r - axis_l);
+    let area_top = r.top() + 2.0;
+    let area_bot = r.bottom() - 14.0;
 
     for g in 1..=maxg {
         let lo = if g == 1 { 0.0 } else { up(g - 1) };
         let hi = up(g);
-        let band = egui::Rect::from_min_max(egui::pos2(sx(lo), band_top), egui::pos2(sx(hi), band_bot));
-        let fillc = if g == cur_gear {
-            VIZ_GREEN
-        } else if g % 2 == 0 {
-            Color32::from_rgb(40, 72, 60)
-        } else {
-            Color32::from_rgb(30, 56, 48)
-        };
-        p.rect_filled(band, 2.0, fillc);
+        // Gear 1 at the bottom, higher gears stacked upward (an ascending staircase).
+        let row_bot = area_bot - (g - 1) as f32 * row_h;
+        let row_top = row_bot - row_h + 3.0;
+        let cy = (row_top + row_bot) * 0.5;
+        let bar = egui::Rect::from_min_max(egui::pos2(sx(lo), row_top), egui::pos2(sx(hi), row_bot));
+        let fillc = if g == cur_gear { VIZ_GREEN } else { Color32::from_rgb(46, 84, 70) };
+        p.rect_filled(bar, 2.0, fillc);
         if g == desired && g != cur_gear {
-            p.rect_stroke(band, 2.0, egui::Stroke::new(1.5, VIZ_AMBER), egui::StrokeKind::Inside);
+            p.rect_stroke(bar, 2.0, egui::Stroke::new(1.5, VIZ_AMBER), egui::StrokeKind::Inside);
         }
-        let txt_col = if g == cur_gear { Color32::BLACK } else { Color32::from_gray(205) };
+        // Gear number in the left gutter.
+        let numcol = if g == cur_gear { VIZ_GREEN } else { Color32::from_gray(205) };
         p.text(
-            band.center(),
+            egui::pos2(r.left() + gutter * 0.5, cy),
             egui::Align2::CENTER_CENTER,
             g.to_string(),
-            egui::FontId::monospace(13.0),
-            txt_col,
+            egui::FontId::monospace(12.0),
+            numcol,
         );
-        // Calibrated shift-point speed at the band's right edge.
+        // Calibrated shift-point speed just past the bar's right edge.
         p.text(
-            egui::pos2(sx(hi), r.bottom() - 1.0),
-            egui::Align2::CENTER_BOTTOM,
+            egui::pos2(sx(hi) + 4.0, cy),
+            egui::Align2::LEFT_CENTER,
             format!("{hi:.0}"),
             egui::FontId::monospace(9.0),
             VIZ_DIM,
         );
     }
 
-    // Live speed marker.
+    // Live speed marker spanning all rows.
     let xs = sx(kmh);
     p.line_segment(
-        [egui::pos2(xs, band_top - 3.0), egui::pos2(xs, band_bot + 2.0)],
+        [egui::pos2(xs, area_top), egui::pos2(xs, area_bot)],
         egui::Stroke::new(2.0, Color32::WHITE),
     );
     p.text(
-        egui::pos2(xs, r.top() + 1.0),
-        egui::Align2::CENTER_TOP,
+        egui::pos2(xs, r.bottom() - 1.0),
+        egui::Align2::CENTER_BOTTOM,
         format!("{kmh:.0} km/h"),
-        egui::FontId::monospace(10.0),
+        egui::FontId::monospace(9.0),
         Color32::WHITE,
     );
     p.rect_stroke(r, 3.0, border, egui::StrokeKind::Inside);
