@@ -29,6 +29,9 @@ const UPSHIFT_SLIP: f32 = 1.0;
 /// Cruise hysteresis: the cruise downshift point sits this fraction of the shift point below the
 /// upshift target, so a just-completed cruise upshift can't immediately bounce back down.
 const CRUISE_HYSTERESIS: f32 = 0.10;
+/// Engine RPM above this multiple of the road-speed-implied RPM means the wheels are spinning;
+/// the speed-based gear math is then garbage, so hold the gear until grip returns.
+const SPIN_RPM_FACTOR: f32 = 1.15;
 
 /// Shift execution state. While `Shifting` we wait for `expected` to appear (or time out)
 /// before commanding anything else — this avoids key spam and tolerates the brief "N" flash
@@ -349,6 +352,16 @@ impl DsgListener {
 
         let rpm = pkt.current_engine_rpm;
         let shift_threshold = effective_max_rpm * (cfg.dsg_shift_rpm_pct / 100.0);
+
+        // ── Wheelspin guard ────────────────────────────────────────────────────
+        // If the engine is turning well above what the road speed implies for this gear, the wheels
+        // are spinning and the road speed is too low to trust. Every gear decision below is built on
+        // road-speed-derived predicted RPM, so on a wheelspinning kickdown that math drops into
+        // absurdly low gears (then over-revs and jumps high). Hold the gear until grip returns.
+        let pred_cur = effective_max_rpm * kmh / cur_redline;
+        if rpm > pred_cur * SPIN_RPM_FACTOR {
+            return current_gear;
+        }
 
         // ── 1) Hard redline upshift ────────────────────────────────────────────
         // At/above the shift point, with grip and genuine road speed (not a wheelspin spike).
