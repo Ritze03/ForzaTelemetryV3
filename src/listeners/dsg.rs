@@ -259,7 +259,6 @@ impl DsgListener {
         // the cooldown window after release — so easing off mid-pull doesn't immediately upshift
         // out of the gear we just grabbed. The hard redline upshift still fires for protection.
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
-        let in_cooldown = self.kickdown_cooldown_until.map(|t| now < t).unwrap_or(false);
         if throttle >= KICKDOWN_THROTTLE {
             self.kickdown_triggered = true;
         } else if self.kickdown_triggered && pkt.accel == 0 {
@@ -267,6 +266,9 @@ impl DsgListener {
                 Some(now + Duration::from_secs_f32(cfg.dsg_kickdown_cooldown_secs.max(0.0)));
             self.kickdown_triggered = false;
         }
+        // Read AFTER arming so a cooldown that starts on this exact release frame already counts —
+        // otherwise the cruise upshift slips through the one frame between release and the timer.
+        let in_cooldown = self.kickdown_cooldown_until.map(|t| now < t).unwrap_or(false);
         self.dbg_kickdown_secs_left = if self.kickdown_triggered {
             -1.0
         } else {
