@@ -350,11 +350,22 @@ impl DsgListener {
         // and only upshifts at the redline (the cruise upshift below never fires when cruise = 1.0).
         let is_race = cfg.dsg_effective_mode(pkt.is_race_on != 0) == GearboxMode::Race;
 
-        // Throttle-demanded target RPM: cruise floor at zero throttle, rising to the shift point at
-        // full throttle. Throttle only counts when the engine is making power.
+        // Throttle-demanded target RPM. Throttle only counts when the engine is making power.
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
-        let cruise = if is_race { 1.0 } else { cfg.dsg_active_tuning().cruise_rpm_pct / 100.0 };
-        let target_rpm = shift_threshold * (cruise + (1.0 - cruise) * throttle).min(1.0);
+        let full_thr = (cfg.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
+        let target_rpm = if is_race || throttle >= full_thr {
+            // Full powerband: Race always, or any mode once the throttle reaches the full-throttle
+            // threshold — drop gears to keep the engine high for power.
+            shift_threshold
+        } else {
+            // Economical (part throttle, non-race): a light press must not snap a gear down. The
+            // target only climbs from the cruise floor up to the downshift deadzone as the throttle
+            // approaches the full-throttle threshold, letting revs build in the current gear.
+            let cruise = cfg.dsg_active_tuning().cruise_rpm_pct / 100.0;
+            let deadzone = cfg.dsg_downshift_deadzone_pct / 100.0;
+            let eco = throttle / full_thr; // 0..1 across the part-throttle range
+            shift_threshold * (cruise + (deadzone - cruise).max(0.0) * eco)
+        };
 
         // ── 2) Cruise upshift ──────────────────────────────────────────────────
         // Ease into a taller (already-calibrated) gear when it would still sit at/above the

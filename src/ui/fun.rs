@@ -258,6 +258,25 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                         .color(Color32::GRAY),
                     );
                     ui.horizontal(|ui| {
+                        ui.label("Full throttle threshold:");
+                        ui.add_enabled(
+                            !is_race,
+                            egui::Slider::new(&mut app.config.dsg_full_throttle_pct, 50.0..=100.0)
+                                .suffix("%")
+                                .step_by(1.0),
+                        );
+                    });
+                    ui.label(
+                        RichText::new(if is_race {
+                            "Unused in Race — always full powerband."
+                        } else {
+                            "Below this throttle the box stays economical (revs up to the deadzone); \
+                             at/above it the full powerband is used. Does not affect kickdown."
+                        })
+                        .size(10.0)
+                        .color(Color32::GRAY),
+                    );
+                    ui.horizontal(|ui| {
                         ui.label("Powerband buffer:");
                         ui.add(
                             egui::Slider::new(&mut app.config.dsg_downshift_powerband_buffer_pct, 0.0..=100.0)
