@@ -548,6 +548,10 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
     let cooldown = app.dsg.dbg_kickdown_secs_left;
     let redlines = app.dsg.gear_redline_speeds;
     let shift_pct = app.config.dsg_shift_rpm_pct;
+    let is_race_mode = mode == GearboxMode::Race;
+    let cruise_frac = app.config.dsg_effective_tuning(in_race).cruise_rpm_pct / 100.0;
+    // Cruise downshift point as a fraction of the shift point (mirrors dsg::CRUISE_HYSTERESIS = 0.10).
+    let down0_frac = (cruise_frac - 0.10).max(0.0);
 
     ui.spacing_mut().item_spacing.y = 7.0;
 
@@ -590,12 +594,12 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
 
     // ── Gear-range speed map (the key one) ──
     ui.label(
-        RichText::new("GEAR MAP \u{2014} speed \u{2192} gear (calibrated shift points)")
+        RichText::new("GEAR MAP \u{2014} each gear's speed range (downshift \u{2192} max)")
             .monospace()
             .size(11.0)
             .color(VIZ_DIM),
     );
-    viz_gear_map(ui, &redlines, shift_pct, kmh, gear, desired);
+    viz_gear_map(ui, &redlines, shift_pct, down0_frac, is_race_mode, kmh, gear, desired);
 
     // ── Inputs (gamma'd throttle over raw ghost, brake) ──
     viz_input_bar(ui, "THR", eff_thr, accel, VIZ_GREEN);
@@ -653,11 +657,20 @@ fn viz_rpm_bar(ui: &mut Ui, rpm: f32, redline: f32, down: f32, target: f32, shif
     p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Inside);
 }
 
-/// Stacked gear-range chart: one row per calibrated gear (a staircase up-right), each row's bar
-/// spanning that gear's speed range [previous shift point .. this gear's calibrated shift point] on
-/// a shared speed axis. Current gear is highlighted, desired outlined, and the live road speed is a
-/// full-height marker — so you read which gear the box maps each speed to.
-fn viz_gear_map(ui: &mut Ui, redlines: &[f32; 11], shift_pct: f32, kmh: f32, cur_gear: i32, desired: i32) {
+/// Stacked gear-range chart: one row per calibrated gear, each row's bar spanning that gear's REAL
+/// speed range on a shared axis — from its downshift speed up to its max (shift-point) speed. These
+/// ranges OVERLAP between neighbours by the shift hysteresis, which the staggered rows make visible.
+/// Current gear is highlighted, desired outlined, and the live road speed is a full-height marker.
+fn viz_gear_map(
+    ui: &mut Ui,
+    redlines: &[f32; 11],
+    shift_pct: f32,
+    down0_frac: f32,
+    is_race: bool,
+    kmh: f32,
+    cur_gear: i32,
+    desired: i32,
+) {
     let border = egui::Stroke::new(1.0, Color32::from_gray(60));
     let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
     let row_h = 16.0;
@@ -678,9 +691,19 @@ fn viz_gear_map(ui: &mut Ui, redlines: &[f32; 11], shift_pct: f32, kmh: f32, cur
         return;
     }
 
-    // Each gear's upshift (shift-point) speed = redline_speed * shift_rpm_pct.
+    // Max speed in a gear = its shift-point speed. Downshift speed (range start) = the cruise
+    // downshift fraction of that for normal modes; Race tiles at the shift points (no hysteresis).
     let up = |g: i32| redlines[g as usize] * shift_pct / 100.0;
-    let max_speed = (up(maxg) * 1.12).max(1.0); // headroom so the top gear's label fits
+    let lo = |g: i32| -> f32 {
+        if g <= 1 {
+            0.0
+        } else if is_race {
+            up(g - 1)
+        } else {
+            down0_frac * up(g)
+        }
+    };
+    let max_speed = (up(maxg) * 1.12).max(1.0);
     let gutter = 18.0;
     let axis_l = r.left() + gutter;
     let axis_r = r.right() - 4.0;
@@ -689,13 +712,15 @@ fn viz_gear_map(ui: &mut Ui, redlines: &[f32; 11], shift_pct: f32, kmh: f32, cur
     let area_bot = r.bottom() - 14.0;
 
     for g in 1..=maxg {
-        let lo = if g == 1 { 0.0 } else { up(g - 1) };
-        let hi = up(g);
-        // Gear 1 at the bottom, higher gears stacked upward (an ascending staircase).
+        let g_lo = lo(g);
+        let g_hi = up(g);
+        // Gear 1 at the bottom, higher gears stacked upward.
         let row_bot = area_bot - (g - 1) as f32 * row_h;
         let row_top = row_bot - row_h + 3.0;
         let cy = (row_top + row_bot) * 0.5;
-        let bar = egui::Rect::from_min_max(egui::pos2(sx(lo), row_top), egui::pos2(sx(hi), row_bot));
+        let x0 = sx(g_lo);
+        let x1 = (sx(g_hi)).max(x0 + 3.0); // keep a sliver visible even if collapsed (Race)
+        let bar = egui::Rect::from_min_max(egui::pos2(x0, row_top), egui::pos2(x1, row_bot));
         let fillc = if g == cur_gear { VIZ_GREEN } else { Color32::from_rgb(46, 84, 70) };
         p.rect_filled(bar, 2.0, fillc);
         if g == desired && g != cur_gear {
@@ -710,11 +735,21 @@ fn viz_gear_map(ui: &mut Ui, redlines: &[f32; 11], shift_pct: f32, kmh: f32, cur
             egui::FontId::monospace(12.0),
             numcol,
         );
-        // Calibrated shift-point speed just past the bar's right edge.
+        // Downshift speed at the bar's left edge (skip gear 1, which starts at 0).
+        if g > 1 {
+            p.text(
+                egui::pos2(x0 - 3.0, cy),
+                egui::Align2::RIGHT_CENTER,
+                format!("{g_lo:.0}"),
+                egui::FontId::monospace(9.0),
+                Color32::from_gray(150),
+            );
+        }
+        // Max (shift-point) speed just past the bar's right edge.
         p.text(
-            egui::pos2(sx(hi) + 4.0, cy),
+            egui::pos2(x1 + 4.0, cy),
             egui::Align2::LEFT_CENTER,
-            format!("{hi:.0}"),
+            format!("{g_hi:.0}"),
             egui::FontId::monospace(9.0),
             VIZ_DIM,
         );
