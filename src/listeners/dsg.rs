@@ -80,6 +80,8 @@ pub struct DsgListener {
 
 impl DsgListener {
     pub fn new() -> Self {
+        // Start every launch with a fresh shift log (the next shift recreates it with a header).
+        let _ = std::fs::remove_file(app_data_dir().join("dsg_shift_log.csv"));
         Self {
             gear_redline_speeds: [0.0; 11],
             gear_samples: std::array::from_fn(|_| VecDeque::new()),
@@ -405,7 +407,13 @@ impl DsgListener {
         let down_point = if is_race { target_rpm } else { target_rpm.min(deadzone_rpm) };
         if rpm < down_point && current_gear > 1 {
             if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
-                let buffer = cfg.dsg_downshift_powerband_buffer_pct / 100.0;
+                // A full-throttle kickdown uses its own (usually smaller) buffer so it drops deeper
+                // into the powerband than a lazy coasting/braking downshift.
+                let buffer = if throttle >= full_thr {
+                    cfg.dsg_kickdown_powerband_buffer_pct / 100.0
+                } else {
+                    cfg.dsg_downshift_powerband_buffer_pct / 100.0
+                };
                 let mut target = current_gear;
                 for g in (1..current_gear).rev() {
                     let Some(pred_g) = self.predicted_rpm(g, kmh, effective_max_rpm) else {

@@ -239,6 +239,7 @@ pub struct AppConfig {
     pub dsg_downshift_deadzone_pct: f32, // hold gear while cruising until revs drop below this % of shift RPM
     pub dsg_full_throttle_pct: f32, // throttle % at/above which a non-race mode uses the full powerband (economical below)
     pub dsg_downshift_powerband_buffer_pct: f32, // extra headroom (% of the inter-gear RPM jump) required below redline to downshift
+    pub dsg_kickdown_powerband_buffer_pct: f32, // same, but for full-throttle kickdowns (usually smaller = drops deeper)
     pub dsg_debug: bool,
     pub dsg_log_shifts: bool, // append each shift (pre/post RPM + speed, inputs) to a CSV for analysis
     // Max-RPM source for the dashboard RPM widget
@@ -317,6 +318,7 @@ impl Default for AppConfig {
             dsg_downshift_deadzone_pct: 60.0,
             dsg_full_throttle_pct: 95.0,
             dsg_downshift_powerband_buffer_pct: 20.0,
+            dsg_kickdown_powerband_buffer_pct: 0.0,
             dsg_debug: false,
             dsg_log_shifts: false,
             max_rpm_mode: MaxRpmSource::GameProvided,

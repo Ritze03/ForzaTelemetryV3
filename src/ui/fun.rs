@@ -291,6 +291,20 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                             .size(10.0)
                             .color(Color32::GRAY),
                     );
+                    ui.horizontal(|ui| {
+                        ui.label("Kickdown powerband buffer:");
+                        ui.add(
+                            egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
+                                .suffix("%")
+                                .step_by(1.0),
+                        );
+                    });
+                    ui.label(
+                        RichText::new("Same, but for full-throttle kickdowns. Lower than the \
+                                       Powerband buffer = kickdowns drop a gear deeper for power.")
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
                 });
 
             ui.add_space(8.0);
