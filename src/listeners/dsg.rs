@@ -384,7 +384,11 @@ impl DsgListener {
         // Ease into a taller (already-calibrated) gear when it would still sit at/above the
         // target — keeps revs low while cruising. Skipped while braking (let it engine-brake)
         // and during the post-kickdown cooldown (stay in the lower gear, ready to go).
-        if !in_cooldown && pkt.brake == 0 && current_gear < 10 {
+        // Same grip + Upshift-speed gate as the hard upshift: don't upshift (even economically)
+        // before reaching that % of the current gear's top speed — without this, gears 2+ upshift
+        // early at part throttle and the Upshift speed slider appears to do nothing for them.
+        let min_upshift_kmh = (cfg.dsg_upshift_speed_pct / 100.0) * cur_redline;
+        if !in_cooldown && pkt.brake == 0 && current_gear < 10 && slip_ok && kmh >= min_upshift_kmh {
             if let Some(pred_next) = self.predicted_rpm(current_gear + 1, kmh, effective_max_rpm) {
                 if pred_next >= target_rpm {
                     return current_gear + 1;
@@ -404,7 +408,13 @@ impl DsgListener {
         // shift point and the powerband buffer provides the hunt protection. Street and Sport stay
         // lazy — hold the gear until revs fall below the deadzone hysteresis.
         let deadzone_rpm = shift_threshold * (cfg.dsg_downshift_deadzone_pct / 100.0);
-        let down_point = if is_race { target_rpm } else { target_rpm.min(deadzone_rpm) };
+        // Race and any full-throttle kickdown ignore the deadzone, so the downshift keeps walking
+        // into the powerband instead of parking one gear high the moment a step lands above it.
+        let down_point = if is_race || throttle >= full_thr {
+            target_rpm
+        } else {
+            target_rpm.min(deadzone_rpm)
+        };
         if rpm < down_point && current_gear > 1 {
             if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
                 // A full-throttle kickdown uses its own (usually smaller) buffer so it drops deeper
