@@ -509,17 +509,28 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
                 shift * (cruise + (deadzone - cruise).max(0.0) * (th / full_thr))
             }
         };
-        // Gear chosen at effective throttle `th`: tallest gear that won't over-rev and still meets
-        // the target; if even the lowest available gear lugs, hold that lowest one.
+        // The box downshifts when revs fall below the DOWN POINT (target minus the cruise
+        // hysteresis) — so the held gear keys off down_point, not the raw target. Using the target
+        // dropped each plateau one gear too low (and never showed the actual cruising/held gear).
+        let down_point_of = |th: f32| {
+            let tgt = target_of(th);
+            if is_race || th >= full_thr {
+                tgt
+            } else {
+                (tgt - 0.10 * shift).max(0.0)
+            }
+        };
+        // Gear held at effective throttle `th`: tallest gear that won't over-rev and stays above the
+        // down point; if even the lowest available gear is below it, hold that lowest one.
         let select = |th: f32| -> i32 {
-            let tg = target_of(th);
+            let dp = down_point_of(th);
             let (mut best, mut lowest) = (0, 0);
             for g in 1..=maxg {
                 if redlines[g as usize] > 0.0 && pred(g) <= shift * 1.002 {
                     if lowest == 0 {
                         lowest = g;
                     }
-                    if pred(g) >= tg {
+                    if pred(g) >= dp {
                         best = g;
                     }
                 }
