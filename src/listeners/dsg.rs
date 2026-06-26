@@ -80,6 +80,15 @@ pub struct DsgListener {
     pub dbg_shift_threshold: f32,
     /// Seconds left on the cooldown countdown; negative = waiting for throttle release; 0 = inactive.
     pub dbg_kickdown_secs_left: f32,
+    /// Throttle-demanded target RPM and the cruise downshift point from the last decision.
+    pub dbg_target_rpm: f32,
+    pub dbg_down_point: f32,
+    /// Gamma-curved throttle (0..1) the box last acted on.
+    pub dbg_throttle: f32,
+    /// Whether the wheelspin guard is holding the gear right now.
+    pub dbg_wheelspin: bool,
+    /// Which decision branch fired last frame (for the live visualization).
+    pub dbg_rule: &'static str,
     pub desync_count: u32,
     pub last_desync: Option<Instant>,
 }
@@ -103,6 +112,11 @@ impl DsgListener {
             dbg_effective_max_rpm: 0.0,
             dbg_shift_threshold: 0.0,
             dbg_kickdown_secs_left: 0.0,
+            dbg_target_rpm: 0.0,
+            dbg_down_point: 0.0,
+            dbg_throttle: 0.0,
+            dbg_wheelspin: false,
+            dbg_rule: "\u{2014}",
             desync_count: 0,
             last_desync: None,
         }
@@ -330,7 +344,7 @@ impl DsgListener {
     /// target, so the two can't oscillate; the redline upshift is kept apart from the downshift
     /// by the over-rev guard.
     fn select_desired_gear(
-        &self,
+        &mut self,
         pkt: &ForzaPacket,
         cfg: &AppConfig,
         current_gear: i32,
@@ -338,9 +352,13 @@ impl DsgListener {
         hold_lower_gear: bool,
     ) -> i32 {
         let kmh = pkt.speed_kmh();
+        let throttle = curved_throttle(pkt, cfg);
+        self.dbg_throttle = throttle;
+        self.dbg_wheelspin = false;
 
         // Stopped / crawling → 1st, ready to launch.
         if kmh < STANDSTILL_KMH {
+            self.dbg_rule = "standstill \u{2192} 1st";
             return 1;
         }
 
@@ -349,6 +367,7 @@ impl DsgListener {
         // revs it past 60% on the way up, which records its redline speed). Without a value we
         // can't reason about shift points, and we must never shift out of an unknown gear.
         if cur_redline <= 0.0 {
+            self.dbg_rule = "calibrating (hold)";
             return current_gear;
         }
 
@@ -362,6 +381,8 @@ impl DsgListener {
         // absurdly low gears (then over-revs and jumps high). Hold the gear until grip returns.
         let pred_cur = effective_max_rpm * kmh / cur_redline;
         if rpm > pred_cur * SPIN_RPM_FACTOR {
+            self.dbg_wheelspin = true;
+            self.dbg_rule = "wheelspin (hold)";
             return current_gear;
         }
 
@@ -376,6 +397,7 @@ impl DsgListener {
             && slip_ok
             && kmh >= (cfg.dsg_upshift_speed_pct / 100.0) * cur_redline
         {
+            self.dbg_rule = "redline upshift";
             return current_gear + 1;
         }
 
@@ -385,9 +407,7 @@ impl DsgListener {
         // In an actual race iff we have a race position (P0 = free roam, P1+ = race).
         let is_race = cfg.dsg_effective_mode(pkt.race_position != 0) == GearboxMode::Race;
 
-        // Throttle-demanded target RPM, with the per-mode accelerator gamma curve applied. Throttle
-        // only counts when the engine is making power.
-        let throttle = curved_throttle(pkt, cfg);
+        // Throttle (gamma-curved) was computed up top; derive the demanded target RPM from it.
         let full_thr = (cfg.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
         let target_rpm = if is_race || throttle >= full_thr {
             // Full powerband: Race always, or any mode once the throttle reaches the full-throttle
@@ -402,6 +422,7 @@ impl DsgListener {
             let eco = throttle / full_thr; // 0..1 across the part-throttle range
             shift_threshold * (cruise + (deadzone - cruise).max(0.0) * eco)
         };
+        self.dbg_target_rpm = target_rpm;
 
         // ── 2) Cruise upshift ──────────────────────────────────────────────────
         // Ease into a taller (already-calibrated) gear when it would still sit at/above the
@@ -416,6 +437,7 @@ impl DsgListener {
         if !hold_lower_gear && pkt.brake == 0 && current_gear < 10 {
             if let Some(pred_next) = self.predicted_rpm(current_gear + 1, kmh, effective_max_rpm) {
                 if pred_next >= target_rpm {
+                    self.dbg_rule = "cruise upshift";
                     return current_gear + 1;
                 }
             }
@@ -441,6 +463,7 @@ impl DsgListener {
         } else {
             (target_rpm - CRUISE_HYSTERESIS * shift_threshold).max(0.0)
         };
+        self.dbg_down_point = down_point;
         if rpm < down_point && current_gear > 1 {
             if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
                 // A full-throttle kickdown uses its own (usually smaller) buffer so it drops deeper
@@ -471,11 +494,13 @@ impl DsgListener {
                     }
                 }
                 if target != current_gear {
+                    self.dbg_rule = if throttle >= full_thr { "kickdown" } else { "downshift" };
                     return target;
                 }
             }
         }
 
+        self.dbg_rule = "hold";
         current_gear
     }
 }
