@@ -261,7 +261,7 @@ impl DsgListener {
         let throttle = curved_throttle(pkt, cfg);
         if throttle >= KICKDOWN_THROTTLE {
             self.kickdown_triggered = true;
-        } else if self.kickdown_triggered && pkt.accel == 0 {
+        } else if self.kickdown_triggered && throttle <= 0.0 {
             self.kickdown_cooldown_until =
                 Some(now + Duration::from_secs_f32(cfg.dsg_kickdown_cooldown_secs.max(0.0)));
             self.kickdown_triggered = false;
@@ -301,7 +301,7 @@ impl DsgListener {
                     to_gear: expected,
                     rpm_pre: rpm,
                     speed_pre: kmh,
-                    accel_pct: (pkt.accel as u16 * 100 / 255) as u8,
+                    accel_pct: (throttle * 100.0).round() as u8,
                     brake_pct: (pkt.brake as u16 * 100 / 255) as u8,
                 });
             }
