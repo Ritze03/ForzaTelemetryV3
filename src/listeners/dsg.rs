@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
+use std::io::Write;
 use std::time::{Duration, Instant};
 
-use crate::config::{AppConfig, DsgMaxRpmSource};
+use crate::config::{app_data_dir, AppConfig, GearboxMode};
 use crate::input::{char_to_key, InputSender};
 use crate::packet::ForzaPacket;
 
@@ -12,18 +13,19 @@ const SHIFT_CONFIRM_TIMEOUT_MS: u64 = 500;
 /// After a desync timeout, hold off re-commanding this long so a late-landing shift is observed
 /// and reconciled instead of double-commanded (prevents overshoot).
 const POST_TIMEOUT_COOLDOWN_MS: u64 = 400;
-/// Gear-selection RPM cap as a fraction of the shift threshold — guarantees ≥10% band free.
-const POWER_HEADROOM_FRAC: f32 = 0.90;
-/// Throttle (0..1) at or above which a downshift counts as a kickdown.
+/// Throttle (0..1) at or above which a full-throttle event arms the kickdown cooldown.
 const KICKDOWN_THROTTLE: f32 = 0.95;
-/// Brake pedal (0..1) above which brake-induced downshifting engages.
-const HARD_BRAKE_THRESHOLD: f32 = 0.5;
 /// At or below this speed the box targets 1st gear (ready to launch).
 const STANDSTILL_KMH: f32 = 5.0;
-/// Engine RPM above this multiple of the road-speed-implied RPM means the wheels are spinning.
-const SPIN_RPM_FACTOR: f32 = 1.15;
 /// Number of valid samples kept per gear for the median calibration.
 const CALIB_WINDOW: usize = 10;
+/// Calibrate a gear only once the engine is past this fraction of the detected redline — high
+/// enough that the kmh/rpm extrapolation is accurate, low enough to lock in within one pull.
+const CALIB_RPM_FRAC: f32 = 0.60;
+/// Tyre slip (abs) above which a calibration sample is rejected (wheelspin corrupts kmh/rpm).
+const CALIB_SLIP: f32 = 0.8;
+/// Tyre slip (abs) at or above which an upshift is suppressed (don't shift on a redline spike).
+const UPSHIFT_SLIP: f32 = 1.0;
 
 /// Shift execution state. While `Shifting` we wait for `expected` to appear (or time out)
 /// before commanding anything else — this avoids key spam and tolerates the brief "N" flash
@@ -33,6 +35,18 @@ enum ShiftPhase {
     Shifting { expected: i32, since: Instant },
 }
 
+/// Pre-shift snapshot, captured when a shift is commanded and written out (with post-shift RPM +
+/// speed) once the shift confirms. Only kept while `dsg_log_shifts` is on.
+struct PendingLog {
+    game_time_ms: u32,
+    from_gear: i32,
+    to_gear: i32,
+    rpm_pre: f32,
+    speed_pre: f32,
+    accel_pct: u8,
+    brake_pct: u8,
+}
+
 pub struct DsgListener {
     /// Extrapolated speed at full redline (100% RPM) per gear index (0 unused; gears 1–10).
     /// The actual shift-point speed is derived live as `* (shift_rpm_pct/100)`. Session-only.
@@ -40,15 +54,17 @@ pub struct DsgListener {
     /// Last ≤10 valid redline-speed estimates per gear; the committed value is their median.
     /// Never locked — the median keeps updating so a wrong value self-corrects.
     gear_samples: [VecDeque<f32>; 11],
-    /// Max RPM observed during manual redline calibration (standing still, brake+accel 100%).
-    pub measured_redline: f32,
+    /// False until the driver manually shifts out of 1st. While false the box stays hands-off so
+    /// the driver can do a clean first-gear redline pull (calibrates gear 1 + nails the redline).
+    pub engaged: bool,
     phase: ShiftPhase,
     last_shift_done: Option<Instant>,
-    upshift_pending_since: Option<Instant>,
     kickdown_triggered: bool,
     kickdown_cooldown_until: Option<Instant>,
     /// After a desync timeout, suppress new commands until this instant (absorbs late shifts).
     resync_until: Option<Instant>,
+    /// Pre-shift snapshot awaiting its post-shift values (shift logging only).
+    pending_log: Option<PendingLog>,
     // ── Debug telemetry (read by the Fun-tab debug panel) ──
     pub dbg_desired_gear: i32,
     pub dbg_effective_max_rpm: f32,
@@ -64,13 +80,13 @@ impl DsgListener {
         Self {
             gear_redline_speeds: [0.0; 11],
             gear_samples: std::array::from_fn(|_| VecDeque::new()),
-            measured_redline: 0.0,
+            engaged: false,
             phase: ShiftPhase::Idle,
             last_shift_done: None,
-            upshift_pending_since: None,
             kickdown_triggered: false,
             kickdown_cooldown_until: None,
             resync_until: None,
+            pending_log: None,
             dbg_desired_gear: 0,
             dbg_effective_max_rpm: 0.0,
             dbg_shift_threshold: 0.0,
@@ -83,17 +99,17 @@ impl DsgListener {
     pub fn reset_calibration(&mut self) {
         self.gear_redline_speeds = [0.0; 11];
         self.gear_samples = std::array::from_fn(|_| VecDeque::new());
-        self.measured_redline = 0.0;
     }
 
     /// Clear the shift state machine (e.g. on car change).
     pub fn reset_state(&mut self) {
+        self.engaged = false;
         self.phase = ShiftPhase::Idle;
         self.last_shift_done = None;
-        self.upshift_pending_since = None;
         self.kickdown_triggered = false;
         self.kickdown_cooldown_until = None;
         self.resync_until = None;
+        self.pending_log = None;
         self.desync_count = 0;
         self.last_desync = None;
     }
@@ -119,72 +135,47 @@ impl DsgListener {
 
         let rpm = pkt.current_engine_rpm;
         let kmh = pkt.speed_kmh();
-        let max_rpm = pkt.engine_max_rpm;
-
-        // Manual redline calibration: standing still, full brake (no handbrake), full throttle.
-        if cfg.dsg_max_rpm_type == DsgMaxRpmSource::Manual
-            && kmh < 1.0
-            && pkt.brake == 255
-            && pkt.hand_brake == 0
-            && pkt.accel == 255
-        {
-            if rpm > self.measured_redline {
-                self.measured_redline = rpm;
-            }
-        }
-
-        // Effective max RPM by source (each falls back to the packet value when not yet available):
-        //  - Game Data   → packet engine max RPM,
-        //  - Auto Detect → the dynamically detected redline,
-        //  - Manual      → the brake-stand measured redline.
-        let effective_max_rpm = match cfg.dsg_max_rpm_type {
-            DsgMaxRpmSource::GameData => max_rpm,
-            DsgMaxRpmSource::AutoDetect => {
-                if dynamic_max_rpm > 0.0 { dynamic_max_rpm } else { max_rpm }
-            }
-            DsgMaxRpmSource::Manual => {
-                if self.measured_redline > 0.0 { self.measured_redline } else { max_rpm }
-            }
-        };
+        // Auto Detect is the only source: the live-detected redline (clean even under
+        // wheelspin/handbrake — see app.rs). Until it's known we can't do anything.
+        let effective_max_rpm = dynamic_max_rpm;
         self.dbg_effective_max_rpm = effective_max_rpm;
         self.dbg_shift_threshold = effective_max_rpm * (cfg.dsg_shift_rpm_pct / 100.0);
 
         let gear = pkt.gear as i32;
         let in_drive_gear = (1..=10).contains(&gear);
 
-        // ── Continuous calibration ──────────────────────────────────────────────
+        // Once the driver shifts up out of 1st, take over (and stay engaged for this car).
+        if gear >= 2 {
+            self.engaged = true;
+        }
+
+        // ── Continuous calibration (runs even before we engage, to learn gear 1) ────────────
         // Extrapolate each gear's speed at the full redline (100% RPM) from the current
-        // RPM/speed ratio. The shift-point speed is derived live elsewhere as
-        // redline_speed * (shift_rpm_pct/100), so it tracks the Shift RPM slider.
-        // Conditions: meaningful RPM (≥50% of shift threshold), no wheel slip (≤0.5),
-        // springs loaded (≥0.1), and the car moving straight forward (velocity aligned with
-        // its heading within ~5%). Once a sample at ≥80% of shift threshold is recorded the
-        // gear is locked.
-        if in_drive_gear && effective_max_rpm > 0.0 && kmh > 5.0 {
-            let shift_threshold = effective_max_rpm * (cfg.dsg_shift_rpm_pct / 100.0);
-            let rpm_pct = rpm / shift_threshold;
+        // RPM/speed ratio. Conditions: past 60% of the redline (accurate ratio), little wheel
+        // slip (<0.8), springs loaded (≥0.1), and moving straight (velocity aligned with heading
+        // within ~5%) so the road-speed magnitude reflects what the wheels are doing.
+        // Gear 1 must be calibrated first (the driver's manual redline pull): until it is, don't
+        // record any higher gear — every later gear is extrapolated off the redline that pull nails.
+        let first_gear_ready = self.gear_redline_speeds[1] > 0.0;
+        if in_drive_gear && effective_max_rpm > 0.0 && kmh > 5.0 && (gear == 1 || first_gear_ready) {
             let gear_idx = gear as usize;
 
-            let no_slip = pkt.tire_slip_ratio_fl.abs() <= 0.5
-                && pkt.tire_slip_ratio_fr.abs() <= 0.5
-                && pkt.tire_slip_ratio_rl.abs() <= 0.5
-                && pkt.tire_slip_ratio_rr.abs() <= 0.5;
+            let no_slip = pkt.tire_slip_ratio_fl.abs() < CALIB_SLIP
+                && pkt.tire_slip_ratio_fr.abs() < CALIB_SLIP
+                && pkt.tire_slip_ratio_rl.abs() < CALIB_SLIP
+                && pkt.tire_slip_ratio_rr.abs() < CALIB_SLIP;
 
             let springs_loaded = pkt.normalized_suspension_travel_fl >= 0.1
                 && pkt.normalized_suspension_travel_fr >= 0.1
                 && pkt.normalized_suspension_travel_rl >= 0.1
                 && pkt.normalized_suspension_travel_rr >= 0.1;
 
-            // Forward velocity must account for ≥95% of total speed — i.e. driving straight,
-            // not sliding/drifting/reversing/airborne. Otherwise the road-speed magnitude
-            // includes motion the wheels aren't producing and kmh/rpm is wrong.
             let speed_ms = pkt.speed.abs();
             let moving_straight = speed_ms > 0.1 && pkt.velocity_z >= 0.95 * speed_ms;
 
-            if rpm_pct >= 0.5 && no_slip && springs_loaded && moving_straight {
-                // Continuously recompute the median of the last 10 valid redline-speed estimates.
-                // The gear is never "locked": a wrong value is corrected as fresh samples slide
-                // the window, and the median rejects the occasional outlier packet.
+            if rpm >= CALIB_RPM_FRAC * effective_max_rpm && no_slip && springs_loaded && moving_straight {
+                // Rolling median of the last 10 valid redline-speed estimates. Never "locked":
+                // a wrong value is corrected as the window slides, and the median rejects outliers.
                 let buf = &mut self.gear_samples[gear_idx];
                 buf.push_back(kmh * effective_max_rpm / rpm);
                 while buf.len() > CALIB_WINDOW {
@@ -194,7 +185,8 @@ impl DsgListener {
             }
         }
 
-        if !cfg.dsg_enabled {
+        // Hands off until enabled, engaged (driver shifted out of 1st), and a redline is known.
+        if !cfg.dsg_enabled || !self.engaged || effective_max_rpm <= 0.0 {
             return;
         }
 
@@ -202,34 +194,34 @@ impl DsgListener {
 
         // ── Shift execution state machine ───────────────────────────────────────
         // While a shift is in flight, send nothing until the expected gear appears or we time
-        // out. The 500 ms timeout applies regardless of a transitional "N" (so a stuck N can't
-        // hang the box).
+        // out. The 500 ms timeout applies regardless of a transitional "N".
         if let ShiftPhase::Shifting { expected, since } = self.phase {
             if gear == expected {
                 self.phase = ShiftPhase::Idle;
-                self.last_shift_done = Some(Instant::now());
+                self.last_shift_done = Some(now);
+                // Shift confirmed → write the row with the post-shift RPM + speed.
+                if let Some(log) = self.pending_log.take() {
+                    write_shift_log(&log, rpm, kmh);
+                }
             } else if since.elapsed() >= Duration::from_millis(SHIFT_CONFIRM_TIMEOUT_MS) {
-                // Desync: sync to the actual gear, then hold off re-commanding long enough to
-                // absorb a shift that is merely landing late (prevents a double-shift / overshoot).
+                // Desync: sync to the actual gear, then hold off re-commanding to absorb a late shift.
                 self.phase = ShiftPhase::Idle;
-                self.resync_until =
-                    Some(Instant::now() + Duration::from_millis(POST_TIMEOUT_COOLDOWN_MS));
+                self.resync_until = Some(now + Duration::from_millis(POST_TIMEOUT_COOLDOWN_MS));
                 self.desync_count += 1;
-                self.last_desync = Some(Instant::now());
+                self.last_desync = Some(now);
+                self.pending_log = None; // drop — a desynced shift would log misleading values
             }
-            // Otherwise (old drive gear or transitional N, within 500 ms): keep waiting.
             return;
         }
 
         // Idle: only act on a real drive gear.
-        if !in_drive_gear || effective_max_rpm <= 0.0 {
-            self.upshift_pending_since = None;
+        if !in_drive_gear {
             return;
         }
 
         // Post-desync cooldown: observe the live gear but issue no new command yet.
         if let Some(t) = self.resync_until {
-            if Instant::now() < t {
+            if now < t {
                 return;
             }
             self.resync_until = None;
@@ -242,26 +234,19 @@ impl DsgListener {
             }
         }
 
-        let shift_threshold = effective_max_rpm * (cfg.dsg_shift_rpm_pct / 100.0);
-        let desired = self.select_desired_gear(pkt, cfg, gear, effective_max_rpm);
-        self.dbg_desired_gear = desired;
-
-        // ── Kickdown detection + cooldown ──────────────────────────────────────
-        // Throttle only counts when the engine is actually making power (hp > 0).
+        // ── Kickdown cooldown ──────────────────────────────────────────────────
+        // Arm on any full-throttle event; once the throttle is released, hold the lower gear
+        // "ready" for the cooldown window by suppressing the gentle cruise upshift (see
+        // select_desired_gear). The hard redline upshift still fires for engine protection.
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
         let in_cooldown = self.kickdown_cooldown_until.map(|t| now < t).unwrap_or(false);
-
-        if throttle >= KICKDOWN_THROTTLE && (desired < gear || cfg.dsg_kickdown_on_full_throttle) {
-            // Full-throttle event (downshift, or any full-throttle when option enabled) →
-            // wait for throttle release before starting cooldown.
+        if throttle >= KICKDOWN_THROTTLE {
             self.kickdown_triggered = true;
         } else if self.kickdown_triggered && pkt.accel == 0 {
-            // Throttle back to zero → start the cooldown countdown now.
             self.kickdown_cooldown_until =
                 Some(now + Duration::from_secs_f32(cfg.dsg_kickdown_cooldown_secs.max(0.0)));
             self.kickdown_triggered = false;
         }
-
         self.dbg_kickdown_secs_left = if self.kickdown_triggered {
             -1.0
         } else {
@@ -271,55 +256,30 @@ impl DsgListener {
                 .unwrap_or(0.0)
         };
 
-        // Resolve the gear we will actually move toward this frame.
-        let mut target_gear = desired;
-
-        if target_gear > gear {
-            if rpm >= shift_threshold {
-                // Redline protection: at/above the shift point, upshift immediately — bypass the
-                // kickdown-cooldown hold and hysteresis. (Wheelspin is already handled in
-                // select_desired_gear, which holds the gear while the wheels are spinning.)
-                self.upshift_pending_since = None;
-            } else {
-                // During kickdown cooldown, hold the lower gear "ready" — only allow the
-                // upshift once we're genuinely bouncing off the ceiling.
-                if in_cooldown && rpm < shift_threshold * 0.98 {
-                    target_gear = gear;
-                }
-
-                // Upshift hysteresis: the request must persist for the mode's delay.
-                if target_gear > gear {
-                    let delay = Duration::from_millis(cfg.dsg_active_tuning().upshift_delay_ms);
-                    match self.upshift_pending_since {
-                        Some(t) if t.elapsed() >= delay => {}
-                        Some(_) => target_gear = gear, // still waiting out the delay
-                        None => {
-                            self.upshift_pending_since = Some(now);
-                            target_gear = gear;
-                        }
-                    }
-                } else {
-                    self.upshift_pending_since = None;
-                }
-            }
-        } else {
-            // Not upshifting → clear any pending upshift timer.
-            self.upshift_pending_since = None;
-        }
-
-        target_gear = target_gear.max(1);
+        let desired = self
+            .select_desired_gear(pkt, cfg, gear, effective_max_rpm, in_cooldown)
+            .max(1);
+        self.dbg_desired_gear = desired;
 
         // ── Command a single confirmed step toward the target ──────────────────
-        if target_gear != gear {
-            let step: i32 = if target_gear > gear { 1 } else { -1 };
+        if desired != gear {
+            let step: i32 = if desired > gear { 1 } else { -1 };
             let expected = gear + step;
             let key_char = if step > 0 { 'e' } else { 'q' };
             if let Some(key) = char_to_key(key_char) {
                 input.press(key, 10);
             }
             self.phase = ShiftPhase::Shifting { expected, since: now };
-            if step > 0 {
-                self.upshift_pending_since = None;
+            if cfg.dsg_log_shifts {
+                self.pending_log = Some(PendingLog {
+                    game_time_ms: pkt.timestamp_ms,
+                    from_gear: gear,
+                    to_gear: expected,
+                    rpm_pre: rpm,
+                    speed_pre: kmh,
+                    accel_pct: (pkt.accel as u16 * 100 / 255) as u8,
+                    brake_pct: (pkt.brake as u16 * 100 / 255) as u8,
+                });
             }
         }
     }
@@ -327,159 +287,163 @@ impl DsgListener {
     /// Predicted engine RPM for `gear` at the current speed, referenced to the full redline.
     /// Returns `None` for uncalibrated gears.
     fn predicted_rpm(&self, gear: i32, kmh: f32, effective_max_rpm: f32) -> Option<f32> {
-        let idx = gear as usize;
         if !(1..=10).contains(&gear) {
             return None;
         }
-        let redline_speed = self.gear_redline_speeds[idx];
+        let redline_speed = self.gear_redline_speeds[gear as usize];
         if redline_speed <= 0.0 {
             return None;
         }
         Some(effective_max_rpm * kmh / redline_speed)
     }
 
-    /// Choose the ideal gear for the current driving intent using the target-RPM model.
+    /// Choose the ideal gear for the current driving intent.
+    ///
+    /// Three rules, in order: a hard redline upshift (the user's "shift at Max RPM × Shift RPM"
+    /// rule, gated on grip + speed), a gentle cruise upshift toward the throttle-demanded target
+    /// (so chill modes settle into tall gears at low revs), and a lazy downshift when revs fall
+    /// below the demand. The cruise-upshift lands at ≥ target and the downshift fires only below
+    /// target, so the two can't oscillate; the redline upshift is kept apart from the downshift
+    /// by the over-rev guard.
     fn select_desired_gear(
         &self,
         pkt: &ForzaPacket,
         cfg: &AppConfig,
         current_gear: i32,
         effective_max_rpm: f32,
+        in_cooldown: bool,
     ) -> i32 {
         let kmh = pkt.speed_kmh();
 
-        // Stopped / crawling → be in 1st, ready to launch. (At a standstill every gear's
-        // predicted RPM is ~0, so the closest-target search would otherwise tie toward the
-        // tallest gear.)
+        // Stopped / crawling → 1st, ready to launch.
         if kmh < STANDSTILL_KMH {
             return 1;
         }
 
-        // Don't shift away from an uncalibrated gear — we have to stay in it to sample it.
-        // Hold until it has a valid calibration value (the continuous calibration fills it in
-        // once RPM/grip/heading conditions are met). Standstill (above) still forces 1st.
-        if (1..=10).contains(&current_gear)
-            && self.gear_redline_speeds[current_gear as usize] <= 0.0
-        {
+        let cur_redline = self.gear_redline_speeds[current_gear as usize];
+        // Hold an uncalibrated gear so the continuous calibration can sample it (the driver/box
+        // revs it past 60% on the way up, which records its redline speed). Without a value we
+        // can't reason about shift points, and we must never shift out of an unknown gear.
+        if cur_redline <= 0.0 {
             return current_gear;
         }
 
-        let actual_rpm = pkt.current_engine_rpm;
+        let rpm = pkt.current_engine_rpm;
         let shift_threshold = effective_max_rpm * (cfg.dsg_shift_rpm_pct / 100.0);
 
-        // Wheelspin hold: if the engine is turning well faster than the current road speed implies
-        // for this gear, the wheels are spinning — road-speed-based selection is unreliable, so
-        // hold the gear (prevents upshifting on spin and spurious kickdown downshifts).
-        if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
-            if actual_rpm > pred_cur * SPIN_RPM_FACTOR {
-                return current_gear;
-            }
-        }
-
-        // Stable limiter upshift: once genuinely at/above the shift point (and not spinning),
-        // upshift one gear. Computed from actual RPM so it doesn't flicker current↔next the way
-        // the closest-target search does as a gear's predicted RPM crosses the over-rev boundary.
-        if actual_rpm >= shift_threshold && (1..10).contains(&current_gear) {
+        // ── 1) Hard redline upshift ────────────────────────────────────────────
+        // At/above the shift point, with grip and genuine road speed (not a wheelspin spike).
+        let slip_ok = pkt.tire_slip_ratio_fl.abs() < UPSHIFT_SLIP
+            && pkt.tire_slip_ratio_fr.abs() < UPSHIFT_SLIP
+            && pkt.tire_slip_ratio_rl.abs() < UPSHIFT_SLIP
+            && pkt.tire_slip_ratio_rr.abs() < UPSHIFT_SLIP;
+        if current_gear < 10
+            && rpm >= shift_threshold
+            && slip_ok
+            && kmh >= (cfg.dsg_upshift_speed_pct / 100.0) * cur_redline
+        {
             return current_gear + 1;
         }
 
-        // Throttle only counts when the engine is actually making power (hp > 0); when coasting
-        // or engine-braking a pressed pedal shouldn't drive the gear choice.
+        // Throttle-demanded target RPM: cruise floor at zero throttle, rising to the shift point
+        // at full throttle. Throttle only counts when the engine is making power. Race ignores the
+        // cruise target entirely — it always wants the full powerband, so it holds the low gear and
+        // only upshifts at the redline (the cruise upshift below never fires when cruise = 1.0).
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
-        let brake_f = pkt.brake as f32 / 255.0;
-        let tuning = cfg.dsg_active_tuning();
-
-        let cruise = tuning.cruise_rpm_pct / 100.0;
-        let brake_add = if brake_f > HARD_BRAKE_THRESHOLD {
-            brake_f * (tuning.brake_downshift_pct / 100.0)
-        } else {
-            0.0
+        let cruise = match cfg.dsg_gearbox_mode {
+            GearboxMode::Race => 1.0,
+            _ => cfg.dsg_active_tuning().cruise_rpm_pct / 100.0,
         };
-        let target_frac =
-            (cruise + (1.0 - cruise) * throttle + brake_add).clamp(cruise, POWER_HEADROOM_FRAC);
-        let target_rpm = shift_threshold * target_frac;
+        let target_rpm = shift_threshold * (cruise + (1.0 - cruise) * throttle).min(1.0);
 
-        // Pick the calibrated gear whose predicted RPM is closest to target, excluding gears
-        // that would over-rev. Ties prefer the taller gear (lower revs).
-        let mut best: Option<(i32, f32)> = None;
-        let mut any_calibrated = false;
-        for g in 1..=10 {
-            let Some(pred) = self.predicted_rpm(g, kmh, effective_max_rpm) else {
-                continue;
-            };
-            any_calibrated = true;
-            // `pred` is the RPM we'd land at after shifting into gear g. A downshift/kickdown
-            // target is only valid if it leaves ≥10% of the RPM range free afterwards; higher or
-            // equal gears just must not over-rev.
-            let max_pred = if g < current_gear {
-                shift_threshold * POWER_HEADROOM_FRAC
-            } else {
-                shift_threshold
-            };
-            if pred > max_pred {
-                continue;
-            }
-            let dist = (pred - target_rpm).abs();
-            match best {
-                // Strictly closer wins; on a tie, larger g (taller, listed later) replaces.
-                Some((_, bd)) if dist <= bd => best = Some((g, dist)),
-                None => best = Some((g, dist)),
-                _ => {}
-            }
-        }
-
-        // Upshift into an *uncalibrated* next gear. The closest-target loop can only choose
-        // among already-calibrated gears, so without this the box would never move up into
-        // (and thus never calibrate) a higher gear. If the current gear has reached its upshift
-        // target and the next gear up has no calibration yet, step into it.
-        if (1..10).contains(&current_gear)
-            && self.gear_redline_speeds[(current_gear + 1) as usize] <= 0.0
-        {
-            if let Some(cur_pred) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
-                if cur_pred >= target_rpm {
+        // ── 2) Cruise upshift ──────────────────────────────────────────────────
+        // Ease into a taller (already-calibrated) gear when it would still sit at/above the
+        // target — keeps revs low while cruising. Skipped while braking (let it engine-brake)
+        // and during the post-kickdown cooldown (stay in the lower gear, ready to go).
+        if !in_cooldown && pkt.brake == 0 && current_gear < 10 {
+            if let Some(pred_next) = self.predicted_rpm(current_gear + 1, kmh, effective_max_rpm) {
+                if pred_next >= target_rpm {
                     return current_gear + 1;
                 }
             }
         }
 
-        if let Some((g, _)) = best {
-            let g = g.max(1);
-            // Cap upshifts to a single gear step. Shifts execute one gear at a time anyway, and
-            // this keeps the target stable/sequential instead of jumping to a far (possibly
-            // mis-calibrated) gear — which previously made the target flicker e.g. 3↔7 whenever
-            // the next gear's predicted RPM crossed the over-rev boundary.
-            if g > current_gear + 1 {
-                return current_gear + 1;
-            }
-            // Downshift deadzone: while cruising (not full throttle, not braking hard) hold the
-            // current gear until revs drop below the deadzone — avoids busy downshifting when you
-            // modulate the throttle. Kickdown / hard braking still downshift.
-            if g < current_gear
-                && throttle < KICKDOWN_THROTTLE
-                && brake_f <= HARD_BRAKE_THRESHOLD
-            {
-                let deadzone_rpm = shift_threshold * (cfg.dsg_downshift_deadzone_pct / 100.0);
-                if pkt.current_engine_rpm >= deadzone_rpm {
-                    return current_gear;
+        // ── 3) Downshift ───────────────────────────────────────────────────────
+        // Triggered once revs fall below the demand AND below the deadzone hysteresis. We then
+        // pick the *deepest* lower gear the powerband buffer allows, evaluating each gear jump
+        // individually: jump = the RPM rise from the current gear into candidate g (so it scales
+        // with how short g is vs. the current gear). The buffer demands `buffer%` of that jump be
+        // left as headroom below the redline — a short gear (big jump) needs more room, so we
+        // won't slam into the limiter or hop past a sensible gear. The state machine still steps
+        // one gear at a time toward the chosen target.
+        // Race ignores the cruise deadzone: it always wants the powerband, so the trigger is the
+        // shift point and the RACE_DOWNSHIFT_CEILING below provides the hunt protection. Street and
+        // Sport stay lazy — hold the gear until revs fall below the deadzone hysteresis.
+        let is_race = cfg.dsg_gearbox_mode == GearboxMode::Race;
+        let deadzone_rpm = shift_threshold * (cfg.dsg_downshift_deadzone_pct / 100.0);
+        let down_point = if is_race { target_rpm } else { target_rpm.min(deadzone_rpm) };
+        if rpm < down_point && current_gear > 1 {
+            if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
+                let buffer = cfg.dsg_downshift_powerband_buffer_pct / 100.0;
+                let mut target = current_gear;
+                for g in (1..current_gear).rev() {
+                    let Some(pred_g) = self.predicted_rpm(g, kmh, effective_max_rpm) else {
+                        break; // uncalibrated lower gear → never drop into the unknown
+                    };
+                    // The landing must clear the shift point by `buffer%` of the inter-gear RPM
+                    // jump. Capping at the shift point (not the absolute redline) keeps the landing
+                    // below the upshift trigger — so it won't bounce straight back up — while the
+                    // buffer alone decides how far below: 0% lets it ride up to the shift point
+                    // (into the powerband top), higher values land progressively lower. This also
+                    // blocks the post-upshift hunt: the just-vacated gear sits at the shift point.
+                    let jump = (pred_g - pred_cur).max(0.0);
+                    if pred_g + buffer * jump >= shift_threshold {
+                        break; // this gear (and any deeper) breaches the buffer
+                    }
+                    target = g;
+                    if pred_g >= target_rpm {
+                        break; // revs back up to the demand → no need to drop further
+                    }
                 }
-            }
-            return g;
-        }
-
-        // ── Fallback before calibration: simple single-step rule. ──────────────
-        if !any_calibrated {
-            let rpm = pkt.current_engine_rpm;
-            if rpm >= target_rpm && kmh > 1.0 {
-                return current_gear + 1;
-            }
-            let lug_rpm = shift_threshold * (cruise * 0.5);
-            if rpm < lug_rpm && current_gear > 1 {
-                return current_gear - 1;
+                if target != current_gear {
+                    return target;
+                }
             }
         }
 
         current_gear
     }
+}
+
+/// Append one shift to `dsg_shift_log.csv` in the app data dir (writing a header if new).
+/// Best-effort: any IO error is silently ignored — logging must never disrupt shifting.
+fn write_shift_log(log: &PendingLog, rpm_post: f32, speed_post: f32) {
+    let path = app_data_dir().join("dsg_shift_log.csv");
+    let new_file = !path.exists();
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    if new_file {
+        let _ = writeln!(
+            f,
+            "game_time_ms,event,gear_from,gear_to,rpm_pre,rpm_post,speed_pre_kmh,speed_post_kmh,accel_pct,brake_pct"
+        );
+    }
+    let event = if log.to_gear > log.from_gear { "up" } else { "down" };
+    let _ = writeln!(
+        f,
+        "{},{},{},{},{:.0},{:.0},{:.1},{:.1},{},{}",
+        log.game_time_ms,
+        event,
+        log.from_gear,
+        log.to_gear,
+        log.rpm_pre,
+        rpm_post,
+        log.speed_pre,
+        speed_post,
+        log.accel_pct,
+        log.brake_pct,
+    );
 }
 
 /// Median of the samples (mean of the two middle values for an even count). 0.0 if empty.

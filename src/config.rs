@@ -29,25 +29,6 @@ impl MaxRpmSource {
     }
 }
 
-/// Max-RPM source for the automatic gearbox (has a Manual brake-stand option too).
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
-pub enum DsgMaxRpmSource {
-    GameData,
-    #[default]
-    AutoDetect,
-    Manual,
-}
-
-impl DsgMaxRpmSource {
-    pub fn label(&self) -> &'static str {
-        match self {
-            DsgMaxRpmSource::GameData => "Game Data",
-            DsgMaxRpmSource::AutoDetect => "Auto Detect",
-            DsgMaxRpmSource::Manual => "Manual",
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum GearboxMode {
     Street,
@@ -68,9 +49,7 @@ impl GearboxMode {
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct GearboxTuning {
-    pub cruise_rpm_pct: f32,      // low-throttle upshift target, % of Shift RPM
-    pub brake_downshift_pct: f32, // brake → target add, % (0 = off)
-    pub upshift_delay_ms: u64,    // upshift hysteresis
+    pub cruise_rpm_pct: f32,      // low-throttle target, % of Shift RPM
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -250,15 +229,16 @@ pub struct AppConfig {
     // DSG automatic gearbox
     pub dsg_enabled: bool,
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
-    pub dsg_max_rpm_type: DsgMaxRpmSource,
+    pub dsg_upshift_speed_pct: f32,  // upshift only once speed reaches this % of the gear's redline speed
     pub dsg_gearbox_mode: GearboxMode,
     pub dsg_tuning_street: GearboxTuning,
     pub dsg_tuning_sport: GearboxTuning,
     pub dsg_tuning_race: GearboxTuning,
     pub dsg_kickdown_cooldown_secs: f32,
-    pub dsg_kickdown_on_full_throttle: bool, // also arm cooldown on any full-throttle event, not just downshifts
     pub dsg_downshift_deadzone_pct: f32, // hold gear while cruising until revs drop below this % of shift RPM
+    pub dsg_downshift_powerband_buffer_pct: f32, // extra headroom (% of the inter-gear RPM jump) required below redline to downshift
     pub dsg_debug: bool,
+    pub dsg_log_shifts: bool, // append each shift (pre/post RPM + speed, inputs) to a CSV for analysis
     // Max-RPM source for the dashboard RPM widget
     pub max_rpm_mode: MaxRpmSource,
     // Acceleration / deceleration test parameters
@@ -325,27 +305,16 @@ impl Default for AppConfig {
             backfire_disable_standstill: true,
             dsg_enabled: false,
             dsg_shift_rpm_pct: 98.0,
-            dsg_max_rpm_type: DsgMaxRpmSource::AutoDetect,
+            dsg_upshift_speed_pct: 80.0,
             dsg_gearbox_mode: GearboxMode::Sport,
-            dsg_tuning_street: GearboxTuning {
-                cruise_rpm_pct: 35.0,
-                brake_downshift_pct: 0.0,
-                upshift_delay_ms: 600,
-            },
-            dsg_tuning_sport: GearboxTuning {
-                cruise_rpm_pct: 50.0,
-                brake_downshift_pct: 40.0,
-                upshift_delay_ms: 300,
-            },
-            dsg_tuning_race: GearboxTuning {
-                cruise_rpm_pct: 85.0,
-                brake_downshift_pct: 70.0,
-                upshift_delay_ms: 120,
-            },
+            dsg_tuning_street: GearboxTuning { cruise_rpm_pct: 35.0 },
+            dsg_tuning_sport:  GearboxTuning { cruise_rpm_pct: 50.0 },
+            dsg_tuning_race:   GearboxTuning { cruise_rpm_pct: 85.0 },
             dsg_kickdown_cooldown_secs: 5.0,
-            dsg_kickdown_on_full_throttle: true,
             dsg_downshift_deadzone_pct: 60.0,
+            dsg_downshift_powerband_buffer_pct: 20.0,
             dsg_debug: false,
+            dsg_log_shifts: false,
             max_rpm_mode: MaxRpmSource::GameProvided,
             accel_start_kmh: 0.0,
             accel_end_kmh: 100.0,
