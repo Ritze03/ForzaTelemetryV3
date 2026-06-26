@@ -177,7 +177,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             egui::CollapsingHeader::new("Advanced")
                 .id_salt("dsg_advanced")
                 .show(ui, |ui| {
-                    if app.config.dsg_gearbox_mode == GearboxMode::Race {
+                    let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;
+                    if is_race {
                         ui.label(
                             RichText::new("Race holds the full powerband — no cruise target.")
                                 .size(10.0)
@@ -217,16 +218,21 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                     ui.horizontal(|ui| {
                         ui.label("Downshift deadzone:");
-                        ui.add(
+                        ui.add_enabled(
+                            !is_race,
                             egui::Slider::new(&mut app.config.dsg_downshift_deadzone_pct, 0.0..=90.0)
                                 .suffix("%")
                                 .step_by(1.0),
                         );
                     });
                     ui.label(
-                        RichText::new("While cruising, hold the gear until revs fall below this % of the shift RPM.")
-                            .size(10.0)
-                            .color(Color32::GRAY),
+                        RichText::new(if is_race {
+                            "Unused in Race — it always stays in the powerband."
+                        } else {
+                            "While cruising, hold the gear until revs fall below this % of the shift RPM."
+                        })
+                        .size(10.0)
+                        .color(Color32::GRAY),
                     );
                     ui.horizontal(|ui| {
                         ui.label("Powerband buffer:");
