@@ -4,9 +4,6 @@ use crate::app::ForzaApp;
 use crate::config::GearboxMode;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
     ui.columns(2, |cols| {
         // ── Left: Backfire ───────────────────────────────────────────
         {
@@ -95,9 +92,12 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             );
         }
 
-        // ── Right: Automatic Gearbox (DSG) ──────────────────────────
+        // ── Right: Automatic Gearbox (DSG) — scrolls within its own column ──
         {
-            let ui = &mut cols[1];
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .id_salt("gearbox_scroll")
+                .show(&mut cols[1], |ui| {
             ui.heading("Automatic Gearbox");
             ui.add_space(8.0);
 
@@ -378,7 +378,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                         ui.end_row();
                     });
             }
+        });
         }
     });
-        });
 }
