@@ -251,9 +251,10 @@ impl DsgListener {
         }
 
         // ── Kickdown cooldown ──────────────────────────────────────────────────
-        // Arm on any full-throttle event; once the throttle is released, hold the lower gear
-        // "ready" for the cooldown window by suppressing the gentle cruise upshift (see
-        // select_desired_gear). The hard redline upshift still fires for engine protection.
+        // Arm on any full-throttle event. The lower gear is held "ready" (the gentle cruise
+        // upshift is suppressed) both WHILE the throttle is still pressed after a kickdown and for
+        // the cooldown window after release — so easing off mid-pull doesn't immediately upshift
+        // out of the gear we just grabbed. The hard redline upshift still fires for protection.
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
         let in_cooldown = self.kickdown_cooldown_until.map(|t| now < t).unwrap_or(false);
         if throttle >= KICKDOWN_THROTTLE {
@@ -272,8 +273,10 @@ impl DsgListener {
                 .unwrap_or(0.0)
         };
 
+        // Hold the lower gear while still on the throttle after a kickdown, and through the cooldown.
+        let hold_lower_gear = self.kickdown_triggered || in_cooldown;
         let desired = self
-            .select_desired_gear(pkt, cfg, gear, effective_max_rpm, in_cooldown)
+            .select_desired_gear(pkt, cfg, gear, effective_max_rpm, hold_lower_gear)
             .max(1);
         self.dbg_desired_gear = desired;
 
@@ -327,7 +330,7 @@ impl DsgListener {
         cfg: &AppConfig,
         current_gear: i32,
         effective_max_rpm: f32,
-        in_cooldown: bool,
+        hold_lower_gear: bool,
     ) -> i32 {
         let kmh = pkt.speed_kmh();
 
@@ -392,8 +395,9 @@ impl DsgListener {
         // at/above the throttle-demanded target, keeping revs near the Cruise RPM target. This is
         // intentionally NOT gated by Upshift speed — that slider is the full-throttle / wheelspin
         // gate on the hard upshift above; gating this one would force the car to rev high before
-        // every part-throttle upshift and defeat the economical behaviour.
-        if !in_cooldown && pkt.brake == 0 && current_gear < 10 {
+        // every part-throttle upshift and defeat the economical behaviour. Suppressed while holding
+        // the lower gear after a kickdown (still on throttle, or during the cooldown).
+        if !hold_lower_gear && pkt.brake == 0 && current_gear < 10 {
             if let Some(pred_next) = self.predicted_rpm(current_gear + 1, kmh, effective_max_rpm) {
                 if pred_next >= target_rpm {
                     return current_gear + 1;
