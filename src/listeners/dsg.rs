@@ -155,12 +155,13 @@ impl DsgListener {
         let in_drive_gear = (1..=10).contains(&gear);
 
         // Engage only after a real first-gear pull: the car must have actually been in 1st and then
-        // shifted up. Starting already in a high gear (e.g. spawning in 4th) must NOT engage — that
-        // previously made the box take over and force a downshift to 1st without any calibration.
+        // shifted up into a *forward* gear. Starting already in a high gear (e.g. spawning in 4th)
+        // must NOT engage, and neither must shifting 1st→Reverse — that passes through Neutral
+        // (gear 10+, R is 0), which `>= 2` wrongly counted as an upshift.
         if gear == 1 {
             self.seen_first_gear = true;
         }
-        if self.seen_first_gear && gear >= 2 {
+        if self.seen_first_gear && (2..=9).contains(&gear) {
             self.engaged = true;
         }
 
