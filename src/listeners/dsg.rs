@@ -345,15 +345,15 @@ impl DsgListener {
             return current_gear + 1;
         }
 
-        // Throttle-demanded target RPM: cruise floor at zero throttle, rising to the shift point
-        // at full throttle. Throttle only counts when the engine is making power. Race ignores the
-        // cruise target entirely — it always wants the full powerband, so it holds the low gear and
-        // only upshifts at the redline (the cruise upshift below never fires when cruise = 1.0).
+        // Race whenever an actual race is on (auto-switch) or it's the selected mode. Race ignores
+        // the cruise target entirely — it always wants the full powerband, so it holds the low gear
+        // and only upshifts at the redline (the cruise upshift below never fires when cruise = 1.0).
+        let is_race = cfg.dsg_effective_mode(pkt.is_race_on != 0) == GearboxMode::Race;
+
+        // Throttle-demanded target RPM: cruise floor at zero throttle, rising to the shift point at
+        // full throttle. Throttle only counts when the engine is making power.
         let throttle = if pkt.power > 0.0 { pkt.accel as f32 / 255.0 } else { 0.0 };
-        let cruise = match cfg.dsg_gearbox_mode {
-            GearboxMode::Race => 1.0,
-            _ => cfg.dsg_active_tuning().cruise_rpm_pct / 100.0,
-        };
+        let cruise = if is_race { 1.0 } else { cfg.dsg_active_tuning().cruise_rpm_pct / 100.0 };
         let target_rpm = shift_threshold * (cruise + (1.0 - cruise) * throttle).min(1.0);
 
         // ── 2) Cruise upshift ──────────────────────────────────────────────────
@@ -377,9 +377,8 @@ impl DsgListener {
         // won't slam into the limiter or hop past a sensible gear. The state machine still steps
         // one gear at a time toward the chosen target.
         // Race ignores the cruise deadzone: it always wants the powerband, so the trigger is the
-        // shift point and the RACE_DOWNSHIFT_CEILING below provides the hunt protection. Street and
-        // Sport stay lazy — hold the gear until revs fall below the deadzone hysteresis.
-        let is_race = cfg.dsg_gearbox_mode == GearboxMode::Race;
+        // shift point and the powerband buffer provides the hunt protection. Street and Sport stay
+        // lazy — hold the gear until revs fall below the deadzone hysteresis.
         let deadzone_rpm = shift_threshold * (cfg.dsg_downshift_deadzone_pct / 100.0);
         let down_point = if is_race { target_rpm } else { target_rpm.min(deadzone_rpm) };
         if rpm < down_point && current_gear > 1 {

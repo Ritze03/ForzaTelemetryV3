@@ -174,6 +174,29 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             };
             ui.label(RichText::new(mode_hint).size(11.0).color(Color32::GRAY));
 
+            ui.checkbox(
+                &mut app.config.dsg_auto_race_mode,
+                "Auto Race mode in races (IsRaceOn)",
+            );
+            if app.config.dsg_auto_race_mode {
+                let in_race = app
+                    .telemetry
+                    .latest
+                    .as_ref()
+                    .map(|p| p.is_race_on != 0)
+                    .unwrap_or(false);
+                let active = app.config.dsg_effective_mode(in_race);
+                ui.label(
+                    RichText::new(format!(
+                        "Active: {}{}",
+                        active.label(),
+                        if in_race { " (race detected)" } else { "" }
+                    ))
+                    .size(11.0)
+                    .color(Color32::from_rgb(60, 210, 100)),
+                );
+            }
+
             egui::CollapsingHeader::new("Advanced")
                 .id_salt("dsg_advanced")
                 .show(ui, |ui| {

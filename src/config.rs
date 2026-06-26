@@ -231,6 +231,7 @@ pub struct AppConfig {
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
     pub dsg_upshift_speed_pct: f32,  // upshift only once speed reaches this % of the gear's redline speed
     pub dsg_gearbox_mode: GearboxMode,
+    pub dsg_auto_race_mode: bool, // force Race mode whenever IsRaceOn (in an actual race)
     pub dsg_tuning_street: GearboxTuning,
     pub dsg_tuning_sport: GearboxTuning,
     pub dsg_tuning_race: GearboxTuning,
@@ -307,6 +308,7 @@ impl Default for AppConfig {
             dsg_shift_rpm_pct: 98.0,
             dsg_upshift_speed_pct: 80.0,
             dsg_gearbox_mode: GearboxMode::Sport,
+            dsg_auto_race_mode: true,
             dsg_tuning_street: GearboxTuning { cruise_rpm_pct: 35.0 },
             dsg_tuning_sport:  GearboxTuning { cruise_rpm_pct: 50.0 },
             dsg_tuning_race:   GearboxTuning { cruise_rpm_pct: 85.0 },
@@ -403,6 +405,16 @@ impl AppConfig {
             GearboxMode::Street => &mut self.dsg_tuning_street,
             GearboxMode::Sport  => &mut self.dsg_tuning_sport,
             GearboxMode::Race   => &mut self.dsg_tuning_race,
+        }
+    }
+
+    /// The mode the gearbox actually drives with: Race whenever an actual race is on and the
+    /// auto-switch is enabled, otherwise the manually selected mode.
+    pub fn dsg_effective_mode(&self, is_race_on: bool) -> GearboxMode {
+        if self.dsg_auto_race_mode && is_race_on {
+            GearboxMode::Race
+        } else {
+            self.dsg_gearbox_mode
         }
     }
 
