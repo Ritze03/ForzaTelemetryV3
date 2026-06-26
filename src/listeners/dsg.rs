@@ -384,11 +384,12 @@ impl DsgListener {
         // Ease into a taller (already-calibrated) gear when it would still sit at/above the
         // target — keeps revs low while cruising. Skipped while braking (let it engine-brake)
         // and during the post-kickdown cooldown (stay in the lower gear, ready to go).
-        // Same grip + Upshift-speed gate as the hard upshift: don't upshift (even economically)
-        // before reaching that % of the current gear's top speed — without this, gears 2+ upshift
-        // early at part throttle and the Upshift speed slider appears to do nothing for them.
-        let min_upshift_kmh = (cfg.dsg_upshift_speed_pct / 100.0) * cur_redline;
-        if !in_cooldown && pkt.brake == 0 && current_gear < 10 && slip_ok && kmh >= min_upshift_kmh {
+        // Economical cruise upshift: ease into a taller (calibrated) gear when it would still sit
+        // at/above the throttle-demanded target, keeping revs near the Cruise RPM target. This is
+        // intentionally NOT gated by Upshift speed — that slider is the full-throttle / wheelspin
+        // gate on the hard upshift above; gating this one would force the car to rev high before
+        // every part-throttle upshift and defeat the economical behaviour.
+        if !in_cooldown && pkt.brake == 0 && current_gear < 10 {
             if let Some(pred_next) = self.predicted_rpm(current_gear + 1, kmh, effective_max_rpm) {
                 if pred_next >= target_rpm {
                     return current_gear + 1;
