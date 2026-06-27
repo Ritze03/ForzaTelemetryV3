@@ -100,8 +100,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     let half = ((avail.x - GAP) * 0.5).max(0.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = GAP; // the only gap between the two panes
-    // ── Left pane: controls ─────────────────────────────────────────
-    ui.allocate_ui(egui::vec2(half, avail.y), |ui| {
+    // ── Left pane: controls (top-down, else horizontal_top makes rows stack sideways) ──
+    ui.allocate_ui_with_layout(
+        egui::vec2(half, avail.y),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("gearbox_scroll")
@@ -114,7 +117,6 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── General ──────────────────────────────────────────────────
             ui.group(|ui| {
-                ui.set_min_width(ui.available_width());
                 ui.label(RichText::new("General").strong());
                 ui.add_space(2.0);
 
@@ -238,7 +240,6 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Advanced Settings ────────────────────────────────────────
             ui.group(|ui| {
-                ui.set_min_width(ui.available_width());
                 ui.label(RichText::new("Advanced Settings").strong());
                 ui.add_space(2.0);
 
@@ -363,7 +364,6 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
             if app.config.dsg_show_debug_panel {
                 ui.add_space(6.0);
                 ui.group(|ui| {
-                    ui.set_min_width(ui.available_width());
                     hover(
                         ui.checkbox(&mut app.config.dsg_debug, "Debug"),
                         "Shows the live decision state (current/target gear, redline, active rule, \
@@ -455,9 +455,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
         });
     });
     // ── Right pane: live visualization ──────────────────────────────
-    ui.allocate_ui(egui::vec2(half, avail.y), |ui| {
-        gearbox_viz(ui, app);
-    });
+    ui.allocate_ui_with_layout(
+        egui::vec2(half, avail.y),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            gearbox_viz(ui, app);
+        },
+    );
     });
 }
 
