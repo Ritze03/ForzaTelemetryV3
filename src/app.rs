@@ -1288,8 +1288,8 @@ impl eframe::App for ForzaApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_tab {
                 Tab::Dashboard    => crate::ui::dashboard::show(ui, self),
-                Tab::Backfire     => crate::ui::fun::show_backfire(ui, self),
-                Tab::Gearbox      => crate::ui::fun::show_gearbox(ui, self),
+                Tab::Backfire     => crate::ui::backfire::show_backfire(ui, self),
+                Tab::Gearbox      => crate::ui::gearbox::show_gearbox(ui, self),
                 Tab::PowerCurve   => crate::ui::power_curve::show(ui, self),
                 Tab::EngineSwaps  => crate::ui::engine_swaps::show(ui, self),
                 Tab::Settings    => crate::ui::settings::show(ui, self),
