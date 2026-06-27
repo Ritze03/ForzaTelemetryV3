@@ -244,62 +244,51 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                         );
                     }
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Kickdown cooldown:");
-                        ui.add_enabled(
-                            !is_race,
-                            egui::Slider::new(&mut app.config.dsg_kickdown_cooldown_secs, 0.0..=10.0)
-                                .suffix(" s")
-                                .step_by(0.5),
+                    if !is_race {
+                        ui.horizontal(|ui| {
+                            ui.label("Kickdown cooldown:");
+                            ui.add(
+                                egui::Slider::new(&mut app.config.dsg_kickdown_cooldown_secs, 0.0..=10.0)
+                                    .suffix(" s")
+                                    .step_by(0.5),
+                            );
+                        });
+                        ui.label(
+                            RichText::new("After a full-throttle event, hold the lower gear ready \
+                                           for this long before easing back up.")
+                                .size(10.0)
+                                .color(Color32::GRAY),
                         );
-                    });
-                    ui.label(
-                        RichText::new(if is_race {
-                            "Unused in Race — there's no cruise upshift to hold off."
-                        } else {
-                            "After a full-throttle event, hold the lower gear ready for this long \
-                             before easing back up."
-                        })
-                        .size(10.0)
-                        .color(Color32::GRAY),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Downshift deadzone:");
-                        ui.add_enabled(
-                            !is_race,
-                            egui::Slider::new(&mut app.config.dsg_downshift_deadzone_pct, 0.0..=90.0)
-                                .suffix("%")
-                                .step_by(1.0),
+                        ui.horizontal(|ui| {
+                            ui.label("Downshift deadzone:");
+                            ui.add(
+                                egui::Slider::new(&mut app.config.dsg_downshift_deadzone_pct, 0.0..=90.0)
+                                    .suffix("%")
+                                    .step_by(1.0),
+                            );
+                        });
+                        ui.label(
+                            RichText::new("While cruising, hold the gear until revs fall below this \
+                                           % of the shift RPM.")
+                                .size(10.0)
+                                .color(Color32::GRAY),
                         );
-                    });
-                    ui.label(
-                        RichText::new(if is_race {
-                            "Unused in Race — it always stays in the powerband."
-                        } else {
-                            "While cruising, hold the gear until revs fall below this % of the shift RPM."
-                        })
-                        .size(10.0)
-                        .color(Color32::GRAY),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Full throttle threshold:");
-                        ui.add_enabled(
-                            !is_race,
-                            egui::Slider::new(&mut app.config.dsg_full_throttle_pct, 50.0..=100.0)
-                                .suffix("%")
-                                .step_by(1.0),
+                        ui.horizontal(|ui| {
+                            ui.label("Full throttle threshold:");
+                            ui.add(
+                                egui::Slider::new(&mut app.config.dsg_full_throttle_pct, 50.0..=100.0)
+                                    .suffix("%")
+                                    .step_by(1.0),
+                            );
+                        });
+                        ui.label(
+                            RichText::new("Below this throttle the box stays economical (revs up to \
+                                           the deadzone); at/above it the full powerband is used. \
+                                           Does not affect kickdown.")
+                                .size(10.0)
+                                .color(Color32::GRAY),
                         );
-                    });
-                    ui.label(
-                        RichText::new(if is_race {
-                            "Unused in Race — always full powerband."
-                        } else {
-                            "Below this throttle the box stays economical (revs up to the deadzone); \
-                             at/above it the full powerband is used. Does not affect kickdown."
-                        })
-                        .size(10.0)
-                        .color(Color32::GRAY),
-                    );
+                    }
                     ui.horizontal(|ui| {
                         ui.label("Powerband buffer:");
                         ui.add(
@@ -315,59 +304,29 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                             .size(10.0)
                             .color(Color32::GRAY),
                     );
-                    ui.horizontal(|ui| {
-                        ui.label("Kickdown powerband buffer:");
-                        ui.add_enabled(
-                            !is_race,
-                            egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
-                                .suffix("%")
-                                .step_by(1.0),
+                    if !is_race {
+                        ui.horizontal(|ui| {
+                            ui.label("Kickdown powerband buffer:");
+                            ui.add(
+                                egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
+                                    .suffix("%")
+                                    .step_by(1.0),
+                            );
+                        });
+                        ui.label(
+                            RichText::new("Same, but for full-throttle kickdowns. Lower than the \
+                                           Powerband buffer = kickdowns drop a gear deeper for power.")
+                                .size(10.0)
+                                .color(Color32::GRAY),
                         );
-                    });
-                    ui.label(
-                        RichText::new(if is_race {
-                            "Unused in Race — it uses the Powerband buffer throughout."
-                        } else {
-                            "Same, but for full-throttle kickdowns. Lower than the Powerband buffer \
-                             = kickdowns drop a gear deeper for power."
-                        })
-                        .size(10.0)
-                        .color(Color32::GRAY),
-                    );
+                    }
                 });
 
             ui.add_space(8.0);
 
-            // Calibration data — always shown, automatically populated
+            // Calibration — the per-gear shift points are shown live in the gear map on the right.
             let any_data = app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0);
             if any_data {
-                ui.label(RichText::new("Calibrated shift points:").strong());
-                ui.label(
-                    RichText::new("(recorded automatically)")
-                        .size(11.0)
-                        .color(Color32::GRAY),
-                );
-                ui.add_space(4.0);
-                let pct = app.config.dsg_shift_rpm_pct;
-                egui::Grid::new("dsg_shift_grid")
-                    .num_columns(2)
-                    .spacing([24.0, 4.0])
-                    .show(ui, |ui| {
-                        for (i, &redline_kmh) in
-                            app.dsg.gear_redline_speeds.iter().enumerate().skip(1)
-                        {
-                            if redline_kmh > 0.0 {
-                                let shift_kmh = redline_kmh * (pct / 100.0);
-                                ui.label(format!("Gear {}:", i));
-                                ui.label(
-                                    RichText::new(format!("{shift_kmh:.0} km/h"))
-                                        .color(Color32::from_rgb(60, 210, 100)),
-                                );
-                                ui.end_row();
-                            }
-                        }
-                    });
-                ui.add_space(4.0);
                 if ui.button("Clear calibration").clicked() {
                     // Full wipe — same as a car change: gear data, detected redline and the
                     // engaged flag all go back to zero, so a fresh manual first-gear pull is needed.
