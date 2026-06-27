@@ -94,14 +94,19 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
-    ui.spacing_mut().item_spacing.x = 16.0; // gap between the two columns (reset inside each)
-    ui.columns(2, |cols| {
-    // ── Left half: controls ─────────────────────────────────────────
+    // Two logical panes (controls | live viz) with a fixed spacer between them.
+    const GAP: f32 = 16.0;
+    let avail = ui.available_size();
+    let half = ((avail.x - GAP) * 0.5).max(0.0);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP; // the only gap between the two panes
+    // ── Left pane: controls ─────────────────────────────────────────
+    ui.allocate_ui(egui::vec2(half, avail.y), |ui| {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("gearbox_scroll")
-        .show(&mut cols[0], |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0; // undo the column gap inside the content
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the pane
             ui.heading("Automatic Gearbox");
             ui.add_space(6.0);
 
@@ -448,9 +453,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 });
             }
         });
-
-    // ── Right half: live visualization ──────────────────────────────
-    gearbox_viz(&mut cols[1], app);
+    });
+    // ── Right pane: live visualization ──────────────────────────────
+    ui.allocate_ui(egui::vec2(half, avail.y), |ui| {
+        gearbox_viz(ui, app);
+    });
     });
 }
 
