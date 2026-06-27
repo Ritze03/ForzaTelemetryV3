@@ -486,21 +486,25 @@ impl DsgListener {
                     cfg.dsg_downshift_powerband_buffer_pct / 100.0
                 };
                 let mut target = current_gear;
+                // RPM of the gear directly above the candidate (starts at the current gear).
+                let mut above_pred = pred_cur;
                 for g in (1..current_gear).rev() {
                     let Some(pred_g) = self.predicted_rpm(g, kmh, effective_max_rpm) else {
                         break; // uncalibrated lower gear → never drop into the unknown
                     };
-                    // The landing must clear the shift point by `buffer%` of the inter-gear RPM
-                    // jump. Capping at the shift point (not the absolute redline) keeps the landing
-                    // below the upshift trigger — so it won't bounce straight back up — while the
-                    // buffer alone decides how far below: 0% lets it ride up to the shift point
-                    // (into the powerband top), higher values land progressively lower. This also
-                    // blocks the post-upshift hunt: the just-vacated gear sits at the shift point.
-                    let jump = (pred_g - pred_cur).max(0.0);
+                    // The landing must clear the shift point by `buffer%` of the ADJACENT inter-gear
+                    // RPM jump (this gear vs the one above it) — NOT the jump from the current gear.
+                    // Using the from-current jump made a deep kickdown stop short (the big jump
+                    // tripped the buffer), then drop again the next frame once the jump shrank — so
+                    // 5th would stage into 3rd, then 2nd. The adjacent jump is path-independent, so
+                    // the box lands on the final gear in one go. Capping at the shift point (not the
+                    // redline) keeps the landing below the upshift trigger so it won't bounce up.
+                    let jump = (pred_g - above_pred).max(0.0);
                     if pred_g + buffer * jump >= shift_threshold {
                         break; // this gear (and any deeper) breaches the buffer
                     }
                     target = g;
+                    above_pred = pred_g;
                     if pred_g >= target_rpm {
                         break; // revs back up to the demand → no need to drop further
                     }
