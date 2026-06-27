@@ -632,7 +632,6 @@ const VIZ_TRACK: Color32 = Color32::from_rgb(34, 38, 44);
 const VIZ_GREEN: Color32 = Color32::from_rgb(70, 220, 120);
 const VIZ_AMBER: Color32 = Color32::from_rgb(255, 200, 70);
 const VIZ_RED: Color32 = Color32::from_rgb(240, 90, 80);
-const VIZ_CYAN: Color32 = Color32::from_rgb(80, 200, 235);
 const VIZ_DIM: Color32 = Color32::from_rgb(120, 128, 138);
 
 /// Right-half live telemetry/decision visualization for the gearbox.
@@ -683,8 +682,7 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
             ui.label(
                 RichText::new(format!("{}  \u{00B7}  {}", mode.label(), rule))
                     .monospace()
-                    .size(12.0)
-                    .color(VIZ_CYAN),
+                    .size(12.0),
             );
             if app.dsg.engaged {
                 ui.label(RichText::new("\u{25CF} ENGAGED").monospace().size(11.0).color(VIZ_GREEN));
@@ -767,7 +765,7 @@ fn viz_rpm_bar(ui: &mut Ui, rpm: f32, redline: f32, down: f32, target: f32, shif
         let x = r.left() + (x_rpm / redline).clamp(0.0, 1.0) * r.width();
         p.line_segment([egui::pos2(x, r.top()), egui::pos2(x, r.bottom())], egui::Stroke::new(1.5, c));
     };
-    tick(down, VIZ_CYAN);
+    tick(down, VIZ_DIM);
     tick(target, VIZ_AMBER);
     tick(shift, VIZ_RED);
     p.text(
