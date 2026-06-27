@@ -94,22 +94,16 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
-    // Two logical panes (controls | live viz) with a fixed spacer between them.
-    const GAP: f32 = 16.0;
-    let avail = ui.available_size();
-    let half = ((avail.x - GAP) * 0.5).max(0.0);
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = GAP; // the only gap between the two panes
-    // ── Left pane: controls (top-down, else horizontal_top makes rows stack sideways) ──
-    ui.allocate_ui_with_layout(
-        egui::vec2(half, avail.y),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
+    // Two columns (controls | live viz) with a fixed spacer between them.
+    const GAP: f32 = 24.0;
+    ui.spacing_mut().item_spacing.x = GAP; // ui.columns uses item_spacing.x as the inter-column gap
+    ui.columns(2, |cols| {
+    // ── Left column: controls ───────────────────────────────────────
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("gearbox_scroll")
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the pane
+        .show(&mut cols[0], |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the column
             ui.heading("Automatic Gearbox");
             ui.add_space(6.0);
 
@@ -145,34 +139,30 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                         base.to_string()
                     }
                 };
-                setting_row(
+                slider_row(
                     ui,
                     "Shift RPM",
                     &shift_what,
                     "Lower to short-shift (earlier, calmer); raise toward 100% to wring out each gear.",
-                    |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut app.config.dsg_shift_rpm_pct, 70.0..=100.0)
-                                .suffix("%")
-                                .step_by(1.0),
-                        );
-                    },
+                    &mut app.config.dsg_shift_rpm_pct,
+                    70.0..=100.0,
+                    1.0,
+                    1,
+                    "%",
                 );
 
-                setting_row(
+                slider_row(
                     ui,
                     "Upshift min. speed",
                     "A redline upshift only fires once road speed reaches this % of the gear's \
                      calibrated top speed — blocks false upshifts from wheelspin rev spikes. \
                      Doesn't gate cruise upshifts.",
                     "Raise if it upshifts during wheelspin; otherwise leave it.",
-                    |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut app.config.dsg_upshift_speed_pct, 50.0..=100.0)
-                                .suffix("%")
-                                .step_by(1.0),
-                        );
-                    },
+                    &mut app.config.dsg_upshift_speed_pct,
+                    50.0..=100.0,
+                    1.0,
+                    1,
+                    "%",
                 );
 
                 ui.add_space(2.0);
@@ -250,23 +240,20 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                             .color(Color32::GRAY),
                     );
                 } else {
-                    setting_row(
+                    slider_row(
                         ui,
                         "Cruise RPM",
                         "The rev level the box settles at under light throttle, as % of the shift \
                          point; it upshifts early to keep revs near here while cruising.",
                         "Lower = taller gears / lower revs (economical); higher = holds lower gears \
                          (sportier cruise).",
-                        |ui| {
-                            let tuning = app.config.dsg_active_tuning_mut();
-                            ui.add(
-                                egui::Slider::new(&mut tuning.cruise_rpm_pct, 20.0..=90.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        },
+                        &mut app.config.dsg_active_tuning_mut().cruise_rpm_pct,
+                        20.0..=90.0,
+                        1.0,
+                        1,
+                        "%",
                     );
-                    setting_row(
+                    slider_row(
                         ui,
                         "Kickdown cooldown",
                         "After a full-throttle burst, holds the lower gear (no early cruise \
@@ -274,15 +261,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                          instantly upshift.",
                         "Longer to stay ready in the low gear after lifting; 0 to upshift as soon \
                          as you ease off.",
-                        |ui| {
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_kickdown_cooldown_secs, 0.0..=10.0)
-                                    .suffix(" s")
-                                    .step_by(0.5),
-                            );
-                        },
+                        &mut app.config.dsg_kickdown_cooldown_secs,
+                        0.0..=10.0,
+                        0.5,
+                        1,
+                        " s",
                     );
-                    setting_row(
+                    slider_row(
                         ui,
                         "Downshift deadzone",
                         "The highest the part-throttle rev target climbs to (% of the shift point) \
@@ -290,15 +275,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                          gear when they fall below.",
                         "Higher = revvier part-throttle, downshifts sooner; lower = lazier, holds \
                          taller gears.",
-                        |ui| {
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_downshift_deadzone_pct, 0.0..=90.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        },
+                        &mut app.config.dsg_downshift_deadzone_pct,
+                        0.0..=90.0,
+                        1.0,
+                        1,
+                        "%",
                     );
-                    setting_row(
+                    slider_row(
                         ui,
                         "Full throttle threshold",
                         "The throttle % where the box switches from economical (revs up to the \
@@ -306,57 +289,52 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                          economical.",
                         "Lower so full power needs less pedal; higher to stay economical until \
                          nearly flat out.",
-                        |ui| {
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_full_throttle_pct, 50.0..=100.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        },
+                        &mut app.config.dsg_full_throttle_pct,
+                        50.0..=100.0,
+                        1.0,
+                        1,
+                        "%",
                     );
                 }
-                setting_row(
+                slider_row(
                     ui,
                     "Powerband buffer",
                     "Headroom below the shift point a downshift must leave, as % of that gear's rev \
                      jump — stops it dropping into a gear that lands near the limiter or hopping \
                      gears. 0% = drop right up to the shift point.",
                     "Higher = shallower, gentler downshifts; lower = deeper, more aggressive.",
-                    |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut app.config.dsg_downshift_powerband_buffer_pct, 0.0..=100.0)
-                                .suffix("%")
-                                .step_by(1.0),
-                        );
-                    },
+                    &mut app.config.dsg_downshift_powerband_buffer_pct,
+                    0.0..=100.0,
+                    1.0,
+                    1,
+                    "%",
                 );
                 if !is_race {
-                    setting_row(
+                    slider_row(
                         ui,
                         "Kickdown powerband buffer",
                         "Same as Powerband buffer but for full-throttle kickdowns — usually lower \
                          so a kickdown grabs a gear deeper for power (unused in Race).",
                         "Lower for deeper kickdowns; raise if they land too high / over-rev.",
-                        |ui| {
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        },
+                        &mut app.config.dsg_kickdown_powerband_buffer_pct,
+                        0.0..=100.0,
+                        1.0,
+                        1,
+                        "%",
                     );
                 }
-                setting_row(
+                slider_row(
                     ui,
                     "Accelerator gamma",
                     "Reshapes the pedal the box reacts to (effective = pedal^gamma). >1 softens the \
                      first part of the pedal (real-car feel), <1 sharpens it; the ends are \
                      unchanged. Set per gearbox mode.",
                     ">1 if it kicks down too eagerly on light throttle; <1 for a sharper response.",
-                    |ui| {
-                        let tuning = app.config.dsg_active_tuning_mut();
-                        ui.add(egui::Slider::new(&mut tuning.accel_gamma, 0.3..=3.0).step_by(0.05));
-                    },
+                    &mut app.config.dsg_active_tuning_mut().accel_gamma,
+                    0.3..=3.0,
+                    0.05,
+                    2,
+                    "",
                 );
             });
 
@@ -453,26 +431,52 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 });
             }
         });
-    });
-    // ── Right pane: live visualization ──────────────────────────────
-    ui.allocate_ui_with_layout(
-        egui::vec2(half, avail.y),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            gearbox_viz(ui, app);
-        },
-    );
+    // ── Right column: live visualization ────────────────────────────
+    gearbox_viz(&mut cols[1], app);
     });
 }
 
 /// A settings row: label (with a What/When hover tooltip) in the left half, control filling the
-/// right half. The control (slider or combobox) is expanded to fill its half via the slider rail.
+/// right half. For a combobox; sliders use `slider_row`.
 fn setting_row(ui: &mut Ui, label: &str, what: &str, when: &str, add: impl FnOnce(&mut Ui)) {
     ui.columns(2, |c| {
         hover(c[0].label(label), what, when);
         let w = c[1].available_width();
         c[1].spacing_mut().slider_width = (w - 52.0).max(40.0);
         add(&mut c[1]);
+    });
+}
+
+/// A slider settings row: label (left half) + a rail that fills the right half, with the value in a
+/// fixed-width spinner (~6 chars) on the far right so successive rows can't drift.
+#[allow(clippy::too_many_arguments)]
+fn slider_row(
+    ui: &mut Ui,
+    label: &str,
+    what: &str,
+    when: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+    decimals: usize,
+    suffix: &str,
+) {
+    const VALUE_W: f32 = 60.0; // fits "100.0%" — the widest value
+    ui.columns(2, |c| {
+        hover(c[0].label(label), what, when);
+        c[1].horizontal(|ui| {
+            let rail = (ui.available_width() - VALUE_W - ui.spacing().item_spacing.x).max(40.0);
+            ui.spacing_mut().slider_width = rail;
+            ui.add(egui::Slider::new(&mut *value, range.clone()).step_by(step).show_value(false));
+            ui.add_sized(
+                [VALUE_W, ui.spacing().interact_size.y],
+                egui::DragValue::new(&mut *value)
+                    .range(range)
+                    .speed(step.max(0.01))
+                    .fixed_decimals(decimals)
+                    .suffix(suffix),
+            );
+        });
     });
 }
 
