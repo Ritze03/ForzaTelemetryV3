@@ -95,7 +95,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
 
 pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     // Two columns (controls | live viz) with a fixed spacer between them.
-    const GAP: f32 = 24.0;
+    const GAP: f32 = 12.0;
     ui.spacing_mut().item_spacing.x = GAP; // ui.columns uses item_spacing.x as the inter-column gap
     ui.columns(2, |cols| {
     // ── Left column: controls ───────────────────────────────────────
