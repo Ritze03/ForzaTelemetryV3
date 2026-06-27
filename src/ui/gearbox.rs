@@ -429,8 +429,19 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
     let is_race = mode == GearboxMode::Race;
     let gamma = app.config.dsg_effective_tuning(in_race).accel_gamma.max(0.05);
     let redlines = app.dsg.gear_redline_speeds;
-    let max_rpm = app.dsg.dbg_effective_max_rpm.max(1.0);
-    let shift = app.dsg.dbg_shift_threshold.max(1.0);
+    // Detected redline: from the box if it's running, else the app-level detector, else the
+    // packet's display redline — so the overlay still works before the box has engaged.
+    let max_rpm = {
+        let m = if app.dsg.dbg_effective_max_rpm > 0.0 {
+            app.dsg.dbg_effective_max_rpm
+        } else if app.dynamic_max_rpm > 0.0 {
+            app.dynamic_max_rpm
+        } else {
+            pkt.map(|q| q.engine_max_rpm).unwrap_or(0.0)
+        };
+        m.max(1.0)
+    };
+    let shift = (max_rpm * app.config.dsg_shift_rpm_pct / 100.0).max(1.0);
     let cruise = if is_race { 1.0 } else { app.config.dsg_effective_tuning(in_race).cruise_rpm_pct / 100.0 };
     let deadzone = app.config.dsg_downshift_deadzone_pct / 100.0;
     let full_thr = (app.config.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
@@ -441,7 +452,9 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
     // powerband), so the overlay would just be one flat plateau.
     if maxg > 0 && speed > 1.0 && !is_race {
         let pred = |g: i32| max_rpm * speed / redlines[g as usize];
-        // Throttle-demanded target RPM as a function of effective throttle (mirrors the box).
+        // Throttle-demanded target RPM as a function of effective throttle — mirrors the box's
+        // `target_rpm` (dsg.rs): the cruise floor at light throttle, rising linearly to the shift
+        // point at/above the full-throttle threshold.
         let target_of = |th: f32| {
             if is_race || th >= full_thr {
                 shift
@@ -449,37 +462,30 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
                 shift * (cruise + (deadzone - cruise).max(0.0) * (th / full_thr))
             }
         };
-        // The box downshifts when revs fall below the DOWN POINT (target minus the cruise
-        // hysteresis) — so the held gear keys off down_point, not the raw target. Using the target
-        // dropped each plateau one gear too low (and never showed the actual cruising/held gear).
-        let down_point_of = |th: f32| {
-            let tgt = target_of(th);
-            if is_race || th >= full_thr {
-                tgt
-            } else {
-                (tgt - 0.10 * shift).max(0.0)
-            }
-        };
-        // Gear held at effective throttle `th`: tallest gear that won't over-rev and stays above the
-        // down point; if even the lowest available gear is below it, hold that lowest one.
+        // Target gear at effective throttle `th`: the TALLEST gear whose revs at this speed still
+        // reach the demanded target without over-revving past the shift point — i.e. the gear the
+        // box would settle into to deliver that pedal. If no usable gear reaches the target (the
+        // demand exceeds even the deepest non-over-revving gear, e.g. full throttle), drop into that
+        // deepest gear — the full-throttle kickdown landing.
         let select = |th: f32| -> i32 {
-            let dp = down_point_of(th);
-            let (mut best, mut lowest) = (0, 0);
+            let target = target_of(th);
+            let mut deepest = 0; // lowest gear that won't over-rev at this speed (kickdown floor)
+            let mut chosen = 0; // tallest such gear whose revs still meet the demand
             for g in 1..=maxg {
-                if redlines[g as usize] > 0.0 && pred(g) <= shift * 1.002 {
-                    if lowest == 0 {
-                        lowest = g;
+                if redlines[g as usize] <= 0.0 {
+                    continue;
+                }
+                let p = pred(g);
+                if p <= shift * 1.002 {
+                    if deepest == 0 {
+                        deepest = g;
                     }
-                    if pred(g) >= dp {
-                        best = g;
+                    if p >= target {
+                        chosen = g;
                     }
                 }
             }
-            if best == 0 {
-                lowest
-            } else {
-                best
-            }
+            if chosen != 0 { chosen } else { deepest }
         };
 
         // Build constant-gear runs across the pedal axis.
