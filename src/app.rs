@@ -1233,6 +1233,21 @@ impl eframe::App for ForzaApp {
                                 );
                             }
                         }
+                        Tab::Gearbox => {
+                            ui.checkbox(
+                                &mut self.config.dsg_show_debug_panel,
+                                "Show debug panel",
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Shows the gearbox Debug box (live decision state + shift log) \
+                                     in the controls column."
+                                )
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                            );
+                        }
                         _ => {
                             ui.centered_and_justified(|ui| {
                                 ui.label(

@@ -242,6 +242,7 @@ pub struct AppConfig {
     pub dsg_downshift_powerband_buffer_pct: f32, // extra headroom (% of the inter-gear RPM jump) required below redline to downshift
     pub dsg_kickdown_powerband_buffer_pct: f32, // same, but for full-throttle kickdowns (usually smaller = drops deeper)
     pub dsg_debug: bool,
+    pub dsg_show_debug_panel: bool, // show the gearbox Debug box at all (toggled from the status-bar cog)
     pub dsg_log_shifts: bool, // append each shift (pre/post RPM + speed, inputs) to a CSV for analysis
     // Max-RPM source for the dashboard RPM widget
     pub max_rpm_mode: MaxRpmSource,
@@ -321,6 +322,7 @@ impl Default for AppConfig {
             dsg_downshift_powerband_buffer_pct: 20.0,
             dsg_kickdown_powerband_buffer_pct: 0.0,
             dsg_debug: false,
+            dsg_show_debug_panel: false,
             dsg_log_shifts: false,
             max_rpm_mode: MaxRpmSource::GameProvided,
             accel_start_kmh: 0.0,

@@ -101,26 +101,32 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
         .id_salt("gearbox_scroll")
         .show(&mut cols[0], |ui| {
             ui.heading("Automatic Gearbox");
-            ui.add_space(8.0);
-
-            ui.checkbox(&mut app.config.dsg_enabled, "Enabled");
-            ui.label(
-                RichText::new("Drive a full first-gear pull to redline and shift to 2nd manually \
-                               to engage — that calibrates 1st and the redline.")
-                    .size(11.0)
-                    .color(Color32::GRAY),
-            );
             ui.add_space(6.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Shift RPM:");
-                ui.add(
-                    egui::Slider::new(&mut app.config.dsg_shift_rpm_pct, 70.0..=100.0)
-                        .suffix("%")
-                        .step_by(1.0),
+            let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;
+
+            // ── General ──────────────────────────────────────────────────
+            ui.group(|ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(RichText::new("General").strong());
+                ui.add_space(2.0);
+
+                ui.checkbox(&mut app.config.dsg_enabled, "Enabled");
+                ui.label(
+                    RichText::new("Drive a full first-gear pull to redline and shift to 2nd \
+                                   manually to engage — calibrates 1st and the redline.")
+                        .size(11.0)
+                        .color(Color32::GRAY),
                 );
-            });
-            {
+                ui.add_space(4.0);
+
+                setting_row(ui, "Shift RPM", |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut app.config.dsg_shift_rpm_pct, 70.0..=100.0)
+                            .suffix("%")
+                            .step_by(1.0),
+                    );
+                });
                 let effective_max = if app.dsg.dbg_effective_max_rpm > 0.0 {
                     app.dsg.dbg_effective_max_rpm
                 } else {
@@ -129,309 +135,292 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 if effective_max > 0.0 {
                     let threshold = effective_max * (app.config.dsg_shift_rpm_pct / 100.0);
                     ui.label(
-                        RichText::new(format!("Max RPM ceiling: {:.0} RPM", threshold))
-                            .size(11.0)
+                        RichText::new(format!("Max RPM ceiling: {threshold:.0} RPM"))
+                            .size(10.0)
                             .color(Color32::GRAY),
                     );
                 }
-            }
+
+                setting_row(ui, "Upshift min. speed", |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut app.config.dsg_upshift_speed_pct, 50.0..=100.0)
+                            .suffix("%")
+                            .step_by(1.0),
+                    );
+                });
+                ui.label(
+                    RichText::new("Min speed (% of the gear's top speed) before a redline upshift \
+                                   — rejects wheelspin spikes.")
+                        .size(10.0)
+                        .color(Color32::GRAY),
+                );
+
+                ui.add_space(2.0);
+                setting_row(ui, "Gearbox mode", |ui| {
+                    egui::ComboBox::from_id_salt("dsg_mode_combo")
+                        .selected_text(app.config.dsg_gearbox_mode.label())
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for mode in [GearboxMode::Street, GearboxMode::Sport, GearboxMode::Race] {
+                                ui.selectable_value(
+                                    &mut app.config.dsg_gearbox_mode,
+                                    mode,
+                                    mode.label(),
+                                );
+                            }
+                        });
+                });
+                let mode_hint = match app.config.dsg_gearbox_mode {
+                    GearboxMode::Street => "Relaxed: upshifts early into tall gears, low cruising revs.",
+                    GearboxMode::Sport  => "Balanced: holds mid revs while cruising.",
+                    GearboxMode::Race   => "Aggressive: stays high in the powerband.",
+                };
+                ui.label(RichText::new(mode_hint).size(10.0).color(Color32::GRAY));
+                ui.checkbox(&mut app.config.dsg_auto_race_mode, "Auto Race mode in races");
+                if app.config.dsg_auto_race_mode {
+                    let in_race = app
+                        .telemetry
+                        .latest
+                        .as_ref()
+                        .map(|p| p.race_position != 0)
+                        .unwrap_or(false);
+                    let active = app.config.dsg_effective_mode(in_race);
+                    ui.label(
+                        RichText::new(format!(
+                            "Active: {}{}",
+                            active.label(),
+                            if in_race { " (race detected)" } else { "" }
+                        ))
+                        .size(11.0)
+                        .color(Color32::from_rgb(60, 210, 100)),
+                    );
+                }
+
+                // Calibration is shown live in the gear map on the right — just the reset here.
+                if app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0) {
+                    ui.add_space(4.0);
+                    if ui.button("Clear calibration").clicked() {
+                        // Full wipe — same as a car change: gear data, detected redline and the
+                        // engaged flag go back to zero, so a fresh manual first-gear pull is needed.
+                        app.dsg.reset_calibration();
+                        app.dsg.reset_state();
+                        app.dynamic_max_rpm = 0.0;
+                    }
+                }
+            });
 
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Upshift speed:");
-                ui.add(
-                    egui::Slider::new(&mut app.config.dsg_upshift_speed_pct, 50.0..=100.0)
-                        .suffix("%")
-                        .step_by(1.0),
-                );
-            });
-            ui.label(
-                RichText::new("Min speed (as % of the gear's top speed) before a redline upshift — \
-                               rejects wheelspin spikes.")
-                    .size(10.0)
-                    .color(Color32::GRAY),
-            );
 
-            ui.add_space(8.0);
+            // ── Advanced Settings ────────────────────────────────────────
+            ui.group(|ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(RichText::new("Advanced Settings").strong());
+                ui.add_space(2.0);
 
-            // ── Gearbox mode (separate from Shift RPM) ──────────────────
-            ui.horizontal(|ui| {
-                ui.label("Gearbox mode:");
-                egui::ComboBox::from_id_salt("dsg_mode_combo")
-                    .selected_text(app.config.dsg_gearbox_mode.label())
-                    .show_ui(ui, |ui| {
-                        for mode in [GearboxMode::Street, GearboxMode::Sport, GearboxMode::Race] {
-                            ui.selectable_value(
-                                &mut app.config.dsg_gearbox_mode,
-                                mode,
-                                mode.label(),
-                            );
-                        }
-                    });
-            });
-            let mode_hint = match app.config.dsg_gearbox_mode {
-                GearboxMode::Street => "Relaxed: upshifts early into tall gears, low cruising revs.",
-                GearboxMode::Sport  => "Balanced: holds mid revs while cruising.",
-                GearboxMode::Race   => "Aggressive: stays high in the powerband.",
-            };
-            ui.label(RichText::new(mode_hint).size(11.0).color(Color32::GRAY));
-
-            ui.checkbox(
-                &mut app.config.dsg_auto_race_mode,
-                "Auto Race mode in races",
-            );
-            if app.config.dsg_auto_race_mode {
-                let in_race = app
-                    .telemetry
-                    .latest
-                    .as_ref()
-                    .map(|p| p.race_position != 0)
-                    .unwrap_or(false);
-                let active = app.config.dsg_effective_mode(in_race);
-                ui.label(
-                    RichText::new(format!(
-                        "Active: {}{}",
-                        active.label(),
-                        if in_race { " (race detected)" } else { "" }
-                    ))
-                    .size(11.0)
-                    .color(Color32::from_rgb(60, 210, 100)),
-                );
-            }
-
-            ui.add_space(8.0);
-            // ── Accelerator gamma curve (per mode) ──────────────────────
-            ui.horizontal(|ui| {
-                ui.label("Accelerator gamma:");
-                let tuning = app.config.dsg_active_tuning_mut();
-                ui.add(egui::Slider::new(&mut tuning.accel_gamma, 0.3..=3.0).step_by(0.05));
-            });
-            ui.label(
-                RichText::new(format!(
-                    "Pedal response for {} mode — >1 softens initial throttle, <1 sharpens it. \
-                     Curve + gear-selection overlay is on the right.",
-                    app.config.dsg_gearbox_mode.label()
-                ))
-                .size(10.0)
-                .color(Color32::GRAY),
-            );
-
-            egui::CollapsingHeader::new("Advanced")
-                .id_salt("dsg_advanced")
-                .show(ui, |ui| {
-                    let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;
-                    if is_race {
-                        ui.label(
-                            RichText::new("Race holds the full powerband — no cruise target.")
-                                .size(10.0)
-                                .color(Color32::GRAY),
-                        );
-                    } else {
+                if is_race {
+                    ui.label(
+                        RichText::new("Race holds the full powerband — no cruise target.")
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
+                } else {
+                    setting_row(ui, "Cruise RPM", |ui| {
                         let tuning = app.config.dsg_active_tuning_mut();
-                        ui.horizontal(|ui| {
-                            ui.label("Cruise RPM:");
-                            ui.add(
-                                egui::Slider::new(&mut tuning.cruise_rpm_pct, 20.0..=90.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        });
-                        ui.label(
-                            RichText::new("Low-throttle target as % of Max RPM ceiling — sets the \
-                                           gear the box settles into while cruising.")
-                                .size(10.0)
-                                .color(Color32::GRAY),
-                        );
-                    }
-                    ui.add_space(4.0);
-                    if !is_race {
-                        ui.horizontal(|ui| {
-                            ui.label("Kickdown cooldown:");
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_kickdown_cooldown_secs, 0.0..=10.0)
-                                    .suffix(" s")
-                                    .step_by(0.5),
-                            );
-                        });
-                        ui.label(
-                            RichText::new("After a full-throttle event, hold the lower gear ready \
-                                           for this long before easing back up.")
-                                .size(10.0)
-                                .color(Color32::GRAY),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Downshift deadzone:");
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_downshift_deadzone_pct, 0.0..=90.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        });
-                        ui.label(
-                            RichText::new("While cruising, hold the gear until revs fall below this \
-                                           % of the shift RPM.")
-                                .size(10.0)
-                                .color(Color32::GRAY),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Full throttle threshold:");
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_full_throttle_pct, 50.0..=100.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        });
-                        ui.label(
-                            RichText::new("Below this throttle the box stays economical (revs up to \
-                                           the deadzone); at/above it the full powerband is used. \
-                                           Does not affect kickdown.")
-                                .size(10.0)
-                                .color(Color32::GRAY),
-                        );
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label("Powerband buffer:");
                         ui.add(
-                            egui::Slider::new(&mut app.config.dsg_downshift_powerband_buffer_pct, 0.0..=100.0)
+                            egui::Slider::new(&mut tuning.cruise_rpm_pct, 20.0..=90.0)
                                 .suffix("%")
                                 .step_by(1.0),
                         );
                     });
                     ui.label(
-                        RichText::new("Headroom below redline required to drop into a gear, as % \
-                                       of that gear's RPM jump from the current gear. Higher = \
-                                       shallower downshifts; 0% = anything up to the redline.")
+                        RichText::new("Low-throttle target as % of Max RPM ceiling — sets the gear \
+                                       the box settles into while cruising.")
                             .size(10.0)
                             .color(Color32::GRAY),
                     );
-                    if !is_race {
-                        ui.horizontal(|ui| {
-                            ui.label("Kickdown powerband buffer:");
-                            ui.add(
-                                egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
-                                    .suffix("%")
-                                    .step_by(1.0),
-                            );
-                        });
-                        ui.label(
-                            RichText::new("Same, but for full-throttle kickdowns. Lower than the \
-                                           Powerband buffer = kickdowns drop a gear deeper for power.")
-                                .size(10.0)
-                                .color(Color32::GRAY),
+                    setting_row(ui, "Kickdown cooldown", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut app.config.dsg_kickdown_cooldown_secs, 0.0..=10.0)
+                                .suffix(" s")
+                                .step_by(0.5),
                         );
-                    }
-                });
-
-            ui.add_space(8.0);
-
-            // Calibration — the per-gear shift points are shown live in the gear map on the right.
-            let any_data = app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0);
-            if any_data {
-                if ui.button("Clear calibration").clicked() {
-                    // Full wipe — same as a car change: gear data, detected redline and the
-                    // engaged flag all go back to zero, so a fresh manual first-gear pull is needed.
-                    app.dsg.reset_calibration();
-                    app.dsg.reset_state();
-                    app.dynamic_max_rpm = 0.0;
+                    });
+                    ui.label(
+                        RichText::new("After a full-throttle event, hold the lower gear ready for \
+                                       this long before easing back up.")
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
+                    setting_row(ui, "Downshift deadzone", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut app.config.dsg_downshift_deadzone_pct, 0.0..=90.0)
+                                .suffix("%")
+                                .step_by(1.0),
+                        );
+                    });
+                    ui.label(
+                        RichText::new("While cruising, hold the gear until revs fall below this % \
+                                       of the shift RPM.")
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
+                    setting_row(ui, "Full throttle threshold", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut app.config.dsg_full_throttle_pct, 50.0..=100.0)
+                                .suffix("%")
+                                .step_by(1.0),
+                        );
+                    });
+                    ui.label(
+                        RichText::new("Below this throttle the box stays economical (revs up to the \
+                                       deadzone); at/above it the full powerband is used. Does not \
+                                       affect kickdown.")
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
                 }
-            } else {
+                setting_row(ui, "Powerband buffer", |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut app.config.dsg_downshift_powerband_buffer_pct, 0.0..=100.0)
+                            .suffix("%")
+                            .step_by(1.0),
+                    );
+                });
                 ui.label(
-                    RichText::new(
-                        "No calibration data yet.\n\
-                         Drive through each gear to redline and it will be recorded automatically.",
-                    )
-                    .color(Color32::GRAY),
+                    RichText::new("Headroom below redline required to drop into a gear, as % of \
+                                   that gear's RPM jump from the current gear. Higher = shallower \
+                                   downshifts; 0% = anything up to the redline.")
+                        .size(10.0)
+                        .color(Color32::GRAY),
                 );
-            }
-
-            ui.add_space(8.0);
-            ui.checkbox(&mut app.config.dsg_log_shifts, "Log shifts to CSV");
-            if app.config.dsg_log_shifts {
+                if !is_race {
+                    setting_row(ui, "Kickdown powerband buffer", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
+                                .suffix("%")
+                                .step_by(1.0),
+                        );
+                    });
+                    ui.label(
+                        RichText::new("Same, but for full-throttle kickdowns. Lower than the \
+                                       Powerband buffer = kickdowns drop a gear deeper for power.")
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
+                }
+                setting_row(ui, "Accelerator gamma", |ui| {
+                    let tuning = app.config.dsg_active_tuning_mut();
+                    ui.add(egui::Slider::new(&mut tuning.accel_gamma, 0.3..=3.0).step_by(0.05));
+                });
                 ui.label(
                     RichText::new(format!(
-                        "{}",
-                        crate::config::app_data_dir().join("dsg_shift_log.csv").display()
+                        "Pedal response for {} mode — >1 softens initial throttle, <1 sharpens it. \
+                         Curve + gear overlay is on the right.",
+                        app.config.dsg_gearbox_mode.label()
                     ))
                     .size(10.0)
                     .color(Color32::GRAY),
                 );
-            }
+            });
 
-            ui.checkbox(&mut app.config.dsg_debug, "Debug");
-            if app.config.dsg_debug {
-                let recent_desync = app
-                    .dsg
-                    .last_desync
-                    .map(|t| t.elapsed().as_secs_f32() < 3.0)
-                    .unwrap_or(false);
-                if recent_desync {
-                    ui.label(
-                        RichText::new("Gear desync detected!")
-                            .strong()
-                            .color(Color32::from_rgb(230, 90, 90)),
-                    );
-                }
-
-                let cur_gear = app
-                    .telemetry
-                    .latest
-                    .as_ref()
-                    .map(|p| p.gear as i32)
-                    .unwrap_or(0);
-                egui::Grid::new("dsg_debug_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 2.0])
-                    .show(ui, |ui| {
-                        ui.label("Engaged:");
-                        ui.label(if app.dsg.engaged { "yes" } else { "no (rev 1st & shift)" });
-                        ui.end_row();
-
-                        ui.label("Current gear:");
-                        ui.label(format!("{cur_gear}"));
-                        ui.end_row();
-
-                        ui.label("Target gear:");
-                        ui.label(format!("{}", app.dsg.dbg_desired_gear));
-                        ui.end_row();
-
-                        ui.label("Shifting to:");
-                        ui.label(match app.dsg.debug_expected() {
-                            Some(g) => format!("{g}"),
-                            None => "\u{2014}".to_string(),
-                        });
-                        ui.end_row();
-
-                        ui.label("Redline:");
-                        ui.label(format!("{:.0} RPM", app.dsg.dbg_effective_max_rpm));
-                        ui.end_row();
-
-                        ui.label("Upshift @:");
-                        ui.label(format!("{:.0} RPM", app.dsg.dbg_shift_threshold));
-                        ui.end_row();
-
-                        ui.label("Kickdown cooldown:");
-                        {
-                            let secs = app.dsg.dbg_kickdown_secs_left;
-                            let txt = if secs < 0.0 {
-                                "waiting for release".to_string()
-                            } else if secs > 0.0 {
-                                format!("{:.1}s", secs)
-                            } else {
-                                "\u{2014}".to_string()
-                            };
-                            ui.label(txt);
+            // ── Debug (only when enabled from the status-bar cog) ────────
+            if app.config.dsg_show_debug_panel {
+                ui.add_space(6.0);
+                ui.group(|ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.checkbox(&mut app.config.dsg_debug, "Debug");
+                    if app.config.dsg_debug {
+                        ui.checkbox(&mut app.config.dsg_log_shifts, "Log shifts to CSV");
+                        if app.config.dsg_log_shifts {
+                            ui.label(
+                                RichText::new(
+                                    crate::config::app_data_dir()
+                                        .join("dsg_shift_log.csv")
+                                        .display()
+                                        .to_string(),
+                                )
+                                .size(10.0)
+                                .color(Color32::GRAY),
+                            );
                         }
-                        ui.end_row();
-
-                        ui.label("Desyncs:");
-                        ui.label(format!("{}", app.dsg.desync_count));
-                        ui.end_row();
-                    });
+                        let recent_desync = app
+                            .dsg
+                            .last_desync
+                            .map(|t| t.elapsed().as_secs_f32() < 3.0)
+                            .unwrap_or(false);
+                        if recent_desync {
+                            ui.label(
+                                RichText::new("Gear desync detected!")
+                                    .strong()
+                                    .color(Color32::from_rgb(230, 90, 90)),
+                            );
+                        }
+                        let cur_gear = app
+                            .telemetry
+                            .latest
+                            .as_ref()
+                            .map(|p| p.gear as i32)
+                            .unwrap_or(0);
+                        egui::Grid::new("dsg_debug_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 2.0])
+                            .show(ui, |ui| {
+                                ui.label("Engaged:");
+                                ui.label(if app.dsg.engaged { "yes" } else { "no (rev 1st & shift)" });
+                                ui.end_row();
+                                ui.label("Current gear:");
+                                ui.label(format!("{cur_gear}"));
+                                ui.end_row();
+                                ui.label("Target gear:");
+                                ui.label(format!("{}", app.dsg.dbg_desired_gear));
+                                ui.end_row();
+                                ui.label("Shifting to:");
+                                ui.label(match app.dsg.debug_expected() {
+                                    Some(g) => format!("{g}"),
+                                    None => "\u{2014}".to_string(),
+                                });
+                                ui.end_row();
+                                ui.label("Redline:");
+                                ui.label(format!("{:.0} RPM", app.dsg.dbg_effective_max_rpm));
+                                ui.end_row();
+                                ui.label("Upshift @:");
+                                ui.label(format!("{:.0} RPM", app.dsg.dbg_shift_threshold));
+                                ui.end_row();
+                                ui.label("Kickdown cooldown:");
+                                {
+                                    let secs = app.dsg.dbg_kickdown_secs_left;
+                                    let txt = if secs < 0.0 {
+                                        "waiting for release".to_string()
+                                    } else if secs > 0.0 {
+                                        format!("{secs:.1}s")
+                                    } else {
+                                        "\u{2014}".to_string()
+                                    };
+                                    ui.label(txt);
+                                }
+                                ui.end_row();
+                                ui.label("Desyncs:");
+                                ui.label(format!("{}", app.dsg.desync_count));
+                                ui.end_row();
+                            });
+                    }
+                });
             }
         });
 
     // ── Right half: live visualization ──────────────────────────────
     gearbox_viz(&mut cols[1], app);
+    });
+}
+
+/// A settings row: label in the left half, control filling the right half. The control (slider or
+/// combobox) is expanded to fill its half via the slider-rail width.
+fn setting_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    ui.columns(2, |c| {
+        c[0].label(label);
+        let w = c[1].available_width();
+        c[1].spacing_mut().slider_width = (w - 52.0).max(40.0);
+        add(&mut c[1]);
     });
 }
 
@@ -441,9 +430,10 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 /// the live pedal (raw on the diagonal, gamma'd on the curve). Sizeable via `size`.
 fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
     let size = size.max(60.0);
+    let bg = ui.visuals().extreme_bg_color;
     let (resp, p) = ui.allocate_painter(egui::vec2(size, size), egui::Sense::hover());
     let r = resp.rect;
-    p.rect_filled(r, 3.0, VIZ_BG);
+    p.rect_filled(r, 3.0, bg);
     let at = |px: f32, py: f32| {
         egui::pos2(
             r.left() + px.clamp(0.0, 1.0) * r.width(),
@@ -569,7 +559,6 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
 }
 
 // ── Live gearbox visualization (right half of the tab) ───────────────────────
-const VIZ_BG: Color32 = Color32::from_rgb(16, 18, 22);
 const VIZ_TRACK: Color32 = Color32::from_rgb(34, 38, 44);
 const VIZ_GREEN: Color32 = Color32::from_rgb(70, 220, 120);
 const VIZ_AMBER: Color32 = Color32::from_rgb(255, 200, 70);
@@ -659,7 +648,10 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
             .size(11.0)
             .color(VIZ_DIM),
     );
-    let gsize = ui.available_width().min(240.0);
+    // Square, filling the space: limited by the column width or the height remaining after the
+    // input bars + lamp row drawn below it (~74 px reserve).
+    let avail = ui.available_size();
+    let gsize = (avail.x.min(avail.y - 74.0)).max(120.0);
     viz_gamma_gears(ui, app, gsize);
 
     // ── Inputs (gamma'd throttle over raw ghost, brake) ──
@@ -733,12 +725,13 @@ fn viz_gear_map(
     desired: i32,
 ) {
     let border = egui::Stroke::new(1.0, Color32::from_gray(60));
+    let bg = ui.visuals().extreme_bg_color;
     let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
     let row_h = 16.0;
     let h = maxg.max(1) as f32 * row_h + 16.0; // + bottom speed-axis label strip
     let (resp, p) = ui.allocate_painter(egui::vec2(ui.available_width(), h), egui::Sense::hover());
     let r = resp.rect;
-    p.rect_filled(r, 3.0, VIZ_BG);
+    p.rect_filled(r, 3.0, bg);
 
     if maxg == 0 {
         p.text(
