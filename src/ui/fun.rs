@@ -246,17 +246,22 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Kickdown cooldown:");
-                        ui.add(
+                        ui.add_enabled(
+                            !is_race,
                             egui::Slider::new(&mut app.config.dsg_kickdown_cooldown_secs, 0.0..=10.0)
                                 .suffix(" s")
                                 .step_by(0.5),
                         );
                     });
                     ui.label(
-                        RichText::new("After a full-throttle event, hold the lower gear ready for \
-                                       this long before easing back up.")
-                            .size(10.0)
-                            .color(Color32::GRAY),
+                        RichText::new(if is_race {
+                            "Unused in Race — there's no cruise upshift to hold off."
+                        } else {
+                            "After a full-throttle event, hold the lower gear ready for this long \
+                             before easing back up."
+                        })
+                        .size(10.0)
+                        .color(Color32::GRAY),
                     );
                     ui.horizontal(|ui| {
                         ui.label("Downshift deadzone:");
@@ -312,17 +317,22 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                     ui.horizontal(|ui| {
                         ui.label("Kickdown powerband buffer:");
-                        ui.add(
+                        ui.add_enabled(
+                            !is_race,
                             egui::Slider::new(&mut app.config.dsg_kickdown_powerband_buffer_pct, 0.0..=100.0)
                                 .suffix("%")
                                 .step_by(1.0),
                         );
                     });
                     ui.label(
-                        RichText::new("Same, but for full-throttle kickdowns. Lower than the \
-                                       Powerband buffer = kickdowns drop a gear deeper for power.")
-                            .size(10.0)
-                            .color(Color32::GRAY),
+                        RichText::new(if is_race {
+                            "Unused in Race — it uses the Powerband buffer throughout."
+                        } else {
+                            "Same, but for full-throttle kickdowns. Lower than the Powerband buffer \
+                             = kickdowns drop a gear deeper for power."
+                        })
+                        .size(10.0)
+                        .color(Color32::GRAY),
                     );
                 });
 
@@ -499,7 +509,9 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
     let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
 
     // ── Gear-selection step overlay (translucent, towards the background) ──
-    if maxg > 0 && speed > 1.0 {
+    // Skipped in Race: gear choice there doesn't depend on the pedal (it always wants the
+    // powerband), so the overlay would just be one flat plateau.
+    if maxg > 0 && speed > 1.0 && !is_race {
         let pred = |g: i32| max_rpm * speed / redlines[g as usize];
         // Throttle-demanded target RPM as a function of effective throttle (mirrors the box).
         let target_of = |th: f32| {

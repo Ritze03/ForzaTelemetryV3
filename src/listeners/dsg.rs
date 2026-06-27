@@ -479,8 +479,10 @@ impl DsgListener {
         if rpm < down_point && current_gear > 1 {
             if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
                 // A full-throttle kickdown uses its own (usually smaller) buffer so it drops deeper
-                // into the powerband than a lazy coasting/braking downshift.
-                let buffer = if throttle >= full_thr {
+                // into the powerband than a lazy coasting/braking downshift. Race is always in the
+                // powerband, so it has no separate kickdown regime — it just uses the Powerband
+                // buffer throughout (the Kickdown buffer is inert in Race).
+                let buffer = if !is_race && throttle >= full_thr {
                     cfg.dsg_kickdown_powerband_buffer_pct / 100.0
                 } else {
                     cfg.dsg_downshift_powerband_buffer_pct / 100.0
