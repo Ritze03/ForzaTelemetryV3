@@ -233,6 +233,20 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.label(RichText::new("Advanced Settings").strong());
                 ui.add_space(2.0);
 
+                slider_row(
+                    ui,
+                    "Accelerator gamma",
+                    "Reshapes the pedal the box reacts to (effective = pedal^gamma). >1 softens the \
+                     first part of the pedal (real-car feel), <1 sharpens it; the ends are \
+                     unchanged. Set per gearbox mode.",
+                    ">1 if it kicks down too eagerly on light throttle; <1 for a sharper response.",
+                    &mut app.config.dsg_active_tuning_mut().accel_gamma,
+                    0.3..=3.0,
+                    0.05,
+                    2,
+                    "",
+                );
+
                 if is_race {
                     ui.label(
                         RichText::new("Race holds the full powerband — no cruise target.")
@@ -323,19 +337,6 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                         "%",
                     );
                 }
-                slider_row(
-                    ui,
-                    "Accelerator gamma",
-                    "Reshapes the pedal the box reacts to (effective = pedal^gamma). >1 softens the \
-                     first part of the pedal (real-car feel), <1 sharpens it; the ends are \
-                     unchanged. Set per gearbox mode.",
-                    ">1 if it kicks down too eagerly on light throttle; <1 for a sharper response.",
-                    &mut app.config.dsg_active_tuning_mut().accel_gamma,
-                    0.3..=3.0,
-                    0.05,
-                    2,
-                    "",
-                );
             });
 
             // ── Debug (only when enabled from the status-bar cog) ────────
