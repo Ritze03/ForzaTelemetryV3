@@ -316,7 +316,7 @@ impl DsgListener {
             let key_char = if step > 0 { 'e' } else { 'q' };
             if let Some(key) = char_to_key(key_char) {
                 for _ in 0..steps {
-                    input.press(key, 10, 20);
+                    input.press(key, 10, 30);
                 }
             }
             self.phase = ShiftPhase::Shifting { expected: desired, since: now, steps };
