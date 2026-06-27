@@ -628,7 +628,7 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
 }
 
 // ── Live gearbox visualization (right half of the tab) ───────────────────────
-const VIZ_TRACK: Color32 = Color32::from_rgb(34, 38, 44);
+const VIZ_TRACK: Color32 = Color32::from_gray(38); // neutral bar-track background (no blue tint)
 const VIZ_GREEN: Color32 = Color32::from_rgb(70, 220, 120);
 const VIZ_AMBER: Color32 = Color32::from_rgb(255, 200, 70);
 const VIZ_RED: Color32 = Color32::from_rgb(240, 90, 80);
