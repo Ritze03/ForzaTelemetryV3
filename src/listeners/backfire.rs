@@ -52,7 +52,7 @@ impl BackfireListener {
         if off_throttle && no_brake && in_rpm_range && rpm_delta_ok && not_accelerating {
             self.last_backfire_rpm = rpm;
             if let Some(key) = char_to_key('w') {
-                input.press(key, cfg.backfire_accel_time_ms);
+                input.press(key, cfg.backfire_accel_time_ms, 0);
             }
         } else if !(off_throttle && no_brake && in_rpm_range) {
             self.last_backfire_rpm = 0.0;

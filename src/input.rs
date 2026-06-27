@@ -8,7 +8,7 @@ mod linux {
     use evdev::uinput::VirtualDeviceBuilder;
 
     enum Cmd {
-        Key { key: Key, hold_ms: u64 },
+        Key { key: Key, hold_ms: u64, gap_ms: u64 },
     }
 
     #[derive(Clone)]
@@ -39,18 +39,23 @@ mod linux {
                 thread::sleep(Duration::from_millis(200));
 
                 for cmd in rx {
-                    let Cmd::Key { key, hold_ms } = cmd;
+                    let Cmd::Key { key, hold_ms, gap_ms } = cmd;
                     let syn = InputEvent::new(EventType::SYNCHRONIZATION, 0, 0);
                     device.emit(&[InputEvent::new(EventType::KEY, key.code(), 1), syn]).ok();
                     thread::sleep(Duration::from_millis(hold_ms));
                     device.emit(&[InputEvent::new(EventType::KEY, key.code(), 0), syn]).ok();
+                    // Gap so back-to-back queued presses (a batched multi-gear kickdown) land as
+                    // distinct key events instead of being coalesced into one.
+                    if gap_ms > 0 {
+                        thread::sleep(Duration::from_millis(gap_ms));
+                    }
                 }
             });
             Self(tx)
         }
 
-        pub fn press(&self, key: Key, hold_ms: u64) {
-            self.0.send(Cmd::Key { key, hold_ms }).ok();
+        pub fn press(&self, key: Key, hold_ms: u64, gap_ms: u64) {
+            self.0.send(Cmd::Key { key, hold_ms, gap_ms }).ok();
         }
     }
 
@@ -76,7 +81,7 @@ mod windows {
     pub struct KeyCode(pub Key);
 
     enum Cmd {
-        Press { key: Key, hold_ms: u64 },
+        Press { key: Key, hold_ms: u64, gap_ms: u64 },
     }
 
     #[derive(Clone)]
@@ -94,17 +99,22 @@ mod windows {
                     }
                 };
                 for cmd in rx {
-                    let Cmd::Press { key, hold_ms } = cmd;
+                    let Cmd::Press { key, hold_ms, gap_ms } = cmd;
                     enigo.key(key, Direction::Press).ok();
                     thread::sleep(Duration::from_millis(hold_ms));
                     enigo.key(key, Direction::Release).ok();
+                    // Gap so back-to-back queued presses (a batched multi-gear kickdown) land as
+                    // distinct key events instead of being coalesced into one.
+                    if gap_ms > 0 {
+                        thread::sleep(Duration::from_millis(gap_ms));
+                    }
                 }
             });
             Self(tx)
         }
 
-        pub fn press(&self, key: KeyCode, hold_ms: u64) {
-            self.0.send(Cmd::Press { key: key.0, hold_ms }).ok();
+        pub fn press(&self, key: KeyCode, hold_ms: u64, gap_ms: u64) {
+            self.0.send(Cmd::Press { key: key.0, hold_ms, gap_ms }).ok();
         }
     }
 
@@ -128,7 +138,7 @@ mod stub {
 
     impl InputSender {
         pub fn new() -> Self { Self }
-        pub fn press(&self, _key: KeyCode, _hold_ms: u64) {}
+        pub fn press(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64) {}
     }
 
     pub fn char_to_key(_c: char) -> Option<KeyCode> { None }

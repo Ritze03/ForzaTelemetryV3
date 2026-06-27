@@ -10,6 +10,8 @@ use crate::packet::ForzaPacket;
 const SETTLE_MS: u64 = 70;
 /// If the expected gear hasn't appeared within this window, assume desync and accept reality.
 const SHIFT_CONFIRM_TIMEOUT_MS: u64 = 500;
+/// Extra confirm time allowed per additional gear in a batched multi-gear kickdown.
+const MULTI_SHIFT_STEP_MS: u64 = 150;
 /// After a desync timeout, hold off re-commanding this long so a late-landing shift is observed
 /// and reconciled instead of double-commanded (prevents overshoot).
 const POST_TIMEOUT_COOLDOWN_MS: u64 = 400;
@@ -38,7 +40,9 @@ const SPIN_RPM_FACTOR: f32 = 1.15;
 /// that slow-shifting cars emit mid-shift.
 enum ShiftPhase {
     Idle,
-    Shifting { expected: i32, since: Instant },
+    /// `expected` is the FINAL gear (batched kickdowns send all the steps up front); `steps` is how
+    /// many gear changes are in flight, used to extend the confirm timeout.
+    Shifting { expected: i32, since: Instant, steps: u32 },
 }
 
 /// Pre-shift snapshot, captured when a shift is commanded and written out (with post-shift RPM +
@@ -228,7 +232,10 @@ impl DsgListener {
         // ── Shift execution state machine ───────────────────────────────────────
         // While a shift is in flight, send nothing until the expected gear appears or we time
         // out. The 500 ms timeout applies regardless of a transitional "N".
-        if let ShiftPhase::Shifting { expected, since } = self.phase {
+        if let ShiftPhase::Shifting { expected, since, steps } = self.phase {
+            // A batched kickdown needs longer to land its final gear (the game shifts through the
+            // intermediates one at a time), so extend the confirm window per extra step.
+            let confirm_ms = SHIFT_CONFIRM_TIMEOUT_MS + (steps.saturating_sub(1) as u64) * MULTI_SHIFT_STEP_MS;
             if gear == expected {
                 self.phase = ShiftPhase::Idle;
                 self.last_shift_done = Some(now);
@@ -236,7 +243,7 @@ impl DsgListener {
                 if let Some(log) = self.pending_log.take() {
                     write_shift_log(&log, rpm, kmh);
                 }
-            } else if since.elapsed() >= Duration::from_millis(SHIFT_CONFIRM_TIMEOUT_MS) {
+            } else if since.elapsed() >= Duration::from_millis(confirm_ms) {
                 // Desync: sync to the actual gear, then hold off re-commanding to absorb a late shift.
                 self.phase = ShiftPhase::Idle;
                 self.resync_until = Some(now + Duration::from_millis(POST_TIMEOUT_COOLDOWN_MS));
@@ -299,20 +306,25 @@ impl DsgListener {
             .max(1);
         self.dbg_desired_gear = desired;
 
-        // ── Command a single confirmed step toward the target ──────────────────
+        // ── Command toward the target ──────────────────────────────────────────
+        // Send every gear change in one burst (a multi-gear kickdown fires all its downshifts up
+        // front) and then wait for the FINAL gear to engage — instead of confirming each step in
+        // turn, which made deep kickdowns slow.
         if desired != gear {
             let step: i32 = if desired > gear { 1 } else { -1 };
-            let expected = gear + step;
+            let steps = (desired - gear).unsigned_abs();
             let key_char = if step > 0 { 'e' } else { 'q' };
             if let Some(key) = char_to_key(key_char) {
-                input.press(key, 10);
+                for _ in 0..steps {
+                    input.press(key, 10, 20);
+                }
             }
-            self.phase = ShiftPhase::Shifting { expected, since: now };
+            self.phase = ShiftPhase::Shifting { expected: desired, since: now, steps };
             if cfg.dsg_log_shifts {
                 self.pending_log = Some(PendingLog {
                     game_time_ms: pkt.timestamp_ms,
                     from_gear: gear,
-                    to_gear: expected,
+                    to_gear: desired,
                     rpm_pre: rpm,
                     speed_pre: kmh,
                     accel_pct: (throttle * 100.0).round() as u8,
