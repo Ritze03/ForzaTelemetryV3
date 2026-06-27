@@ -34,6 +34,9 @@ const CRUISE_HYSTERESIS: f32 = 0.10;
 /// Engine RPM above this multiple of the road-speed-implied RPM means the wheels are spinning;
 /// the speed-based gear math is then garbage, so hold the gear until grip returns.
 const SPIN_RPM_FACTOR: f32 = 1.15;
+/// Seconds of speed change a full-throttle kickdown looks ahead (using forward acceleration), so a
+/// multi-gear drop lands on the final gear in one go instead of staging as the car coasts down.
+const KICKDOWN_LOOKAHEAD_S: f32 = 0.5;
 
 /// Shift execution state. While `Shifting` we wait for `expected` to appear (or time out)
 /// before commanding anything else — this avoids key spam and tolerates the brief "N" flash
@@ -477,7 +480,17 @@ impl DsgListener {
         };
         self.dbg_down_point = down_point;
         if rpm < down_point && current_gear > 1 {
-            if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
+            // Kickdown look-ahead: a multi-gear full-throttle shift takes a moment, during which the
+            // car usually coasts down a little (clutch out). Anticipate that lower speed so the
+            // kickdown lands on the FINAL gear in one decision instead of staging deeper as the
+            // speed drifts across a buffer boundary. Only ever projects downward (never deepens a
+            // gear while accelerating); the cruise downshift uses the real speed.
+            let loop_kmh = if throttle >= full_thr {
+                (kmh + pkt.acceleration_z * 3.6 * KICKDOWN_LOOKAHEAD_S).clamp(kmh * 0.85, kmh)
+            } else {
+                kmh
+            };
+            if let Some(pred_cur) = self.predicted_rpm(current_gear, loop_kmh, effective_max_rpm) {
                 // A full-throttle kickdown uses its own (usually smaller) buffer so it drops deeper
                 // into the powerband than a lazy coasting/braking downshift.
                 let buffer = if throttle >= full_thr {
@@ -489,7 +502,7 @@ impl DsgListener {
                 // RPM of the gear directly above the candidate (starts at the current gear).
                 let mut above_pred = pred_cur;
                 for g in (1..current_gear).rev() {
-                    let Some(pred_g) = self.predicted_rpm(g, kmh, effective_max_rpm) else {
+                    let Some(pred_g) = self.predicted_rpm(g, loop_kmh, effective_max_rpm) else {
                         break; // uncalibrated lower gear → never drop into the unknown
                     };
                     // The landing must clear the shift point by `buffer%` of the ADJACENT inter-gear
