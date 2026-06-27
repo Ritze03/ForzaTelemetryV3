@@ -347,6 +347,81 @@ impl DsgListener {
         Some(effective_max_rpm * kmh / redline_speed)
     }
 
+    /// Hypothetical one-step gear decision, for the UI overlay that shows which gear each pedal
+    /// position targets. Pure — no `&mut`, no live RPM/slip; the rpm in a gear is taken as its
+    /// predicted rpm at `kmh`. Mirrors `select_desired_gear`'s upshift + downshift rules so the
+    /// overlay can't drift from the real box. `throttle` is the gamma-curved pedal; `in_race_pos`
+    /// is whether a race is on (P1+). Returns the gear the box would move toward (a kickdown lands
+    /// its final gear in one call); returns `gear` unchanged when it would hold.
+    pub fn sim_step(
+        &self,
+        gear: i32,
+        throttle: f32,
+        kmh: f32,
+        eff_max: f32,
+        cfg: &AppConfig,
+        in_race_pos: bool,
+    ) -> i32 {
+        let Some(pred_cur) = self.predicted_rpm(gear, kmh, eff_max) else {
+            return gear; // uncalibrated — never reason about an unknown gear
+        };
+        let is_race = cfg.dsg_effective_mode(in_race_pos) == GearboxMode::Race;
+        let shift = eff_max * (cfg.dsg_shift_rpm_pct / 100.0);
+        let full_thr = (cfg.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
+        let target = if is_race || throttle >= full_thr {
+            shift
+        } else {
+            let cruise = cfg.dsg_active_tuning().cruise_rpm_pct / 100.0;
+            let deadzone = cfg.dsg_downshift_deadzone_pct / 100.0;
+            let eco = throttle / full_thr;
+            shift * (cruise + (deadzone - cruise).max(0.0) * eco)
+        };
+
+        // Hard redline upshift (the live slip/upshift-speed gates are implied at steady state,
+        // since shift_pct > upshift_speed_pct) and the gentle cruise upshift toward the target.
+        if gear < 10 {
+            if let Some(pred_next) = self.predicted_rpm(gear + 1, kmh, eff_max) {
+                if pred_cur >= shift || pred_next >= target {
+                    return gear + 1;
+                }
+            }
+        }
+
+        // Downshift: hold until revs fall below the down point, then kick down to the gear that
+        // reaches the target, bounded by the powerband buffer (can skip gears).
+        let down_point = if is_race || throttle >= full_thr {
+            target
+        } else {
+            (target - CRUISE_HYSTERESIS * shift).max(0.0)
+        };
+        if pred_cur < down_point && gear > 1 {
+            let buffer = if !is_race && throttle >= full_thr {
+                cfg.dsg_kickdown_powerband_buffer_pct / 100.0
+            } else {
+                cfg.dsg_downshift_powerband_buffer_pct / 100.0
+            };
+            let mut target_gear = gear;
+            let mut above_pred = pred_cur;
+            for g in (1..gear).rev() {
+                let Some(pred_g) = self.predicted_rpm(g, kmh, eff_max) else {
+                    break;
+                };
+                let jump = (pred_g - above_pred).max(0.0);
+                if pred_g + buffer * jump >= shift {
+                    break;
+                }
+                target_gear = g;
+                above_pred = pred_g;
+                if pred_g >= target {
+                    break;
+                }
+            }
+            return target_gear;
+        }
+
+        gear
+    }
+
     /// Choose the ideal gear for the current driving intent.
     ///
     /// Three rules, in order: a hard redline upshift (the user's "shift at Max RPM × Shift RPM"
@@ -578,5 +653,56 @@ fn median(samples: &VecDeque<f32>) -> f32 {
         v[n / 2]
     } else {
         (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AppConfig, GearboxMode};
+
+    /// Apply sim_step until the gear stops changing (a kickdown lands in one call, but converge
+    /// to be safe). Returns the settled gear.
+    fn settle(dsg: &DsgListener, mut gear: i32, th: f32, kmh: f32, cfg: &AppConfig) -> i32 {
+        for _ in 0..16 {
+            let next = dsg.sim_step(gear, th, kmh, 7000.0, cfg, false);
+            if next == gear {
+                return gear;
+            }
+            gear = next;
+        }
+        gear
+    }
+
+    #[test]
+    fn overlay_sweep_is_hysteretic_and_monotonic() {
+        let mut dsg = DsgListener::new();
+        // 6-gear calibration: redline speeds (km/h at full RPM).
+        dsg.gear_redline_speeds = [0.0, 60.0, 100.0, 150.0, 210.0, 280.0, 360.0, 0.0, 0.0, 0.0, 0.0];
+        let mut cfg = AppConfig::default();
+        cfg.dsg_gearbox_mode = GearboxMode::Street; // cruise 35%, deadzone 60%, full-thr 95%, shift 98%
+        let kmh = 120.0;
+
+        // Cruise gear at idle: climb from 1st.
+        let cruise_gear = settle(&dsg, 1, 0.0, kmh, &cfg);
+        assert!(cruise_gear >= 5, "cruise gear at 120 km/h should be tall, got {cruise_gear}");
+
+        // Sweep the pedal up, carrying the gear.
+        let mut gear = cruise_gear;
+        let mut gears = Vec::new();
+        for i in 0..=100 {
+            let x = i as f32 / 100.0;
+            let th = x; // gamma applied by the caller; test the raw mapping
+            gear = settle(&dsg, gear, th, kmh, &cfg);
+            gears.push(gear);
+        }
+
+        // (a) non-increasing as the pedal rises.
+        assert!(gears.windows(2).all(|w| w[1] <= w[0]), "gear must not climb as pedal rises: {gears:?}");
+        // (b) hysteresis: it must HOLD the cruise gear past the first throttle increase, not drop
+        // immediately (the pure-target version dropped at ~mid pedal — this guards the hold).
+        assert_eq!(gears[10], cruise_gear, "should still hold the cruise gear at 10% pedal");
+        // (c) reaches a low kickdown gear at full throttle, but not below the powerband floor.
+        assert!(gears[100] <= 3 && gears[100] >= 2, "full-throttle kickdown floor, got {}", gears[100]);
     }
 }

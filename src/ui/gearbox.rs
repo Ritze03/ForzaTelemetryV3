@@ -441,65 +441,42 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
         };
         m.max(1.0)
     };
-    let shift = (max_rpm * app.config.dsg_shift_rpm_pct / 100.0).max(1.0);
-    let cruise = if is_race { 1.0 } else { app.config.dsg_effective_tuning(in_race).cruise_rpm_pct / 100.0 };
-    let deadzone = app.config.dsg_downshift_deadzone_pct / 100.0;
-    let full_thr = (app.config.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
     let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
 
     // ── Gear-selection step overlay (translucent, towards the background) ──
     // Skipped in Race: gear choice there doesn't depend on the pedal (it always wants the
     // powerband), so the overlay would just be one flat plateau.
     if maxg > 0 && speed > 1.0 && !is_race {
-        let pred = |g: i32| max_rpm * speed / redlines[g as usize];
-        // Throttle-demanded target RPM as a function of effective throttle — mirrors the box's
-        // `target_rpm` (dsg.rs): the cruise floor at light throttle, rising linearly to the shift
-        // point at/above the full-throttle threshold.
-        let target_of = |th: f32| {
-            if is_race || th >= full_thr {
-                shift
-            } else {
-                shift * (cruise + (deadzone - cruise).max(0.0) * (th / full_thr))
-            }
-        };
-        // Target gear at effective throttle `th`: the TALLEST gear whose revs at this speed still
-        // reach the demanded target without over-revving past the shift point — i.e. the gear the
-        // box would settle into to deliver that pedal. If no usable gear reaches the target (the
-        // demand exceeds even the deepest non-over-revving gear, e.g. full throttle), drop into that
-        // deepest gear — the full-throttle kickdown landing.
-        let select = |th: f32| -> i32 {
-            let target = target_of(th);
-            let mut deepest = 0; // lowest gear that won't over-rev at this speed (kickdown floor)
-            let mut chosen = 0; // tallest such gear whose revs still meet the demand
-            for g in 1..=maxg {
-                if redlines[g as usize] <= 0.0 {
-                    continue;
+        // Simulate the box (hysteresis-aware): carry the gear as the pedal sweeps 0→1, applying the
+        // box's own decision (DsgListener::sim_step) at each point — so it HOLDS the tall cruise
+        // gear until revs fall below the down point, then kicks down, exactly like the real gearbox,
+        // instead of a naive per-throttle pick. `th = x^gamma` is the gamma-curved pedal.
+        let settle = |gear: i32, th: f32| -> i32 {
+            let mut g = gear;
+            for _ in 0..16 {
+                let next = app.dsg.sim_step(g, th, speed, max_rpm, &app.config, in_race);
+                if next == g {
+                    break;
                 }
-                let p = pred(g);
-                if p <= shift * 1.002 {
-                    if deepest == 0 {
-                        deepest = g;
-                    }
-                    if p >= target {
-                        chosen = g;
-                    }
-                }
+                g = next;
             }
-            if chosen != 0 { chosen } else { deepest }
+            g
         };
+        // Cruise gear at idle: the gear the box settles into accelerating up to this speed.
+        let mut gear = settle(1, 0.0);
 
-        // Build constant-gear runs across the pedal axis.
-        let n = 64;
+        // Build constant-gear runs over the raw-pedal axis (throttle only rises → only downshifts).
+        let n = 128;
         let mut runs: Vec<(f32, f32, i32)> = Vec::new();
         let mut run_lo = 0.0_f32;
-        let mut prev_g = select(0.0);
+        let mut prev_g = gear;
         for i in 1..=n {
             let x = i as f32 / n as f32;
-            let g = select(x.powf(gamma));
-            if g != prev_g {
+            gear = settle(gear, x.powf(gamma));
+            if gear != prev_g {
                 runs.push((run_lo, x, prev_g));
                 run_lo = x;
-                prev_g = g;
+                prev_g = gear;
             }
         }
         runs.push((run_lo, 1.0, prev_g));
