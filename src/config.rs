@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Language;
+
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub enum Theme {
     Dark,
@@ -22,10 +24,10 @@ pub enum MaxRpmSource {
 
 impl MaxRpmSource {
     pub fn label(&self) -> &'static str {
-        match self {
+        crate::i18n::tr(match self {
             MaxRpmSource::GameProvided => "Game Data",
             MaxRpmSource::DetectDynamically => "Auto Detect",
-        }
+        })
     }
 }
 
@@ -39,11 +41,11 @@ pub enum GearboxMode {
 
 impl GearboxMode {
     pub fn label(&self) -> &'static str {
-        match self {
+        crate::i18n::tr(match self {
             GearboxMode::Street => "Street",
             GearboxMode::Sport  => "Sport",
             GearboxMode::Race   => "Race",
-        }
+        })
     }
 }
 
@@ -112,7 +114,7 @@ pub enum WidgetKind {
 
 impl WidgetKind {
     pub fn label(&self) -> &'static str {
-        match self {
+        crate::i18n::tr(match self {
             WidgetKind::Empty      => "Empty",
             WidgetKind::Speed      => "Speed",
             WidgetKind::Gear       => "Gear",
@@ -126,7 +128,7 @@ impl WidgetKind {
             WidgetKind::GForce     => "G-Forces",
             WidgetKind::Suspension => "Suspension",
             WidgetKind::MiniMap    => "Map",
-        }
+        })
     }
 }
 
@@ -252,6 +254,8 @@ pub struct AppConfig {
     pub decel_start_kmh: f32,
     pub decel_end_kmh: f32,
     pub decel_dynamic_mode: bool,
+    // UI language
+    pub language: Language,
 }
 
 impl Default for AppConfig {
@@ -330,6 +334,7 @@ impl Default for AppConfig {
             decel_start_kmh: 100.0,
             decel_end_kmh: 0.0,
             decel_dynamic_mode: false,
+            language: Language::English,
         }
     }
 }

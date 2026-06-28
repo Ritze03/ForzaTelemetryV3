@@ -2,11 +2,12 @@ use egui::{Color32, RichText, Ui};
 use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints};
 
 use crate::app::ForzaApp;
+use crate::i18n::tr;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     // Controls row
     ui.horizontal(|ui| {
-        if ui.button("Clear live").clicked() {
+        if ui.button(tr("Clear live")).clicked() {
             app.power_capture.clear();
             app.power_plot_auto_bounds = true;
         }
@@ -14,7 +15,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.add_space(8.0);
         let has_live_curve = !app.power_capture.power_series.is_empty();
         if ui
-            .add_enabled(has_live_curve, egui::Button::new("Save reference"))
+            .add_enabled(has_live_curve, egui::Button::new(tr("Save reference")))
             .clicked()
         {
             app.saved_power_curve = Some(app.power_capture.snapshot());
@@ -25,7 +26,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.add_space(8.0);
         let has_saved = app.saved_power_curve.is_some();
         if ui
-            .add_enabled(has_saved, egui::Button::new("Clear reference"))
+            .add_enabled(has_saved, egui::Button::new(tr("Clear reference")))
             .clicked()
         {
             app.saved_power_curve = None;
@@ -34,7 +35,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         if app.telemetry.is_connected {
             ui.add_space(8.0);
             ui.label(
-                RichText::new(format!("{} Full-throttle to capture", crate::icons::CIRCLE))
+                RichText::new(format!("{} {}", crate::icons::CIRCLE, tr("Full-throttle to capture")))
                     .color(Color32::from_rgb(60, 200, 90)),
             );
         }
@@ -84,7 +85,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     // ── Power & Torque chart ─────────────────────────────────────
     ui.group(|ui| {
-        ui.label(RichText::new("Power & Torque vs RPM").strong());
+        ui.label(RichText::new(tr("Power & Torque vs RPM")).strong());
         let saved_power_series = saved_curve.map(|curve| curve.power_series.clone());
         let saved_torque_series = saved_curve.map(|curve| curve.torque_series.clone());
         let power_pts: PlotPoints = PlotPoints::new(app.power_capture.power_series.clone());
@@ -93,7 +94,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         let power_resp = Plot::new("power_plot")
             .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
             .height(power_h)
-            .x_axis_label("RPM")
+            .x_axis_label(tr("RPM"))
             .y_axis_label("PS / Nm")
             .include_x(0.0)
             .include_x(engine_max_rpm)
@@ -103,25 +104,25 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 }
                 if let Some(saved_power_series) = saved_power_series.as_ref() {
                     plot_ui.line(
-                        Line::new("Saved Power (PS)", saved_power_series.clone())
+                        Line::new(tr("Saved Power (PS)"), saved_power_series.clone())
                             .color(Color32::from_rgba_unmultiplied(80, 160, 240, 90))
                             .width(1.5),
                     );
                 }
                 if let Some(saved_torque_series) = saved_torque_series.as_ref() {
                     plot_ui.line(
-                        Line::new("Saved Torque (Nm)", saved_torque_series.clone())
+                        Line::new(tr("Saved Torque (Nm)"), saved_torque_series.clone())
                             .color(Color32::from_rgba_unmultiplied(240, 140, 40, 90))
                             .width(1.5),
                     );
                 }
                 plot_ui.line(
-                    Line::new("Power (PS)", power_pts)
+                    Line::new(tr("Power (PS)"), power_pts)
                         .color(Color32::from_rgb(80, 160, 240))
                         .width(2.5),
                 );
                 plot_ui.line(
-                    Line::new("Torque (Nm)", torque_pts)
+                    Line::new(tr("Torque (Nm)"), torque_pts)
                         .color(Color32::from_rgb(240, 140, 40))
                         .width(2.5),
                 );
@@ -136,7 +137,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.add_space(gap);
 
         ui.group(|ui| {
-            ui.label(RichText::new("Boost vs RPM").strong());
+            ui.label(RichText::new(tr("Boost vs RPM")).strong());
             let use_bar = app.config.use_bar;
             let live_max_boost = app
                 .power_capture
@@ -210,10 +211,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 }
             }
 
-            let boost_label = if use_bar { "Boost (bar)" } else { "Boost (PSI)" };
+            let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
             let boost_resp = Plot::new("boost_plot")
                 .height(boost_h)
-                .x_axis_label("RPM")
+                .x_axis_label(tr("RPM"))
                 .y_axis_label(boost_label)
                 .include_x(0.0)
                 .include_x(engine_max_rpm)
@@ -224,16 +225,16 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     }
                     // Background (higher) bars drawn first, foreground (lower) bars on top
                     if !bg_live.is_empty() {
-                        plot_ui.bar_chart(BarChart::new("Boost", bg_live));
+                        plot_ui.bar_chart(BarChart::new(tr("Boost"), bg_live));
                     }
                     if !bg_saved.is_empty() {
-                        plot_ui.bar_chart(BarChart::new("Saved Boost", bg_saved));
+                        plot_ui.bar_chart(BarChart::new(tr("Saved Boost"), bg_saved));
                     }
                     if !fg_live.is_empty() {
-                        plot_ui.bar_chart(BarChart::new("Boost", fg_live));
+                        plot_ui.bar_chart(BarChart::new(tr("Boost"), fg_live));
                     }
                     if !fg_saved.is_empty() {
-                        plot_ui.bar_chart(BarChart::new("Saved Boost", fg_saved));
+                        plot_ui.bar_chart(BarChart::new(tr("Saved Boost"), fg_saved));
                     }
                 });
             if boost_resp.response.clicked_by(egui::PointerButton::Middle) {

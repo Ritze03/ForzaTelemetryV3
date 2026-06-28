@@ -2,6 +2,7 @@ use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
 use crate::config::GearboxMode;
+use crate::i18n::tr;
 
 pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     // Two columns (controls | live viz) with a fixed spacer between them.
@@ -14,22 +15,22 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
         .id_salt("gearbox_scroll")
         .show(&mut cols[0], |ui| {
             ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the column
-            ui.heading("Automatic Gearbox");
+            ui.heading(tr("Automatic Gearbox"));
             ui.add_space(6.0);
 
             let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;
 
             // ── General ──────────────────────────────────────────────────
             ui.group(|ui| {
-                ui.label(RichText::new("General").strong());
+                ui.label(RichText::new(tr("General")).strong());
                 ui.add_space(2.0);
 
                 hover(
-                    ui.checkbox(&mut app.config.dsg_enabled, "Enabled"),
-                    "Lets the box send shift inputs. Stays hands-off until you do one full \
+                    ui.checkbox(&mut app.config.dsg_enabled, tr("Enabled")),
+                    tr("Lets the box send shift inputs. Stays hands-off until you do one full \
                      first-gear pull to redline and shift to 2nd manually — that calibrates 1st \
-                     gear and the true redline.",
-                    "On to drive automatically; off to shift yourself.",
+                     gear and the true redline."),
+                    tr("On to drive automatically; off to shift yourself."),
                 );
 
                 let shift_what = {
@@ -38,11 +39,12 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     } else {
                         app.telemetry.latest.as_ref().map(|p| p.engine_max_rpm).unwrap_or(0.0)
                     };
-                    let base = "Upshift point as % of the detected redline — also the reference \
-                                every gear's shift speed scales to.";
+                    let base = tr("Upshift point as % of the detected redline — also the reference \
+                                every gear's shift speed scales to.");
                     if effective_max > 0.0 {
                         format!(
-                            "{base} Right now that's ≈ {:.0} RPM.",
+                            "{base} {} ≈ {:.0} RPM.",
+                            tr("Right now that's"),
                             effective_max * app.config.dsg_shift_rpm_pct / 100.0
                         )
                     } else {
@@ -51,9 +53,9 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 };
                 slider_row(
                     ui,
-                    "Shift RPM",
+                    tr("Shift RPM"),
                     &shift_what,
-                    "Lower to short-shift (earlier, calmer); raise toward 100% to wring out each gear.",
+                    tr("Lower to short-shift (earlier, calmer); raise toward 100% to wring out each gear."),
                     &mut app.config.dsg_shift_rpm_pct,
                     70.0..=100.0,
                     1.0,
@@ -63,11 +65,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
                 slider_row(
                     ui,
-                    "Upshift min. speed",
-                    "A redline upshift only fires once road speed reaches this % of the gear's \
+                    tr("Upshift min. speed"),
+                    tr("A redline upshift only fires once road speed reaches this % of the gear's \
                      calibrated top speed — blocks false upshifts from wheelspin rev spikes. \
-                     Doesn't gate cruise upshifts.",
-                    "Raise if it upshifts during wheelspin; otherwise leave it.",
+                     Doesn't gate cruise upshifts."),
+                    tr("Raise if it upshifts during wheelspin; otherwise leave it."),
                     &mut app.config.dsg_upshift_speed_pct,
                     50.0..=100.0,
                     1.0,
@@ -78,11 +80,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.add_space(2.0);
                 setting_row(
                     ui,
-                    "Gearbox mode",
-                    "Shift personality. Street/Sport cruise economically (upshift early, lazy \
+                    tr("Gearbox mode"),
+                    tr("Shift personality. Street/Sport cruise economically (upshift early, lazy \
                      downshifts); Race holds the full powerband and ignores the cruise/deadzone \
-                     settings.",
-                    "Street = relaxed, Sport = balanced, Race = aggressive/track.",
+                     settings."),
+                    tr("Street = relaxed, Sport = balanced, Race = aggressive/track."),
                     |ui| {
                         egui::ComboBox::from_id_salt("dsg_mode_combo")
                             .selected_text(app.config.dsg_gearbox_mode.label())
@@ -99,10 +101,10 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     },
                 );
                 hover(
-                    ui.checkbox(&mut app.config.dsg_auto_race_mode, "Auto Race mode in races"),
-                    "Forces Race mode whenever you're in an actual race (position P1+), and \
-                     reverts to your chosen mode in free-roam.",
-                    "Off to keep your selected mode everywhere.",
+                    ui.checkbox(&mut app.config.dsg_auto_race_mode, tr("Auto Race mode in races")),
+                    tr("Forces Race mode whenever you're in an actual race (position P1+), and \
+                     reverts to your chosen mode in free-roam."),
+                    tr("Off to keep your selected mode everywhere."),
                 );
                 if app.config.dsg_auto_race_mode {
                     let in_race = app
@@ -114,9 +116,10 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     let active = app.config.dsg_effective_mode(in_race);
                     ui.label(
                         RichText::new(format!(
-                            "Active: {}{}",
+                            "{} {}{}",
+                            tr("Active:"),
                             active.label(),
-                            if in_race { " (race detected)" } else { "" }
+                            if in_race { tr(" (race detected)") } else { "" }
                         ))
                         .size(11.0)
                         .color(Color32::from_rgb(60, 210, 100)),
@@ -126,7 +129,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 // Calibration is shown live in the gear map on the right — just the reset here.
                 if app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0) {
                     ui.add_space(4.0);
-                    if ui.button("Clear calibration").clicked() {
+                    if ui.button(tr("Clear calibration")).clicked() {
                         // Full wipe — same as a car change: gear data, detected redline and the
                         // engaged flag go back to zero, so a fresh manual first-gear pull is needed.
                         app.dsg.reset_calibration();
@@ -140,16 +143,16 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Advanced Settings ────────────────────────────────────────
             ui.group(|ui| {
-                ui.label(RichText::new("Advanced Settings").strong());
+                ui.label(RichText::new(tr("Advanced Settings")).strong());
                 ui.add_space(2.0);
 
                 slider_row(
                     ui,
-                    "Accelerator gamma",
-                    "Reshapes the pedal the box reacts to (effective = pedal^gamma). >1 softens the \
+                    tr("Accelerator gamma"),
+                    tr("Reshapes the pedal the box reacts to (effective = pedal^gamma). >1 softens the \
                      first part of the pedal (real-car feel), <1 sharpens it; the ends are \
-                     unchanged. Set per gearbox mode.",
-                    ">1 if it kicks down too eagerly on light throttle; <1 for a sharper response.",
+                     unchanged. Set per gearbox mode."),
+                    tr(">1 if it kicks down too eagerly on light throttle; <1 for a sharper response."),
                     &mut app.config.dsg_active_tuning_mut().accel_gamma,
                     0.3..=3.0,
                     0.05,
@@ -162,11 +165,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 if !is_race {
                     slider_row(
                         ui,
-                        "Cruise RPM",
-                        "The rev level the box settles at under light throttle, as % of the shift \
-                         point; it upshifts early to keep revs near here while cruising.",
-                        "Lower = taller gears / lower revs (economical); higher = holds lower gears \
-                         (sportier cruise).",
+                        tr("Cruise RPM"),
+                        tr("The rev level the box settles at under light throttle, as % of the shift \
+                         point; it upshifts early to keep revs near here while cruising."),
+                        tr("Lower = taller gears / lower revs (economical); higher = holds lower gears \
+                         (sportier cruise)."),
                         &mut app.config.dsg_active_tuning_mut().cruise_rpm_pct,
                         20.0..=90.0,
                         1.0,
@@ -175,12 +178,12 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                     slider_row(
                         ui,
-                        "Kickdown cooldown",
-                        "After a full-throttle burst, holds the lower gear (no early cruise \
+                        tr("Kickdown cooldown"),
+                        tr("After a full-throttle burst, holds the lower gear (no early cruise \
                          upshift) for this long once you lift off, so easing off mid-corner doesn't \
-                         instantly upshift.",
-                        "Longer to stay ready in the low gear after lifting; 0 to upshift as soon \
-                         as you ease off.",
+                         instantly upshift."),
+                        tr("Longer to stay ready in the low gear after lifting; 0 to upshift as soon \
+                         as you ease off."),
                         &mut app.config.dsg_kickdown_cooldown_secs,
                         0.0..=10.0,
                         0.5,
@@ -189,12 +192,12 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                     slider_row(
                         ui,
-                        "Downshift deadzone",
-                        "The highest the part-throttle rev target climbs to (% of the shift point) \
+                        tr("Downshift deadzone"),
+                        tr("The highest the part-throttle rev target climbs to (% of the shift point) \
                          as you press toward full throttle — the box keeps revs near it and drops a \
-                         gear when they fall below.",
-                        "Higher = revvier part-throttle, downshifts sooner; lower = lazier, holds \
-                         taller gears.",
+                         gear when they fall below."),
+                        tr("Higher = revvier part-throttle, downshifts sooner; lower = lazier, holds \
+                         taller gears."),
                         &mut app.config.dsg_downshift_deadzone_pct,
                         0.0..=90.0,
                         1.0,
@@ -203,12 +206,12 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                     slider_row(
                         ui,
-                        "Full throttle threshold",
-                        "The throttle % where the box switches from economical (revs up to the \
+                        tr("Full throttle threshold"),
+                        tr("The throttle % where the box switches from economical (revs up to the \
                          deadzone) to the full powerband (drops gears for power); below it stays \
-                         economical.",
-                        "Lower so full power needs less pedal; higher to stay economical until \
-                         nearly flat out.",
+                         economical."),
+                        tr("Lower so full power needs less pedal; higher to stay economical until \
+                         nearly flat out."),
                         &mut app.config.dsg_full_throttle_pct,
                         50.0..=100.0,
                         1.0,
@@ -218,11 +221,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 }
                 slider_row(
                     ui,
-                    "Powerband buffer",
-                    "Headroom below the shift point a downshift must leave, as % of that gear's rev \
+                    tr("Powerband buffer"),
+                    tr("Headroom below the shift point a downshift must leave, as % of that gear's rev \
                      jump — stops it dropping into a gear that lands near the limiter or hopping \
-                     gears. 0% = drop right up to the shift point.",
-                    "Higher = shallower, gentler downshifts; lower = deeper, more aggressive.",
+                     gears. 0% = drop right up to the shift point."),
+                    tr("Higher = shallower, gentler downshifts; lower = deeper, more aggressive."),
                     &mut app.config.dsg_downshift_powerband_buffer_pct,
                     0.0..=100.0,
                     1.0,
@@ -232,10 +235,10 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 if !is_race {
                     slider_row(
                         ui,
-                        "Kickdown powerband buffer",
-                        "Same as Powerband buffer but for full-throttle kickdowns — usually lower \
-                         so a kickdown grabs a gear deeper for power (unused in Race).",
-                        "Lower for deeper kickdowns; raise if they land too high / over-rev.",
+                        tr("Kickdown powerband buffer"),
+                        tr("Same as Powerband buffer but for full-throttle kickdowns — usually lower \
+                         so a kickdown grabs a gear deeper for power (unused in Race)."),
+                        tr("Lower for deeper kickdowns; raise if they land too high / over-rev."),
                         &mut app.config.dsg_kickdown_powerband_buffer_pct,
                         0.0..=100.0,
                         1.0,
@@ -250,17 +253,17 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.add_space(6.0);
                 ui.group(|ui| {
                     hover(
-                        ui.checkbox(&mut app.config.dsg_debug, "Debug"),
-                        "Shows the live decision state (current/target gear, redline, active rule, \
-                         cooldown, desyncs) and reveals the shift-log toggle.",
-                        "For tuning or diagnosing shifts.",
+                        ui.checkbox(&mut app.config.dsg_debug, tr("Debug")),
+                        tr("Shows the live decision state (current/target gear, redline, active rule, \
+                         cooldown, desyncs) and reveals the shift-log toggle."),
+                        tr("For tuning or diagnosing shifts."),
                     );
                     if app.config.dsg_debug {
                         hover(
-                            ui.checkbox(&mut app.config.dsg_log_shifts, "Log shifts to CSV"),
-                            "Appends every shift (pre/post RPM + speed, throttle, brake) to a CSV \
-                             for offline analysis; cleared on each launch.",
-                            "On to capture a session.",
+                            ui.checkbox(&mut app.config.dsg_log_shifts, tr("Log shifts to CSV")),
+                            tr("Appends every shift (pre/post RPM + speed, throttle, brake) to a CSV \
+                             for offline analysis; cleared on each launch."),
+                            tr("On to capture a session."),
                         );
                         if app.config.dsg_log_shifts {
                             ui.label(
@@ -281,7 +284,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                             .unwrap_or(false);
                         if recent_desync {
                             ui.label(
-                                RichText::new("Gear desync detected!")
+                                RichText::new(tr("Gear desync detected!"))
                                     .strong()
                                     .color(Color32::from_rgb(230, 90, 90)),
                             );
@@ -296,32 +299,32 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                             .num_columns(2)
                             .spacing([16.0, 2.0])
                             .show(ui, |ui| {
-                                ui.label("Engaged:");
-                                ui.label(if app.dsg.engaged { "yes" } else { "no (rev 1st & shift)" });
+                                ui.label(tr("Engaged:"));
+                                ui.label(if app.dsg.engaged { tr("yes") } else { tr("no (rev 1st & shift)") });
                                 ui.end_row();
-                                ui.label("Current gear:");
+                                ui.label(tr("Current gear:"));
                                 ui.label(format!("{cur_gear}"));
                                 ui.end_row();
-                                ui.label("Target gear:");
+                                ui.label(tr("Target gear:"));
                                 ui.label(format!("{}", app.dsg.dbg_desired_gear));
                                 ui.end_row();
-                                ui.label("Shifting to:");
+                                ui.label(tr("Shifting to:"));
                                 ui.label(match app.dsg.debug_expected() {
                                     Some(g) => format!("{g}"),
                                     None => "\u{2014}".to_string(),
                                 });
                                 ui.end_row();
-                                ui.label("Redline:");
+                                ui.label(tr("Redline:"));
                                 ui.label(format!("{:.0} RPM", app.dsg.dbg_effective_max_rpm));
                                 ui.end_row();
-                                ui.label("Upshift @:");
+                                ui.label(tr("Upshift @:"));
                                 ui.label(format!("{:.0} RPM", app.dsg.dbg_shift_threshold));
                                 ui.end_row();
-                                ui.label("Kickdown cooldown:");
+                                ui.label(tr("Kickdown cooldown:"));
                                 {
                                     let secs = app.dsg.dbg_kickdown_secs_left;
                                     let txt = if secs < 0.0 {
-                                        "waiting for release".to_string()
+                                        tr("waiting for release").to_string()
                                     } else if secs > 0.0 {
                                         format!("{secs:.1}s")
                                     } else {
@@ -330,7 +333,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                                     ui.label(txt);
                                 }
                                 ui.end_row();
-                                ui.label("Desyncs:");
+                                ui.label(tr("Desyncs:"));
                                 ui.label(format!("{}", app.dsg.desync_count));
                                 ui.end_row();
                             });
@@ -391,10 +394,10 @@ fn slider_row(
 fn hover(resp: egui::Response, what: &str, when: &str) -> egui::Response {
     resp.on_hover_ui(|ui| {
         ui.set_max_width(300.0);
-        ui.label(RichText::new("What it does").strong());
+        ui.label(RichText::new(tr("What it does")).strong());
         ui.label(what);
         ui.add_space(4.0);
-        ui.label(RichText::new("When to adjust").strong());
+        ui.label(RichText::new(tr("When to adjust")).strong());
         ui.label(when);
     })
 }
@@ -569,18 +572,18 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
                 1..=9 => desired.to_string(),
                 _ => "\u{2014}".to_string(),
             };
-            ui.label(RichText::new(format!("target {tg}")).monospace().size(13.0).color(VIZ_DIM));
+            ui.label(RichText::new(format!("{} {tg}", tr("target"))).monospace().size(13.0).color(VIZ_DIM));
             ui.label(
-                RichText::new(format!("{}  \u{00B7}  {}", mode.label(), rule))
+                RichText::new(format!("{}  \u{00B7}  {}", mode.label(), tr(rule)))
                     .monospace()
                     .size(12.0)
                     .color(VIZ_CYAN),
             );
             if app.dsg.engaged {
-                ui.label(RichText::new("\u{25CF} ENGAGED").monospace().size(11.0).color(VIZ_GREEN));
+                ui.label(RichText::new(tr("\u{25CF} ENGAGED")).monospace().size(11.0).color(VIZ_GREEN));
             } else {
                 ui.label(
-                    RichText::new("\u{25CB} idle \u{2014} rev 1st & shift")
+                    RichText::new(tr("\u{25CB} idle \u{2014} rev 1st & shift"))
                         .monospace()
                         .size(11.0)
                         .color(VIZ_DIM),
@@ -594,7 +597,7 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
 
     // ── Gear-range speed map (the key one) ──
     ui.label(
-        RichText::new("GEAR MAP \u{2014} each gear's speed range (downshift \u{2192} max)")
+        RichText::new(tr("GEAR MAP \u{2014} each gear's speed range (downshift \u{2192} max)"))
             .monospace()
             .size(11.0)
             .color(VIZ_DIM),
@@ -603,7 +606,7 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
 
     // ── Accelerator gamma curve + gear-selection overlay ──
     ui.label(
-        RichText::new("ACCEL \u{2192} GEAR \u{2014} gamma curve + selected gear at this speed")
+        RichText::new(tr("ACCEL \u{2192} GEAR \u{2014} gamma curve + selected gear at this speed"))
             .monospace()
             .size(11.0)
             .color(VIZ_DIM),
@@ -615,8 +618,8 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
     viz_gamma_gears(ui, app, gsize);
 
     // ── Inputs (gamma'd throttle over raw ghost, brake) ──
-    viz_input_bar(ui, "THR", eff_thr, accel, VIZ_GREEN);
-    viz_input_bar(ui, "BRK", brake, brake, VIZ_RED);
+    viz_input_bar(ui, tr("THR"), eff_thr, accel, VIZ_GREEN);
+    viz_input_bar(ui, tr("BRK"), brake, brake, VIZ_RED);
 
     // ── Indicator lamps ──
     ui.horizontal(|ui| {
@@ -624,15 +627,15 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
             let c = if on { col } else { Color32::from_gray(60) };
             ui.label(RichText::new(format!("\u{25CF} {label}")).monospace().size(11.0).color(c));
         };
-        lamp(ui, app.dsg.dbg_wheelspin, "SPIN", VIZ_RED);
-        lamp(ui, cooldown != 0.0, "KICK", VIZ_AMBER);
+        lamp(ui, app.dsg.dbg_wheelspin, tr("SPIN"), VIZ_RED);
+        lamp(ui, cooldown != 0.0, tr("KICK"), VIZ_AMBER);
         if cooldown > 0.0 {
             ui.label(RichText::new(format!("{cooldown:.1}s")).monospace().size(11.0).color(VIZ_AMBER));
         } else if cooldown < 0.0 {
-            ui.label(RichText::new("armed").monospace().size(11.0).color(VIZ_AMBER));
+            ui.label(RichText::new(tr("armed")).monospace().size(11.0).color(VIZ_AMBER));
         }
         let dsync = app.dsg.last_desync.map(|t| t.elapsed().as_secs_f32() < 1.5).unwrap_or(false);
-        lamp(ui, dsync, "DESYNC", VIZ_RED);
+        lamp(ui, dsync, tr("DESYNC"), VIZ_RED);
     });
 }
 
@@ -697,7 +700,7 @@ fn viz_gear_map(
         p.text(
             r.center(),
             egui::Align2::CENTER_CENTER,
-            "no calibration yet",
+            tr("no calibration yet"),
             egui::FontId::monospace(12.0),
             VIZ_DIM,
         );

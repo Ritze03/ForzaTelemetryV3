@@ -11,6 +11,7 @@ use crate::app::{
 use crate::config::{
     GameMode, SprintType, TextAlign, TireDisplayStyle, TireSlipStyle, WidgetKind, WidgetLayout,
 };
+use crate::i18n::tr;
 use crate::packet::ForzaPacket;
 
 const RESIZE_STRIP: f32 = 8.0;
@@ -19,9 +20,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     let Some(pkt) = app.telemetry.latest.clone() else {
         ui.centered_and_justified(|ui| {
             ui.label(
-                RichText::new(
+                RichText::new(tr(
                     "Waiting for telemetry…\n\nEnable Data Out in Forza:\nSETTINGS → HUD AND GAMEPLAY → Data Out",
-                )
+                ))
                 .size(18.0)
                 .color(Color32::GRAY),
             );
@@ -552,7 +553,7 @@ fn show_gear_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     p.text(
         pos2(avail.left() + 4.0, avail.bottom() - 4.0),
         egui::Align2::LEFT_BOTTOM,
-        "Gear",
+        tr("Gear"),
         egui::FontId::proportional(12.0),
         legend_color,
     );
@@ -573,12 +574,12 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        ui.label(RichText::new(format!("RPM: {:>5.0}", pkt.current_engine_rpm))
+        ui.label(RichText::new(format!("{}: {:>5.0}", tr("RPM"), pkt.current_engine_rpm))
             .size(rpm_font).strong());
     });
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        ui.label(RichText::new(format!("max: {:>5.0}", max_rpm))
+        ui.label(RichText::new(format!("{}: {:>5.0}", tr("max"), max_rpm))
             .size((rpm_font * 0.45).max(9.0)).color(Color32::GRAY));
     });
 
@@ -598,16 +599,16 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 // ── Block renderers (unchanged) ────────────────────────────────────
 
 fn show_inputs_block(ui: &mut Ui, _app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading("Inputs");
+    ui.heading(tr("Inputs"));
     ui.add_space(4.0);
 
-    input_bar(ui, "Accel",     pkt.accel,      Color32::from_rgb(60, 200, 90));
-    input_bar(ui, "Brake",     pkt.brake,      Color32::from_rgb(220, 60, 60));
-    input_bar(ui, "Clutch",    pkt.clutch,     Color32::from_rgb(80, 140, 220));
-    input_bar(ui, "HandBrake", pkt.hand_brake, Color32::from_rgb(230, 150, 40));
+    input_bar(ui, tr("Accel"),     pkt.accel,      Color32::from_rgb(60, 200, 90));
+    input_bar(ui, tr("Brake"),     pkt.brake,      Color32::from_rgb(220, 60, 60));
+    input_bar(ui, tr("Clutch"),    pkt.clutch,     Color32::from_rgb(80, 140, 220));
+    input_bar(ui, tr("HandBrake"), pkt.hand_brake, Color32::from_rgb(230, 150, 40));
 
     ui.add_space(6.0);
-    ui.label("Steer");
+    ui.label(tr("Steer"));
     draw_steering(ui, pkt.steer);
 }
 
@@ -615,21 +616,21 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     // Capture the full widget rect before the heading consumes any space.
     let full_rect = ui.available_rect_before_wrap();
 
-    ui.heading("Car");
+    ui.heading(tr("Car"));
     ui.add_space(4.0);
 
     let no_data = app.cached_car_class_str.is_empty();
     let line1 = if no_data {
-        "Class -- [---]".to_string()
+        format!("{} -- [---]", tr("Class"))
     } else {
-        format!("Class {} [{}]", app.cached_car_class_str, app.cached_car_pi)
+        format!("{} {} [{}]", tr("Class"), app.cached_car_class_str, app.cached_car_pi)
     };
     let line2 = if no_data {
         "XWD | ---".to_string()
     } else if app.cached_num_cylinders == 0 {
-        format!("{} | Electric", app.cached_drivetrain_str)
+        format!("{} | {}", app.cached_drivetrain_str, tr("Electric"))
     } else {
-        format!("{} | {} cyl", app.cached_drivetrain_str, app.cached_num_cylinders)
+        format!("{} | {} {}", app.cached_drivetrain_str, app.cached_num_cylinders, tr("cyl"))
     };
 
     // Center data lines in the full widget rect so they sit at the widget's
@@ -648,7 +649,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading("Engine");
+    ui.heading(tr("Engine"));
     ui.add_space(4.0);
 
     let (boost_cur, boost_max, boost_unit) = if app.config.use_bar {
@@ -658,24 +659,30 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     };
 
     ui.label(format!(
-        "Power:  {:>5.0} PS   (max {:>5.0})",
+        "{}  {:>5.0} PS   ({} {:>5.0})",
+        tr("Power:"),
         pkt.power_ps().max(0.0),
+        tr("max"),
         app.max_power_ps
     ));
     ui.label(format!(
-        "Torque: {:>5.0} Nm   (max {:>5.0})",
+        "{} {:>5.0} Nm   ({} {:>5.0})",
+        tr("Torque:"),
         pkt.torque_nm().max(0.0),
+        tr("max"),
         app.max_torque_nm
     ));
     ui.label(format!(
-        "Boost:  {:5.2} {boost_unit}  (max {:5.2})",
+        "{}  {:5.2} {boost_unit}  ({} {:5.2})",
+        tr("Boost:"),
         boost_cur.max(0.0),
+        tr("max"),
         boost_max.max(0.0)
     ));
 
     if app.config.game_mode == GameMode::ForzaMotorsport7 {
         ui.add_space(4.0);
-        ui.label(format!("Fuel:   {:.0}%", pkt.fuel * 100.0));
+        ui.label(format!("{}   {:.0}%", tr("Fuel:"), pkt.fuel * 100.0));
         ui.add(
             egui::ProgressBar::new(pkt.fuel)
                 .fill(Color32::from_rgb(60, 160, 240))
@@ -685,17 +692,17 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_position_block(ui: &mut Ui, pkt: &ForzaPacket) {
-    ui.heading("Position");
+    ui.heading(tr("Position"));
     ui.add_space(4.0);
     ui.columns(2, |cols| {
-        cols[0].label(RichText::new("Position").size(11.0).color(Color32::GRAY));
+        cols[0].label(RichText::new(tr("Position")).size(11.0).color(Color32::GRAY));
         cols[0].label(format!("X: {:>10.2} m", pkt.position_x));
         cols[0].label(format!("Y: {:>10.2} m", pkt.position_y));
         cols[0].label(format!("Z: {:>10.2} m", pkt.position_z));
-        cols[1].label(RichText::new("Rotation").size(11.0).color(Color32::GRAY));
-        cols[1].label(format!("Yaw:   {:>6.2}°", pkt.yaw.to_degrees()));
-        cols[1].label(format!("Pitch: {:>6.2}°", pkt.pitch.to_degrees()));
-        cols[1].label(format!("Roll:  {:>6.2}°", pkt.roll.to_degrees()));
+        cols[1].label(RichText::new(tr("Rotation")).size(11.0).color(Color32::GRAY));
+        cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Yaw")), pkt.yaw.to_degrees()));
+        cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Pitch")), pkt.pitch.to_degrees()));
+        cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Roll")), pkt.roll.to_degrees()));
     });
 }
 
@@ -703,7 +710,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
 
     if is_fh6 && pkt.race_position == 0 {
-        ui.heading("Sprint");
+        ui.heading(tr("Sprint"));
         ui.add_space(4.0);
 
         let st = &app.sprint_timer;
@@ -741,27 +748,27 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         sprint_row(ui, lbl3, st.three_to_four, c400, stype, show_other);
         sprint_row(ui, lbl4, st.four_to_five, c500, stype, show_other);
     } else {
-        ui.heading("Race");
+        ui.heading(tr("Race"));
         ui.add_space(4.0);
 
-        ui.label(format!("Position: P{}", pkt.race_position));
-        ui.label(format!("Lap:      {}", pkt.lap_number));
+        ui.label(format!("{} P{}", tr("Position:"), pkt.race_position));
+        ui.label(format!("{:<9} {}", tr("Lap:"), pkt.lap_number));
         ui.add_space(6.0);
-        ui.label(RichText::new(format!("Current   {}", fmt_lap(pkt.current_lap))).size(15.0));
-        ui.label(RichText::new(format!("Last      {}", fmt_lap(pkt.last_lap))).size(15.0));
+        ui.label(RichText::new(format!("{:<9} {}", tr("Current"), fmt_lap(pkt.current_lap))).size(15.0));
+        ui.label(RichText::new(format!("{:<9} {}", tr("Last"), fmt_lap(pkt.last_lap))).size(15.0));
         ui.label(
-            RichText::new(format!("Best      {}", fmt_lap(pkt.best_lap)))
+            RichText::new(format!("{:<9} {}", tr("Best"), fmt_lap(pkt.best_lap)))
                 .size(15.0)
                 .color(Color32::from_rgb(255, 210, 40)),
         );
         ui.add_space(8.0);
-        ui.label(format!("Race time: {}", fmt_lap(pkt.current_race_time)));
-        ui.label(format!("Distance:  {:.1} km", pkt.distance_traveled / 1000.0));
+        ui.label(format!("{} {}", tr("Race time:"), fmt_lap(pkt.current_race_time)));
+        ui.label(format!("{}  {:.1} km", tr("Distance:"), pkt.distance_traveled / 1000.0));
     }
 }
 
 fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading("Tires");
+    ui.heading(tr("Tires"));
     ui.add_space(4.0);
     match app.config.tire_display_style {
         TireDisplayStyle::Separate => show_tires_separate(ui, app, pkt),
@@ -784,14 +791,14 @@ fn show_tires_separate(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             }
             ui.end_row();
 
-            ui.label("Temp");
+            ui.label(tr("Temp"));
             tire_temp_label(ui, pkt.tire_temp_fl, use_f);
             tire_temp_label(ui, pkt.tire_temp_fr, use_f);
             tire_temp_label(ui, pkt.tire_temp_rl, use_f);
             tire_temp_label(ui, pkt.tire_temp_rr, use_f);
             ui.end_row();
 
-            ui.label("Slip");
+            ui.label(tr("Slip"));
             for &slip in &[
                 pkt.tire_combined_slip_fl,
                 pkt.tire_combined_slip_fr,
@@ -807,7 +814,7 @@ fn show_tires_separate(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             ui.end_row();
 
             let water_icon = |v: i32| if v != 0 { crate::icons::TINT } else { "  " };
-            ui.label("Water");
+            ui.label(tr("Water"));
             ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_fl));
             ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_fr));
             ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_rl));
@@ -816,7 +823,7 @@ fn show_tires_separate(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
             if !is_fh6 {
                 let rumble = |v: i32| if v != 0 { crate::icons::CIRCLE } else { "  " };
-                ui.label("Rumble");
+                ui.label(tr("Rumble"));
                 ui.label(rumble(pkt.wheel_on_rumble_strip_fl));
                 ui.label(rumble(pkt.wheel_on_rumble_strip_fr));
                 ui.label(rumble(pkt.wheel_on_rumble_strip_rl));
@@ -898,7 +905,7 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading("G-Forces");
+    ui.heading(tr("G-Forces"));
     ui.add_space(4.0);
 
     let lat = pkt.acceleration_x / 9.81;
@@ -927,23 +934,23 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         draw_gforce_plot(ui, lat, lon, &app.gforce_stats, plot_size);
         ui.add_space(gap);
         ui.vertical(|ui| {
-            ui.label(RichText::new("Current:").size(12.0).color(Color32::GRAY));
-            ui.label(format!("  Lat:  {:+.2} g", lat));
-            ui.label(format!("  Long: {:+.2} g", lon));
-            ui.label(format!("  Vert: {:+.2} g", vert));
+            ui.label(RichText::new(tr("Current:")).size(12.0).color(Color32::GRAY));
+            ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Lat")), lat));
+            ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Long")), lon));
+            ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Vert")), vert));
             ui.add_space(4.0);
-            ui.label(RichText::new("Peak:").size(12.0).color(Color32::GRAY));
+            ui.label(RichText::new(tr("Peak:")).size(12.0).color(Color32::GRAY));
             ui.colored_label(
                 Color32::YELLOW,
-                format!("  Lat:  {:.2} g", app.gforce_stats.max_lateral),
+                format!("  {:<5} {:.2} g", format!("{}:", tr("Lat")), app.gforce_stats.max_lateral),
             );
             ui.colored_label(
                 Color32::YELLOW,
-                format!("  Long: {:.2} g", app.gforce_stats.max_longitudinal),
+                format!("  {:<5} {:.2} g", format!("{}:", tr("Long")), app.gforce_stats.max_longitudinal),
             );
             ui.colored_label(
                 Color32::YELLOW,
-                format!("  Vert: {:.2} g", app.gforce_stats.max_vertical),
+                format!("  {:<5} {:.2} g", format!("{}:", tr("Vert")), app.gforce_stats.max_vertical),
             );
         });
     });
@@ -958,7 +965,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         pkt.normalized_suspension_travel_rr,
     ];
 
-    ui.heading("Suspension");
+    ui.heading(tr("Suspension"));
     ui.add_space(4.0);
 
     let avail_h  = ui.available_rect_before_wrap().height();
@@ -1015,9 +1022,9 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // ── Text rows: Cur / Min / Max ─────────────────────────────────
     let text_top = bar_top + bar_h + gap_h;
     let rows: [(&str, Color32, [String; 4]); 3] = [
-        ("Cur", gray,  travels.map(|v| format!("{:.2}", v))),
-        ("Min", red,   std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.min[i]) } else { "0.00".into() })),
-        ("Max", green, std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.max[i]) } else { "0.00".into() })),
+        (tr("Cur"), gray,  travels.map(|v| format!("{:.2}", v))),
+        (tr("Min"), red,   std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.min[i]) } else { "0.00".into() })),
+        (tr("Max"), green, std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.max[i]) } else { "0.00".into() })),
     ];
     for (row_i, (lbl, color, vals)) in rows.iter().enumerate() {
         let cy = text_top + (row_i as f32 + 0.5) * text_h;
@@ -1245,9 +1252,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         let (label, sub) = match &app.minimap_cache_progress {
             Some(in_progress) if !in_progress.is_empty() => {
                 let names = in_progress.join(", ");
-                ("Creating Map Cache", Some(format!("Processing: {}…", names)))
+                (tr("Creating Map Cache"), Some(format!("{}: {}…", tr("Processing"), names)))
             }
-            _ => ("Loading map…", None),
+            _ => (tr("Loading map…"), None),
         };
         p.text(
             center + vec2(0.0, 12.0),

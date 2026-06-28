@@ -1,25 +1,26 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
+use crate::i18n::tr;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    ui.heading("Engine Swap Reference");
+    ui.heading(tr("Engine Swap Reference"));
     ui.label(
-        RichText::new("Display-only reference table. All engines available in Forza Horizon 6.")
+        RichText::new(tr("Display-only reference table. All engines available in Forza Horizon 6."))
             .color(Color32::GRAY),
     );
     ui.add_space(8.0);
 
     ui.horizontal(|ui| {
-        ui.label(format!("{} Search:", crate::icons::SEARCH));
+        ui.label(format!("{} {}", crate::icons::SEARCH, tr("Search:")));
         ui.text_edit_singleline(&mut app.engine_search);
         if ui.small_button(crate::icons::TIMES).clicked() {
             app.engine_search.clear();
         }
         ui.label(
             RichText::new(format!(
-                "{} engines",
-                filtered_count(app)
+                "{} {}",
+                filtered_count(app), tr("engines")
             ))
             .color(Color32::GRAY),
         );
@@ -37,10 +38,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
                 // Header
-                ui.label(RichText::new("In-Game Label").strong());
-                ui.label(RichText::new("Source Vehicle").strong());
-                ui.label(RichText::new("Engine Name").strong());
-                ui.label(RichText::new("HP").strong());
+                ui.label(RichText::new(tr("In-Game Label")).strong());
+                ui.label(RichText::new(tr("Source Vehicle")).strong());
+                ui.label(RichText::new(tr("Engine Name")).strong());
+                ui.label(RichText::new(tr("HP")).strong());
                 ui.end_row();
 
                 for engine in &app.engines {

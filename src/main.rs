@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod engines;
+mod i18n;
 mod icons;
 mod input;
 mod listeners;

@@ -1,26 +1,27 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
+use crate::i18n::tr;
 
 pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("backfire_scroll")
         .show(ui, |ui| {
-            ui.heading("Backfire");
+            ui.heading(tr("Backfire"));
             ui.label(
-                RichText::new("Triggers Backfire by spamming 'W'")
+                RichText::new(tr("Triggers Backfire by spamming 'W'"))
                     .color(Color32::GRAY),
             );
             ui.add_space(8.0);
 
-            ui.checkbox(&mut app.config.backfire_enabled, "Enabled");
+            ui.checkbox(&mut app.config.backfire_enabled, tr("Enabled"));
             ui.add_space(4.0);
 
-            ui.checkbox(&mut app.config.backfire_dynamic_rpm, "Dynamic RPM");
+            ui.checkbox(&mut app.config.backfire_dynamic_rpm, tr("Dynamic RPM"));
             if app.config.backfire_dynamic_rpm {
                 ui.horizontal(|ui| {
-                    ui.label("Min:");
+                    ui.label(tr("Min:"));
                     ui.add(
                         egui::Slider::new(&mut app.config.backfire_dynamic_min_pct, 0.0..=100.0)
                             .suffix("%")
@@ -28,7 +29,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Max:");
+                    ui.label(tr("Max:"));
                     ui.add(
                         egui::Slider::new(&mut app.config.backfire_dynamic_max_pct, 0.0..=100.0)
                             .suffix("%")
@@ -37,15 +38,15 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 });
                 ui.label(
                     RichText::new(format!(
-                        "Range: {:.0} \u{2013} {:.0} RPM",
-                        app.backfire.last_min_rpm, app.backfire.last_max_rpm,
+                        "{}: {:.0} \u{2013} {:.0} RPM",
+                        tr("Range"), app.backfire.last_min_rpm, app.backfire.last_max_rpm,
                     ))
                     .size(11.0)
                     .color(Color32::GRAY),
                 );
             } else {
                 ui.horizontal(|ui| {
-                    ui.label("Min RPM:");
+                    ui.label(tr("Min RPM:"));
                     ui.add(
                         egui::DragValue::new(&mut app.config.backfire_min_rpm)
                             .range(0.0..=20000.0)
@@ -53,7 +54,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Max RPM:");
+                    ui.label(tr("Max RPM:"));
                     ui.add(
                         egui::DragValue::new(&mut app.config.backfire_max_rpm)
                             .range(0.0..=20000.0)
@@ -64,7 +65,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label("RPM interval:");
+                ui.label(tr("RPM interval:"));
                 ui.add(
                     egui::DragValue::new(&mut app.config.backfire_interval_rpm)
                         .range(0.0..=2000.0)
@@ -72,7 +73,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 );
             });
             ui.horizontal(|ui| {
-                ui.label("Key press duration:");
+                ui.label(tr("Key press duration:"));
                 ui.add(
                     egui::DragValue::new(&mut app.config.backfire_accel_time_ms)
                         .range(1..=50)
@@ -83,11 +84,11 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
             ui.add_space(4.0);
             ui.checkbox(
                 &mut app.config.backfire_disable_standstill,
-                "Disable if standing still",
+                tr("Disable if standing still"),
             );
             ui.checkbox(
                 &mut app.config.backfire_test_mode,
-                "Test mode (ignores throttle/RPM conditions)",
+                tr("Test mode (ignores throttle/RPM conditions)"),
             );
         });
 }

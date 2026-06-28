@@ -625,6 +625,7 @@ impl ForzaApp {
 
 impl eframe::App for ForzaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        crate::i18n::set_language(self.config.language);
         self.drain_packets();
 
         // Poll minimap image receiver — drain all pending messages this frame
@@ -759,18 +760,19 @@ impl eframe::App for ForzaApp {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 use crate::icons;
+                use crate::i18n::tr;
                 ui.selectable_value(&mut self.current_tab, Tab::Dashboard,
-                    format!("{} Dashboard", icons::DASHBOARD));
+                    format!("{} {}", icons::DASHBOARD, tr("Dashboard")));
                 ui.selectable_value(&mut self.current_tab, Tab::Backfire,
-                    format!("{} Backfire", icons::BOLT));
+                    format!("{} {}", icons::BOLT, tr("Backfire")));
                 ui.selectable_value(&mut self.current_tab, Tab::Gearbox,
-                    format!("{}  Automatic Gearbox", icons::GAMEPAD));
+                    format!("{}  {}", icons::GAMEPAD, tr("Automatic Gearbox")));
                 ui.selectable_value(&mut self.current_tab, Tab::PowerCurve,
-                    format!("{} Power Curve", icons::LINE_CHART));
+                    format!("{} {}", icons::LINE_CHART, tr("Power Curve")));
                 ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
-                    format!("{} Engine Swaps", icons::WRENCH));
+                    format!("{} {}", icons::WRENCH, tr("Engine Swaps")));
                 ui.selectable_value(&mut self.current_tab, Tab::Settings,
-                    format!("{} Settings", icons::COG));
+                    format!("{} {}", icons::COG, tr("Settings")));
             });
             ui.add_space(2.0);
         });
@@ -779,11 +781,12 @@ impl eframe::App for ForzaApp {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 use crate::icons;
+                use crate::i18n::tr;
                 // LEFT: connection status + pps
                 let (color, icon, text) = if self.telemetry.is_connected {
-                    (egui::Color32::from_rgb(60, 200, 90), icons::PLUG, "Connected")
+                    (egui::Color32::from_rgb(60, 200, 90), icons::PLUG, tr("Connected"))
                 } else {
-                    (egui::Color32::from_rgb(200, 60, 60), icons::NO_SIGNAL, " Disconnected")
+                    (egui::Color32::from_rgb(200, 60, 60), icons::NO_SIGNAL, tr(" Disconnected"))
                 };
                 ui.colored_label(color, format!("{icon} {text}"));
                 ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
@@ -831,6 +834,7 @@ impl eframe::App for ForzaApp {
                     ui.set_opacity(opacity);
                     use crate::config::{SpeedDeltaMode, SprintType, TextAlign, TireSlipStyle};
                     use crate::icons;
+                    use crate::i18n::tr;
 
                     // Main tab row (no Settings tab here)
                     ui.horizontal(|ui| {
@@ -841,7 +845,7 @@ impl eframe::App for ForzaApp {
                             (Tab::PowerCurve,   "Power"),
                             (Tab::EngineSwaps,  "Engines"),
                         ] {
-                            ui.selectable_value(&mut self.page_settings_tab, tab, lbl);
+                            ui.selectable_value(&mut self.page_settings_tab, tab, tr(lbl));
                         }
                     });
                     ui.separator();
@@ -863,7 +867,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
-                                    ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, lbl);
+                                    ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
                                 }
                             });
                             ui.separator();
@@ -875,7 +879,7 @@ impl eframe::App for ForzaApp {
                                     let active = self.config.dashboard_edit_mode;
                                     let btn = ui.add(
                                         egui::Button::new(
-                                            egui::RichText::new(format!("{}  Edit Mode", crate::icons::PENCIL))
+                                            egui::RichText::new(format!("{}  {}", crate::icons::PENCIL, tr("Edit Mode")))
                                                 .color(if active {
                                                     egui::Color32::from_rgb(80, 150, 255)
                                                 } else {
@@ -893,20 +897,20 @@ impl eframe::App for ForzaApp {
                                     }
                                     ui.add_space(8.0);
 
-                                    ui.label("Grid columns:");
+                                    ui.label(tr("Grid columns:"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.grid_cols, 1..=40_usize),
                                     );
                                     ui.add_space(4.0);
-                                    ui.label("Grid rows:");
+                                    ui.label(tr("Grid rows:"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.grid_rows, 1..=40_usize),
                                     );
                                     ui.add_space(4.0);
-                                    ui.checkbox(&mut self.config.dashboard_show_grid, "Show grid");
-                                    ui.checkbox(&mut self.config.dashboard_show_outlines, "Show widget outlines");
+                                    ui.checkbox(&mut self.config.dashboard_show_grid, tr("Show grid"));
+                                    ui.checkbox(&mut self.config.dashboard_show_outlines, tr("Show widget outlines"));
                                     ui.add_space(8.0);
-                                    if ui.button("Reset Layout").clicked() {
+                                    if ui.button(tr("Reset Layout")).clicked() {
                                         self.config.dashboard_widgets =
                                             crate::config::default_widget_layout();
                                         self.config.save();
@@ -950,103 +954,103 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Kmh => {
                                     ui.horizontal(|ui| {
-                                        ui.label("Alignment:");
+                                        ui.label(tr("Alignment:"));
                                         egui::ComboBox::from_id_salt("speed_align")
                                             .selected_text(match self.config.speed_align {
-                                                TextAlign::Right            => "Right",
-                                                TextAlign::Center           => "Center",
-                                                TextAlign::RightPlaceholder => "Right w/ Placeholder",
+                                                TextAlign::Right            => tr("Right"),
+                                                TextAlign::Center           => tr("Center"),
+                                                TextAlign::RightPlaceholder => tr("Right w/ Placeholder"),
                                             })
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::Right,            "Right");
-                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::Center,           "Center");
-                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::RightPlaceholder, "Right w/ Placeholder");
+                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::Right,            tr("Right"));
+                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::Center,           tr("Center"));
+                                                ui.selectable_value(&mut self.config.speed_align, TextAlign::RightPlaceholder, tr("Right w/ Placeholder"));
                                             });
                                     });
                                     ui.add_space(8.0);
-                                    ui.checkbox(&mut self.config.show_speed_delta, "Show Accel/Decel Tracker");
+                                    ui.checkbox(&mut self.config.show_speed_delta, tr("Show Accel/Decel Tracker"));
                                     if self.config.show_speed_delta {
                                         ui.add_space(4.0);
                                         ui.horizontal(|ui| {
-                                            ui.label("Mode:");
+                                            ui.label(tr("Mode:"));
                                             egui::ComboBox::from_id_salt("speed_delta_mode")
                                                 .selected_text(match self.config.speed_delta_mode {
-                                                    SpeedDeltaMode::Track     => "Track (1s comparison)",
-                                                    SpeedDeltaMode::Calculate => "Calculate (frame-to-frame)",
+                                                    SpeedDeltaMode::Track     => tr("Track (1s comparison)"),
+                                                    SpeedDeltaMode::Calculate => tr("Calculate (frame-to-frame)"),
                                                 })
                                                 .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut self.config.speed_delta_mode, SpeedDeltaMode::Track,     "Track (1s comparison)");
-                                                    ui.selectable_value(&mut self.config.speed_delta_mode, SpeedDeltaMode::Calculate, "Calculate (frame-to-frame)");
+                                                    ui.selectable_value(&mut self.config.speed_delta_mode, SpeedDeltaMode::Track,     tr("Track (1s comparison)"));
+                                                    ui.selectable_value(&mut self.config.speed_delta_mode, SpeedDeltaMode::Calculate, tr("Calculate (frame-to-frame)"));
                                                 });
                                         });
                                     }
                                 }
                                 DashboardSubTab::Gear => {
                                     ui.horizontal(|ui| {
-                                        ui.label("Alignment:");
+                                        ui.label(tr("Alignment:"));
                                         egui::ComboBox::from_id_salt("gear_align")
                                             .selected_text(match self.config.gear_align {
-                                                TextAlign::Right | TextAlign::RightPlaceholder => "Right",
-                                                TextAlign::Center => "Center",
+                                                TextAlign::Right | TextAlign::RightPlaceholder => tr("Right"),
+                                                TextAlign::Center => tr("Center"),
                                             })
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.config.gear_align, TextAlign::Right,  "Right");
-                                                ui.selectable_value(&mut self.config.gear_align, TextAlign::Center, "Center");
+                                                ui.selectable_value(&mut self.config.gear_align, TextAlign::Right,  tr("Right"));
+                                                ui.selectable_value(&mut self.config.gear_align, TextAlign::Center, tr("Center"));
                                             });
                                     });
                                 }
                                 DashboardSubTab::SprintTimes => {
                                     ui.horizontal(|ui| {
-                                        ui.label("Type:");
+                                        ui.label(tr("Type:"));
                                         egui::ComboBox::from_id_salt("sprint_type")
                                             .selected_text(match self.config.sprint_type {
-                                                SprintType::Incremental => "Incremental (segment times)",
-                                                SprintType::Absolute    => "Absolute (0 to X times)",
+                                                SprintType::Incremental => tr("Incremental (segment times)"),
+                                                SprintType::Absolute    => tr("Absolute (0 to X times)"),
                                             })
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.config.sprint_type, SprintType::Incremental, "Incremental (segment times)");
-                                                ui.selectable_value(&mut self.config.sprint_type, SprintType::Absolute,    "Absolute (0 to X times)");
+                                                ui.selectable_value(&mut self.config.sprint_type, SprintType::Incremental, tr("Incremental (segment times)"));
+                                                ui.selectable_value(&mut self.config.sprint_type, SprintType::Absolute,    tr("Absolute (0 to X times)"));
                                             });
                                     });
                                     ui.add_space(8.0);
                                     ui.checkbox(&mut self.config.sprint_show_other,
-                                        "Show other type in parentheses");
+                                        tr("Show other type in parentheses"));
                                 }
                                 DashboardSubTab::Tires => {
                                     use crate::config::TireDisplayStyle;
                                     ui.horizontal(|ui| {
-                                        ui.label("Style:");
+                                        ui.label(tr("Style:"));
                                         egui::ComboBox::from_id_salt("tire_display_style")
                                             .selected_text(match self.config.tire_display_style {
-                                                TireDisplayStyle::Separate => "Separate",
-                                                TireDisplayStyle::Combined => "Combined",
+                                                TireDisplayStyle::Separate => tr("Separate"),
+                                                TireDisplayStyle::Combined => tr("Combined"),
                                             })
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Separate, "Separate");
-                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Combined, "Combined");
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Separate, tr("Separate"));
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Combined, tr("Combined"));
                                             });
                                     });
                                     if self.config.tire_display_style == TireDisplayStyle::Separate {
                                         ui.add_space(8.0);
                                         ui.horizontal(|ui| {
-                                            ui.label("Slip display style:");
+                                            ui.label(tr("Slip display style:"));
                                             egui::ComboBox::from_id_salt("tire_slip_style")
                                                 .selected_text(match self.config.tire_slip_style {
-                                                    TireSlipStyle::Values => "Values",
-                                                    TireSlipStyle::Graph  => "Graph",
-                                                    TireSlipStyle::Both   => "Both",
+                                                    TireSlipStyle::Values => tr("Values"),
+                                                    TireSlipStyle::Graph  => tr("Graph"),
+                                                    TireSlipStyle::Both   => tr("Both"),
                                                 })
                                                 .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Values, "Values");
-                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Graph,  "Graph");
-                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Both,   "Both");
+                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Values, tr("Values"));
+                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Graph,  tr("Graph"));
+                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Both,   tr("Both"));
                                                 });
                                         });
                                     }
                                 }
                                 DashboardSubTab::Rpm => {
                                     ui.horizontal(|ui| {
-                                        ui.label("Max RPM:");
+                                        ui.label(tr("Max RPM:"));
                                         egui::ComboBox::from_id_salt("page_max_rpm_mode_combo")
                                             .selected_text(self.config.max_rpm_mode.label())
                                             .show_ui(ui, |ui| {
@@ -1063,25 +1067,25 @@ impl eframe::App for ForzaApp {
                                             });
                                     });
                                     ui.label(
-                                        egui::RichText::new(
+                                        egui::RichText::new(tr(
                                             "Max RPM used for the RPM widget and shift indicator.",
-                                        )
+                                        ))
                                         .size(11.0)
                                         .color(egui::Color32::GRAY),
                                     );
                                 }
                                 DashboardSubTab::Shift => {
-                                    ui.label("Shift indicator thresholds (% of engine max RPM):");
+                                    ui.label(tr("Shift indicator thresholds (% of engine max RPM):"));
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
-                                        ui.label("Low (warn):");
+                                        ui.label(tr("Low (warn):"));
                                         ui.add(
                                             egui::Slider::new(&mut self.config.shift_low_pct, 50.0..=99.0)
                                                 .suffix("%"),
                                         );
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label("High (shift):");
+                                        ui.label(tr("High (shift):"));
                                         ui.add(
                                             egui::Slider::new(&mut self.config.shift_high_pct, 51.0..=100.0)
                                                 .suffix("%"),
@@ -1090,7 +1094,7 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.config.minimap_fps_limit_enabled, "Render FPS limit:");
+                                        ui.checkbox(&mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit:"));
                                         if self.config.minimap_fps_limit_enabled {
                                             ui.add(
                                                 egui::Slider::new(&mut self.config.minimap_fps_limit, 5.0..=120.0)
@@ -1099,30 +1103,30 @@ impl eframe::App for ForzaApp {
                                             );
                                         }
                                     });
-                                    ui.checkbox(&mut self.config.minimap_smooth_rotation, "Smooth rotation");
-                                    ui.checkbox(&mut self.config.minimap_use_movement_dir, "Use movement direction as rotation");
-                                    ui.checkbox(&mut self.config.minimap_mirror_edges, "Mirror map at edges");
+                                    ui.checkbox(&mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
+                                    ui.checkbox(&mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
+                                    ui.checkbox(&mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
                                     ui.add_space(4.0);
-                                    ui.label("Zoom when driving (radius, metres):");
+                                    ui.label(tr("Zoom when driving (radius, metres):"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.minimap_zoom_driving_m, 50.0..=3000.0)
                                             .suffix(" m"),
                                     );
                                     ui.add_space(4.0);
-                                    ui.label("Zoom when stopped (radius, metres):");
+                                    ui.label(tr("Zoom when stopped (radius, metres):"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.minimap_zoom_stopped_m, 500.0..=6000.0)
                                             .suffix(" m"),
                                     );
                                     ui.add_space(8.0);
-                                    ui.label("Image quality:");
+                                    ui.label(tr("Image quality:"));
                                     ui.horizontal(|ui| {
                                         ui.add(
                                             egui::Slider::new(&mut self.config.minimap_quality, 20.0..=100.0)
                                                 .step_by(5.0)
                                                 .suffix("%"),
                                         );
-                                        if ui.button("Reload Map").clicked() {
+                                        if ui.button(tr("Reload Map")).clicked() {
                                             let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
                                             let s = current_season();
                                             let q = self.config.minimap_quality;
@@ -1131,7 +1135,7 @@ impl eframe::App for ForzaApp {
                                             self.minimap_img_receiver = Some(map_rx);
                                             self.minimap_loaded_season = s;
                                         }
-                                        if ui.button("Rebuild Map Cache").clicked() {
+                                        if ui.button(tr("Rebuild Map Cache")).clicked() {
                                             let cache_dir = crate::config::app_data_dir().join("map_cache");
                                             let _ = std::fs::remove_dir_all(&cache_dir);
                                             let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
@@ -1145,24 +1149,24 @@ impl eframe::App for ForzaApp {
                                         }
                                     });
                                     ui.label(
-                                        egui::RichText::new("100% = full resolution; lower = faster load. Cache makes repeat loads near-instant.")
+                                        egui::RichText::new(tr("100% = full resolution; lower = faster load. Cache makes repeat loads near-instant."))
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );
                                     ui.add_space(8.0);
-                                    ui.collapsing("Advanced calibration", |ui| {
+                                    ui.collapsing(tr("Advanced calibration"), |ui| {
                                         ui.add_space(4.0);
                                         ui.label(
-                                            egui::RichText::new(
+                                            egui::RichText::new(tr(
                                                 "Tune if the car dot is misaligned with the map.\n\
                                                  Default values are derived from in-game reference points."
-                                            )
+                                            ))
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                         );
                                         ui.add_space(6.0);
                                         ui.horizontal(|ui| {
-                                            ui.label("Pixels per metre:");
+                                            ui.label(tr("Pixels per metre:"));
                                             ui.add(
                                                 egui::DragValue::new(&mut self.config.minimap_px_per_m)
                                                     .speed(0.001)
@@ -1170,21 +1174,21 @@ impl eframe::App for ForzaApp {
                                             );
                                         });
                                         ui.horizontal(|ui| {
-                                            ui.label("World origin X (m at pixel 0):");
+                                            ui.label(tr("World origin X (m at pixel 0):"));
                                             ui.add(
                                                 egui::DragValue::new(&mut self.config.minimap_world_origin_x)
                                                     .speed(10.0),
                                             );
                                         });
                                         ui.horizontal(|ui| {
-                                            ui.label("World origin Z (m at pixel 0):");
+                                            ui.label(tr("World origin Z (m at pixel 0):"));
                                             ui.add(
                                                 egui::DragValue::new(&mut self.config.minimap_world_origin_z)
                                                     .speed(10.0),
                                             );
                                         });
                                         ui.add_space(4.0);
-                                        if ui.button("Reset to defaults").clicked() {
+                                        if ui.button(tr("Reset to defaults")).clicked() {
                                             self.config.minimap_px_per_m = 0.3722;
                                             self.config.minimap_world_origin_x = -12540.0;
                                             self.config.minimap_world_origin_z = 10738.0;
@@ -1195,7 +1199,7 @@ impl eframe::App for ForzaApp {
                         }
                         Tab::PowerCurve => {
                             ui.horizontal(|ui| {
-                                ui.label("RPM step size:");
+                                ui.label(tr("RPM step size:"));
                                 ui.add(
                                     egui::Slider::new(&mut self.config.power_curve_step, 25.0..=500.0)
                                         .step_by(25.0)
@@ -1205,14 +1209,14 @@ impl eframe::App for ForzaApp {
                             ui.add_space(8.0);
                             ui.checkbox(
                                 &mut self.config.power_curve_forced_induction,
-                                "Forced induction detection",
+                                tr("Forced induction detection"),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new(
+                                egui::RichText::new(tr(
                                     "ON: hide boost graph if no positive pressure was captured.\n\
                                      OFF: always show the boost graph."
-                                )
+                                ))
                                 .size(11.0)
                                 .color(egui::Color32::GRAY),
                             );
@@ -1220,14 +1224,14 @@ impl eframe::App for ForzaApp {
                                 ui.add_space(8.0);
                                 ui.checkbox(
                                     &mut self.config.power_curve_save_fi_state,
-                                    "Save Forced Induction State",
+                                    tr("Save Forced Induction State"),
                                 );
                                 ui.add_space(4.0);
                                 ui.label(
-                                    egui::RichText::new(
+                                    egui::RichText::new(tr(
                                         "Keep the boost graph visible after clearing data,\n\
                                          if FI was detected at least once for this car."
-                                    )
+                                    ))
                                     .size(11.0)
                                     .color(egui::Color32::GRAY),
                                 );
@@ -1236,14 +1240,14 @@ impl eframe::App for ForzaApp {
                         Tab::Gearbox => {
                             ui.checkbox(
                                 &mut self.config.dsg_show_debug_panel,
-                                "Show debug panel",
+                                tr("Show debug panel"),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new(
+                                egui::RichText::new(tr(
                                     "Shows the gearbox Debug box (live decision state + shift log) \
                                      in the controls column."
-                                )
+                                ))
                                 .size(11.0)
                                 .color(egui::Color32::GRAY),
                             );
@@ -1251,7 +1255,7 @@ impl eframe::App for ForzaApp {
                         _ => {
                             ui.centered_and_justified(|ui| {
                                 ui.label(
-                                    egui::RichText::new("No options for this page")
+                                    egui::RichText::new(tr("No options for this page"))
                                         .color(egui::Color32::GRAY),
                                 );
                             });
