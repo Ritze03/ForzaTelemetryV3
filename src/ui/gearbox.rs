@@ -157,13 +157,9 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     "",
                 );
 
-                if is_race {
-                    ui.label(
-                        RichText::new("Race holds the full powerband — no cruise target.")
-                            .size(10.0)
-                            .color(Color32::GRAY),
-                    );
-                } else {
+                // Race ignores the cruise/deadzone settings entirely (explained in the Gearbox
+                // mode tooltip), so these rows are simply hidden.
+                if !is_race {
                     slider_row(
                         ui,
                         "Cruise RPM",
