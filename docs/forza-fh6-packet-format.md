@@ -97,7 +97,7 @@ F32 SuspensionTravelMetersRearRight
 
 // Car identity
 S32 CarOrdinal             // unique car make/model ID
-S32 CarClass               // 0=D, 1=C, 2=B, 3=A, 4=S1, 5=S2, 6=X
+S32 CarClass               // 0=D, 1=C, 2=B, 3=A, 4=S1, 5=S2, 6=R, 7=X
 S32 CarPerformanceIndex    // 100 (worst) to 999 (best)
 S32 DrivetrainType         // 0=FWD, 1=RWD, 2=AWD
 S32 NumCylinders
