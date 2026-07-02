@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -159,6 +160,35 @@ pub fn default_widget_layout() -> Vec<WidgetLayout> {
 
 // ──────────────────────────────────────────────────────────────────
 
+/// Saved DSG calibration for one car. The full CarOrdinal → CarCalibration map lives in its
+/// own file (`automatic-gearbox-saved-calibrations.json`), separate from config.json.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct CarCalibration {
+    pub gear_redline_speeds: [f32; 11],
+    pub max_rpm: f32,
+}
+
+fn car_calibrations_path() -> PathBuf {
+    app_data_dir().join("automatic-gearbox-saved-calibrations.json")
+}
+
+pub fn load_car_calibrations() -> HashMap<i32, CarCalibration> {
+    std::fs::read_to_string(car_calibrations_path())
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
+    let path = car_calibrations_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    if let Ok(data) = serde_json::to_string_pretty(map) {
+        std::fs::write(&path, data).ok();
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub listen_port: u16,
@@ -246,6 +276,7 @@ pub struct AppConfig {
     pub dsg_debug: bool,
     pub dsg_show_debug_panel: bool, // show the gearbox Debug box at all (toggled from the status-bar cog)
     pub dsg_log_shifts: bool, // append each shift (pre/post RPM + speed, inputs) to a CSV for analysis
+    pub dsg_save_calibration: bool, // opt-in: persist per-car calibration and auto-load it (skips the manual 1st-gear pull)
     // Max-RPM source for the dashboard RPM widget
     pub max_rpm_mode: MaxRpmSource,
     // Acceleration / deceleration test parameters
@@ -328,6 +359,7 @@ impl Default for AppConfig {
             dsg_debug: false,
             dsg_show_debug_panel: false,
             dsg_log_shifts: false,
+            dsg_save_calibration: false,
             max_rpm_mode: MaxRpmSource::GameProvided,
             accel_start_kmh: 0.0,
             accel_end_kmh: 100.0,

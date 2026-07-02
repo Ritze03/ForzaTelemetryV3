@@ -304,6 +304,15 @@ fn de(s: &str) -> Option<&'static str> {
         "Active:" => "Aktiv:",
         " (race detected)" => " (Rennen erkannt)",
         "Clear calibration" => "Kalibrierung löschen",
+        "Remember calibration per car" => "Kalibrierung pro Auto merken",
+        "Saves each car's measured gear speeds and redline. When you get back into \
+                     a saved car, the calibration loads automatically and the manual first-gear \
+                     pull is no longer needed." =>
+            "Speichert die gemessenen Gang-Geschwindigkeiten und die Maximaldrehzahl jedes Autos. \
+             Steigst du wieder in ein gespeichertes Auto, wird die Kalibrierung automatisch \
+             geladen und der manuelle Zug im ersten Gang ist nicht mehr nötig.",
+        "On to calibrate each car only once; off to recalibrate every session." =>
+            "An, um jedes Auto nur einmal zu kalibrieren; aus, um jede Sitzung neu zu kalibrieren.",
 
         // ── Gearbox tab: Advanced ──────────────────────────────────────
         "Advanced Settings" => "Erweiterte Einstellungen",

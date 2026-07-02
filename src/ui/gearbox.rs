@@ -126,15 +126,27 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     );
                 }
 
+                hover(
+                    ui.checkbox(&mut app.config.dsg_save_calibration, tr("Remember calibration per car")),
+                    tr("Saves each car's measured gear speeds and redline. When you get back into \
+                     a saved car, the calibration loads automatically and the manual first-gear \
+                     pull is no longer needed."),
+                    tr("On to calibrate each car only once; off to recalibrate every session."),
+                );
+
                 // Calibration is shown live in the gear map on the right — just the reset here.
                 if app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0) {
                     ui.add_space(4.0);
                     if ui.button(tr("Clear calibration")).clicked() {
                         // Full wipe — same as a car change: gear data, detected redline and the
                         // engaged flag go back to zero, so a fresh manual first-gear pull is needed.
+                        // Also forget the saved profile, or it would silently reload.
                         app.dsg.reset_calibration();
                         app.dsg.reset_state();
                         app.dynamic_max_rpm = 0.0;
+                        if app.car_calibrations.remove(&app.last_car_ordinal).is_some() {
+                            crate::config::save_car_calibrations(&app.car_calibrations);
+                        }
                     }
                 }
             });

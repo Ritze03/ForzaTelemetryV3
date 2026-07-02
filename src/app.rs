@@ -1,10 +1,12 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{Context, Pos2, Vec2};
 
-use crate::config::{AppConfig, SpeedDeltaMode};
+use crate::config::{
+    load_car_calibrations, save_car_calibrations, AppConfig, CarCalibration, SpeedDeltaMode,
+};
 use crate::engines::{load_engines, EngineRecord};
 use crate::input::InputSender;
 use crate::listeners::backfire::BackfireListener;
@@ -331,6 +333,10 @@ pub struct ForzaApp {
     pub last_car_ordinal: i32,
     pub last_packet_time: Option<Instant>,
 
+    /// Saved per-car DSG calibrations (own file, not config.json). Used only when
+    /// `config.dsg_save_calibration` is on.
+    pub car_calibrations: HashMap<i32, CarCalibration>,
+
     // Session maxima (reset on car change)
     pub max_power_ps:  f32,
     pub max_torque_nm: f32,
@@ -445,6 +451,7 @@ impl ForzaApp {
             pending_port,
             last_car_ordinal: 0,
             last_packet_time: None,
+            car_calibrations: load_car_calibrations(),
             max_power_ps: 0.0,
             max_torque_nm: 0.0,
             max_boost_psi: 0.0,
@@ -522,6 +529,17 @@ impl ForzaApp {
                 self.cached_engine_max_rpm = 0.0;
                 self.fi_detected = false;
                 self.dynamic_max_rpm = 0.0;
+
+                // Opt-in: flush saved calibrations to disk (car change is a natural checkpoint),
+                // then restore the new car's profile and skip the manual 1st→2nd pull.
+                if self.config.dsg_save_calibration {
+                    save_car_calibrations(&self.car_calibrations);
+                    if let Some(cal) = self.car_calibrations.get(&pkt.car_ordinal) {
+                        self.dsg.gear_redline_speeds = cal.gear_redline_speeds;
+                        self.dsg.engaged = true;
+                        self.dynamic_max_rpm = cal.max_rpm;
+                    }
+                }
             }
 
             // Session maxima + cache car identity
@@ -606,6 +624,18 @@ impl ForzaApp {
             self.perf_test.update(&pkt, accel_s, accel_e, decel_s, decel_e);
             self.backfire.update(&pkt, &fun_cfg, &self.input);
             self.dsg.update(&pkt, &fun_cfg, &self.input, self.dynamic_max_rpm);
+
+            // Opt-in: keep the in-memory per-car calibration current; it's written to its own
+            // file on car change and on exit.
+            if self.config.dsg_save_calibration
+                && pkt.car_ordinal != 0
+                && self.dsg.gear_redline_speeds[1] > 0.0
+            {
+                self.car_calibrations.insert(pkt.car_ordinal, CarCalibration {
+                    gear_redline_speeds: self.dsg.gear_redline_speeds,
+                    max_rpm: self.dynamic_max_rpm,
+                });
+            }
 
             self.telemetry.update(pkt);
 
@@ -1310,5 +1340,8 @@ impl eframe::App for ForzaApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.config.save();
+        if self.config.dsg_save_calibration {
+            save_car_calibrations(&self.car_calibrations);
+        }
     }
 }

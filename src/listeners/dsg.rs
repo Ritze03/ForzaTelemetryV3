@@ -59,7 +59,8 @@ struct PendingLog {
 
 pub struct DsgListener {
     /// Extrapolated speed at full redline (100% RPM) per gear index (0 unused; gears 1–10).
-    /// The actual shift-point speed is derived live as `* (shift_rpm_pct/100)`. Session-only.
+    /// The actual shift-point speed is derived live as `* (shift_rpm_pct/100)`. Session-only
+    /// unless `dsg_save_calibration` is on — then app.rs persists/restores it per CarOrdinal.
     pub gear_redline_speeds: [f32; 11],
     /// Last ≤10 valid redline-speed estimates per gear; the committed value is their median.
     /// Never locked — the median keeps updating so a wrong value self-corrects.
