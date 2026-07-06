@@ -172,6 +172,25 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     "",
                 );
 
+                // Race-only: gear overlap (the other modes get their hysteresis from the cruise
+                // deadzone instead).
+                if is_race {
+                    slider_row(
+                        ui,
+                        tr("Gear overlap"),
+                        tr("Extends each gear's speed range downward past the previous gear's end \
+                         (%-points of max RPM). Stops the box dropping straight back down when a \
+                         long gear or slow shift bleeds speed right after an upshift."),
+                        tr("Raise if it hunts up/down after upshifts (long gears, slow boxes); \
+                         0 for the old exact tiling."),
+                        &mut app.config.dsg_race_gear_overlap_pct,
+                        0.0..=30.0,
+                        1.0,
+                        1,
+                        "%",
+                    );
+                }
+
                 // Race ignores the cruise/deadzone settings entirely (explained in the Gearbox
                 // mode tooltip), so these rows are simply hidden.
                 if !is_race {
@@ -614,7 +633,17 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
             .size(11.0)
             .color(VIZ_DIM),
     );
-    viz_gear_map(ui, &redlines, shift_pct, down0_frac, is_race_mode, kmh, gear, desired);
+    viz_gear_map(
+        ui,
+        &redlines,
+        shift_pct,
+        down0_frac,
+        is_race_mode,
+        app.config.dsg_race_gear_overlap_pct,
+        kmh,
+        gear,
+        desired,
+    );
 
     // ── Accelerator gamma curve + gear-selection overlay ──
     ui.label(
@@ -695,6 +724,7 @@ fn viz_gear_map(
     shift_pct: f32,
     down0_frac: f32,
     is_race: bool,
+    race_overlap_pct: f32,
     kmh: f32,
     cur_gear: i32,
     desired: i32,
@@ -721,13 +751,14 @@ fn viz_gear_map(
     }
 
     // Max speed in a gear = its shift-point speed. Downshift speed (range start) = the cruise
-    // downshift fraction of that for normal modes; Race tiles at the shift points (no hysteresis).
+    // downshift fraction of that for normal modes; Race tiles at the shift points, extended
+    // downward by the Gear overlap (the previous gear's speed at shift% − overlap%-points).
     let up = |g: i32| redlines[g as usize] * shift_pct / 100.0;
     let lo = |g: i32| -> f32 {
         if g <= 1 {
             0.0
         } else if is_race {
-            up(g - 1)
+            redlines[(g - 1) as usize] * (shift_pct - race_overlap_pct).max(0.0) / 100.0
         } else {
             down0_frac * up(g)
         }

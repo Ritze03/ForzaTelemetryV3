@@ -316,6 +316,18 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Gearbox tab: Advanced ──────────────────────────────────────
         "Advanced Settings" => "Erweiterte Einstellungen",
+        "Gear overlap" => "Gang-Überlappung",
+        "Extends each gear's speed range downward past the previous gear's end \
+                         (%-points of max RPM). Stops the box dropping straight back down when a \
+                         long gear or slow shift bleeds speed right after an upshift." =>
+            "Erweitert den Geschwindigkeitsbereich jedes Gangs nach unten über das Ende des \
+             vorherigen Gangs hinaus (%-Punkte der Maximaldrehzahl). Verhindert, dass das Getriebe \
+             direkt wieder herunterschaltet, wenn ein langer Gang oder ein langsamer Schaltvorgang \
+             kurz nach dem Hochschalten Geschwindigkeit kostet.",
+        "Raise if it hunts up/down after upshifts (long gears, slow boxes); \
+                         0 for the old exact tiling." =>
+            "Erhöhen, wenn es nach dem Hochschalten hin- und herpendelt (lange Gänge, langsame \
+             Getriebe); 0 für die alte exakte Aufteilung.",
         "Accelerator gamma" => "Gaspedal-Gamma",
         "Reshapes the pedal the box reacts to (effective = pedal^gamma). >1 softens the \
                      first part of the pedal (real-car feel), <1 sharpens it; the ends are \
@@ -432,6 +444,7 @@ fn de(s: &str) -> Option<&'static str> {
         "standstill \u{2192} 1st" => "Stillstand \u{2192} 1.",
         "calibrating (hold)" => "kalibriere (halten)",
         "wheelspin (hold)" => "Radschlupf (halten)",
+        "airborne (hold)" => "in der Luft (halten)",
         "redline upshift" => "Limit-Hochschalten",
         "cruise upshift" => "Cruise-Hochschalten",
         "kickdown" => "Kickdown",

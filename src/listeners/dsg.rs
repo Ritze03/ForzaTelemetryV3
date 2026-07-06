@@ -34,6 +34,9 @@ const CRUISE_HYSTERESIS: f32 = 0.10;
 /// Engine RPM above this multiple of the road-speed-implied RPM means the wheels are spinning;
 /// the speed-based gear math is then garbage, so hold the gear until grip returns.
 const SPIN_RPM_FACTOR: f32 = 1.15;
+/// All four normalized suspension travels below this = airborne (0.0 is max stretch). Stricter
+/// than the calibration's ≥0.1 "springs loaded" gate: a jump fully extends every wheel.
+const AIRBORNE_SUSPENSION: f32 = 0.05;
 
 /// Shift execution state. While `Shifting` we wait for `expected` to appear (or time out)
 /// before commanding anything else — this avoids key spam and tolerates the brief "N" flash
@@ -401,6 +404,11 @@ impl DsgListener {
             } else {
                 cfg.dsg_downshift_powerband_buffer_pct / 100.0
             };
+            let landing_cap = if is_race {
+                shift - (cfg.dsg_race_gear_overlap_pct / 100.0).max(0.0) * eff_max
+            } else {
+                shift
+            };
             let mut target_gear = gear;
             let mut above_pred = pred_cur;
             for g in (1..gear).rev() {
@@ -408,12 +416,12 @@ impl DsgListener {
                     break;
                 };
                 let jump = (pred_g - above_pred).max(0.0);
-                if pred_g + buffer * jump >= shift {
+                if pred_g + buffer * jump >= landing_cap {
                     break;
                 }
                 target_gear = g;
                 above_pred = pred_g;
-                if pred_g >= target {
+                if pred_g >= down_point {
                     break;
                 }
             }
@@ -443,6 +451,20 @@ impl DsgListener {
         let throttle = curved_throttle(pkt, cfg);
         self.dbg_throttle = throttle;
         self.dbg_wheelspin = false;
+
+        // ── Airborne guard ─────────────────────────────────────────────────────
+        // All four wheels at (near) max suspension stretch = the car is in the air. Road speed
+        // and RPM are meaningless for gear choice up there, and shifting mid-flight unsettles
+        // the landing — hold whatever gear we're in until the wheels touch down. Checked before
+        // the standstill rule so a slow airborne car doesn't get slammed into 1st.
+        if pkt.normalized_suspension_travel_fl < AIRBORNE_SUSPENSION
+            && pkt.normalized_suspension_travel_fr < AIRBORNE_SUSPENSION
+            && pkt.normalized_suspension_travel_rl < AIRBORNE_SUSPENSION
+            && pkt.normalized_suspension_travel_rr < AIRBORNE_SUSPENSION
+        {
+            self.dbg_rule = "airborne (hold)";
+            return current_gear;
+        }
 
         // Stopped / crawling → 1st, ready to launch.
         if kmh < STANDSTILL_KMH {
@@ -563,6 +585,17 @@ impl DsgListener {
                 } else {
                     cfg.dsg_downshift_powerband_buffer_pct / 100.0
                 };
+                // Race gear overlap (#8): each gear's range extends DOWNWARD past the previous
+                // gear's end — a lower gear is only entered once it sits at least `overlap`
+                // %-points of max RPM below the shift point. Without it the ranges tile exactly
+                // at the shift points, so the speed bled during a slow/long upshift dropped the
+                // old gear just under the shift point and the box hopped straight back down.
+                let landing_cap = if is_race {
+                    shift_threshold
+                        - (cfg.dsg_race_gear_overlap_pct / 100.0).max(0.0) * effective_max_rpm
+                } else {
+                    shift_threshold
+                };
                 let mut target = current_gear;
                 // RPM of the gear directly above the candidate (starts at the current gear).
                 let mut above_pred = pred_cur;
@@ -570,21 +603,27 @@ impl DsgListener {
                     let Some(pred_g) = self.predicted_rpm(g, kmh, effective_max_rpm) else {
                         break; // uncalibrated lower gear → never drop into the unknown
                     };
-                    // The landing must clear the shift point by `buffer%` of the ADJACENT inter-gear
+                    // The landing must clear the landing cap by `buffer%` of the ADJACENT inter-gear
                     // RPM jump (this gear vs the one above it) — NOT the jump from the current gear.
                     // Using the from-current jump made a deep kickdown stop short (the big jump
                     // tripped the buffer), then drop again the next frame once the jump shrank — so
                     // 5th would stage into 3rd, then 2nd. The adjacent jump is path-independent, so
-                    // the box lands on the final gear in one go. Capping at the shift point (not the
-                    // redline) keeps the landing below the upshift trigger so it won't bounce up.
+                    // the box lands on the final gear in one go. The cap is the shift point (minus
+                    // the Race gear overlap), not the redline, so the landing stays below the
+                    // upshift trigger and won't bounce up.
                     let jump = (pred_g - above_pred).max(0.0);
-                    if pred_g + buffer * jump >= shift_threshold {
+                    if pred_g + buffer * jump >= landing_cap {
                         break; // this gear (and any deeper) breaches the buffer
                     }
                     target = g;
                     above_pred = pred_g;
-                    if pred_g >= target_rpm {
-                        break; // revs back up to the demand → no need to drop further
+                    // Stop at the first gear that clears the DOWN point, not the up target: a gear
+                    // inside the hysteresis band [down_point, target) is stable (it can't re-trigger
+                    // this downshift, and the gear above it just measured below the down point so
+                    // the cruise upshift won't bounce back). Requiring ≥ target skipped exactly
+                    // those gears and made every cruise downshift drop at least two gears (#6).
+                    if pred_g >= down_point {
+                        break; // revs recovered → no need to drop further
                     }
                 }
                 if target != current_gear {
@@ -705,5 +744,41 @@ mod tests {
         assert_eq!(gears[10], cruise_gear, "should still hold the cruise gear at 10% pedal");
         // (c) reaches a low kickdown gear at full throttle, but not below the powerband floor.
         assert!(gears[100] <= 3 && gears[100] >= 2, "full-throttle kickdown floor, got {}", gears[100]);
+    }
+
+    /// Issue #6: a cruise downshift must take the adjacent gear when it lands inside the
+    /// hysteresis band [down_point, target) — the old `>= target` stop condition skipped it
+    /// and always dropped at least two gears on close-ratio boxes.
+    #[test]
+    fn cruise_downshift_takes_single_gear() {
+        let mut dsg = DsgListener::new();
+        // Close-ratio upper gears (g4/g5 = 1.15) — the geometry that exposed the bug.
+        dsg.gear_redline_speeds = [0.0, 60.0, 100.0, 160.0, 200.0, 230.0, 264.5, 0.0, 0.0, 0.0, 0.0];
+        let mut cfg = AppConfig::default();
+        cfg.dsg_gearbox_mode = GearboxMode::Sport; // cruise 50%, deadzone 60%, full-thr 95%
+        // 104 km/h in 5th at 65% pedal: pred_5 ≈ 3165 < down_point ≈ 3213 (trigger), and
+        // pred_4 ≈ 3640 sits inside [down_point, target ≈ 3899) — 4th is the right answer.
+        let got = dsg.sim_step(5, 0.65, 104.0, 7000.0, &cfg, false);
+        assert_eq!(got, 4, "must downshift a single gear, not skip to 3rd");
+        // And 4th is stable — no follow-up hop in either direction.
+        assert_eq!(settle(&dsg, got, 0.65, 104.0, &cfg), 4);
+    }
+
+    /// Issue #8: in Race mode the gear overlap extends each gear downward, so the speed bled
+    /// during a slow upshift no longer drops the box straight back into the gear it just left.
+    #[test]
+    fn race_gear_overlap_prevents_downshift_hunt() {
+        let mut dsg = DsgListener::new();
+        dsg.gear_redline_speeds = [0.0, 60.0, 100.0, 160.0, 200.0, 230.0, 264.5, 0.0, 0.0, 0.0, 0.0];
+        let mut cfg = AppConfig::default();
+        cfg.dsg_gearbox_mode = GearboxMode::Race;
+        // Just upshifted 4th→5th and bled speed: at 188.2 km/h pred_4 ≈ 6586 = 0.96·shift,
+        // i.e. 4th sits only 4% under the shift point (6860).
+        let (gear, kmh) = (5, 188.2);
+        cfg.dsg_race_gear_overlap_pct = 10.0;
+        assert_eq!(dsg.sim_step(gear, 1.0, kmh, 7000.0, &cfg, false), 5, "overlap must hold 5th");
+        // With no overlap the ranges tile exactly and the old hunt reappears (slider semantics).
+        cfg.dsg_race_gear_overlap_pct = 0.0;
+        assert_eq!(dsg.sim_step(gear, 1.0, kmh, 7000.0, &cfg, false), 4, "0% = old exact tiling");
     }
 }
