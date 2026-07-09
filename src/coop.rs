@@ -529,104 +529,139 @@ fn cleanup_client(inner: &Arc<Mutex<Inner>>, id: &str) {
 // ── Client ─────────────────────────────────────────────────────────
 
 fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool>) {
-    // A fresh trycloudflare tunnel needs a few seconds for DNS/edge propagation,
-    // so a guest who joins immediately can miss on the first try — retry a few times.
+    // A fresh trycloudflare tunnel needs a few seconds for DNS/edge propagation, and
+    // quick tunnels can hiccup mid-session — so both the initial connect and any drop
+    // retry a few times before giving up.
     const ATTEMPTS: u32 = 6;
-    let mut ws = 'connect: loop {
-        let mut last_err = String::new();
-        for attempt in 1..=ATTEMPTS {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            match tungstenite::connect(&url) {
-                Ok((ws, _resp)) => break 'connect ws,
-                Err(e) => {
-                    last_err = e.to_string();
-                    let mut g = inner.lock().unwrap();
-                    g.status = format!("Connecting… (try {attempt}/{ATTEMPTS})");
-                    drop(g);
-                    if attempt < ATTEMPTS {
-                        std::thread::sleep(Duration::from_millis(1500));
+    let mut first = true;
+
+    'reconnect: loop {
+        // ── connect (with retry) ──
+        let mut ws = {
+            let mut last_err = String::new();
+            let mut connected = None;
+            for attempt in 1..=ATTEMPTS {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                match tungstenite::connect(&url) {
+                    Ok((w, _resp)) => {
+                        connected = Some(w);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = e.to_string();
+                        let verb = if first { "Connecting" } else { "Reconnecting" };
+                        inner.lock().unwrap().status = format!("{verb}… (try {attempt}/{ATTEMPTS})");
+                        if attempt < ATTEMPTS {
+                            std::thread::sleep(Duration::from_millis(1500));
+                        }
                     }
                 }
             }
+            match connected {
+                Some(w) => w,
+                None => {
+                    let mut g = inner.lock().unwrap();
+                    g.role = Role::Off;
+                    g.error = Some(format!("connect failed: {last_err}"));
+                    g.status = "Disconnected".into();
+                    return;
+                }
+            }
+        };
+        set_client_timeout(&mut ws, Some(Duration::from_millis(20)));
+
+        // Say hello; a failure here is treated as a drop and reconnected.
+        let hello = Control::Hello { name: name.clone(), hue };
+        if ws.write(Message::Text(serde_json::to_string(&hello).unwrap_or_default())).is_err() {
+            first = false;
+            std::thread::sleep(Duration::from_millis(500));
+            continue 'reconnect;
         }
-        let mut g = inner.lock().unwrap();
-        g.role = Role::Off;
-        g.error = Some(format!("connect failed: {last_err}"));
-        g.status = "Disconnected".into();
-        return;
-    };
-    set_client_timeout(&mut ws, Some(Duration::from_millis(20)));
 
-    // Say hello.
-    let hello = Control::Hello { name: name.clone(), hue };
-    if ws
-        .write(Message::Text(serde_json::to_string(&hello).unwrap_or_default()))
-        .is_err()
-    {
-        inner.lock().unwrap().error = Some("send hello failed".into());
-        return;
-    }
-
-    let (tx, rx) = mpsc::sync_channel::<Message>(256);
-    {
-        let mut g = inner.lock().unwrap();
-        g.client_out = Some(tx);
-        g.status = "Connected".into();
-    }
-
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            let _ = ws.write(Message::Close(None));
-            break;
+        let (tx, rx) = mpsc::sync_channel::<Message>(256);
+        {
+            let mut g = inner.lock().unwrap();
+            g.client_out = Some(tx);
+            g.status = "Connected".into();
+            g.error = None;
+            g.remote.clear();
         }
-        let mut wrote = false;
-        while let Ok(m) = rx.try_recv() {
-            if ws.write(m).is_err() {
+        first = false;
+
+        // ── session read/write loop ──
+        let mut clean = false;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                let _ = ws.write(Message::Close(None));
+                clean = true;
                 break;
             }
-            wrote = true;
-        }
-        if wrote {
-            let _ = ws.flush();
-        }
-        match ws.read() {
-            Ok(Message::Binary(data)) if data.len() >= ID_LEN + WIRE_LEN => {
-                let sender = Uuid::from_slice(&data[..ID_LEN])
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                let my_id = inner.lock().unwrap().my_id.clone();
-                if sender != my_id {
-                    if let Some(pkt) = ForzaPacket::from_bytes(&data[ID_LEN..]) {
-                        let mut g = inner.lock().unwrap();
-                        g.remote.entry(sender).or_insert_with(RemoteBuf::new).push(pkt);
-                    }
+            let mut wrote = false;
+            let mut send_err = false;
+            while let Ok(m) = rx.try_recv() {
+                if ws.write(m).is_err() {
+                    send_err = true;
+                    break;
                 }
+                wrote = true;
             }
-            Ok(Message::Text(t)) => {
-                let mut g = inner.lock().unwrap();
-                match serde_json::from_str::<Control>(&t) {
-                    Ok(Control::Welcome { id, roster }) => {
-                        g.my_id = id.clone();
-                        if let Ok(u) = Uuid::parse_str(&id) {
-                            g.my_id_bytes = *u.as_bytes();
+            if wrote {
+                let _ = ws.flush();
+            }
+            if send_err {
+                break;
+            }
+            match ws.read() {
+                Ok(Message::Binary(data)) if data.len() >= ID_LEN + WIRE_LEN => {
+                    let sender = Uuid::from_slice(&data[..ID_LEN])
+                        .map(|u| u.to_string())
+                        .unwrap_or_default();
+                    let my_id = inner.lock().unwrap().my_id.clone();
+                    if sender != my_id {
+                        if let Some(pkt) = ForzaPacket::from_bytes(&data[ID_LEN..]) {
+                            let mut g = inner.lock().unwrap();
+                            g.remote.entry(sender).or_insert_with(RemoteBuf::new).push(pkt);
                         }
-                        g.roster = roster;
                     }
-                    Ok(Control::Roster { players }) => {
-                        g.roster = players;
-                    }
-                    _ => {}
                 }
+                Ok(Message::Text(t)) => {
+                    let mut g = inner.lock().unwrap();
+                    match serde_json::from_str::<Control>(&t) {
+                        Ok(Control::Welcome { id, roster }) => {
+                            g.my_id = id.clone();
+                            if let Ok(u) = Uuid::parse_str(&id) {
+                                g.my_id_bytes = *u.as_bytes();
+                            }
+                            g.roster = roster;
+                        }
+                        Ok(Control::Roster { players }) => {
+                            g.roster = players;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
             }
-            Ok(Message::Close(_)) => break,
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e))
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
         }
+
+        if stop.load(Ordering::Relaxed) || clean {
+            break 'reconnect;
+        }
+        // Dropped mid-session — clear remote state and try to reconnect.
+        {
+            let mut g = inner.lock().unwrap();
+            g.client_out = None;
+            g.remote.clear();
+            g.status = "Reconnecting…".into();
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 
     let mut g = inner.lock().unwrap();
