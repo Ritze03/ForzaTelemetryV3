@@ -510,6 +510,76 @@ fn de(s: &str) -> Option<&'static str> {
         "Settings are also auto-saved on exit." =>
             "Einstellungen werden auch beim Beenden automatisch gespeichert.",
 
+        // ── Co-Op ──────────────────────────────────────────────────────
+        "Co-Op" => "Koop",
+        "Offline" => "Offline",
+        "Hosting" => "Hostet",
+        "Joined" => "Beigetreten",
+        "Your Identity" => "Deine Identität",
+        "Name:" => "Name:",
+        "Player" => "Spieler",
+        "Colour:" => "Farbe:",
+        "Others see this name + colour; your own map arrow uses the colour only." =>
+            "Andere sehen diesen Namen + Farbe; dein eigener Kartenpfeil nutzt nur die Farbe.",
+        "Pacing" => "Taktung",
+        "Buffer:" => "Puffer:",
+        "Delays remote players by this much to smooth out network jitter.\n\
+                 0 = lowest latency; raise it if other cars stutter on the map." =>
+            "Verzögert entfernte Spieler, um Netzwerk-Jitter zu glätten.\n\
+                 0 = geringste Latenz; erhöhen, wenn andere Autos auf der Karte ruckeln.",
+        "Session" => "Sitzung",
+        "Host Session" => "Sitzung hosten",
+        "…or join with a code:" => "…oder mit einem Code beitreten:",
+        "Join" => "Beitreten",
+        "Share this code so others can join:" => "Teile diesen Code, damit andere beitreten können:",
+        "Starting tunnel…" => "Tunnel wird gestartet…",
+        "Stop Hosting" => "Hosten beenden",
+        "Connected to:" => "Verbunden mit:",
+        "Leave Session" => "Sitzung verlassen",
+        "Players" => "Spieler",
+        "No one here yet." => "Noch niemand hier.",
+        "(you)" => "(du)",
+        "Copy" => "Kopieren",
+        "Copied" => "Kopiert",
+        "Same network? Lower latency with:" => "Gleiches Netzwerk? Geringere Latenz mit:",
+        "players" => "Spieler",
+        "Host port:" => "Host-Port:",
+        "Local port the tunnel points at. Change only if it clashes with another app." =>
+            "Lokaler Port, auf den der Tunnel zeigt. Nur ändern, wenn er mit einer anderen App kollidiert.",
+
+        // ── Dashboard widgets (new) ────────────────────────────────────
+        "Co-Op Players" => "Koop-Spieler",
+        "Not in a session." => "Nicht in einer Sitzung.",
+        "Host or join from the Co-Op tab." => "Im Koop-Tab hosten oder beitreten.",
+        "Speed Trace" => "Geschwindigkeitsverlauf",
+        "Collecting…" => "Sammle…",
+        "Boost" => "Ladedruck",
+        "peak" => "Spitze",
+        "Session Stats" => "Sitzungsstatistik",
+        "Top Speed" => "Höchstgeschw.",
+        "Peak Power" => "Max. Leistung",
+        "Peak Torque" => "Max. Drehmoment",
+        "Peak Boost" => "Max. Ladedruck",
+        "Peak Lat G" => "Max. Quer-G",
+        "Peak Long G" => "Max. Längs-G",
+        "Max RPM" => "Max. U/min",
+
+        // ── Recording / replay ─────────────────────────────────────────
+        "Recording" => "Aufnahme",
+        "Record" => "Aufnehmen",
+        "Stop Recording" => "Aufnahme beenden",
+        "Recording live telemetry to a file…" => "Nehme Live-Telemetrie in eine Datei auf…",
+        "No recordings yet." => "Noch keine Aufnahmen.",
+        "Replay" => "Abspielen",
+        "Replaying" => "Wiedergabe",
+        "Replays into the app as if the game were live." =>
+            "Spielt in der App ab, als wäre das Spiel live.",
+        "Loop" => "Schleife",
+        "Export CSV" => "CSV exportieren",
+        "Saved" => "Gespeichert",
+        "CSV export failed:" => "CSV-Export fehlgeschlagen:",
+        "Stop" => "Stopp",
+
         _ => return None,
     })
 }
