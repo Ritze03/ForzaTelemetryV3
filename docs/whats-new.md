@@ -1,5 +1,11 @@
 # What's New — `unattended-testing` branch
 
+![Co-Op session: two players sharing telemetry, with map trails, standings and the new widgets](assets/coop-session.jpg)
+
+*Two players in a co-op session (host left, guest right): coloured map trails, the
+Co-Op standings, Speed Trace, Boost gauge and Session Stats widgets, all under the
+Graphite theme.*
+
 A summary of everything added on this branch. Built and screenshot-verified end
 to end (co-op tested over both LAN and a real trycloudflare tunnel, with 2 and 3
 players; recording verified by capturing a run and replaying it with the live
