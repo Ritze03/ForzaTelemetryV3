@@ -1745,8 +1745,10 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             my = e.y;
         }
         let c = pos2(mx, my);
+        // Gentle pulse to draw the eye to the destination.
+        let p = 1.0 + 0.16 * (ui.input(|i| i.time) as f32 * 4.0).sin();
         painter.add(egui::Shape::convex_polygon(
-            vec![c + vec2(0.0, -9.0), c + vec2(7.0, 0.0), c + vec2(0.0, 9.0), c + vec2(-7.0, 0.0)],
+            vec![c + vec2(0.0, -9.0 * p), c + vec2(7.0 * p, 0.0), c + vec2(0.0, 9.0 * p), c + vec2(-7.0 * p, 0.0)],
             col,
             Stroke::new(1.5, Color32::BLACK),
         ));
