@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -99,9 +99,9 @@ struct Inner {
     roster: Vec<PlayerInfo>,
     remote: HashMap<String, RemoteBuf>,
     /// Host: one outgoing channel per connected client, for broadcasting.
-    clients: Vec<(String, Sender<Message>)>,
+    clients: Vec<(String, SyncSender<Message>)>,
     /// Client: outgoing channel to the host.
-    client_out: Option<Sender<Message>>,
+    client_out: Option<SyncSender<Message>>,
     status: String,
     error: Option<String>,
     words: Option<String>,
@@ -110,12 +110,14 @@ struct Inner {
 
 impl Inner {
     /// Host: send a message to every client except `skip` (None = all).
+    /// Bounded per-client queue: on backpressure we drop this frame (telemetry is
+    /// fine to skip — the next one is 16ms away) rather than buffer unboundedly.
     fn broadcast(&mut self, msg: Message, skip: Option<&str>) {
         self.clients.retain(|(id, tx)| {
             if Some(id.as_str()) == skip {
                 return true;
             }
-            tx.send(msg.clone()).is_ok()
+            !matches!(tx.try_send(msg.clone()), Err(mpsc::TrySendError::Disconnected(_)))
         });
     }
     fn roster_msg(&self) -> Message {
@@ -193,7 +195,7 @@ impl CoopState {
             Role::Host => inner.broadcast(msg, None),
             Role::Client => {
                 if let Some(tx) = &inner.client_out {
-                    let _ = tx.send(msg);
+                    let _ = tx.try_send(msg);
                 }
             }
             Role::Off => {}
@@ -216,7 +218,7 @@ impl CoopState {
             Role::Client => {
                 if let Some(tx) = &inner.client_out {
                     let c = Control::Update { name: name.to_string(), hue };
-                    let _ = tx.send(Message::Text(serde_json::to_string(&c).unwrap_or_default()));
+                    let _ = tx.try_send(Message::Text(serde_json::to_string(&c).unwrap_or_default()));
                 }
             }
             Role::Off => {}
@@ -404,7 +406,7 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
     };
     let id = Uuid::new_v4().to_string();
     let id_bytes = *Uuid::parse_str(&id).unwrap().as_bytes();
-    let (tx, rx) = mpsc::channel::<Message>();
+    let (tx, rx) = mpsc::sync_channel::<Message>(256);
 
     // Register + welcome + roster broadcast.
     {
@@ -533,7 +535,7 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
         return;
     }
 
-    let (tx, rx) = mpsc::channel::<Message>();
+    let (tx, rx) = mpsc::sync_channel::<Message>(256);
     {
         let mut g = inner.lock().unwrap();
         g.client_out = Some(tx);
