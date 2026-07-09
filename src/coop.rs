@@ -895,23 +895,31 @@ fn extract_words(line: &str) -> Option<String> {
 
 /// `app_data_dir()/cloudflared`, downloading it if absent (best-effort via curl/wget).
 pub fn ensure_cloudflared() -> Result<std::path::PathBuf, String> {
-    let path = crate::config::app_data_dir().join("cloudflared");
+    // Platform-correct local filename + release asset (x86_64; the game is x64).
+    #[cfg(windows)]
+    let (bin_name, asset) = ("cloudflared.exe", "cloudflared-windows-amd64.exe");
+    #[cfg(not(windows))]
+    let (bin_name, asset) = ("cloudflared", "cloudflared-linux-amd64");
+
+    let path = crate::config::app_data_dir().join(bin_name);
     if path.exists() {
         return Ok(path);
     }
     // ponytail: shell out to curl/wget rather than pull an HTTP-client dep; the
     // binary is normally already present, this is only the cold-start fallback.
-    let url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64";
+    // (Windows 10+ ships curl.exe, so this works there too.)
+    let url =
+        format!("https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}");
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
     let ok = Command::new("curl")
-        .args(["-fsSL", "-o", &path.to_string_lossy(), url])
+        .args(["-fsSL", "-o", &path.to_string_lossy(), url.as_str()])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
         || Command::new("wget")
-            .args(["-qO", &path.to_string_lossy(), url])
+            .args(["-qO", &path.to_string_lossy(), url.as_str()])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
