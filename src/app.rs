@@ -817,6 +817,7 @@ impl ForzaApp {
         use std::collections::HashSet;
         const MIN_MOVE: f32 = 4.0; // metres between recorded points
         const MAX_PTS: usize = 400;
+        const TELEPORT: f32 = 300.0; // jump this far in one packet ⇒ clear the trail
 
         if self.coop.role() == crate::coop::Role::Off {
             if !self.minimap_trails.is_empty() {
@@ -827,21 +828,28 @@ impl ForzaApp {
 
         fn push(trails: &mut HashMap<String, VecDeque<(f32, f32)>>, key: String, x: f32, z: f32) {
             let dq = trails.entry(key).or_default();
-            if dq
-                .back()
-                .map_or(true, |&(px, pz)| (px - x).hypot(pz - z) >= MIN_MOVE)
-            {
-                dq.push_back((x, z));
-                if dq.len() > MAX_PTS {
-                    dq.pop_front();
+            match dq.back() {
+                Some(&(px, pz)) => {
+                    let moved = (px - x).hypot(pz - z);
+                    if moved >= TELEPORT {
+                        dq.clear(); // teleport (fast-travel / reset) — drop the stale line
+                        dq.push_back((x, z));
+                    } else if moved >= MIN_MOVE {
+                        dq.push_back((x, z));
+                    }
                 }
+                None => dq.push_back((x, z)),
+            }
+            if dq.len() > MAX_PTS {
+                dq.pop_front();
             }
         }
 
         let mut present: HashSet<String> = HashSet::new();
         present.insert("local".to_string());
         if let Some(pkt) = &self.telemetry.latest {
-            if pkt.is_race_on != 0 {
+            // Skip paused games (car at origin) so we don't draw a line to (0,0).
+            if pkt.is_race_on != 0 && !pkt.is_paused() {
                 push(
                     &mut self.minimap_trails,
                     "local".to_string(),
@@ -851,12 +859,14 @@ impl ForzaApp {
             }
         }
         for (info, rp) in self.coop.remote_players() {
-            push(
-                &mut self.minimap_trails,
-                info.id.clone(),
-                rp.position_x,
-                rp.position_z,
-            );
+            if !rp.is_paused() {
+                push(
+                    &mut self.minimap_trails,
+                    info.id.clone(),
+                    rp.position_x,
+                    rp.position_z,
+                );
+            }
             present.insert(info.id);
         }
         self.minimap_trails.retain(|k, _| present.contains(k));

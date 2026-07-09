@@ -310,6 +310,17 @@ impl ForzaPacket {
         self.speed * 3.6
     }
 
+    /// A paused game reports the car at the world origin with zero orientation.
+    /// Used to suppress co-op map rendering (trail + marker) for a paused player.
+    pub fn is_paused(&self) -> bool {
+        self.position_x == 0.0
+            && self.position_y == 0.0
+            && self.position_z == 0.0
+            && self.yaw == 0.0
+            && self.pitch == 0.0
+            && self.roll == 0.0
+    }
+
     pub fn speed_mph(&self) -> f32 {
         self.speed * 2.236_94
     }

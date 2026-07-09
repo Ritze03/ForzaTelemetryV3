@@ -635,6 +635,40 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     // Bar scale: fixed reference top speed so bars are comparable frame-to-frame.
     let max_kmh = 320.0_f32;
+
+    // Static column widths (in monospace character cells) so the row layout never
+    // shifts as names/speeds change — only the speed bar in the middle flexes.
+    // Monospace advance ≈ 0.6 em; exact value doesn't matter, only that it's constant.
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+    let ch = (mono.size * 0.6).max(6.0);
+    let name_w = 15.0 * ch; // rank prefix + 12-char name
+    let dist_w = 6.0 * ch;
+    let speed_w = 8.0 * ch; // "207 km/h"
+    let gear_w = 3.0 * ch;  // "G10"
+    let spacing = ui.spacing().item_spacing.x;
+
+    // Fixed-width text cell (min-width forces the reserved space even when empty).
+    let cell = |ui: &mut Ui, w: f32, text: RichText, right: bool| {
+        let layout = if right {
+            egui::Layout::right_to_left(egui::Align::Center)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Center)
+        };
+        ui.allocate_ui_with_layout(egui::vec2(w, 18.0), layout, |ui| {
+            ui.set_min_width(w);
+            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+        });
+    };
+    // Truncate to n chars with an ellipsis (monospace ⇒ n cells wide).
+    let fit = |s: &str, n: usize| -> String {
+        let c: Vec<char> = s.chars().collect();
+        if c.len() > n {
+            c[..n.saturating_sub(1)].iter().collect::<String>() + "…"
+        } else {
+            s.to_string()
+        }
+    };
+
     ui.add_space(4.0);
     for (rank, (name, hue, speed_ms, gear, is_self, dist_m)) in rows.iter().enumerate() {
         let col = crate::ui::coop::hue_color(*hue);
@@ -642,30 +676,29 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let disp = if use_mph { speed_ms * 2.236_94 } else { kmh };
         let gear_str = match gear { 0 => "N".to_string(), g => g.to_string() };
         ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
             ui.painter().circle_filled(dot.center(), 5.0, col);
-            let label = if *is_self {
-                RichText::new(format!("{}. {}", rank + 1, name)).strong()
+
+            let name_rt = RichText::new(fit(&format!("{}. {}", rank + 1, name), 15)).monospace();
+            cell(ui, name_w, if *is_self { name_rt.strong() } else { name_rt }, false);
+
+            let dtxt = if *is_self {
+                String::new()
+            } else if *dist_m >= 1000.0 {
+                format!("{:.1}km", dist_m / 1000.0)
             } else {
-                RichText::new(format!("{}. {}", rank + 1, name))
+                format!("{:.0}m", dist_m)
             };
-            ui.label(label);
-            if !*is_self {
-                let dtxt = if *dist_m >= 1000.0 {
-                    format!("{:.1}km", dist_m / 1000.0)
-                } else {
-                    format!("{:.0}m", dist_m)
-                };
-                ui.label(RichText::new(dtxt).size(10.0).color(Color32::from_gray(120)));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("G{gear_str}")).size(12.0).color(Color32::from_gray(150)));
-                ui.label(RichText::new(format!("{disp:>5.0} {unit}")).monospace());
-                let bar_w = (ui.available_width() - 10.0).clamp(30.0, 260.0);
-                ui.add(egui::ProgressBar::new((kmh / max_kmh).clamp(0.0, 1.0))
-                    .fill(col)
-                    .desired_width(bar_w));
-            });
+            cell(ui, dist_w, RichText::new(dtxt).monospace().size(11.0).color(Color32::from_gray(120)), true);
+
+            // The one flexible element: fill what's left after the fixed speed+gear cells.
+            let bar_w = (ui.available_width() - speed_w - gear_w - 2.0 * spacing).max(20.0);
+            ui.add(egui::ProgressBar::new((kmh / max_kmh).clamp(0.0, 1.0))
+                .fill(col)
+                .desired_width(bar_w));
+
+            cell(ui, speed_w, RichText::new(format!("{disp:>3.0} {unit}")).monospace(), true);
+            cell(ui, gear_w, RichText::new(format!("G{gear_str}")).monospace().color(Color32::from_gray(150)), true);
         });
         ui.add_space(2.0);
     }
@@ -1609,7 +1642,10 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         if let Some(tr) = app.minimap_trails.get("local") {
             draw_trail(tr, crate::ui::coop::hue_color(app.config.coop_hue));
         }
-        for (info, _) in app.coop.remote_players() {
+        for (info, pkt) in app.coop.remote_players() {
+            if pkt.is_paused() {
+                continue; // paused teammate — don't draw their line
+            }
             if let Some(tr) = app.minimap_trails.get(&info.id) {
                 draw_trail(tr, crate::ui::coop::hue_color(info.hue));
             }
@@ -1626,6 +1662,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         // side-by-side) can be nudged apart instead of stacking illegibly.
         let mut labels: Vec<(Pos2, String, Color32)> = Vec::new();
         for (info, pkt) in remotes {
+            if pkt.is_paused() {
+                continue; // paused teammate — don't draw their marker at the origin
+            }
             let dx = pkt.position_x - car_x;
             let dz = pkt.position_z - car_z;
             let sx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
