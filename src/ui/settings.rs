@@ -244,7 +244,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                             });
                         }
                         if !replaying
-                            && ui.add(crate::theme::danger_button(crate::icons::TIMES)).clicked()
+                            && ui.add(crate::theme::danger_button(format!("{} ", crate::icons::TIMES))).clicked()
                         {
                             crate::recorder::delete_recording(&files[sel].0);
                             app.replay_selected = None;

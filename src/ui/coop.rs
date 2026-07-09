@@ -14,14 +14,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     let role = app.coop.role();
 
     ui.horizontal(|ui| {
-        ui.heading(format!("{} {}", icons::USERS, tr("Co-Op")));
+        ui.heading(format!("{}  {}", icons::USERS, tr("Co-Op")));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (col, txt) = match role {
                 Role::Off => (crate::theme::FAINT, tr("Offline")),
                 Role::Host => (crate::theme::ACCENT, tr("Hosting")),
                 Role::Client => (crate::theme::GOOD, tr("Joined")),
             };
-            ui.colored_label(col, format!("{} {}", icons::CIRCLE, txt));
+            ui.colored_label(col, format!("{}  {}", icons::CIRCLE, txt));
         });
     });
     ui.separator();

@@ -933,19 +933,19 @@ impl eframe::App for ForzaApp {
                 use crate::icons;
                 use crate::i18n::tr;
                 ui.selectable_value(&mut self.current_tab, Tab::Dashboard,
-                    format!("{} {}", icons::DASHBOARD, tr("Dashboard")));
+                    format!("{}  {}", icons::DASHBOARD, tr("Dashboard")));
+                ui.selectable_value(&mut self.current_tab, Tab::Coop,
+                    format!("{}  {}", icons::USERS, tr("Co-Op")));
                 ui.selectable_value(&mut self.current_tab, Tab::Backfire,
-                    format!("{} {}", icons::BOLT, tr("Backfire")));
+                    format!("{}  {}", icons::BOLT, tr("Backfire")));
                 ui.selectable_value(&mut self.current_tab, Tab::Gearbox,
                     format!("{}  {}", icons::GAMEPAD, tr("Automatic Gearbox")));
                 ui.selectable_value(&mut self.current_tab, Tab::PowerCurve,
-                    format!("{} {}", icons::LINE_CHART, tr("Power Curve")));
+                    format!("{}  {}", icons::LINE_CHART, tr("Power Curve")));
                 ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
-                    format!("{} {}", icons::WRENCH, tr("Engine Swaps")));
-                ui.selectable_value(&mut self.current_tab, Tab::Coop,
-                    format!("{} {}", icons::USERS, tr("Co-Op")));
+                    format!("{}  {}", icons::WRENCH, tr("Engine Swaps")));
                 ui.selectable_value(&mut self.current_tab, Tab::Settings,
-                    format!("{} {}", icons::COG, tr("Settings")));
+                    format!("{}  {}", icons::COG, tr("Settings")));
             });
             ui.add_space(2.0);
         });
@@ -961,9 +961,9 @@ impl eframe::App for ForzaApp {
                 let (color, icon, text) = if self.telemetry.is_connected {
                     (crate::theme::GOOD, icons::PLUG, tr("Connected"))
                 } else {
-                    (crate::theme::DANGER, icons::NO_SIGNAL, tr(" Disconnected"))
+                    (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
                 };
-                ui.colored_label(color, format!("{icon} {text}"));
+                ui.colored_label(color, format!("{icon}  {text}"));
                 ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
 
                 // Co-Op indicator (visible from any tab)
@@ -975,7 +975,7 @@ impl eframe::App for ForzaApp {
                         _ => (crate::theme::GOOD, tr("Joined")),
                     };
                     let n = self.coop.roster().len();
-                    ui.colored_label(c, format!("{} {} · {} {}", icons::USERS, verb, n, tr("players")));
+                    ui.colored_label(c, format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")));
                 }
 
                 // Recording / replay indicators (visible from any tab)
@@ -983,11 +983,11 @@ impl eframe::App for ForzaApp {
                     ui.separator();
                     let s = rec.elapsed().as_secs();
                     ui.colored_label(crate::theme::DANGER,
-                        format!("{} REC {}:{:02} · {} pkts", icons::CIRCLE, s / 60, s % 60, rec.packets));
+                        format!("{}  REC {}:{:02} · {} pkts", icons::CIRCLE, s / 60, s % 60, rec.packets));
                 }
                 if self.replay.is_some() {
                     ui.separator();
-                    ui.colored_label(crate::theme::ACCENT, format!("{} {}", icons::LINE_CHART, tr("Replaying")));
+                    ui.colored_label(crate::theme::ACCENT, format!("{}  {}", icons::LINE_CHART, tr("Replaying")));
                 }
 
                 // RIGHT: cog toggle
