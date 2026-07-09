@@ -1532,13 +1532,15 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                 col,
                 Stroke::new(1.5, Color32::BLACK),
             ));
-            painter.text(
-                pos2(sx, sy - s * 1.9),
-                egui::Align2::CENTER_BOTTOM,
-                &info.name,
-                egui::FontId::proportional(11.0),
-                col,
-            );
+            // Name with a dark outline so it stays legible over snow/roads.
+            let name_pos = pos2(sx, sy - s * 1.9);
+            let name_font = egui::FontId::proportional(11.0);
+            let shadow = Color32::from_black_alpha(200);
+            for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                painter.text(name_pos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM,
+                    &info.name, name_font.clone(), shadow);
+            }
+            painter.text(name_pos, egui::Align2::CENTER_BOTTOM, &info.name, name_font, col);
         }
     }
 
