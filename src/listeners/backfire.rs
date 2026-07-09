@@ -27,7 +27,8 @@ impl BackfireListener {
         let kmh = pkt.speed_kmh();
         let rpm = pkt.current_engine_rpm;
 
-        if cfg.backfire_disable_standstill && kmh == 0.0 {
+        // Below 1 km/h counts as standstill — telemetry speed is rarely exactly 0.0.
+        if cfg.backfire_disable_standstill && kmh < 1.0 {
             return;
         }
 
