@@ -39,6 +39,14 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
   0 = lowest latency; raise it if other cars stutter.
 - **coop_port** — local port the tunnel points at (config only).
 
+## Bandwidth
+
+Each player streams one raw 340-byte frame (16-byte sender UUID + 324-byte packet)
+at the game's ~60 Hz, so **~20 KB/s upload per player**. Measured on a 2-player
+loopback session: ~40 KB/s total (both directions). The host relays, so its usage
+scales with player count, but it stays modest — a 4-player host is on the order of
+~180 KB/s up. Comfortable even on slow connections.
+
 ## cloudflared
 
 The app uses `cloudflared` from its data dir (`app_data_dir()/cloudflared`), downloading
