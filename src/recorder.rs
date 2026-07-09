@@ -113,6 +113,12 @@ pub fn export_csv(ftr: &std::path::Path) -> Result<PathBuf, String> {
     Ok(csv_path)
 }
 
+/// Delete a recording and its sibling `.csv` export, if present.
+pub fn delete_recording(ftr: &std::path::Path) {
+    let _ = std::fs::remove_file(ftr);
+    let _ = std::fs::remove_file(ftr.with_extension("csv"));
+}
+
 /// Handle to a running replay; dropping or calling `stop` ends it.
 pub struct ReplayHandle {
     stop: Arc<AtomicBool>,

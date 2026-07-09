@@ -243,6 +243,13 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                                 Err(e) => format!("{} {e}", tr("CSV export failed:")),
                             });
                         }
+                        if !replaying
+                            && ui.add(crate::theme::danger_button(crate::icons::TIMES)).clicked()
+                        {
+                            crate::recorder::delete_recording(&files[sel].0);
+                            app.replay_selected = None;
+                            app.csv_export_msg = None;
+                        }
                     });
                     ui.label(RichText::new(tr("Replays into the app as if the game were live."))
                         .size(11.0).color(Color32::GRAY));
