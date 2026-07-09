@@ -18,7 +18,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Game ─────────────────────────────────────────────────
             left.group(|ui| {
-                ui.heading(tr("Game"));
+                ui.label(crate::theme::section_label(tr("Game")));
                 ui.add_space(4.0);
 
                 egui::ComboBox::from_label(tr("Target game"))
@@ -54,7 +54,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Load Preset ───────────────────────────────────────────
             left.group(|ui| {
-                ui.heading(tr("Load Preset"));
+                ui.label(crate::theme::section_label(tr("Load Preset")));
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
@@ -92,7 +92,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Network ──────────────────────────────────────────────
             left.group(|ui| {
-                ui.heading(tr("Network"));
+                ui.label(crate::theme::section_label(tr("Network")));
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
@@ -121,9 +121,26 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             left.add_space(8.0);
 
+            // ── Co-Op ────────────────────────────────────────────────
+            left.group(|ui| {
+                ui.label(crate::theme::section_label(tr("Co-Op")));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Host port:"));
+                    ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
+                });
+                ui.label(
+                    RichText::new(tr("Local port the tunnel points at. Change only if it clashes with another app."))
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
+            });
+
+            left.add_space(8.0);
+
             // ── Display ──────────────────────────────────────────────
             left.group(|ui| {
-                ui.heading(tr("Display"));
+                ui.label(crate::theme::section_label(tr("Display")));
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
@@ -174,7 +191,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             // GitHub link
             right.group(|ui| {
-                ui.heading(tr("Repository"));
+                ui.label(crate::theme::section_label(tr("Repository")));
                 ui.add_space(4.0);
                 ui.hyperlink_to(
                     "github.com/Ritze03/ForzaTelemetryV3",
