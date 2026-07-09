@@ -552,3 +552,51 @@ pub fn app_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ForzaTelemetryV3")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_serde_roundtrips() {
+        let c = AppConfig::default();
+        let s = serde_json::to_string(&c).expect("serialize");
+        let back: AppConfig = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(back.coop_port, c.coop_port);
+        assert_eq!(back.minimap_north_up, c.minimap_north_up);
+        assert_eq!(back.dashboard_widgets.len(), c.dashboard_widgets.len());
+    }
+
+    #[test]
+    fn old_config_missing_new_keys_deserializes_via_defaults() {
+        // Mirrors the merge in AppConfig::load(): an older config lacking new fields
+        // fills them from defaults rather than failing to parse.
+        let saved = serde_json::json!({ "listen_port": 4321 });
+        let def = serde_json::to_value(AppConfig::default()).unwrap();
+        let (serde_json::Value::Object(mut m), serde_json::Value::Object(d)) =
+            (saved, def) else { panic!() };
+        for (k, v) in d { m.entry(k).or_insert(v); }
+        let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("merge parse");
+        assert_eq!(cfg.listen_port, 4321);       // kept from the old config
+        assert_eq!(cfg.coop_port, DEFAULT_COOP_PORT_TEST); // filled from default
+    }
+
+    // Keep the expected default in sync without importing the coop module into the test.
+    const DEFAULT_COOP_PORT_TEST: u16 = 7071;
+
+    #[test]
+    fn injected_widgets_appended_not_duplicated() {
+        let mut ws = default_widget_layout();
+        let before = ws.len();
+        inject_missing_widget_kinds(&mut ws);
+        // Every optional kind now present exactly once.
+        for k in [WidgetKind::CoopPlayers, WidgetKind::Trace, WidgetKind::Boost, WidgetKind::SessionStats] {
+            assert_eq!(ws.iter().filter(|w| w.kind == k).count(), 1, "optional widget present exactly once");
+        }
+        // Running it again is idempotent.
+        let after_once = ws.len();
+        inject_missing_widget_kinds(&mut ws);
+        assert_eq!(ws.len(), after_once, "idempotent");
+        assert!(ws.len() > before);
+    }
+}
