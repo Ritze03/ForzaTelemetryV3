@@ -236,6 +236,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                         } else if ui.add(crate::theme::primary_button(tr("Replay"))).clicked() {
                             app.start_replay(files[sel].0.clone());
                         }
+                        ui.checkbox(&mut app.replay_loop, tr("Loop"));
                     });
                     ui.label(RichText::new(tr("Replays into the app as if the game were live."))
                         .size(11.0).color(Color32::GRAY));

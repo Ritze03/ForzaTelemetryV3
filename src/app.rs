@@ -420,6 +420,7 @@ pub struct ForzaApp {
     pub recorder: Option<crate::recorder::RecordState>,
     pub replay: Option<crate::recorder::ReplayHandle>,
     pub replay_selected: Option<usize>,
+    pub replay_loop: bool,
 
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
@@ -530,6 +531,7 @@ impl ForzaApp {
             recorder: None,
             replay: None,
             replay_selected: None,
+            replay_loop: false,
             receiver,
             _network: network,
         }
@@ -558,7 +560,7 @@ impl ForzaApp {
     /// Replay a recording file over UDP to our own listen port.
     pub fn start_replay(&mut self, path: std::path::PathBuf) {
         self.replay = None; // stop any in-progress replay first
-        match crate::recorder::start_replay(path, self.config.listen_port) {
+        match crate::recorder::start_replay(path, self.config.listen_port, self.replay_loop) {
             Ok(h) => self.replay = Some(h),
             Err(e) => eprintln!("replay failed to start: {e}"),
         }
@@ -959,6 +961,16 @@ impl eframe::App for ForzaApp {
                     };
                     let n = self.coop.roster().len();
                     ui.colored_label(c, format!("{} {} · {} {}", icons::USERS, verb, n, tr("players")));
+                }
+
+                // Recording / replay indicators (visible from any tab)
+                if let Some(rec) = self.recorder.as_ref() {
+                    ui.separator();
+                    ui.colored_label(crate::theme::DANGER, format!("{} REC · {} pkts", icons::CIRCLE, rec.packets));
+                }
+                if self.replay.is_some() {
+                    ui.separator();
+                    ui.colored_label(crate::theme::ACCENT, format!("{} {}", icons::LINE_CHART, tr("Replaying")));
                 }
 
                 // RIGHT: cog toggle

@@ -91,7 +91,7 @@ impl Drop for ReplayHandle {
 
 /// Replay a recording by streaming its packets over UDP to `127.0.0.1:port`,
 /// honouring the recorded timing. Runs on a background thread.
-pub fn start_replay(path: PathBuf, port: u16) -> std::io::Result<ReplayHandle> {
+pub fn start_replay(path: PathBuf, port: u16, loop_replay: bool) -> std::io::Result<ReplayHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
     let data = {
@@ -103,30 +103,35 @@ pub fn start_replay(path: PathBuf, port: u16) -> std::io::Result<ReplayHandle> {
     let dst = format!("127.0.0.1:{port}");
 
     std::thread::spawn(move || {
-        let started = Instant::now();
-        let mut off = 0usize;
-        while off + 6 <= data.len() {
-            if stop_thread.load(Ordering::Relaxed) {
-                break;
-            }
-            let ms = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
-            let len = u16::from_le_bytes(data[off + 4..off + 6].try_into().unwrap()) as usize;
-            off += 6;
-            if off + len > data.len() {
-                break;
-            }
-            let packet = &data[off..off + len];
-            off += len;
-
-            // Wait until the recorded moment (cap sleeps so stop stays responsive).
-            let target = Duration::from_millis(ms as u64);
-            while started.elapsed() < target {
+        loop {
+            let started = Instant::now();
+            let mut off = 0usize;
+            while off + 6 <= data.len() {
                 if stop_thread.load(Ordering::Relaxed) {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(2).min(target - started.elapsed()));
+                let ms = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+                let len = u16::from_le_bytes(data[off + 4..off + 6].try_into().unwrap()) as usize;
+                off += 6;
+                if off + len > data.len() {
+                    break;
+                }
+                let packet = &data[off..off + len];
+                off += len;
+
+                // Wait until the recorded moment (cap sleeps so stop stays responsive).
+                let target = Duration::from_millis(ms as u64);
+                while started.elapsed() < target {
+                    if stop_thread.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(2).min(target - started.elapsed()));
+                }
+                let _ = sock.send_to(packet, &dst);
             }
-            let _ = sock.send_to(packet, &dst);
+            if !loop_replay || stop_thread.load(Ordering::Relaxed) {
+                break;
+            }
         }
     });
 
