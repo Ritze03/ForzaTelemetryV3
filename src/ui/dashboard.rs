@@ -1762,6 +1762,20 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         }
         painter.text(dpos, egui::Align2::CENTER_BOTTOM, &dtxt, dfont, col);
     }
+
+    // North compass — the map is heading-up (rotates with the car), so show where
+    // north is. `yaw` is the map rotation; screen-north is the up vector rotated by it.
+    {
+        let cc = rect.min + vec2(22.0, 22.0);
+        let r = 12.0_f32;
+        painter.circle_filled(cc, r + 2.0, Color32::from_black_alpha(130));
+        painter.circle_stroke(cc, r, Stroke::new(1.0, Color32::from_gray(150)));
+        let (ns, nc) = yaw.sin_cos();
+        let north = vec2(-ns, -nc); // screen direction of world-north
+        painter.line_segment([cc, cc + north * r], Stroke::new(2.0, Color32::from_rgb(230, 80, 80)));
+        painter.text(cc + north * (r + 6.0), egui::Align2::CENTER_CENTER, "N",
+            egui::FontId::proportional(11.0), Color32::WHITE);
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
