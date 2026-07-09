@@ -451,6 +451,62 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::GForce     => show_gforce_block(ui, app, pkt),
         WidgetKind::Suspension => show_suspension_block(ui, app, pkt),
         WidgetKind::MiniMap    => show_minimap_widget(ui, app),
+        WidgetKind::CoopPlayers => show_coop_players(ui, app, pkt),
+    }
+}
+
+/// Live co-op standings: one row per player (self + remotes) with a hue-coloured
+/// speed bar, current speed and gear. Sorted fastest-first.
+fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    use crate::coop::Role;
+    ui.heading(tr("Co-Op"));
+
+    if app.coop.role() == Role::Off {
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr("Not in a session.")).size(12.0).color(Color32::GRAY));
+        ui.label(RichText::new(tr("Host or join from the Co-Op tab."))
+            .size(11.0).color(Color32::from_gray(110)));
+        return;
+    }
+
+    let use_mph = app.config.use_mph;
+    let unit = if use_mph { "mph" } else { "km/h" };
+
+    // Collect (name, hue, speed m/s, gear, is_self). Self first, then remotes.
+    let mut rows: Vec<(String, f32, f32, u8, bool)> = Vec::new();
+    rows.push((app.config.coop_name.clone(), app.config.coop_hue, pkt.speed, pkt.gear, true));
+    for (info, rp) in app.coop.remote_players() {
+        rows.push((info.name.clone(), info.hue, rp.speed, rp.gear, false));
+    }
+    rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Bar scale: fixed reference top speed so bars are comparable frame-to-frame.
+    let max_kmh = 320.0_f32;
+    ui.add_space(4.0);
+    for (rank, (name, hue, speed_ms, gear, is_self)) in rows.iter().enumerate() {
+        let col = crate::ui::coop::hue_color(*hue);
+        let kmh = speed_ms * 3.6;
+        let disp = if use_mph { speed_ms * 2.236_94 } else { kmh };
+        let gear_str = match gear { 0 => "N".to_string(), g => g.to_string() };
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot.center(), 5.0, col);
+            let label = if *is_self {
+                RichText::new(format!("{}. {}", rank + 1, name)).strong()
+            } else {
+                RichText::new(format!("{}. {}", rank + 1, name))
+            };
+            ui.label(label);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(format!("G{gear_str}")).size(12.0).color(Color32::from_gray(150)));
+                ui.label(RichText::new(format!("{disp:>5.0} {unit}")).monospace());
+                let bar_w = (ui.available_width() - 10.0).clamp(30.0, 260.0);
+                ui.add(egui::ProgressBar::new((kmh / max_kmh).clamp(0.0, 1.0))
+                    .fill(col)
+                    .desired_width(bar_w));
+            });
+        });
+        ui.add_space(2.0);
     }
 }
 
