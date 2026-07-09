@@ -52,6 +52,10 @@ enum Control {
     Roster { players: Vec<PlayerInfo> },
     /// Client → host: change my name/hue.
     Update { name: String, hue: f32 },
+    /// A shared map waypoint (world [x,z] + setter's hue), or `None` to clear it.
+    /// Either direction; the host re-broadcasts a client's waypoint to everyone.
+    /// (Option — not NaN — so it survives JSON, which has no NaN.)
+    Waypoint { pos: Option<[f32; 2]>, hue: f32 },
 }
 
 /// Per-remote jitter buffer: timestamped packets awaiting playback.
@@ -107,6 +111,8 @@ struct Inner {
     words: Option<String>,
     lan_url: Option<String>,
     buffer_ms: u32,
+    /// Shared map waypoint: (world_x, world_z, setter hue).
+    waypoint: Option<(f32, f32, f32)>,
 }
 
 /// Best-effort local LAN IP (the address a same-network peer would reach us on).
@@ -159,6 +165,7 @@ impl CoopState {
             words: None,
             lan_url: None,
             buffer_ms,
+            waypoint: None,
             // seed identity even while Off so the UI preview is stable
         };
         let _ = (name, hue);
@@ -193,6 +200,33 @@ impl CoopState {
     }
     pub fn set_buffer_ms(&self, ms: u32) {
         self.inner.lock().unwrap().buffer_ms = ms;
+    }
+
+    /// The active shared waypoint (world_x, world_z, hue), if any.
+    pub fn waypoint(&self) -> Option<(f32, f32, f32)> {
+        self.inner.lock().unwrap().waypoint
+    }
+
+    /// Drop a shared waypoint at a world position (hue = our colour). Pass `None` to clear.
+    pub fn set_waypoint(&self, pos: Option<(f32, f32)>, hue: f32) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.role == Role::Off {
+            return;
+        }
+        inner.waypoint = pos.map(|(x, z)| (x, z, hue));
+        let msg = Message::Text(
+            serde_json::to_string(&Control::Waypoint { pos: pos.map(|(x, z)| [x, z]), hue })
+                .unwrap_or_default(),
+        );
+        match inner.role {
+            Role::Host => inner.broadcast(msg, None),
+            Role::Client => {
+                if let Some(tx) = &inner.client_out {
+                    let _ = tx.try_send(msg);
+                }
+            }
+            Role::Off => {}
+        }
     }
 
     /// Push the locally-received telemetry packet out to peers.
@@ -280,6 +314,7 @@ impl CoopState {
         inner.roster.clear();
         inner.words = None;
         inner.lan_url = None;
+        inner.waypoint = None;
         inner.status = "Stopped".into();
         inner.error = None;
     }
@@ -470,8 +505,8 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
                     g.broadcast(Message::Binary(frame), Some(&id));
                 }
             }
-            Ok(Message::Text(t)) => {
-                if let Ok(Control::Update { name, hue }) = serde_json::from_str::<Control>(&t) {
+            Ok(Message::Text(t)) => match serde_json::from_str::<Control>(&t) {
+                Ok(Control::Update { name, hue }) => {
                     let mut g = inner.lock().unwrap();
                     if let Some(p) = g.roster.iter_mut().find(|p| p.id == id) {
                         p.name = name;
@@ -480,7 +515,16 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
                     let msg = g.roster_msg();
                     g.broadcast(msg, None);
                 }
-            }
+                Ok(Control::Waypoint { pos, hue }) => {
+                    let mut g = inner.lock().unwrap();
+                    g.waypoint = pos.map(|[x, z]| (x, z, hue));
+                    let msg = Message::Text(
+                        serde_json::to_string(&Control::Waypoint { pos, hue }).unwrap_or_default(),
+                    );
+                    g.broadcast(msg, Some(&id)); // to the other clients
+                }
+                _ => {}
+            },
             Ok(Message::Close(_)) => break,
             Ok(_) => {}
             Err(tungstenite::Error::Io(e))
@@ -638,6 +682,9 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
                         }
                         Ok(Control::Roster { players }) => {
                             g.roster = players;
+                        }
+                        Ok(Control::Waypoint { pos, hue }) => {
+                            g.waypoint = pos.map(|[x, z]| (x, z, hue));
                         }
                         _ => {}
                     }

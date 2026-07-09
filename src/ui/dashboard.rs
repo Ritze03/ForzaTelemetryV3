@@ -1474,7 +1474,13 @@ fn sub_rect(r: egui::Rect, start: f32, end: f32) -> egui::Rect {
 
 fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let rect = ui.available_rect_before_wrap();
-    ui.allocate_space(rect.size());
+    // Clickable in normal mode so co-op players can drop a shared waypoint; in Edit
+    // Mode the grid handles drag/resize instead, so only sense clicks when not editing.
+    let map_resp = if app.config.dashboard_edit_mode {
+        ui.allocate_rect(rect, egui::Sense::hover())
+    } else {
+        ui.allocate_rect(rect, egui::Sense::click())
+    };
 
     let cx = rect.center().x;
     let cy = rect.center().y;
@@ -1706,6 +1712,54 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         local_col,
         Stroke::new(1.5, Color32::BLACK),
     ));
+
+    // ── Co-op shared waypoint ──────────────────────────────────────
+    // Left-click drops/moves a waypoint everyone in the session sees; right-click clears.
+    if !app.config.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
+        if map_resp.clicked() {
+            if let Some(m) = map_resp.interact_pointer_pos() {
+                let a = (m.x - cx) / scale;
+                let b = -(m.y - cy) / scale;
+                let wx = car_x + a * cos_yaw + b * sin_yaw;
+                let wz = car_z - a * sin_yaw + b * cos_yaw;
+                app.coop.set_waypoint(Some((wx, wz)), app.config.coop_hue);
+            }
+        }
+        if map_resp.secondary_clicked() {
+            app.coop.set_waypoint(None, 0.0);
+        }
+    }
+    if let Some((wx, wz, hue)) = app.coop.waypoint() {
+        let dx = wx - car_x;
+        let dz = wz - car_z;
+        let mut mx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
+        let mut my = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
+        let col = crate::ui::coop::hue_color(hue);
+        if !rect.shrink(6.0).contains(pos2(mx, my)) {
+            let d = pos2(mx, my) - rect.center();
+            let half = rect.size() * 0.5 - Vec2::splat(8.0);
+            let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
+            let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
+            let e = rect.center() + d * kx.min(ky).min(1.0);
+            mx = e.x;
+            my = e.y;
+        }
+        let c = pos2(mx, my);
+        painter.add(egui::Shape::convex_polygon(
+            vec![c + vec2(0.0, -9.0), c + vec2(7.0, 0.0), c + vec2(0.0, 9.0), c + vec2(-7.0, 0.0)],
+            col,
+            Stroke::new(1.5, Color32::BLACK),
+        ));
+        painter.circle_filled(c, 2.5, Color32::WHITE);
+        let dist = (dx * dx + dz * dz).sqrt();
+        let dtxt = if dist >= 1000.0 { format!("{:.1}km", dist / 1000.0) } else { format!("{:.0}m", dist) };
+        let dfont = egui::FontId::proportional(10.0);
+        let dpos = c + vec2(0.0, -12.0);
+        for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            painter.text(dpos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM, &dtxt, dfont.clone(), Color32::from_black_alpha(200));
+        }
+        painter.text(dpos, egui::Align2::CENTER_BOTTOM, &dtxt, dfont, col);
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
