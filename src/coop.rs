@@ -848,5 +848,24 @@ mod tests {
             words_to_url("https://blue-fox.trycloudflare.com"),
             "wss://blue-fox.trycloudflare.com/ws"
         );
+        // LAN URL passthrough (used for same-network joins).
+        assert_eq!(words_to_url("ws://192.168.1.5:7071"), "ws://192.168.1.5:7071/ws");
+    }
+
+    #[test]
+    fn control_messages_survive_json() {
+        // Regression: the waypoint-clear (pos: None) must survive JSON — a NaN
+        // sentinel serialised to `null` and failed to parse back into f32.
+        for c in [
+            Control::Waypoint { pos: Some([1.5, -2.5]), hue: 200.0 },
+            Control::Waypoint { pos: None, hue: 0.0 },
+            Control::Hello { name: "Guest".into(), hue: 30.0 },
+            Control::Update { name: "Guest2".into(), hue: 140.0 },
+        ] {
+            let s = serde_json::to_string(&c).expect("serialize");
+            let back: Control = serde_json::from_str(&s).expect("deserialize");
+            // Control isn't PartialEq; compare by re-serialising.
+            assert_eq!(serde_json::to_string(&back).unwrap(), s);
+        }
     }
 }

@@ -385,4 +385,14 @@ mod tests {
         assert_eq!(back.steer, p.steer);
         assert_eq!(back.race_position, p.race_position);
     }
+
+    #[test]
+    fn rejects_undersized_packets() {
+        // A too-short buffer must be rejected, never partially parsed.
+        assert!(ForzaPacket::from_bytes(&[]).is_none());
+        assert!(ForzaPacket::from_bytes(&[0u8; 100]).is_none());
+        assert!(ForzaPacket::from_bytes(&[0u8; 231]).is_none());
+        // A full-length packet parses.
+        assert!(ForzaPacket::from_bytes(&ForzaPacket::default().to_bytes()).is_some());
+    }
 }
