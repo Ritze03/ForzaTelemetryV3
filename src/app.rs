@@ -1303,7 +1303,7 @@ impl eframe::App for ForzaApp {
                                             );
                                         }
                                     });
-                                    ui.checkbox(&mut self.config.minimap_north_up, tr("Lock map north-up"));
+                                    ui.checkbox(&mut self.config.minimap_north_up, tr("Lock map north-up")).on_hover_text("F10");
                                     if !self.config.minimap_north_up {
                                         ui.checkbox(&mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
                                         ui.checkbox(&mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));

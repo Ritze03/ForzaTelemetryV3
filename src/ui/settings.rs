@@ -206,7 +206,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 } else {
                     crate::theme::secondary_button(rec_label)
                 };
-                if ui.add(rec_btn).clicked() {
+                if ui.add(rec_btn).on_hover_text("F9").clicked() {
                     app.toggle_recording();
                 }
                 if recording {
