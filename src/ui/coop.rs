@@ -169,25 +169,52 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                 });
             }
             Role::Host => {
-                ui.label(tr("Share this code so others can join:"));
-                ui.add_space(2.0);
-                match app.coop.words() {
-                    Some(words) => share_code(ui, app, &words),
-                    None => {
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(16.0));
-                            ui.label(RichText::new(tr("Starting tunnel…")).color(Color32::GRAY));
-                        });
+                if let Some((got, total)) = app.coop.download() {
+                    // First run on this machine: fetching the cloudflared binary.
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(16.0));
+                        ui.label(RichText::new(tr("Downloading cloudflared…"))
+                            .color(Color32::from_gray(200)));
+                    });
+                    ui.add_space(4.0);
+                    let mb = |b: u64| b as f32 / 1_048_576.0;
+                    let (frac, text) = match total {
+                        Some(t) if t > 0 => (
+                            (got as f32 / t as f32).clamp(0.0, 1.0),
+                            format!("{:.1} / {:.1} MB", mb(got), mb(t)),
+                        ),
+                        _ => (0.0, format!("{:.1} MB", mb(got))),
+                    };
+                    let mut bar = egui::ProgressBar::new(frac)
+                        .text(text)
+                        .desired_width(ui.available_width());
+                    if total.is_none() {
+                        bar = bar.animate(true); // size unknown → indeterminate sweep
                     }
+                    ui.add(bar);
+                    ui.add_space(8.0);
+                    stop_button(ui, app, tr("Cancel"));
+                } else {
+                    ui.label(tr("Share this code so others can join:"));
+                    ui.add_space(2.0);
+                    match app.coop.words() {
+                        Some(words) => share_code(ui, app, &words),
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(16.0));
+                                ui.label(RichText::new(tr("Starting tunnel…")).color(Color32::GRAY));
+                            });
+                        }
+                    }
+                    if let Some(lan) = app.coop.lan_url() {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(tr("Same network? Lower latency with:"))
+                            .size(11.0).color(crate::theme::FAINT));
+                        ui.add(egui::Label::new(RichText::new(lan).monospace().size(13.0)).selectable(true));
+                    }
+                    ui.add_space(8.0);
+                    stop_button(ui, app, tr("Stop Hosting"));
                 }
-                if let Some(lan) = app.coop.lan_url() {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(tr("Same network? Lower latency with:"))
-                        .size(11.0).color(crate::theme::FAINT));
-                    ui.add(egui::Label::new(RichText::new(lan).monospace().size(13.0)).selectable(true));
-                }
-                ui.add_space(8.0);
-                stop_button(ui, app, tr("Stop Hosting"));
             }
             Role::Client => {
                 if let Some(words) = app.coop.words() {

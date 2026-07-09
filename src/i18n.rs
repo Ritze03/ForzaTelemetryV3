@@ -536,6 +536,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Join" => "Beitreten",
         "Share this code so others can join:" => "Teile diesen Code, damit andere beitreten können:",
         "Starting tunnel…" => "Tunnel wird gestartet…",
+        "Downloading cloudflared…" => "Cloudflared wird heruntergeladen…",
+        "Cancel" => "Abbrechen",
         "Stop Hosting" => "Hosten beenden",
         "Connected to:" => "Verbunden mit:",
         "Leave Session" => "Sitzung verlassen",

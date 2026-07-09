@@ -113,6 +113,12 @@ struct Inner {
     buffer_ms: u32,
     /// Shared map waypoint: (world_x, world_z, setter hue).
     waypoint: Option<(f32, f32, f32)>,
+    /// Running cloudflared tunnel child. Owned here (not on CoopState) so the
+    /// background host-start thread can hand it off and `stop()` can still kill it.
+    tunnel: Option<Child>,
+    /// cloudflared download in flight: (bytes so far, total if known). `None` when
+    /// not downloading; drives the progress indicator in the Co-Op tab.
+    download: Option<(u64, Option<u64>)>,
 }
 
 /// Best-effort local LAN IP (the address a same-network peer would reach us on).
@@ -145,7 +151,6 @@ impl Inner {
 pub struct CoopState {
     inner: Arc<Mutex<Inner>>,
     stop: Arc<AtomicBool>,
-    tunnel: Option<Child>,
     pub port: u16,
 }
 
@@ -166,13 +171,14 @@ impl CoopState {
             lan_url: None,
             buffer_ms,
             waypoint: None,
+            tunnel: None,
+            download: None,
             // seed identity even while Off so the UI preview is stable
         };
         let _ = (name, hue);
         Self {
             inner: Arc::new(Mutex::new(inner)),
             stop: Arc::new(AtomicBool::new(false)),
-            tunnel: None,
             port: DEFAULT_COOP_PORT,
         }
     }
@@ -185,6 +191,10 @@ impl CoopState {
     }
     pub fn error(&self) -> Option<String> {
         self.inner.lock().unwrap().error.clone()
+    }
+    /// Cloudflared download progress while it's being fetched: (bytes, total?).
+    pub fn download(&self) -> Option<(u64, Option<u64>)> {
+        self.inner.lock().unwrap().download
     }
     pub fn words(&self) -> Option<String> {
         self.inner.lock().unwrap().words.clone()
@@ -303,10 +313,11 @@ impl CoopState {
 
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(mut child) = self.tunnel.take() {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(mut child) = inner.tunnel.take() {
             let _ = child.kill();
         }
-        let mut inner = self.inner.lock().unwrap();
+        inner.download = None;
         inner.role = Role::Off;
         inner.clients.clear();
         inner.client_out = None;
@@ -358,18 +369,40 @@ impl CoopState {
         let stop = self.stop.clone();
         std::thread::spawn(move || host_accept_loop(listener, inner, stop));
 
-        // cloudflared quick tunnel → public wss URL
-        match ensure_cloudflared()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))
-            .and_then(|bin| spawn_tunnel(&bin, port, self.inner.clone(), self.stop.clone()))
-        {
-            Ok(child) => self.tunnel = Some(child),
-            Err(e) => {
-                let mut inner = self.inner.lock().unwrap();
-                inner.error = Some(format!("cloudflared: {e}"));
-                inner.status = "Server up (LAN only — no tunnel)".into();
+        // cloudflared quick tunnel → public wss URL. Ensuring the binary can mean a
+        // multi-MB download, so do it (and the tunnel spawn) on a background thread;
+        // progress lands in `inner.download` for the UI.
+        let inner = self.inner.clone();
+        let stop = self.stop.clone();
+        std::thread::spawn(move || {
+            let progress = |dl: u64, total: Option<u64>| {
+                if let Ok(mut i) = inner.lock() {
+                    i.download = Some((dl, total));
+                }
+            };
+            let res = match ensure_cloudflared(&progress, &stop) {
+                Ok(bin) => spawn_tunnel(&bin, port, inner.clone(), stop.clone())
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            let mut i = inner.lock().unwrap();
+            i.download = None;
+            if stop.load(Ordering::Relaxed) {
+                // User pressed Stop while we were downloading — tear down the tunnel
+                // we just started (dropping a Child does not kill the process).
+                if let Ok(mut child) = res {
+                    let _ = child.kill();
+                }
+                return;
             }
-        }
+            match res {
+                Ok(child) => i.tunnel = Some(child),
+                Err(e) => {
+                    i.error = Some(format!("cloudflared: {e}"));
+                    i.status = "Server up (LAN only — no tunnel)".into();
+                }
+            }
+        });
     }
 
     /// Join a hosted session by its word-slug.
@@ -893,8 +926,13 @@ fn extract_words(line: &str) -> Option<String> {
     Some(slug.to_string())
 }
 
-/// `app_data_dir()/cloudflared`, downloading it if absent (best-effort via curl/wget).
-pub fn ensure_cloudflared() -> Result<std::path::PathBuf, String> {
+/// `app_data_dir()/cloudflared`, downloading it if absent. `progress(downloaded,
+/// total)` is called periodically during the download (total is `None` until the
+/// size is known). Returns immediately if the binary is already present.
+pub fn ensure_cloudflared(
+    progress: &dyn Fn(u64, Option<u64>),
+    stop: &AtomicBool,
+) -> Result<std::path::PathBuf, String> {
     // Platform-correct local filename + release asset (x86_64; the game is x64).
     #[cfg(windows)]
     let (bin_name, asset) = ("cloudflared.exe", "cloudflared-windows-amd64.exe");
@@ -913,18 +951,64 @@ pub fn ensure_cloudflared() -> Result<std::path::PathBuf, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    let ok = Command::new("curl")
-        .args(["-fsSL", "-o", &path.to_string_lossy(), url.as_str()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-        || Command::new("wget")
-            .args(["-qO", &path.to_string_lossy(), url.as_str()])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-    if !ok {
-        return Err("cloudflared missing and download failed (drop the binary in the data dir)".into());
+    let tmp = path.with_extension("part");
+    let _ = std::fs::remove_file(&tmp);
+    let total = head_content_length(&url);
+    progress(0, total);
+
+    // Spawn the downloader as a child and poll the growing file for progress,
+    // instead of blocking on it, so the UI can show live bytes.
+    let tmp_s = tmp.to_string_lossy().to_string();
+    let mut child = Command::new("curl")
+        .args(["-fsSL", "-o", &tmp_s, url.as_str()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .or_else(|_| {
+            Command::new("wget")
+                .args(["-qO", &tmp_s, url.as_str()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })
+        .map_err(|_| {
+            "cloudflared missing and no curl/wget to fetch it (drop the binary in the data dir)"
+                .to_string()
+        })?;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let got = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+                if !status.success() || got == 0 {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(
+                        "cloudflared download failed (drop the binary in the data dir)".into(),
+                    );
+                }
+                progress(got, total.or(Some(got)));
+                break;
+            }
+            Ok(None) => {
+                if stop.load(Ordering::Relaxed) {
+                    let _ = child.kill();
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err("cancelled".into());
+                }
+                let got = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+                progress(got, total);
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("cloudflared download error: {e}"));
+            }
+        }
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cloudflared: could not save binary: {e}"));
     }
     #[cfg(unix)]
     {
@@ -932,6 +1016,23 @@ pub fn ensure_cloudflared() -> Result<std::path::PathBuf, String> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).ok();
     }
     Ok(path)
+}
+
+/// Best-effort total download size via a HEAD request (follows redirects); the
+/// last `Content-Length` seen is the final asset's. `None` if it can't be read.
+fn head_content_length(url: &str) -> Option<u64> {
+    let out = Command::new("curl").args(["-sIL", url]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut last = None;
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            if let Ok(n) = v.trim().parse::<u64>() {
+                last = Some(n);
+            }
+        }
+    }
+    last
 }
 
 #[cfg(test)]
