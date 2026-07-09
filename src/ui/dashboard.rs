@@ -1558,6 +1558,20 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                     col,
                     Stroke::new(1.0, Color32::BLACK),
                 ));
+                // Distance to the teammate, nudged inward from the edge marker.
+                let dist_m = (dx * dx + dz * dz).sqrt();
+                let dist_txt = if dist_m >= 1000.0 {
+                    format!("{:.1}km", dist_m / 1000.0)
+                } else {
+                    format!("{:.0}m", dist_m)
+                };
+                let dpos = edge - d.normalized() * 14.0;
+                let dfont = egui::FontId::proportional(10.0);
+                for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                    painter.text(dpos + vec2(off.0, off.1), egui::Align2::CENTER_CENTER,
+                        &dist_txt, dfont.clone(), Color32::from_black_alpha(200));
+                }
+                painter.text(dpos, egui::Align2::CENTER_CENTER, &dist_txt, dfont, col);
             }
         }
     }
