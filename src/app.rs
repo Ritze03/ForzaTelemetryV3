@@ -915,6 +915,18 @@ impl eframe::App for ForzaApp {
                 ui.colored_label(color, format!("{icon} {text}"));
                 ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
 
+                // Co-Op indicator (visible from any tab)
+                let coop_role = self.coop.role();
+                if coop_role != crate::coop::Role::Off {
+                    ui.separator();
+                    let (c, verb) = match coop_role {
+                        crate::coop::Role::Host => (crate::theme::ACCENT, tr("Hosting")),
+                        _ => (crate::theme::GOOD, tr("Joined")),
+                    };
+                    let n = self.coop.roster().len();
+                    ui.colored_label(c, format!("{} {} · {} {}", icons::USERS, verb, n, tr("players")));
+                }
+
                 // RIGHT: cog toggle
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let cog_color = if self.page_settings_open {
