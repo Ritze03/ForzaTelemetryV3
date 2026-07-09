@@ -1527,7 +1527,8 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
 
     let car_x = app.minimap_cached_car_x;
     let car_z = app.minimap_cached_car_z;
-    let yaw   = app.minimap_smoothed_yaw;
+    // North-up locks the map (yaw 0); otherwise it's heading-up (rotates with the car).
+    let yaw   = if cfg.minimap_north_up { 0.0 } else { app.minimap_smoothed_yaw };
 
     // Metres visible from widget centre to nearest edge
     let zoom  = app.minimap_current_zoom.max(1.0);
@@ -1699,7 +1700,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     } else {
         Color32::WHITE
     };
-    let arrow_angle = app.minimap_cached_raw_yaw - app.minimap_smoothed_yaw;
+    let arrow_angle = app.minimap_cached_raw_yaw - yaw;
     let (sin_a, cos_a) = arrow_angle.sin_cos();
     let rot = |vx: f32, vy: f32| -> Pos2 {
         pos2(cx + vx * cos_a - vy * sin_a, cy + vx * sin_a + vy * cos_a)

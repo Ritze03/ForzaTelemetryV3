@@ -1292,8 +1292,11 @@ impl eframe::App for ForzaApp {
                                             );
                                         }
                                     });
-                                    ui.checkbox(&mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
-                                    ui.checkbox(&mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
+                                    ui.checkbox(&mut self.config.minimap_north_up, tr("Lock map north-up"));
+                                    if !self.config.minimap_north_up {
+                                        ui.checkbox(&mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
+                                        ui.checkbox(&mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
+                                    }
                                     ui.checkbox(&mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
                                     ui.add_space(4.0);
                                     ui.label(tr("Zoom when driving (radius, metres):"));

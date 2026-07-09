@@ -252,6 +252,7 @@ pub struct AppConfig {
     pub minimap_smooth_rotation: bool,
     pub minimap_use_movement_dir: bool,
     pub minimap_mirror_edges: bool,
+    pub minimap_north_up: bool, // lock map north-up instead of heading-up
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -346,6 +347,7 @@ impl Default for AppConfig {
             minimap_smooth_rotation: true,
             minimap_use_movement_dir: true,
             minimap_mirror_edges: true,
+            minimap_north_up: false,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,
