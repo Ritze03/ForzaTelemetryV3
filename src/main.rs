@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod coop;
 mod engines;
 mod i18n;
 mod icons;

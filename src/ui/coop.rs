@@ -1,0 +1,268 @@
+use egui::{Color32, RichText, Ui};
+
+use crate::app::ForzaApp;
+use crate::coop::Role;
+use crate::i18n::tr;
+
+/// Player hue (0..360) → a saturated, readable marker colour.
+pub fn hue_color(hue: f32) -> Color32 {
+    Color32::from(egui::ecolor::Hsva::new(hue / 360.0, 0.85, 0.98, 1.0))
+}
+
+pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::icons;
+    let role = app.coop.role();
+
+    ui.horizontal(|ui| {
+        ui.heading(format!("{} {}", icons::USERS, tr("Co-Op")));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (col, txt) = match role {
+                Role::Off => (Color32::GRAY, tr("Offline")),
+                Role::Host => (Color32::from_rgb(80, 180, 255), tr("Hosting")),
+                Role::Client => (Color32::from_rgb(60, 210, 100), tr("Joined")),
+            };
+            ui.colored_label(col, format!("{} {}", icons::CIRCLE, txt));
+        });
+    });
+    ui.separator();
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.columns(2, |cols| {
+            identity_and_pacing(&mut cols[0], app);
+            session_panel(&mut cols[1], app, role);
+        });
+    });
+}
+
+fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
+    ui.group(|ui| {
+        ui.heading(tr("Your Identity"));
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label(tr("Name:"));
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut app.config.coop_name)
+                    .hint_text(tr("Player"))
+                    .desired_width(180.0),
+            );
+            if resp.changed() {
+                let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
+                app.coop.update_identity(&n, h);
+            }
+        });
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label(tr("Colour:"));
+            // Swatch preview
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 4.0, hue_color(app.config.coop_hue));
+            ui.painter().rect_stroke(
+                rect,
+                4.0,
+                egui::Stroke::new(1.0, Color32::from_gray(40)),
+                egui::StrokeKind::Inside,
+            );
+            let resp = ui.add(
+                egui::Slider::new(&mut app.config.coop_hue, 0.0..=360.0)
+                    .show_value(false)
+                    .suffix("°"),
+            );
+            if resp.changed() {
+                let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
+                app.coop.update_identity(&n, h);
+            }
+        });
+        ui.label(
+            RichText::new(tr("Others see this name + colour; your own map arrow uses the colour only."))
+                .size(11.0)
+                .color(Color32::GRAY),
+        );
+    });
+
+    ui.add_space(8.0);
+
+    ui.group(|ui| {
+        ui.heading(tr("Pacing"));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(tr("Buffer:"));
+            let resp = ui.add(
+                egui::Slider::new(&mut app.config.coop_buffer_ms, 0..=500)
+                    .suffix(" ms")
+                    .step_by(10.0),
+            );
+            if resp.changed() {
+                app.coop.set_buffer_ms(app.config.coop_buffer_ms);
+            }
+        });
+        ui.label(
+            RichText::new(tr(
+                "Delays remote players by this much to smooth out network jitter.\n\
+                 0 = lowest latency; raise it if other cars stutter on the map.",
+            ))
+            .size(11.0)
+            .color(Color32::GRAY),
+        );
+    });
+}
+
+fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
+    use crate::icons;
+    ui.group(|ui| {
+        ui.heading(tr("Session"));
+        ui.add_space(4.0);
+
+        // Status line
+        let status = app.coop.status();
+        if !status.is_empty() {
+            ui.label(RichText::new(status).color(Color32::from_gray(200)));
+        }
+        if let Some(err) = app.coop.error() {
+            ui.colored_label(Color32::from_rgb(230, 120, 120), format!("⚠ {err}"));
+        }
+        ui.add_space(4.0);
+
+        match role {
+            Role::Off => {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new(RichText::new(format!("{}  {}", icons::GLOBE, tr("Host Session"))).size(15.0))
+                            .fill(Color32::from_rgb(40, 90, 160)),
+                    )
+                    .clicked()
+                {
+                    let (n, h, b) = (
+                        app.config.coop_name.clone(),
+                        app.config.coop_hue,
+                        app.config.coop_buffer_ms,
+                    );
+                    app.coop.start_host(app.config.coop_port, &n, h, b);
+                }
+                ui.add_space(8.0);
+                ui.label(tr("…or join with a code:"));
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.coop_join_input)
+                            .hint_text("blue-fox-rapid-owl")
+                            .desired_width(180.0),
+                    );
+                    let can_join = !app.coop_join_input.trim().is_empty();
+                    if ui
+                        .add_enabled(
+                            can_join,
+                            egui::Button::new(format!("{}  {}", icons::LINK, tr("Join"))),
+                        )
+                        .clicked()
+                    {
+                        let (words, n, h, b) = (
+                            app.coop_join_input.clone(),
+                            app.config.coop_name.clone(),
+                            app.config.coop_hue,
+                            app.config.coop_buffer_ms,
+                        );
+                        app.coop.start_client(&words, &n, h, b);
+                    }
+                });
+            }
+            Role::Host => {
+                ui.label(tr("Share this code so others can join:"));
+                ui.add_space(2.0);
+                match app.coop.words() {
+                    Some(words) => share_code(ui, app, &words),
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(16.0));
+                            ui.label(RichText::new(tr("Starting tunnel…")).color(Color32::GRAY));
+                        });
+                    }
+                }
+                ui.add_space(8.0);
+                stop_button(ui, app, tr("Stop Hosting"));
+            }
+            Role::Client => {
+                if let Some(words) = app.coop.words() {
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Connected to:"));
+                        ui.label(RichText::new(words).monospace().strong());
+                    });
+                }
+                ui.add_space(8.0);
+                stop_button(ui, app, tr("Leave Session"));
+            }
+        }
+    });
+
+    ui.add_space(8.0);
+    roster_panel(ui, app);
+}
+
+fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {
+    use crate::icons;
+    egui::Frame::none()
+        .fill(Color32::from_gray(24))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .corner_radius(4.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Selectable so it can be copied by hand if the button fails.
+                ui.add(
+                    egui::Label::new(RichText::new(words).monospace().size(16.0).strong())
+                        .selectable(true),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let just_copied = app
+                        .coop_copied_at
+                        .map(|t| t.elapsed().as_secs_f32() < 1.5)
+                        .unwrap_or(false);
+                    let label = if just_copied {
+                        format!("{}  {}", icons::CHECK, tr("Copied"))
+                    } else {
+                        format!("{}  {}", icons::COPY, tr("Copy"))
+                    };
+                    if ui.button(label).clicked() {
+                        ui.ctx().copy_text(words.to_string());
+                        app.coop_copied_at = Some(std::time::Instant::now());
+                    }
+                });
+            });
+        });
+}
+
+fn roster_panel(ui: &mut Ui, app: &ForzaApp) {
+    ui.group(|ui| {
+        let roster = app.coop.roster();
+        ui.heading(format!("{} ({})", tr("Players"), roster.len()));
+        ui.add_space(4.0);
+        if roster.is_empty() {
+            ui.label(RichText::new(tr("No one here yet.")).color(Color32::GRAY));
+        }
+        let my_id = app.coop.my_id();
+        for p in roster {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 6.0, hue_color(p.hue));
+                ui.label(RichText::new(&p.name).size(14.0));
+                if p.id == my_id {
+                    ui.label(RichText::new(tr("(you)")).size(11.0).color(Color32::GRAY));
+                }
+            });
+        }
+    });
+}
+
+fn stop_button(ui: &mut Ui, app: &mut ForzaApp, label: &str) {
+    use crate::icons;
+    if ui
+        .add_sized(
+            [ui.available_width(), 28.0],
+            egui::Button::new(format!("{}  {}", icons::TIMES, label))
+                .fill(Color32::from_rgb(120, 45, 45)),
+        )
+        .clicked()
+    {
+        app.coop.stop();
+    }
+}

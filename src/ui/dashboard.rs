@@ -1340,8 +1340,45 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let painter = ui.painter_at(rect);
     painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 
-    // Car indicator: triangle rotated to show actual car heading relative to map orientation
     let s = 7.0_f32;
+
+    // Remote co-op players: place each on the map relative to the local car using
+    // the same world→screen rotation, with their identity colour + name.
+    let remotes = app.coop.remote_players();
+    if !remotes.is_empty() {
+        for (info, pkt) in remotes {
+            let dx = pkt.position_x - car_x;
+            let dz = pkt.position_z - car_z;
+            let sx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
+            let sy = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
+            if !rect.expand(24.0).contains(pos2(sx, sy)) {
+                continue; // off-screen — skip
+            }
+            let col = crate::ui::coop::hue_color(info.hue);
+            let (sa, ca) = (pkt.yaw - yaw).sin_cos();
+            let rr = |vx: f32, vy: f32| pos2(sx + vx * ca - vy * sa, sy + vx * sa + vy * ca);
+            painter.add(egui::Shape::convex_polygon(
+                vec![rr(0.0, -s * 1.4), rr(s, s * 0.6), rr(-s, s * 0.6)],
+                col,
+                Stroke::new(1.5, Color32::BLACK),
+            ));
+            painter.text(
+                pos2(sx, sy - s * 1.9),
+                egui::Align2::CENTER_BOTTOM,
+                &info.name,
+                egui::FontId::proportional(11.0),
+                col,
+            );
+        }
+    }
+
+    // Local car indicator: triangle rotated to show heading relative to map orientation.
+    // Uses the player's co-op colour (colour only, no name) when in a session.
+    let local_col = if app.coop.role() != crate::coop::Role::Off {
+        crate::ui::coop::hue_color(app.config.coop_hue)
+    } else {
+        Color32::WHITE
+    };
     let arrow_angle = app.minimap_cached_raw_yaw - app.minimap_smoothed_yaw;
     let (sin_a, cos_a) = arrow_angle.sin_cos();
     let rot = |vx: f32, vy: f32| -> Pos2 {
@@ -1352,7 +1389,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let right = rot( s,        s * 0.6);
     painter.add(egui::Shape::convex_polygon(
         vec![tip, right, left],
-        Color32::WHITE,
+        local_col,
         Stroke::new(1.5, Color32::BLACK),
     ));
 }

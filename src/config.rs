@@ -288,6 +288,11 @@ pub struct AppConfig {
     pub decel_dynamic_mode: bool,
     // UI language
     pub language: Language,
+    // Co-Op
+    pub coop_name: String,
+    pub coop_hue: f32,        // 0..360, player marker colour
+    pub coop_buffer_ms: u32,  // jitter buffer for remote players (pacing)
+    pub coop_port: u16,       // local host port cloudflared points at
 }
 
 impl Default for AppConfig {
@@ -369,6 +374,10 @@ impl Default for AppConfig {
             decel_end_kmh: 0.0,
             decel_dynamic_mode: false,
             language: Language::English,
+            coop_name: "Player".to_string(),
+            coop_hue: 205.0,
+            coop_buffer_ms: 0,
+            coop_port: crate::coop::DEFAULT_COOP_PORT,
         }
     }
 }
@@ -521,6 +530,11 @@ impl AppConfig {
 
 
 pub fn app_data_dir() -> PathBuf {
+    // Test/dev override: point the whole app (config, calibrations, map cache, cloudflared)
+    // at an alternate dir so a throwaway config can't clobber the real one.
+    if let Some(dir) = std::env::var_os("FORZA_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ForzaTelemetryV3")

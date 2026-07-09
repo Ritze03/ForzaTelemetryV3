@@ -262,6 +262,50 @@ impl ForzaPacket {
         })
     }
 
+    /// Re-serialize to the 324-byte wire format (323 meaningful + 1 trailing pad).
+    /// Inverse of `from_bytes`; used to relay locally-received telemetry over co-op.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(324);
+        macro_rules! w { ($v:expr) => { b.extend_from_slice(&$v.to_le_bytes()); } }
+        w!(self.is_race_on); w!(self.timestamp_ms);
+        w!(self.engine_max_rpm); w!(self.engine_idle_rpm); w!(self.current_engine_rpm);
+        w!(self.acceleration_x); w!(self.acceleration_y); w!(self.acceleration_z);
+        w!(self.velocity_x); w!(self.velocity_y); w!(self.velocity_z);
+        w!(self.angular_velocity_x); w!(self.angular_velocity_y); w!(self.angular_velocity_z);
+        w!(self.yaw); w!(self.pitch); w!(self.roll);
+        w!(self.normalized_suspension_travel_fl); w!(self.normalized_suspension_travel_fr);
+        w!(self.normalized_suspension_travel_rl); w!(self.normalized_suspension_travel_rr);
+        w!(self.tire_slip_ratio_fl); w!(self.tire_slip_ratio_fr);
+        w!(self.tire_slip_ratio_rl); w!(self.tire_slip_ratio_rr);
+        w!(self.wheel_rotation_speed_fl); w!(self.wheel_rotation_speed_fr);
+        w!(self.wheel_rotation_speed_rl); w!(self.wheel_rotation_speed_rr);
+        w!(self.wheel_on_rumble_strip_fl); w!(self.wheel_on_rumble_strip_fr);
+        w!(self.wheel_on_rumble_strip_rl); w!(self.wheel_on_rumble_strip_rr);
+        w!(self.wheel_in_puddle_fl); w!(self.wheel_in_puddle_fr);
+        w!(self.wheel_in_puddle_rl); w!(self.wheel_in_puddle_rr);
+        w!(self.surface_rumble_fl); w!(self.surface_rumble_fr);
+        w!(self.surface_rumble_rl); w!(self.surface_rumble_rr);
+        w!(self.tire_slip_angle_fl); w!(self.tire_slip_angle_fr);
+        w!(self.tire_slip_angle_rl); w!(self.tire_slip_angle_rr);
+        w!(self.tire_combined_slip_fl); w!(self.tire_combined_slip_fr);
+        w!(self.tire_combined_slip_rl); w!(self.tire_combined_slip_rr);
+        w!(self.suspension_travel_meters_fl); w!(self.suspension_travel_meters_fr);
+        w!(self.suspension_travel_meters_rl); w!(self.suspension_travel_meters_rr);
+        w!(self.car_ordinal); w!(self.car_class); w!(self.car_performance_index);
+        w!(self.drivetrain_type); w!(self.num_cylinders);
+        w!(self.car_group); w!(self.smashable_vel_diff); w!(self.smashable_mass);
+        w!(self.position_x); w!(self.position_y); w!(self.position_z);
+        w!(self.speed); w!(self.power); w!(self.torque);
+        w!(self.tire_temp_fl); w!(self.tire_temp_fr); w!(self.tire_temp_rl); w!(self.tire_temp_rr);
+        w!(self.boost); w!(self.fuel); w!(self.distance_traveled);
+        w!(self.best_lap); w!(self.last_lap); w!(self.current_lap); w!(self.current_race_time);
+        w!(self.lap_number); w!(self.race_position);
+        w!(self.accel); w!(self.brake); w!(self.clutch); w!(self.hand_brake); w!(self.gear);
+        w!(self.steer); w!(self.normalized_driving_line); w!(self.normalized_ai_brake_difference);
+        b.push(0); // trailing pad byte the game includes
+        b
+    }
+
     pub fn speed_kmh(&self) -> f32 {
         self.speed * 3.6
     }
@@ -305,4 +349,40 @@ impl ForzaPacket {
         (temp_f - 32.0) * 5.0 / 9.0
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_to_from_bytes() {
+        // Fill a packet with distinct values so a mis-ordered field is caught.
+        let mut p = ForzaPacket::default();
+        p.is_race_on = 1;
+        p.timestamp_ms = 123_456;
+        p.current_engine_rpm = 6543.0;
+        p.speed = 55.5;
+        p.position_x = -12345.6;
+        p.position_z = 9876.5;
+        p.yaw = 1.23;
+        p.car_ordinal = 4242;
+        p.gear = 4;
+        p.accel = 200;
+        p.steer = -42;
+        p.lap_number = 7;
+        p.race_position = 3;
+        let bytes = p.to_bytes();
+        assert_eq!(bytes.len(), 324, "wire packet must be 324 bytes");
+        let back = ForzaPacket::from_bytes(&bytes).expect("parse");
+        assert_eq!(back.timestamp_ms, p.timestamp_ms);
+        assert_eq!(back.current_engine_rpm, p.current_engine_rpm);
+        assert_eq!(back.speed, p.speed);
+        assert_eq!(back.position_x, p.position_x);
+        assert_eq!(back.position_z, p.position_z);
+        assert_eq!(back.car_ordinal, p.car_ordinal);
+        assert_eq!(back.gear, p.gear);
+        assert_eq!(back.steer, p.steer);
+        assert_eq!(back.race_position, p.race_position);
+    }
 }

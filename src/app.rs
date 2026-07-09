@@ -291,6 +291,7 @@ pub enum Tab {
     Gearbox,
     PowerCurve,
     EngineSwaps,
+    Coop,
     Settings,
 }
 
@@ -393,6 +394,11 @@ pub struct ForzaApp {
     // Preset loader selected index (None = nothing selected)
     pub pending_preset: Option<usize>,
 
+    // Co-Op
+    pub coop: crate::coop::CoopState,
+    pub coop_join_input: String,
+    pub coop_copied_at: Option<Instant>,
+
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
 }
@@ -435,6 +441,9 @@ impl ForzaApp {
         };
 
         let initial_zoom = config.minimap_zoom_stopped_m;
+        let config_coop_name = config.coop_name.clone();
+        let config_coop_hue = config.coop_hue;
+        let config_coop_buffer_ms = config.coop_buffer_ms;
         Self {
             config,
             engines,
@@ -489,6 +498,9 @@ impl ForzaApp {
             minimap_img_receiver: map_rx,
             minimap_cache_progress: None,
             pending_preset: None,
+            coop: crate::coop::CoopState::new(&config_coop_name, config_coop_hue, config_coop_buffer_ms),
+            coop_join_input: String::new(),
+            coop_copied_at: None,
             receiver,
             _network: network,
         }
@@ -637,6 +649,9 @@ impl ForzaApp {
                 });
             }
 
+            // Co-Op: relay our locally-received telemetry to peers.
+            self.coop.push_local(&pkt);
+
             self.telemetry.update(pkt);
 
             received += 1;
@@ -657,6 +672,8 @@ impl eframe::App for ForzaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.config.language);
         self.drain_packets();
+        // Advance co-op jitter buffers so remote player positions are ready to draw.
+        self.coop.tick();
 
         // Poll minimap image receiver — drain all pending messages this frame
         if self.minimap_img_receiver.is_some() {
@@ -801,6 +818,8 @@ impl eframe::App for ForzaApp {
                     format!("{} {}", icons::LINE_CHART, tr("Power Curve")));
                 ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
                     format!("{} {}", icons::WRENCH, tr("Engine Swaps")));
+                ui.selectable_value(&mut self.current_tab, Tab::Coop,
+                    format!("{} {}", icons::USERS, tr("Co-Op")));
                 ui.selectable_value(&mut self.current_tab, Tab::Settings,
                     format!("{} {}", icons::COG, tr("Settings")));
             });
@@ -1326,6 +1345,7 @@ impl eframe::App for ForzaApp {
                 Tab::Gearbox      => crate::ui::gearbox::show_gearbox(ui, self),
                 Tab::PowerCurve   => crate::ui::power_curve::show(ui, self),
                 Tab::EngineSwaps  => crate::ui::engine_swaps::show(ui, self),
+                Tab::Coop         => crate::ui::coop::show(ui, self),
                 Tab::Settings    => crate::ui::settings::show(ui, self),
             }
         });
