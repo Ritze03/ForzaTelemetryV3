@@ -405,6 +405,8 @@ pub struct ForzaApp {
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
     pub minimap_trails: HashMap<String, VecDeque<(f32, f32)>>,
+    /// Rolling ~30s trace of (time, speed km/h, rpm) for the Speed Trace widget.
+    pub trace_history: VecDeque<(Instant, f32, f32)>,
 
     // Preset loader selected index (None = nothing selected)
     pub pending_preset: Option<usize>,
@@ -515,6 +517,7 @@ impl ForzaApp {
             minimap_img_receiver: map_rx,
             minimap_cache_progress: None,
             minimap_trails: HashMap::new(),
+            trace_history: VecDeque::new(),
             pending_preset: None,
             coop: crate::coop::CoopState::new(&config_coop_name, config_coop_hue, config_coop_buffer_ms),
             coop_join_input: config_coop_last_code,
@@ -623,6 +626,20 @@ impl ForzaApp {
                         self.speed_history.pop_front();
                     } else {
                         break;
+                    }
+                }
+
+                // Speed/RPM trace history (~30 s window, ~25 Hz).
+                if self.trace_history.back().map_or(true, |&(t, ..)| {
+                    now.duration_since(t) >= Duration::from_millis(40)
+                }) {
+                    self.trace_history.push_back((now, cur_kmh, pkt.current_engine_rpm));
+                    while let Some(&(t, ..)) = self.trace_history.front() {
+                        if now.duration_since(t) > Duration::from_secs(30) {
+                            self.trace_history.pop_front();
+                        } else {
+                            break;
+                        }
                     }
                 }
                 match self.config.speed_delta_mode {
@@ -1030,7 +1047,7 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Engine,
                                         WidgetKind::Position, WidgetKind::Race,
                                         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
-                                        WidgetKind::MiniMap, WidgetKind::CoopPlayers,
+                                        WidgetKind::MiniMap, WidgetKind::CoopPlayers, WidgetKind::Trace,
                                     ] {
                                         let mut enabled = !self.config.disabled_modules.contains(&kind);
                                         if ui.checkbox(&mut enabled, kind.label()).changed() {

@@ -452,7 +452,69 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::Suspension => show_suspension_block(ui, app, pkt),
         WidgetKind::MiniMap    => show_minimap_widget(ui, app),
         WidgetKind::CoopPlayers => show_coop_players(ui, app, pkt),
+        WidgetKind::Trace      => show_trace_widget(ui, app, pkt),
     }
+}
+
+/// Rolling speed (km/h) + RPM sparkline over the last ~30 s, hand-drawn to match
+/// the lightweight dashboard widgets.
+fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    ui.label(crate::theme::section_label(tr("Speed Trace")));
+    ui.add_space(2.0);
+
+    let use_mph = app.config.use_mph;
+    let unit = if use_mph { "mph" } else { "km/h" };
+    let speed_disp = if use_mph { pkt.speed_mph() } else { pkt.speed_kmh() };
+
+    // Legend / current values
+    ui.horizontal(|ui| {
+        ui.colored_label(Color32::from_rgb(80, 200, 110), format!("{speed_disp:.0} {unit}"));
+        ui.colored_label(Color32::from_rgb(230, 160, 40), format!("{:.0} rpm", pkt.current_engine_rpm));
+    });
+
+    let rect = ui.available_rect_before_wrap();
+    ui.allocate_rect(rect, egui::Sense::hover());
+    if rect.height() < 10.0 || rect.width() < 10.0 {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, Color32::from_rgb(22, 24, 27));
+
+    let hist = &app.trace_history;
+    if hist.len() < 2 {
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER,
+            tr("Collecting…"), egui::FontId::proportional(12.0), Color32::from_gray(90));
+        return;
+    }
+
+    let window = 30.0_f32;
+    let now = std::time::Instant::now();
+    let speed_max = if use_mph { 200.0 } else { 320.0 };
+    let rpm_max = effective_max_rpm(app, pkt).max(1000.0);
+
+    // Horizontal gridlines
+    for f in [0.25_f32, 0.5, 0.75] {
+        let y = rect.bottom() - f * rect.height();
+        painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)],
+            Stroke::new(0.5, Color32::from_gray(45)));
+    }
+
+    let x_of = |t: &std::time::Instant| {
+        let age = now.duration_since(*t).as_secs_f32().min(window);
+        rect.right() - (age / window) * rect.width()
+    };
+    let y_of = |v: f32, vmax: f32| rect.bottom() - (v / vmax).clamp(0.0, 1.0) * (rect.height() - 2.0);
+
+    let mut speed_pts = Vec::with_capacity(hist.len());
+    let mut rpm_pts = Vec::with_capacity(hist.len());
+    for (t, spd_kmh, rpm) in hist.iter() {
+        let x = x_of(t);
+        let spd = if use_mph { spd_kmh / 1.609_34 } else { *spd_kmh };
+        speed_pts.push(pos2(x, y_of(spd, speed_max)));
+        rpm_pts.push(pos2(x, y_of(*rpm, rpm_max)));
+    }
+    painter.add(egui::Shape::line(rpm_pts, Stroke::new(1.3, Color32::from_rgb(200, 140, 35))));
+    painter.add(egui::Shape::line(speed_pts, Stroke::new(1.8, Color32::from_rgb(80, 200, 110))));
 }
 
 /// Live co-op standings: one row per player (self + remotes) with a hue-coloured
@@ -617,14 +679,19 @@ fn show_gear_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.allocate_space(avail.size());
 }
 
-fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    let max_rpm = match app.config.max_rpm_mode {
+/// Max RPM the dashboard uses (game-provided or dynamically detected redline).
+fn effective_max_rpm(app: &ForzaApp, pkt: &ForzaPacket) -> f32 {
+    match app.config.max_rpm_mode {
         crate::config::MaxRpmSource::GameProvided => pkt.engine_max_rpm,
         crate::config::MaxRpmSource::DetectDynamically => {
             if app.dynamic_max_rpm > 0.0 { app.dynamic_max_rpm } else { pkt.engine_max_rpm }
         }
     }
-    .max(1.0);
+    .max(1.0)
+}
+
+fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    let max_rpm = effective_max_rpm(app, pkt);
     let avail_h = ui.available_rect_before_wrap().height();
     let rpm_font = (avail_h * 0.20).min(28.0).max(12.0);
 
