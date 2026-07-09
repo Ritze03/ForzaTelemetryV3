@@ -1615,6 +1615,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // the same world→screen rotation, with their identity colour + name.
     let remotes = app.coop.remote_players();
     if !remotes.is_empty() {
+        // Names are drawn in a second pass so labels of cars close together (e.g. racing
+        // side-by-side) can be nudged apart instead of stacking illegibly.
+        let mut labels: Vec<(Pos2, String, Color32)> = Vec::new();
         for (info, pkt) in remotes {
             let dx = pkt.position_x - car_x;
             let dz = pkt.position_z - car_z;
@@ -1623,7 +1626,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             let col = crate::ui::coop::hue_color(info.hue);
 
             if rect.shrink(8.0).contains(pos2(sx, sy)) {
-                // On-screen: full heading arrow + name.
+                // On-screen: full heading arrow; name deferred to the 2nd pass.
                 let (sa, ca) = (pkt.yaw - yaw).sin_cos();
                 let rr = |vx: f32, vy: f32| pos2(sx + vx * ca - vy * sa, sy + vx * sa + vy * ca);
                 painter.add(egui::Shape::convex_polygon(
@@ -1631,15 +1634,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                     col,
                     Stroke::new(1.5, Color32::BLACK),
                 ));
-                // Name with a dark outline so it stays legible over snow/roads.
-                let name_pos = pos2(sx, sy - s * 1.9);
-                let name_font = egui::FontId::proportional(11.0);
-                let shadow = Color32::from_black_alpha(200);
-                for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                    painter.text(name_pos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM,
-                        &info.name, name_font.clone(), shadow);
-                }
-                painter.text(name_pos, egui::Align2::CENTER_BOTTOM, &info.name, name_font, col);
+                labels.push((pos2(sx, sy - s * 1.9), info.name.clone(), col));
             } else {
                 // Off-screen: clamp to the map edge and point a marker toward them,
                 // so you always know which way your teammates are.
@@ -1672,6 +1667,22 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                 }
                 painter.text(dpos, egui::Align2::CENTER_CENTER, &dist_txt, dfont, col);
             }
+        }
+
+        // 2nd pass: draw names, nudging each down while it collides with a placed one.
+        let name_font = egui::FontId::proportional(11.0);
+        let shadow = Color32::from_black_alpha(200);
+        let mut placed: Vec<Pos2> = Vec::new();
+        for (mut pos, name, col) in labels {
+            while placed.iter().any(|p| (p.x - pos.x).abs() < 46.0 && (p.y - pos.y).abs() < 13.0) {
+                pos.y += 13.0;
+            }
+            placed.push(pos);
+            for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                painter.text(pos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM,
+                    &name, name_font.clone(), shadow);
+            }
+            painter.text(pos, egui::Align2::CENTER_BOTTOM, &name, name_font.clone(), col);
         }
     }
 
