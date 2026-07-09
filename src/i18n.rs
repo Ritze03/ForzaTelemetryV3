@@ -506,6 +506,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Repository" => "Repository",
         "Credits:" => "Mitwirkende:",
         "Le0_X8 — seasonal map images" => "Le0_X8 — saisonale Kartenbilder",
+        "Geist font — Vercel (OFL)" => "Geist-Schrift — Vercel (OFL)",
+        "Nerd Fonts — Ryan L McIntyre (MIT)" => "Nerd Fonts — Ryan L McIntyre (MIT)",
+        "Font licences: assets/fonts/" => "Schrift-Lizenzen: assets/fonts/",
         "Save Settings" => "Einstellungen speichern",
         "Settings are also auto-saved on exit." =>
             "Einstellungen werden auch beim Beenden automatisch gespeichert.",

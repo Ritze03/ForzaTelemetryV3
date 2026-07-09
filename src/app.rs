@@ -21,7 +21,12 @@ use crate::telemetry::TelemetryState;
 // ── Season detection ──────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Season { Spring, Summer, Autumn, Winter }
+pub enum Season {
+    Spring,
+    Summer,
+    Autumn,
+    Winter,
+}
 
 pub fn current_season() -> Season {
     // Spring started 2026-06-12 14:30:00 UTC (7:30 AM PDT). Unix: 1749738600.
@@ -31,7 +36,9 @@ pub fn current_season() -> Season {
         .unwrap_or_default()
         .as_secs() as i64;
     let secs = now - 1_749_738_600_i64;
-    if secs < 0 { return Season::Spring; }
+    if secs < 0 {
+        return Season::Spring;
+    }
     match (secs / 604_800) % 4 {
         0 => Season::Spring,
         1 => Season::Summer,
@@ -71,23 +78,33 @@ fn season_display_name(season: Season) -> &'static str {
 fn map_cache_path(season: Season, quality_pct: u32) -> std::path::PathBuf {
     crate::config::app_data_dir()
         .join("map_cache")
-        .join(format!("{}_q{}.bin", season_display_name(season).to_lowercase(), quality_pct))
+        .join(format!(
+            "{}_q{}.bin",
+            season_display_name(season).to_lowercase(),
+            quality_pct
+        ))
 }
 
 fn try_load_map_cache(path: &std::path::Path) -> Option<(egui::ColorImage, [u32; 2])> {
     let data = std::fs::read(path).ok()?;
-    if data.len() < 16 { return None; }
+    if data.len() < 16 {
+        return None;
+    }
     let orig_w = u32::from_le_bytes(data[0..4].try_into().ok()?);
     let orig_h = u32::from_le_bytes(data[4..8].try_into().ok()?);
-    let w      = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
-    let h      = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
-    if data.len() != 16 + w * h * 4 { return None; }
+    let w = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
+    let h = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
+    if data.len() != 16 + w * h * 4 {
+        return None;
+    }
     let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &data[16..]);
     Some((color_image, [orig_w, orig_h]))
 }
 
 fn write_map_cache(path: &std::path::Path, orig: [u32; 2], scaled: [u32; 2], rgba: &[u8]) {
-    if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let mut buf = Vec::with_capacity(16 + rgba.len());
     buf.extend_from_slice(&orig[0].to_le_bytes());
     buf.extend_from_slice(&orig[1].to_le_bytes());
@@ -102,16 +119,21 @@ fn write_map_cache(path: &std::path::Path, orig: [u32; 2], scaled: [u32; 2], rgb
 fn decode_and_cache_season(season: Season, quality: f32) {
     let quality_pct = quality.round() as u32;
     let cache_file = map_cache_path(season, quality_pct);
-    if cache_file.exists() { return; }
+    if cache_file.exists() {
+        return;
+    }
     let bytes = season_map_bytes(season);
-    let Ok(img) = image::load_from_memory(bytes) else { return; };
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return;
+    };
     let orig_size = [img.width(), img.height()];
     let rgba = if quality >= 99.9 {
         img.into_rgba8()
     } else {
         let nw = ((orig_size[0] as f32 * quality / 100.0) as u32).max(1);
         let nh = ((orig_size[1] as f32 * quality / 100.0) as u32).max(1);
-        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle).into_rgba8()
+        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
+            .into_rgba8()
     };
     let (w, h) = rgba.dimensions();
     write_map_cache(&cache_file, orig_size, [w, h], rgba.as_raw());
@@ -127,10 +149,17 @@ fn load_map_color_image(season: Season, quality: f32) -> Option<(egui::ColorImag
 /// sending a `CacheBuilt` message for each completion, then loads the current season's image
 /// from cache and sends `Done`.
 fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoadMessage>) {
-    let all_seasons = [Season::Spring, Season::Summer, Season::Autumn, Season::Winter];
+    let all_seasons = [
+        Season::Spring,
+        Season::Summer,
+        Season::Autumn,
+        Season::Winter,
+    ];
     let quality_pct = quality.round() as u32;
 
-    let to_build: Vec<Season> = all_seasons.iter().copied()
+    let to_build: Vec<Season> = all_seasons
+        .iter()
+        .copied()
         .filter(|&s| !map_cache_path(s, quality_pct).exists())
         .collect();
 
@@ -138,20 +167,29 @@ fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoa
         // Send immediately — file-exist checks are done, decodes haven't started yet.
         // This lets the widget switch to the progress screen before any slow work begins.
         let _ = tx.send(MapLoadMessage::CacheBuildStarted {
-            names: to_build.iter().map(|&s| season_display_name(s).to_string()).collect(),
+            names: to_build
+                .iter()
+                .map(|&s| season_display_name(s).to_string())
+                .collect(),
         });
 
-        let handles: Vec<_> = to_build.iter().copied().map(|season| {
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                decode_and_cache_season(season, quality);
-                let _ = tx.send(MapLoadMessage::CacheBuilt {
-                    name: season_display_name(season).to_string(),
-                });
+        let handles: Vec<_> = to_build
+            .iter()
+            .copied()
+            .map(|season| {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    decode_and_cache_season(season, quality);
+                    let _ = tx.send(MapLoadMessage::CacheBuilt {
+                        name: season_display_name(season).to_string(),
+                    });
+                })
             })
-        }).collect();
+            .collect();
 
-        for h in handles { let _ = h.join(); }
+        for h in handles {
+            let _ = h.join();
+        }
     }
 
     let result = load_map_color_image(current_season, quality);
@@ -174,7 +212,9 @@ fn minimap_target_yaw(pkt: &crate::packet::ForzaPacket, use_movement_dir: bool) 
 fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
     use std::f32::consts::{PI, TAU};
     let mut diff = (b - a).rem_euclid(TAU);
-    if diff > PI { diff -= TAU; }
+    if diff > PI {
+        diff -= TAU;
+    }
     a + diff * t
 }
 
@@ -223,14 +263,14 @@ impl SuspensionStats {
 
 #[derive(Default)]
 pub struct GForceStats {
-    pub max_lateral:       f32,
-    pub max_longitudinal:  f32,
-    pub max_vertical:      f32,
-    pub peak_lateral:      f32,
+    pub max_lateral: f32,
+    pub max_longitudinal: f32,
+    pub max_vertical: f32,
+    pub peak_lateral: f32,
     pub peak_longitudinal: f32,
-    pub peak_reset_timer:  Option<Instant>,
+    pub peak_reset_timer: Option<Instant>,
     /// Recent (lat, lon) samples for the traction-circle trail (~1.5 s window).
-    pub g_history:         VecDeque<(Instant, f32, f32)>,
+    pub g_history: VecDeque<(Instant, f32, f32)>,
 }
 
 impl GForceStats {
@@ -245,7 +285,7 @@ impl GForceStats {
             }
         }
 
-        let cur_mag  = (lat * lat + lon * lon).sqrt();
+        let cur_mag = (lat * lat + lon * lon).sqrt();
         let peak_mag = (self.peak_lateral.powi(2) + self.peak_longitudinal.powi(2)).sqrt();
 
         if cur_mag > peak_mag {
@@ -264,9 +304,15 @@ impl GForceStats {
             }
         }
 
-        if lat.abs()  >= 0.5 { self.max_lateral      = self.max_lateral.max(lat.abs()); }
-        if lon.abs()  >= 0.1 { self.max_longitudinal = self.max_longitudinal.max(lon.abs()); }
-        if vert.abs() >= 0.2 { self.max_vertical     = self.max_vertical.max(vert.abs()); }
+        if lat.abs() >= 0.5 {
+            self.max_lateral = self.max_lateral.max(lat.abs());
+        }
+        if lon.abs() >= 0.1 {
+            self.max_longitudinal = self.max_longitudinal.max(lon.abs());
+        }
+        if vert.abs() >= 0.2 {
+            self.max_vertical = self.max_vertical.max(vert.abs());
+        }
     }
 }
 
@@ -351,7 +397,7 @@ pub struct ForzaApp {
     pub car_calibrations: HashMap<i32, CarCalibration>,
 
     // Session maxima (reset on car change)
-    pub max_power_ps:  f32,
+    pub max_power_ps: f32,
     pub max_torque_nm: f32,
     pub max_boost_psi: f32,
     pub max_speed_kmh: f32,
@@ -365,10 +411,10 @@ pub struct ForzaApp {
     pub gforce_stats: GForceStats,
 
     // Cached car identity — persists when is_race_on == 0 (paused)
-    pub cached_car_class_str:  String,
-    pub cached_car_pi:         i32,
+    pub cached_car_class_str: String,
+    pub cached_car_pi: i32,
     pub cached_drivetrain_str: String,
-    pub cached_num_cylinders:  i32,
+    pub cached_num_cylinders: i32,
 
     // Speed delta tracking
     pub speed_delta_kmh: f32,
@@ -391,16 +437,16 @@ pub struct ForzaApp {
 
     // Mini map
     pub minimap_texture: Option<egui::TextureHandle>,
-    pub minimap_orig_size: [u32; 2],      // original image dims for world-space coverage maths
+    pub minimap_orig_size: [u32; 2], // original image dims for world-space coverage maths
     pub minimap_current_zoom: f32,
-    pub minimap_loaded_season: Season,    // season currently in the texture
-    minimap_stopped_at: Option<Instant>,  // when speed dropped below threshold
-    minimap_last_render_time: f64,        // egui time of last cached-position refresh
-    pub minimap_cached_car_x: f32,        // throttled position cache for minimap rendering
+    pub minimap_loaded_season: Season, // season currently in the texture
+    minimap_stopped_at: Option<Instant>, // when speed dropped below threshold
+    minimap_last_render_time: f64,     // egui time of last cached-position refresh
+    pub minimap_cached_car_x: f32,     // throttled position cache for minimap rendering
     pub minimap_cached_car_z: f32,
     pub minimap_cached_yaw: f32,
-    pub minimap_cached_raw_yaw: f32,      // always raw pkt.yaw, for arrow orientation
-    pub minimap_smoothed_yaw: f32,        // lerped yaw used for actual rendering
+    pub minimap_cached_raw_yaw: f32, // always raw pkt.yaw, for arrow orientation
+    pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
@@ -431,20 +477,24 @@ pub struct ForzaApp {
 impl ForzaApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut fonts = egui::FontDefinitions::default();
+        // Geist family, copied from the ritz launcher (licences in assets/fonts/):
+        // Geist Mono (TTF) for crisp UI text, Geist Mono Nerd Font (OTF) for icon
+        // glyphs only — text stays a clean TTF, only \uf… icons fall back to the OTF.
         fonts.font_data.insert(
-            "hack_nerd".to_owned(),
-            egui::FontData::from_static(include_bytes!("../assets/HackNerdFont-Regular.ttf")).into(),
+            "geist_mono".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/fonts/GeistMono-Regular.ttf"))
+                .into(),
         );
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "hack_nerd".to_owned());
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "hack_nerd".to_owned());
+        fonts.font_data.insert(
+            "geist_icons".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/fonts/GeistMonoNerdFont-Regular.otf"))
+                .into(),
+        );
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let fam = fonts.families.entry(family).or_default();
+            fam.insert(0, "geist_mono".to_owned()); // primary UI text
+            fam.push("geist_icons".to_owned());     // icon-glyph fallback
+        }
         _cc.egui_ctx.set_fonts(fonts);
         crate::theme::apply(&_cc.egui_ctx);
 
@@ -457,10 +507,15 @@ impl ForzaApp {
 
         // Spawn background thread to load the seasonal map image (skip if Map module disabled)
         let season = current_season();
-        let map_rx = if !config.disabled_modules.contains(&crate::config::WidgetKind::MiniMap) {
+        let map_rx = if !config
+            .disabled_modules
+            .contains(&crate::config::WidgetKind::MiniMap)
+        {
             let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
             let map_quality = config.minimap_quality;
-            std::thread::spawn(move || { map_load_thread(season, map_quality, map_tx); });
+            std::thread::spawn(move || {
+                map_load_thread(season, map_quality, map_tx);
+            });
             Some(map_rx)
         } else {
             None
@@ -497,10 +552,10 @@ impl ForzaApp {
             dynamic_max_rpm: 0.0,
             suspension_stats: SuspensionStats::default(),
             gforce_stats: GForceStats::default(),
-            cached_car_class_str:  String::new(),
-            cached_car_pi:         0,
+            cached_car_class_str: String::new(),
+            cached_car_pi: 0,
             cached_drivetrain_str: "XWD".to_string(),
-            cached_num_cylinders:  0,
+            cached_num_cylinders: 0,
             speed_delta_kmh: 0.0,
             last_tracked_speed: 0.0,
             last_track_instant: None,
@@ -528,7 +583,11 @@ impl ForzaApp {
             minimap_trails: HashMap::new(),
             trace_history: VecDeque::new(),
             pending_preset: None,
-            coop: crate::coop::CoopState::new(&config_coop_name, config_coop_hue, config_coop_buffer_ms),
+            coop: crate::coop::CoopState::new(
+                &config_coop_name,
+                config_coop_hue,
+                config_coop_buffer_ms,
+            ),
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
             recorder: None,
@@ -613,10 +672,10 @@ impl ForzaApp {
 
             // Session maxima + cache car identity
             if pkt.is_race_on != 0 {
-                self.cached_car_class_str  = pkt.car_class_str().to_string();
-                self.cached_car_pi         = pkt.car_performance_index;
+                self.cached_car_class_str = pkt.car_class_str().to_string();
+                self.cached_car_pi = pkt.car_performance_index;
                 self.cached_drivetrain_str = pkt.drivetrain_str().to_string();
-                self.cached_num_cylinders  = pkt.num_cylinders;
+                self.cached_num_cylinders = pkt.num_cylinders;
                 if pkt.engine_max_rpm > 0.0 {
                     self.cached_engine_max_rpm = pkt.engine_max_rpm as f64;
                 }
@@ -636,14 +695,14 @@ impl ForzaApp {
                     self.dynamic_max_rpm = self.dynamic_max_rpm.max(pkt.current_engine_rpm);
                 }
                 if pkt.speed >= 0.1 {
-                    self.max_power_ps  = self.max_power_ps.max(pkt.power_ps());
+                    self.max_power_ps = self.max_power_ps.max(pkt.power_ps());
                     self.max_torque_nm = self.max_torque_nm.max(pkt.torque_nm());
                     self.max_boost_psi = self.max_boost_psi.max(pkt.boost);
                     self.max_speed_kmh = self.max_speed_kmh.max(pkt.speed * 3.6);
                 }
 
-                let lat  = pkt.acceleration_x / 9.81;
-                let lon  = pkt.acceleration_z / 9.81;
+                let lat = pkt.acceleration_x / 9.81;
+                let lon = pkt.acceleration_z / 9.81;
                 let vert = pkt.acceleration_y / 9.81;
                 self.gforce_stats.update(lat, lon, vert);
 
@@ -670,7 +729,8 @@ impl ForzaApp {
                 if self.trace_history.back().map_or(true, |&(t, ..)| {
                     now.duration_since(t) >= Duration::from_millis(40)
                 }) {
-                    self.trace_history.push_back((now, cur_kmh, pkt.current_engine_rpm));
+                    self.trace_history
+                        .push_back((now, cur_kmh, pkt.current_engine_rpm));
                     while let Some(&(t, ..)) = self.trace_history.front() {
                         if now.duration_since(t) > Duration::from_secs(30) {
                             self.trace_history.pop_front();
@@ -686,7 +746,8 @@ impl ForzaApp {
                         }
                     }
                     SpeedDeltaMode::Track => {
-                        if self.last_track_instant
+                        if self
+                            .last_track_instant
                             .map(|t| t.elapsed() >= Duration::from_secs(1))
                             .unwrap_or(true)
                         {
@@ -705,9 +766,11 @@ impl ForzaApp {
 
             self.sprint_timer.update(&pkt);
             self.power_capture.update(&pkt, step);
-            self.perf_test.update(&pkt, accel_s, accel_e, decel_s, decel_e);
+            self.perf_test
+                .update(&pkt, accel_s, accel_e, decel_s, decel_e);
             self.backfire.update(&pkt, &fun_cfg, &self.input);
-            self.dsg.update(&pkt, &fun_cfg, &self.input, self.dynamic_max_rpm);
+            self.dsg
+                .update(&pkt, &fun_cfg, &self.input, self.dynamic_max_rpm);
 
             // Opt-in: keep the in-memory per-car calibration current; it's written to its own
             // file on car change and on exit.
@@ -715,10 +778,13 @@ impl ForzaApp {
                 && pkt.car_ordinal != 0
                 && self.dsg.gear_redline_speeds[1] > 0.0
             {
-                self.car_calibrations.insert(pkt.car_ordinal, CarCalibration {
-                    gear_redline_speeds: self.dsg.gear_redline_speeds,
-                    max_rpm: self.dynamic_max_rpm,
-                });
+                self.car_calibrations.insert(
+                    pkt.car_ordinal,
+                    CarCalibration {
+                        gear_redline_speeds: self.dsg.gear_redline_speeds,
+                        max_rpm: self.dynamic_max_rpm,
+                    },
+                );
             }
 
             // Co-Op: relay our locally-received telemetry to peers.
@@ -732,9 +798,10 @@ impl ForzaApp {
             self.telemetry.update(pkt);
 
             received += 1;
-            if received >= 200 { break; }
+            if received >= 200 {
+                break;
+            }
         }
-
 
         // Mark disconnected after 2 s without a packet
         if let Some(t) = self.last_packet_time {
@@ -760,7 +827,10 @@ impl ForzaApp {
 
         fn push(trails: &mut HashMap<String, VecDeque<(f32, f32)>>, key: String, x: f32, z: f32) {
             let dq = trails.entry(key).or_default();
-            if dq.back().map_or(true, |&(px, pz)| (px - x).hypot(pz - z) >= MIN_MOVE) {
+            if dq
+                .back()
+                .map_or(true, |&(px, pz)| (px - x).hypot(pz - z) >= MIN_MOVE)
+            {
                 dq.push_back((x, z));
                 if dq.len() > MAX_PTS {
                     dq.pop_front();
@@ -772,11 +842,21 @@ impl ForzaApp {
         present.insert("local".to_string());
         if let Some(pkt) = &self.telemetry.latest {
             if pkt.is_race_on != 0 {
-                push(&mut self.minimap_trails, "local".to_string(), pkt.position_x, pkt.position_z);
+                push(
+                    &mut self.minimap_trails,
+                    "local".to_string(),
+                    pkt.position_x,
+                    pkt.position_z,
+                );
             }
         }
         for (info, rp) in self.coop.remote_players() {
-            push(&mut self.minimap_trails, info.id.clone(), rp.position_x, rp.position_z);
+            push(
+                &mut self.minimap_trails,
+                info.id.clone(),
+                rp.position_x,
+                rp.position_z,
+            );
             present.insert(info.id);
         }
         self.minimap_trails.retain(|k, _| present.contains(k));
@@ -808,14 +888,16 @@ impl eframe::App for ForzaApp {
                         self.minimap_cache_progress = None;
                         if let Some((img, orig_size)) = result {
                             self.minimap_orig_size = orig_size;
-                            self.minimap_texture = Some(
-                                ctx.load_texture("minimap", img, egui::TextureOptions {
+                            self.minimap_texture = Some(ctx.load_texture(
+                                "minimap",
+                                img,
+                                egui::TextureOptions {
                                     magnification: egui::TextureFilter::Linear,
-                                    minification:  egui::TextureFilter::Linear,
-                                    wrap_mode:     egui::TextureWrapMode::MirroredRepeat,
-                                    mipmap_mode:   None,
-                                }),
-                            );
+                                    minification: egui::TextureFilter::Linear,
+                                    wrap_mode: egui::TextureWrapMode::MirroredRepeat,
+                                    mipmap_mode: None,
+                                },
+                            ));
                         }
                         self.minimap_img_receiver = None;
                         break;
@@ -832,12 +914,18 @@ impl eframe::App for ForzaApp {
 
         // Auto-reload when the season changes (skip if Map module disabled)
         let season_now = current_season();
-        if season_now != self.minimap_loaded_season && self.minimap_img_receiver.is_none()
-            && !self.config.disabled_modules.contains(&crate::config::WidgetKind::MiniMap)
+        if season_now != self.minimap_loaded_season
+            && self.minimap_img_receiver.is_none()
+            && !self
+                .config
+                .disabled_modules
+                .contains(&crate::config::WidgetKind::MiniMap)
         {
             let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
             let q = self.config.minimap_quality;
-            std::thread::spawn(move || { map_load_thread(season_now, q, map_tx); });
+            std::thread::spawn(move || {
+                map_load_thread(season_now, q, map_tx);
+            });
             self.minimap_texture = None;
             self.minimap_img_receiver = Some(map_rx);
             self.minimap_loaded_season = season_now;
@@ -862,7 +950,8 @@ impl eframe::App for ForzaApp {
                     if pkt.is_race_on != 0 {
                         self.minimap_cached_car_x = pkt.position_x;
                         self.minimap_cached_car_z = pkt.position_z;
-                        self.minimap_cached_yaw = minimap_target_yaw(pkt, self.config.minimap_use_movement_dir);
+                        self.minimap_cached_yaw =
+                            minimap_target_yaw(pkt, self.config.minimap_use_movement_dir);
                         self.minimap_cached_raw_yaw = pkt.yaw;
                     }
                 }
@@ -893,7 +982,12 @@ impl eframe::App for ForzaApp {
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
         {
             let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-            let speed_kmh = self.telemetry.latest.as_ref().map(|p| p.speed * 3.6).unwrap_or(0.0);
+            let speed_kmh = self
+                .telemetry
+                .latest
+                .as_ref()
+                .map(|p| p.speed * 3.6)
+                .unwrap_or(0.0);
             let lerp_t = (3.0 * dt).min(1.0);
             if speed_kmh >= 5.0 {
                 self.minimap_stopped_at = None;
@@ -928,97 +1022,131 @@ impl eframe::App for ForzaApp {
         egui::TopBottomPanel::top("tab_bar")
             .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD))
             .show(ctx, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                use crate::icons;
-                use crate::i18n::tr;
-                ui.selectable_value(&mut self.current_tab, Tab::Dashboard,
-                    format!("{}  {}", icons::DASHBOARD, tr("Dashboard")));
-                ui.selectable_value(&mut self.current_tab, Tab::Coop,
-                    format!("{}  {}", icons::USERS, tr("Co-Op")));
-                ui.selectable_value(&mut self.current_tab, Tab::Backfire,
-                    format!("{}  {}", icons::BOLT, tr("Backfire")));
-                ui.selectable_value(&mut self.current_tab, Tab::Gearbox,
-                    format!("{}  {}", icons::GAMEPAD, tr("Automatic Gearbox")));
-                ui.selectable_value(&mut self.current_tab, Tab::PowerCurve,
-                    format!("{}  {}", icons::LINE_CHART, tr("Power Curve")));
-                ui.selectable_value(&mut self.current_tab, Tab::EngineSwaps,
-                    format!("{}  {}", icons::WRENCH, tr("Engine Swaps")));
-                ui.selectable_value(&mut self.current_tab, Tab::Settings,
-                    format!("{}  {}", icons::COG, tr("Settings")));
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    use crate::i18n::tr;
+                    use crate::icons;
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Dashboard,
+                        format!("{}  {}", icons::DASHBOARD, tr("Dashboard")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Coop,
+                        format!("{}  {}", icons::USERS, tr("Co-Op")),
+                    );
+                    // Intentional single space, otherwise spacing looks too large
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Backfire,
+                        format!("{} {}", icons::BOLT, tr("Backfire")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Gearbox,
+                        format!("{}  {}", icons::GAMEPAD, tr("Automatic Gearbox")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::PowerCurve,
+                        format!("{}  {}", icons::LINE_CHART, tr("Power Curve")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::EngineSwaps,
+                        format!("{}  {}", icons::WRENCH, tr("Engine Swaps")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Settings,
+                        format!("{}  {}", icons::COG, tr("Settings")),
+                    );
+                });
+                ui.add_space(2.0);
             });
-            ui.add_space(2.0);
-        });
 
         // ── Bottom status bar ──────────────────────────────────────
         egui::TopBottomPanel::bottom("status_bar")
             .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::PANEL2))
             .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                use crate::icons;
-                use crate::i18n::tr;
-                // LEFT: connection status + pps
-                let (color, icon, text) = if self.telemetry.is_connected {
-                    (crate::theme::GOOD, icons::PLUG, tr("Connected"))
-                } else {
-                    (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
-                };
-                ui.colored_label(color, format!("{icon}  {text}"));
-                ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
-
-                // Co-Op indicator (visible from any tab)
-                let coop_role = self.coop.role();
-                if coop_role != crate::coop::Role::Off {
-                    ui.separator();
-                    let (c, verb) = match coop_role {
-                        crate::coop::Role::Host => (crate::theme::ACCENT, tr("Hosting")),
-                        _ => (crate::theme::GOOD, tr("Joined")),
-                    };
-                    let n = self.coop.roster().len();
-                    ui.colored_label(c, format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")));
-                }
-
-                // Recording / replay indicators (visible from any tab)
-                if let Some(rec) = self.recorder.as_ref() {
-                    ui.separator();
-                    let s = rec.elapsed().as_secs();
-                    ui.colored_label(crate::theme::DANGER,
-                        format!("{}  REC {}:{:02} · {} pkts", icons::CIRCLE, s / 60, s % 60, rec.packets));
-                }
-                if self.replay.is_some() {
-                    ui.separator();
-                    ui.colored_label(crate::theme::ACCENT, format!("{}  {}", icons::LINE_CHART, tr("Replaying")));
-                }
-
-                // RIGHT: cog toggle
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let cog_color = if self.page_settings_open {
-                        egui::Color32::from_rgb(255, 200, 60)
+                ui.horizontal(|ui| {
+                    use crate::i18n::tr;
+                    use crate::icons;
+                    // LEFT: connection status + pps
+                    let (color, icon, text) = if self.telemetry.is_connected {
+                        (crate::theme::GOOD, icons::PLUG, tr("Connected"))
                     } else {
-                        egui::Color32::GRAY
+                        (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
                     };
-                    let (rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(22.0, 18.0),
-                        egui::Sense::click(),
-                    );
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        icons::COG,
-                        egui::FontId::proportional(16.0),
-                        cog_color,
-                    );
-                    if resp.clicked() {
-                        self.page_settings_open = !self.page_settings_open;
-                        self.page_settings_tab = self.current_tab;
-                        if !self.page_settings_open {
-                            self.config.save();
-                        }
+                    ui.colored_label(color, format!("{icon}  {text}"));
+                    ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
+
+                    // Co-Op indicator (visible from any tab)
+                    let coop_role = self.coop.role();
+                    if coop_role != crate::coop::Role::Off {
+                        ui.separator();
+                        let (c, verb) = match coop_role {
+                            crate::coop::Role::Host => (crate::theme::ACCENT, tr("Hosting")),
+                            _ => (crate::theme::GOOD, tr("Joined")),
+                        };
+                        let n = self.coop.roster().len();
+                        ui.colored_label(
+                            c,
+                            format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
+                        );
                     }
-                    resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                    // Recording / replay indicators (visible from any tab)
+                    if let Some(rec) = self.recorder.as_ref() {
+                        ui.separator();
+                        let s = rec.elapsed().as_secs();
+                        ui.colored_label(
+                            crate::theme::DANGER,
+                            format!(
+                                "{}  REC {}:{:02} · {} pkts",
+                                icons::CIRCLE,
+                                s / 60,
+                                s % 60,
+                                rec.packets
+                            ),
+                        );
+                    }
+                    if self.replay.is_some() {
+                        ui.separator();
+                        ui.colored_label(
+                            crate::theme::ACCENT,
+                            format!("{}  {}", icons::LINE_CHART, tr("Replaying")),
+                        );
+                    }
+
+                    // RIGHT: cog toggle
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let cog_color = if self.page_settings_open {
+                            egui::Color32::from_rgb(255, 200, 60)
+                        } else {
+                            egui::Color32::GRAY
+                        };
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            icons::COG,
+                            egui::FontId::proportional(16.0),
+                            cog_color,
+                        );
+                        if resp.clicked() {
+                            self.page_settings_open = !self.page_settings_open;
+                            self.page_settings_tab = self.current_tab;
+                            if !self.page_settings_open {
+                                self.config.save();
+                            }
+                        }
+                        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    });
                 });
             });
-        });
 
         // ── Page settings floating window ──────────────────────────
         if self.page_settings_open {
@@ -1473,7 +1601,12 @@ impl eframe::App for ForzaApp {
                 .map(|r| {
                     let mut rect = r.response.rect;
                     rect.set_bottom(ctx.screen_rect().bottom());
-                    ctx.input(|i| i.pointer.hover_pos().map(|p| rect.contains(p)).unwrap_or(false))
+                    ctx.input(|i| {
+                        i.pointer
+                            .hover_pos()
+                            .map(|p| rect.contains(p))
+                            .unwrap_or(false)
+                    })
                 })
                 .unwrap_or(false);
 
@@ -1492,16 +1625,14 @@ impl eframe::App for ForzaApp {
             }
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.current_tab {
-                Tab::Dashboard    => crate::ui::dashboard::show(ui, self),
-                Tab::Backfire     => crate::ui::backfire::show_backfire(ui, self),
-                Tab::Gearbox      => crate::ui::gearbox::show_gearbox(ui, self),
-                Tab::PowerCurve   => crate::ui::power_curve::show(ui, self),
-                Tab::EngineSwaps  => crate::ui::engine_swaps::show(ui, self),
-                Tab::Coop         => crate::ui::coop::show(ui, self),
-                Tab::Settings    => crate::ui::settings::show(ui, self),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.current_tab {
+            Tab::Dashboard => crate::ui::dashboard::show(ui, self),
+            Tab::Backfire => crate::ui::backfire::show_backfire(ui, self),
+            Tab::Gearbox => crate::ui::gearbox::show_gearbox(ui, self),
+            Tab::PowerCurve => crate::ui::power_curve::show(ui, self),
+            Tab::EngineSwaps => crate::ui::engine_swaps::show(ui, self),
+            Tab::Coop => crate::ui::coop::show(ui, self),
+            Tab::Settings => crate::ui::settings::show(ui, self),
         });
 
         // FPS limiter

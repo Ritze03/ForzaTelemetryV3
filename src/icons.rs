@@ -1,4 +1,4 @@
-// NerdFont (HackNerdFont-Regular) codepoints — Font Awesome v4 range U+F000–U+F2FF.
+// Nerd Font (GeistMonoNerdFont-Regular) codepoints — Font Awesome v4 range U+F000–U+F2FF.
 // All confirmed present in the embedded TTF via cmap format-12 scan.
 
 pub const DASHBOARD:  &str = "\u{F0E4}"; // fa-dashboard (speedometer)

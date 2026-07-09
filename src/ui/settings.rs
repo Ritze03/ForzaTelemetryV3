@@ -275,6 +275,19 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("Le0_X8 — seasonal map images"),
                     "https://www.reddit.com/r/ForzaHorizon/comments/1td6qzb/8096x_hires_seasonal_maps_of_fh6_from_the_early/",
                 );
+                ui.hyperlink_to(
+                    tr("Geist font — Vercel (OFL)"),
+                    "https://github.com/vercel/geist-font",
+                );
+                ui.hyperlink_to(
+                    tr("Nerd Fonts — Ryan L McIntyre (MIT)"),
+                    "https://github.com/ryanoasis/nerd-fonts",
+                );
+                ui.label(
+                    RichText::new(tr("Font licences: assets/fonts/"))
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
             });
 
         });
