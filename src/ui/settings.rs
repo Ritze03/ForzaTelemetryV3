@@ -237,9 +237,18 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                             app.start_replay(files[sel].0.clone());
                         }
                         ui.checkbox(&mut app.replay_loop, tr("Loop"));
+                        if ui.add(crate::theme::secondary_button(tr("Export CSV"))).clicked() {
+                            app.csv_export_msg = Some(match crate::recorder::export_csv(&files[sel].0) {
+                                Ok(p) => format!("{} {}", tr("Saved"), p.display()),
+                                Err(e) => format!("{} {e}", tr("CSV export failed:")),
+                            });
+                        }
                     });
                     ui.label(RichText::new(tr("Replays into the app as if the game were live."))
                         .size(11.0).color(Color32::GRAY));
+                    if let Some(msg) = &app.csv_export_msg {
+                        ui.label(RichText::new(msg).size(11.0).color(Color32::from_rgb(110, 190, 110)));
+                    }
                 }
             });
 

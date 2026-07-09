@@ -421,6 +421,7 @@ pub struct ForzaApp {
     pub replay: Option<crate::recorder::ReplayHandle>,
     pub replay_selected: Option<usize>,
     pub replay_loop: bool,
+    pub csv_export_msg: Option<String>,
 
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
@@ -532,6 +533,7 @@ impl ForzaApp {
             replay: None,
             replay_selected: None,
             replay_loop: false,
+            csv_export_msg: None,
             receiver,
             _network: network,
         }

@@ -72,6 +72,48 @@ pub fn list_recordings() -> Vec<(PathBuf, String)> {
         .collect()
 }
 
+/// Convert a `.ftr` recording to a `.csv` next to it (a useful subset of fields
+/// per packet, one row each) for analysis in a spreadsheet or pandas.
+pub fn export_csv(ftr: &std::path::Path) -> Result<PathBuf, String> {
+    use crate::packet::ForzaPacket;
+    let data = std::fs::read(ftr).map_err(|e| e.to_string())?;
+    let csv_path = ftr.with_extension("csv");
+    let mut w = csv::Writer::from_path(&csv_path).map_err(|e| e.to_string())?;
+    w.write_record([
+        "t_ms", "speed_kmh", "rpm", "gear", "accel", "brake", "steer",
+        "power_ps", "torque_nm", "boost_psi", "fuel",
+        "pos_x", "pos_y", "pos_z", "yaw", "lat_g", "long_g", "vert_g",
+        "tire_fl", "tire_fr", "tire_rl", "tire_rr", "cur_lap", "last_lap",
+    ])
+    .map_err(|e| e.to_string())?;
+
+    let mut off = 0usize;
+    while off + 6 <= data.len() {
+        let ms = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+        let len = u16::from_le_bytes(data[off + 4..off + 6].try_into().unwrap()) as usize;
+        off += 6;
+        if off + len > data.len() {
+            break;
+        }
+        if let Some(p) = ForzaPacket::from_bytes(&data[off..off + len]) {
+            let r = |v: f32| format!("{v:.3}");
+            w.write_record([
+                ms.to_string(), r(p.speed_kmh()), r(p.current_engine_rpm), p.gear.to_string(),
+                p.accel.to_string(), p.brake.to_string(), p.steer.to_string(),
+                r(p.power_ps()), r(p.torque_nm()), r(p.boost), r(p.fuel),
+                r(p.position_x), r(p.position_y), r(p.position_z), r(p.yaw),
+                r(p.acceleration_x / 9.81), r(p.acceleration_z / 9.81), r(p.acceleration_y / 9.81),
+                r(p.tire_temp_fl), r(p.tire_temp_fr), r(p.tire_temp_rl), r(p.tire_temp_rr),
+                r(p.current_lap), r(p.last_lap),
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+        off += len;
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    Ok(csv_path)
+}
+
 /// Handle to a running replay; dropping or calling `stop` ends it.
 pub struct ReplayHandle {
     stop: Arc<AtomicBool>,
@@ -136,4 +178,41 @@ pub fn start_replay(path: PathBuf, port: u16, loop_replay: bool) -> std::io::Res
     });
 
     Ok(ReplayHandle { stop })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packet::ForzaPacket;
+
+    #[test]
+    fn export_csv_parses_ftr_format() {
+        let mut p = ForzaPacket::default();
+        p.current_engine_rpm = 6000.0;
+        p.gear = 5;
+        let raw = p.to_bytes();
+
+        let dir = std::env::temp_dir().join("ftr_test_export");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ftr = dir.join("t.ftr");
+        {
+            let mut w = BufWriter::new(File::create(&ftr).unwrap());
+            w.write_all(&123u32.to_le_bytes()).unwrap();
+            w.write_all(&(raw.len() as u16).to_le_bytes()).unwrap();
+            w.write_all(&raw).unwrap();
+        }
+
+        let csv = export_csv(&ftr).unwrap();
+        let content = std::fs::read_to_string(&csv).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines[0].starts_with("t_ms,speed_kmh"), "header");
+        assert_eq!(lines.len(), 2, "one data row");
+        let cols: Vec<&str> = lines[1].split(',').collect();
+        assert_eq!(cols[0], "123");      // t_ms
+        assert_eq!(cols[2], "6000.000"); // rpm
+        assert_eq!(cols[3], "5");        // gear
+
+        let _ = std::fs::remove_file(&ftr);
+        let _ = std::fs::remove_file(&csv);
+    }
 }
