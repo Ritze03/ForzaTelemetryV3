@@ -1521,26 +1521,44 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             let dz = pkt.position_z - car_z;
             let sx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
             let sy = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
-            if !rect.expand(24.0).contains(pos2(sx, sy)) {
-                continue; // off-screen — skip
-            }
             let col = crate::ui::coop::hue_color(info.hue);
-            let (sa, ca) = (pkt.yaw - yaw).sin_cos();
-            let rr = |vx: f32, vy: f32| pos2(sx + vx * ca - vy * sa, sy + vx * sa + vy * ca);
-            painter.add(egui::Shape::convex_polygon(
-                vec![rr(0.0, -s * 1.4), rr(s, s * 0.6), rr(-s, s * 0.6)],
-                col,
-                Stroke::new(1.5, Color32::BLACK),
-            ));
-            // Name with a dark outline so it stays legible over snow/roads.
-            let name_pos = pos2(sx, sy - s * 1.9);
-            let name_font = egui::FontId::proportional(11.0);
-            let shadow = Color32::from_black_alpha(200);
-            for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                painter.text(name_pos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM,
-                    &info.name, name_font.clone(), shadow);
+
+            if rect.shrink(8.0).contains(pos2(sx, sy)) {
+                // On-screen: full heading arrow + name.
+                let (sa, ca) = (pkt.yaw - yaw).sin_cos();
+                let rr = |vx: f32, vy: f32| pos2(sx + vx * ca - vy * sa, sy + vx * sa + vy * ca);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![rr(0.0, -s * 1.4), rr(s, s * 0.6), rr(-s, s * 0.6)],
+                    col,
+                    Stroke::new(1.5, Color32::BLACK),
+                ));
+                // Name with a dark outline so it stays legible over snow/roads.
+                let name_pos = pos2(sx, sy - s * 1.9);
+                let name_font = egui::FontId::proportional(11.0);
+                let shadow = Color32::from_black_alpha(200);
+                for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                    painter.text(name_pos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM,
+                        &info.name, name_font.clone(), shadow);
+                }
+                painter.text(name_pos, egui::Align2::CENTER_BOTTOM, &info.name, name_font, col);
+            } else {
+                // Off-screen: clamp to the map edge and point a marker toward them,
+                // so you always know which way your teammates are.
+                let c = rect.center();
+                let d = pos2(sx, sy) - c;
+                let half = rect.size() * 0.5 - Vec2::splat(10.0);
+                let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
+                let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
+                let edge = c + d * kx.min(ky).min(1.0);
+                let (sa, ca) = d.y.atan2(d.x).sin_cos();
+                let m = 6.5_f32;
+                let rr = |vx: f32, vy: f32| pos2(edge.x + vx * ca - vy * sa, edge.y + vx * sa + vy * ca);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![rr(m, 0.0), rr(-m * 0.7, m * 0.7), rr(-m * 0.7, -m * 0.7)],
+                    col,
+                    Stroke::new(1.0, Color32::BLACK),
+                ));
             }
-            painter.text(name_pos, egui::Align2::CENTER_BOTTOM, &info.name, name_font, col);
         }
     }
 
