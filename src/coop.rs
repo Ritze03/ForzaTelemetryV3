@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
@@ -572,6 +572,102 @@ fn cleanup_client(inner: &Arc<Mutex<Inner>>, id: &str) {
 
 // ── Client ─────────────────────────────────────────────────────────
 
+/// Connect the client WebSocket. Fast path uses the system resolver; if that
+/// misses on a `wss://…` host (some resolvers — e.g. a flaky systemd-resolved
+/// stub — fail to resolve *fresh* trycloudflare subdomains that public DNS has),
+/// resolve the host via 1.1.1.1 / 8.8.8.8 and connect to that IP with the correct
+/// TLS SNI so the tunnel still works.
+fn connect_ws(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, tungstenite::Error> {
+    let first = match tungstenite::connect(url) {
+        Ok((ws, _)) => return Ok(ws),
+        Err(e) => e,
+    };
+    // Fallback only for wss:// with a real hostname (the tunnel case).
+    if let Some(rest) = url.strip_prefix("wss://") {
+        let host = rest.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+        if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
+            if let Some(ip) = resolve_a(host, "1.1.1.1").or_else(|| resolve_a(host, "8.8.8.8")) {
+                if let Ok(tcp) = TcpStream::connect((ip, 443)) {
+                    let _ = tcp.set_nodelay(true);
+                    if let Ok((ws, _)) = tungstenite::client_tls(url, tcp) {
+                        return Ok(ws);
+                    }
+                }
+            }
+        }
+    }
+    Err(first)
+}
+
+/// Minimal synchronous DNS A-record lookup against a specific resolver (stdlib
+/// UDP only — deliberately tiny; upgrade to a DNS crate only if we ever need
+/// CNAME chasing, EDNS or IPv6). Returns the first A record.
+fn resolve_a(host: &str, dns: &str) -> Option<Ipv4Addr> {
+    let mut q: Vec<u8> = Vec::with_capacity(host.len() + 18);
+    q.extend_from_slice(&[0x13, 0x37, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]); // hdr: id, RD, qd=1
+    for label in host.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        q.push(label.len() as u8);
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x01]); // end name, qtype=A, qclass=IN
+
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+    sock.send_to(&q, (dns, 53)).ok()?;
+    let mut buf = [0u8; 512];
+    let n = sock.recv(&mut buf).ok()?;
+    parse_a_answer(&buf[..n])
+}
+
+/// Parse the first A record out of a DNS response (handles name compression).
+fn parse_a_answer(resp: &[u8]) -> Option<Ipv4Addr> {
+    if resp.len() < 12 {
+        return None;
+    }
+    let ancount = u16::from_be_bytes([resp[6], resp[7]]);
+    let mut i = 12;
+    // Skip the question name + qtype/qclass.
+    while i < resp.len() && resp[i] != 0 {
+        if resp[i] & 0xC0 == 0xC0 {
+            i += 2;
+            break;
+        }
+        i += 1 + resp[i] as usize;
+    }
+    if resp.get(i) == Some(&0) {
+        i += 1;
+    }
+    i += 4;
+    for _ in 0..ancount {
+        // Answer name: a compression pointer (2 bytes) or a sequence of labels.
+        if resp.get(i)? & 0xC0 == 0xC0 {
+            i += 2;
+        } else {
+            while i < resp.len() && resp[i] != 0 {
+                i += 1 + resp[i] as usize;
+            }
+            i += 1;
+        }
+        if i + 10 > resp.len() {
+            return None;
+        }
+        let rtype = u16::from_be_bytes([resp[i], resp[i + 1]]);
+        let rdlen = u16::from_be_bytes([resp[i + 8], resp[i + 9]]) as usize;
+        i += 10;
+        if i + rdlen > resp.len() {
+            return None;
+        }
+        if rtype == 1 && rdlen == 4 {
+            return Some(Ipv4Addr::new(resp[i], resp[i + 1], resp[i + 2], resp[i + 3]));
+        }
+        i += rdlen;
+    }
+    None
+}
+
 fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool>) {
     // A fresh trycloudflare tunnel needs a few seconds for DNS/edge propagation, and
     // quick tunnels can hiccup mid-session — so both the initial connect and any drop
@@ -588,8 +684,8 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                match tungstenite::connect(&url) {
-                    Ok((w, _resp)) => {
+                match connect_ws(&url) {
+                    Ok(w) => {
                         connected = Some(w);
                         break;
                     }
@@ -880,6 +976,19 @@ mod tests {
         b.push(ForzaPacket::default());
         b.advance(Duration::from_secs(10));
         assert!(b.current.is_none(), "fresh packet held back by the jitter buffer");
+    }
+
+    #[test]
+    fn parse_dns_a_answer() {
+        // Response for "a.com" → A 1.2.3.4, answer name as a 0xC00C compression pointer.
+        let resp: &[u8] = &[
+            0x13, 0x37, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // header
+            0x01, b'a', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,       // question
+            0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c,             // answer name+type+class+ttl
+            0x00, 0x04, 0x01, 0x02, 0x03, 0x04,                                     // rdlen=4, 1.2.3.4
+        ];
+        assert_eq!(parse_a_answer(resp), Some(Ipv4Addr::new(1, 2, 3, 4)));
+        assert_eq!(parse_a_answer(&[0u8; 4]), None); // too short
     }
 
     #[test]
