@@ -839,6 +839,12 @@ mod tests {
         let line = "2026-07-09T10:00:00Z INF |  https://blue-fox-rapid-owl.trycloudflare.com  |";
         assert_eq!(extract_words(line).as_deref(), Some("blue-fox-rapid-owl"));
         assert_eq!(extract_words("no url here"), None);
+        // Trailing slash is trimmed.
+        assert_eq!(extract_words("https://foo-bar.trycloudflare.com/").as_deref(), Some("foo-bar"));
+        // Non-trycloudflare host is ignored.
+        assert_eq!(extract_words("https://example.com"), None);
+        // A slug with an extra dot (sub-subdomain) is rejected.
+        assert_eq!(extract_words("https://a.b.trycloudflare.com"), None);
     }
 
     #[test]
@@ -850,6 +856,8 @@ mod tests {
         );
         // LAN URL passthrough (used for same-network joins).
         assert_eq!(words_to_url("ws://192.168.1.5:7071"), "ws://192.168.1.5:7071/ws");
+        // A pasted bare host also works.
+        assert_eq!(words_to_url("foo-bar.trycloudflare.com"), "wss://foo-bar.trycloudflare.com/ws");
     }
 
     #[test]
