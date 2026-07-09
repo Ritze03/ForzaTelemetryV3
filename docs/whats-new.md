@@ -59,6 +59,11 @@ In **Settings → Recording**:
   live (with a **Loop** option).
 - **Export CSV** — 24 fields per packet, for analysis in a spreadsheet / pandas.
 
+## Hotkeys
+
+- **F9** — start/stop telemetry recording.
+- **F10** — toggle the minimap between heading-up and north-up.
+
 ## Testing without the game
 
 `python3 tools/sim.py --port <listen_port> --scenario circle|figure8|accel|idle`

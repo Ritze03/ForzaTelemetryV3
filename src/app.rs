@@ -915,6 +915,15 @@ impl eframe::App for ForzaApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
         }
 
+        // Hotkeys: F9 start/stop recording, F10 toggle map orientation.
+        // (F-keys never conflict with text entry, so they're safe to handle unconditionally.)
+        if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
+            self.toggle_recording();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
+            self.config.minimap_north_up = !self.config.minimap_north_up;
+        }
+
         // Tab bar
         egui::TopBottomPanel::top("tab_bar")
             .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD))
