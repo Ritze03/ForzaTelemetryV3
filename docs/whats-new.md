@@ -19,7 +19,8 @@ See **docs/coop.md** for full usage. In short:
   smooths pacing.
 - On the **Dashboard minimap**: every player shows as a coloured arrow with their
   name (yours is colour-only), a fading **breadcrumb trail**, and **edge markers
-  with distance** for teammates who are off-screen.
+  with distance** for teammates who are off-screen. Left-click drops a **shared
+  waypoint** ("meet here") everyone sees; right-click clears it.
 - Robustness: connect-retry for tunnel propagation, **auto-reconnect** on
   mid-session drops, bounded send queues, LAN fallback, port setting in Settings.
 - A **status-bar indicator** shows your role + player count from any tab.

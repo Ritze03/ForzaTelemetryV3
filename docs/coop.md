@@ -29,6 +29,9 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
 5. Optional dashboard widgets (drag them in via Edit Mode): **Co-Op Players** — a live
    speed-bar leaderboard of everyone in the session. The status bar also shows your role
    and the player count from any tab.
+6. **Waypoints**: left-click the minimap to drop a shared waypoint everyone sees (a
+   diamond in your colour, showing each player's distance to it) — handy for "meet here".
+   Right-click clears it.
 
 ## Options
 
