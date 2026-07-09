@@ -105,7 +105,17 @@ struct Inner {
     status: String,
     error: Option<String>,
     words: Option<String>,
+    lan_url: Option<String>,
     buffer_ms: u32,
+}
+
+/// Best-effort local LAN IP (the address a same-network peer would reach us on).
+/// Uses the "connect a UDP socket to pick the outbound route" trick — no packets sent.
+fn local_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    if ip.is_loopback() { None } else { Some(ip.to_string()) }
 }
 
 impl Inner {
@@ -147,6 +157,7 @@ impl CoopState {
             status: String::new(),
             error: None,
             words: None,
+            lan_url: None,
             buffer_ms,
             // seed identity even while Off so the UI preview is stable
         };
@@ -170,6 +181,9 @@ impl CoopState {
     }
     pub fn words(&self) -> Option<String> {
         self.inner.lock().unwrap().words.clone()
+    }
+    pub fn lan_url(&self) -> Option<String> {
+        self.inner.lock().unwrap().lan_url.clone()
     }
     pub fn my_id(&self) -> String {
         self.inner.lock().unwrap().my_id.clone()
@@ -265,6 +279,7 @@ impl CoopState {
         inner.remote.clear();
         inner.roster.clear();
         inner.words = None;
+        inner.lan_url = None;
         inner.status = "Stopped".into();
         inner.error = None;
     }
@@ -283,6 +298,7 @@ impl CoopState {
             inner.status = "Starting server…".into();
             inner.error = None;
             inner.words = None;
+            inner.lan_url = local_ip().map(|ip| format!("ws://{ip}:{port}"));
             inner.remote.clear();
             inner.clients.clear();
             inner.roster = vec![PlayerInfo {

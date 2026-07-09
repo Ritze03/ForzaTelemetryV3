@@ -180,6 +180,12 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                         });
                     }
                 }
+                if let Some(lan) = app.coop.lan_url() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tr("Same network? Lower latency with:"))
+                        .size(11.0).color(crate::theme::FAINT));
+                    ui.add(egui::Label::new(RichText::new(lan).monospace().size(13.0)).selectable(true));
+                }
                 ui.add_space(8.0);
                 stop_button(ui, app, tr("Stop Hosting"));
             }
