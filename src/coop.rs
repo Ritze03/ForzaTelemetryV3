@@ -788,7 +788,7 @@ enum Br {
 fn extract_words(line: &str) -> Option<String> {
     let i = line.find("https://")?;
     let rest = &line[i + "https://".len()..];
-    let end = rest.find(|c: char| c == ' ' || c == '|' || c == '\t').unwrap_or(rest.len());
+    let end = rest.find([' ', '|', '\t']).unwrap_or(rest.len());
     let host = rest[..end].trim().trim_end_matches('/');
     let slug = host.strip_suffix(".trycloudflare.com")?;
     if slug.is_empty() || slug.contains('.') {
