@@ -23,7 +23,12 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
    select it and copy by hand).
 3. Others paste/type the code and press **Join**.
 4. On the Dashboard minimap, remote players appear as coloured arrows with their name;
-   your own arrow uses your colour (no name).
+   your own arrow uses your colour (no name). Off-screen teammates show as a coloured
+   marker clamped to the map edge with the distance to them. Each player also leaves a
+   fading breadcrumb trail in their colour.
+5. Optional dashboard widgets (drag them in via Edit Mode): **Co-Op Players** — a live
+   speed-bar leaderboard of everyone in the session. The status bar also shows your role
+   and the player count from any tab.
 
 ## Options
 

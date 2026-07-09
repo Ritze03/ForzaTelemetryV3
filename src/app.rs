@@ -1060,6 +1060,7 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::Position, WidgetKind::Race,
                                         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
                                         WidgetKind::MiniMap, WidgetKind::CoopPlayers, WidgetKind::Trace,
+                                        WidgetKind::Boost,
                                     ] {
                                         let mut enabled = !self.config.disabled_modules.contains(&kind);
                                         if ui.checkbox(&mut enabled, kind.label()).changed() {

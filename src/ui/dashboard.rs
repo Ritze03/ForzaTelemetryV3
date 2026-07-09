@@ -453,6 +453,56 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::MiniMap    => show_minimap_widget(ui, app),
         WidgetKind::CoopPlayers => show_coop_players(ui, app, pkt),
         WidgetKind::Trace      => show_trace_widget(ui, app, pkt),
+        WidgetKind::Boost      => show_boost_widget(ui, app, pkt),
+    }
+}
+
+/// Turbo/supercharger boost gauge — current value + a bar with the session-peak tick.
+fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    ui.label(crate::theme::section_label(tr("Boost")));
+
+    let use_bar = app.config.use_bar;
+    let conv = |psi: f32| if use_bar { psi * 0.068_947_6 } else { psi };
+    let unit = if use_bar { "bar" } else { "PSI" };
+    let cur = conv(pkt.boost);
+    let peak = conv(app.max_boost_psi);
+    // Colour ramps green→orange→red with boost pressure.
+    let level = (pkt.boost / 20.0).clamp(0.0, 1.0);
+    let bar_col = Color32::from_rgb(
+        (70.0 + 160.0 * level) as u8,
+        (200.0 - 120.0 * level) as u8,
+        70,
+    );
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
+        ui.label(RichText::new(unit).size(12.0).color(Color32::GRAY));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{} {peak:.2}", tr("peak"))).size(11.0).color(Color32::from_gray(150)));
+        });
+    });
+    ui.add_space(4.0);
+
+    let rect = ui.available_rect_before_wrap();
+    let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height().min(26.0)));
+    ui.allocate_rect(bar, egui::Sense::hover());
+    let painter = ui.painter_at(bar);
+    painter.rect_filled(bar, 4.0, Color32::from_rgb(22, 24, 27));
+
+    let scale = peak.max(cur).max(conv(7.0)) * 1.15;
+    if scale > 0.0 {
+        let frac = (cur / scale).clamp(0.0, 1.0);
+        if frac > 0.001 {
+            let fill = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * frac, bar.height()));
+            painter.rect_filled(fill, 4.0, bar_col);
+        }
+        // Peak tick
+        let pf = (peak / scale).clamp(0.0, 1.0);
+        if pf > 0.001 {
+            let x = bar.left() + bar.width() * pf;
+            painter.line_segment([pos2(x, bar.top() + 2.0), pos2(x, bar.bottom() - 2.0)],
+                Stroke::new(2.0, Color32::from_rgb(240, 220, 90)));
+        }
     }
 }
 
