@@ -972,7 +972,9 @@ impl eframe::App for ForzaApp {
                 // Recording / replay indicators (visible from any tab)
                 if let Some(rec) = self.recorder.as_ref() {
                     ui.separator();
-                    ui.colored_label(crate::theme::DANGER, format!("{} REC · {} pkts", icons::CIRCLE, rec.packets));
+                    let s = rec.elapsed().as_secs();
+                    ui.colored_label(crate::theme::DANGER,
+                        format!("{} REC {}:{:02} · {} pkts", icons::CIRCLE, s / 60, s % 60, rec.packets));
                 }
                 if self.replay.is_some() {
                     ui.separator();

@@ -35,6 +35,11 @@ impl RecordState {
         Ok(Self { writer, start: Instant::now(), packets: 0 })
     }
 
+    /// How long this recording has been running.
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.start.elapsed()
+    }
+
     /// Append one packet with its elapsed-since-start timestamp.
     pub fn write_packet(&mut self, raw: &[u8]) {
         let ms = self.start.elapsed().as_millis().min(u32::MAX as u128) as u32;
