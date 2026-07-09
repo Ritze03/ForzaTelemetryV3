@@ -563,6 +563,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Peak Lat G" => "Max. Quer-G",
         "Peak Long G" => "Max. Längs-G",
         "Max RPM" => "Max. U/min",
+        "Lock map north-up" => "Karte nach Norden ausrichten",
 
         // ── Recording / replay ─────────────────────────────────────────
         "Recording" => "Aufnahme",
