@@ -459,7 +459,7 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
 /// speed bar, current speed and gear. Sorted fastest-first.
 fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     use crate::coop::Role;
-    ui.heading(tr("Co-Op"));
+    ui.label(crate::theme::section_label(tr("Co-Op")));
 
     if app.coop.role() == Role::Off {
         ui.add_space(4.0);
@@ -655,7 +655,7 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 // ── Block renderers (unchanged) ────────────────────────────────────
 
 fn show_inputs_block(ui: &mut Ui, _app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading(tr("Inputs"));
+    ui.label(crate::theme::section_label(tr("Inputs")));
     ui.add_space(4.0);
 
     input_bar(ui, tr("Accel"),     pkt.accel,      Color32::from_rgb(60, 200, 90));
@@ -672,7 +672,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     // Capture the full widget rect before the heading consumes any space.
     let full_rect = ui.available_rect_before_wrap();
 
-    ui.heading(tr("Car"));
+    ui.label(crate::theme::section_label(tr("Car")));
     ui.add_space(4.0);
 
     let no_data = app.cached_car_class_str.is_empty();
@@ -705,7 +705,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading(tr("Engine"));
+    ui.label(crate::theme::section_label(tr("Engine")));
     ui.add_space(4.0);
 
     let (boost_cur, boost_max, boost_unit) = if app.config.use_bar {
@@ -748,7 +748,7 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_position_block(ui: &mut Ui, pkt: &ForzaPacket) {
-    ui.heading(tr("Position"));
+    ui.label(crate::theme::section_label(tr("Position")));
     ui.add_space(4.0);
     ui.columns(2, |cols| {
         cols[0].label(RichText::new(tr("Position")).size(11.0).color(Color32::GRAY));
@@ -766,7 +766,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
 
     if is_fh6 && pkt.race_position == 0 {
-        ui.heading(tr("Sprint"));
+        ui.label(crate::theme::section_label(tr("Sprint")));
         ui.add_space(4.0);
 
         let st = &app.sprint_timer;
@@ -804,7 +804,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         sprint_row(ui, lbl3, st.three_to_four, c400, stype, show_other);
         sprint_row(ui, lbl4, st.four_to_five, c500, stype, show_other);
     } else {
-        ui.heading(tr("Race"));
+        ui.label(crate::theme::section_label(tr("Race")));
         ui.add_space(4.0);
 
         ui.label(format!("{} P{}", tr("Position:"), pkt.race_position));
@@ -824,7 +824,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading(tr("Tires"));
+    ui.label(crate::theme::section_label(tr("Tires")));
     ui.add_space(4.0);
     match app.config.tire_display_style {
         TireDisplayStyle::Separate => show_tires_separate(ui, app, pkt),
@@ -961,7 +961,7 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.heading(tr("G-Forces"));
+    ui.label(crate::theme::section_label(tr("G-Forces")));
     ui.add_space(4.0);
 
     let lat = pkt.acceleration_x / 9.81;
@@ -1021,7 +1021,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         pkt.normalized_suspension_travel_rr,
     ];
 
-    ui.heading(tr("Suspension"));
+    ui.label(crate::theme::section_label(tr("Suspension")));
     ui.add_space(4.0);
 
     let avail_h  = ui.available_rect_before_wrap().height();

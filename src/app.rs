@@ -448,6 +448,7 @@ impl ForzaApp {
         let config_coop_name = config.coop_name.clone();
         let config_coop_hue = config.coop_hue;
         let config_coop_buffer_ms = config.coop_buffer_ms;
+        let config_coop_last_code = config.coop_last_code.clone();
         Self {
             config,
             engines,
@@ -504,7 +505,7 @@ impl ForzaApp {
             minimap_trails: HashMap::new(),
             pending_preset: None,
             coop: crate::coop::CoopState::new(&config_coop_name, config_coop_hue, config_coop_buffer_ms),
-            coop_join_input: String::new(),
+            coop_join_input: config_coop_last_code,
             coop_copied_at: None,
             receiver,
             _network: network,

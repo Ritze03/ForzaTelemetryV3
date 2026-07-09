@@ -162,6 +162,8 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                             app.config.coop_hue,
                             app.config.coop_buffer_ms,
                         );
+                        app.config.coop_last_code = words.clone();
+                        app.config.save();
                         app.coop.start_client(&words, &n, h, b);
                     }
                 });

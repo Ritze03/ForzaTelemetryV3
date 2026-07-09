@@ -295,6 +295,7 @@ pub struct AppConfig {
     pub coop_hue: f32,        // 0..360, player marker colour
     pub coop_buffer_ms: u32,  // jitter buffer for remote players (pacing)
     pub coop_port: u16,       // local host port cloudflared points at
+    pub coop_last_code: String, // last join code, prefilled next launch
 }
 
 impl Default for AppConfig {
@@ -380,6 +381,7 @@ impl Default for AppConfig {
             coop_hue: 205.0,
             coop_buffer_ms: 0,
             coop_port: crate::coop::DEFAULT_COOP_PORT,
+            coop_last_code: String::new(),
         }
     }
 }
