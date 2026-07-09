@@ -529,15 +529,33 @@ fn cleanup_client(inner: &Arc<Mutex<Inner>>, id: &str) {
 // ── Client ─────────────────────────────────────────────────────────
 
 fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool>) {
-    let mut ws = match tungstenite::connect(&url) {
-        Ok((ws, _resp)) => ws,
-        Err(e) => {
-            let mut g = inner.lock().unwrap();
-            g.role = Role::Off;
-            g.error = Some(format!("connect failed: {e}"));
-            g.status = "Disconnected".into();
-            return;
+    // A fresh trycloudflare tunnel needs a few seconds for DNS/edge propagation,
+    // so a guest who joins immediately can miss on the first try — retry a few times.
+    const ATTEMPTS: u32 = 6;
+    let mut ws = 'connect: loop {
+        let mut last_err = String::new();
+        for attempt in 1..=ATTEMPTS {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            match tungstenite::connect(&url) {
+                Ok((ws, _resp)) => break 'connect ws,
+                Err(e) => {
+                    last_err = e.to_string();
+                    let mut g = inner.lock().unwrap();
+                    g.status = format!("Connecting… (try {attempt}/{ATTEMPTS})");
+                    drop(g);
+                    if attempt < ATTEMPTS {
+                        std::thread::sleep(Duration::from_millis(1500));
+                    }
+                }
+            }
         }
+        let mut g = inner.lock().unwrap();
+        g.role = Role::Off;
+        g.error = Some(format!("connect failed: {last_err}"));
+        g.status = "Disconnected".into();
+        return;
     };
     set_client_timeout(&mut ws, Some(Duration::from_millis(20)));
 
