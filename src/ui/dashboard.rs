@@ -584,18 +584,20 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let use_mph = app.config.use_mph;
     let unit = if use_mph { "mph" } else { "km/h" };
 
-    // Collect (name, hue, speed m/s, gear, is_self). Self first, then remotes.
-    let mut rows: Vec<(String, f32, f32, u8, bool)> = Vec::new();
-    rows.push((app.config.coop_name.clone(), app.config.coop_hue, pkt.speed, pkt.gear, true));
+    // Collect (name, hue, speed m/s, gear, is_self, distance_m). Self first, then remotes.
+    let mut rows: Vec<(String, f32, f32, u8, bool, f32)> = Vec::new();
+    rows.push((app.config.coop_name.clone(), app.config.coop_hue, pkt.speed, pkt.gear, true, 0.0));
     for (info, rp) in app.coop.remote_players() {
-        rows.push((info.name.clone(), info.hue, rp.speed, rp.gear, false));
+        let dist = ((rp.position_x - pkt.position_x).powi(2)
+            + (rp.position_z - pkt.position_z).powi(2)).sqrt();
+        rows.push((info.name.clone(), info.hue, rp.speed, rp.gear, false, dist));
     }
     rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
     // Bar scale: fixed reference top speed so bars are comparable frame-to-frame.
     let max_kmh = 320.0_f32;
     ui.add_space(4.0);
-    for (rank, (name, hue, speed_ms, gear, is_self)) in rows.iter().enumerate() {
+    for (rank, (name, hue, speed_ms, gear, is_self, dist_m)) in rows.iter().enumerate() {
         let col = crate::ui::coop::hue_color(*hue);
         let kmh = speed_ms * 3.6;
         let disp = if use_mph { speed_ms * 2.236_94 } else { kmh };
@@ -609,6 +611,14 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 RichText::new(format!("{}. {}", rank + 1, name))
             };
             ui.label(label);
+            if !*is_self {
+                let dtxt = if *dist_m >= 1000.0 {
+                    format!("{:.1}km", dist_m / 1000.0)
+                } else {
+                    format!("{:.0}m", dist_m)
+                };
+                ui.label(RichText::new(dtxt).size(10.0).color(Color32::from_gray(120)));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(format!("G{gear_str}")).size(12.0).color(Color32::from_gray(150)));
                 ui.label(RichText::new(format!("{disp:>5.0} {unit}")).monospace());
