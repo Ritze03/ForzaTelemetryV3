@@ -11,6 +11,7 @@ mod listeners;
 mod network;
 mod packet;
 mod telemetry;
+mod theme;
 mod ui;
 
 use app::ForzaApp;

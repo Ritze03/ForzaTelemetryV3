@@ -17,9 +17,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.heading(format!("{} {}", icons::USERS, tr("Co-Op")));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (col, txt) = match role {
-                Role::Off => (Color32::GRAY, tr("Offline")),
-                Role::Host => (Color32::from_rgb(80, 180, 255), tr("Hosting")),
-                Role::Client => (Color32::from_rgb(60, 210, 100), tr("Joined")),
+                Role::Off => (crate::theme::FAINT, tr("Offline")),
+                Role::Host => (crate::theme::ACCENT, tr("Hosting")),
+                Role::Client => (crate::theme::GOOD, tr("Joined")),
             };
             ui.colored_label(col, format!("{} {}", icons::CIRCLE, txt));
         });
@@ -36,7 +36,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.group(|ui| {
-        ui.heading(tr("Your Identity"));
+        ui.label(crate::theme::section_label(tr("Your Identity")));
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
@@ -84,7 +84,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.add_space(8.0);
 
     ui.group(|ui| {
-        ui.heading(tr("Pacing"));
+        ui.label(crate::theme::section_label(tr("Pacing")));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(tr("Buffer:"));
@@ -111,7 +111,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
 fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     use crate::icons;
     ui.group(|ui| {
-        ui.heading(tr("Session"));
+        ui.label(crate::theme::section_label(tr("Session")));
         ui.add_space(4.0);
 
         // Status line
@@ -129,8 +129,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                 if ui
                     .add_sized(
                         [ui.available_width(), 30.0],
-                        egui::Button::new(RichText::new(format!("{}  {}", icons::GLOBE, tr("Host Session"))).size(15.0))
-                            .fill(Color32::from_rgb(40, 90, 160)),
+                        crate::theme::primary_button(format!("{}  {}", icons::GLOBE, tr("Host Session"))),
                     )
                     .clicked()
                 {
@@ -201,8 +200,8 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
 
 fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {
     use crate::icons;
-    egui::Frame::none()
-        .fill(Color32::from_gray(24))
+    egui::Frame::new()
+        .fill(crate::theme::FIELD)
         .inner_margin(egui::Margin::symmetric(8, 6))
         .corner_radius(4.0)
         .show(ui, |ui| {
@@ -234,7 +233,7 @@ fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {
 fn roster_panel(ui: &mut Ui, app: &ForzaApp) {
     ui.group(|ui| {
         let roster = app.coop.roster();
-        ui.heading(format!("{} ({})", tr("Players"), roster.len()));
+        ui.label(crate::theme::section_label(&format!("{} ({})", tr("Players"), roster.len())));
         ui.add_space(4.0);
         if roster.is_empty() {
             ui.label(RichText::new(tr("No one here yet.")).color(Color32::GRAY));
@@ -258,8 +257,7 @@ fn stop_button(ui: &mut Ui, app: &mut ForzaApp, label: &str) {
     if ui
         .add_sized(
             [ui.available_width(), 28.0],
-            egui::Button::new(format!("{}  {}", icons::TIMES, label))
-                .fill(Color32::from_rgb(120, 45, 45)),
+            crate::theme::danger_button(format!("{}  {}", icons::TIMES, label)),
         )
         .clicked()
     {

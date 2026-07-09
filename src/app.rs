@@ -421,6 +421,7 @@ impl ForzaApp {
             .or_default()
             .insert(0, "hack_nerd".to_owned());
         _cc.egui_ctx.set_fonts(fonts);
+        crate::theme::apply(&_cc.egui_ctx);
 
         let config = AppConfig::load();
         let engines = load_engines();
@@ -799,11 +800,10 @@ impl eframe::App for ForzaApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
         }
 
-        // Always dark — Light mode removed
-        ctx.set_visuals(egui::Visuals::dark());
-
         // Tab bar
-        egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("tab_bar")
+            .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD))
+            .show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 use crate::icons;
@@ -827,15 +827,17 @@ impl eframe::App for ForzaApp {
         });
 
         // ── Bottom status bar ──────────────────────────────────────
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::PANEL2))
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 use crate::icons;
                 use crate::i18n::tr;
                 // LEFT: connection status + pps
                 let (color, icon, text) = if self.telemetry.is_connected {
-                    (egui::Color32::from_rgb(60, 200, 90), icons::PLUG, tr("Connected"))
+                    (crate::theme::GOOD, icons::PLUG, tr("Connected"))
                 } else {
-                    (egui::Color32::from_rgb(200, 60, 60), icons::NO_SIGNAL, tr(" Disconnected"))
+                    (crate::theme::DANGER, icons::NO_SIGNAL, tr(" Disconnected"))
                 };
                 ui.colored_label(color, format!("{icon} {text}"));
                 ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
