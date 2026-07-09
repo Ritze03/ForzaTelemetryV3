@@ -454,7 +454,46 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::CoopPlayers => show_coop_players(ui, app, pkt),
         WidgetKind::Trace      => show_trace_widget(ui, app, pkt),
         WidgetKind::Boost      => show_boost_widget(ui, app, pkt),
+        WidgetKind::SessionStats => show_session_stats(ui, app, pkt),
     }
+}
+
+/// Per-car session maxima (reset on car change) — a quick run-review summary.
+fn show_session_stats(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    ui.label(crate::theme::section_label(tr("Session Stats")));
+    ui.add_space(4.0);
+
+    let use_mph = app.config.use_mph;
+    let use_bar = app.config.use_bar;
+    let (spd, spd_u) = if use_mph {
+        (app.max_speed_kmh / 1.609_34, "mph")
+    } else {
+        (app.max_speed_kmh, "km/h")
+    };
+    let (boost, boost_u) = if use_bar {
+        (app.max_boost_psi * 0.068_947_6, "bar")
+    } else {
+        (app.max_boost_psi, "PSI")
+    };
+    let val_col = Color32::from_rgb(230, 200, 90);
+
+    let mut stat = |label: &str, value: String| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(label).color(Color32::from_gray(160)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(value).strong().color(val_col));
+            });
+        });
+    };
+
+    stat(tr("Top Speed"), format!("{spd:.0} {spd_u}"));
+    stat(tr("Peak Power"), format!("{:.0} PS", app.max_power_ps));
+    stat(tr("Peak Torque"), format!("{:.0} Nm", app.max_torque_nm));
+    stat(tr("Peak Boost"), format!("{boost:.2} {boost_u}"));
+    stat(tr("Peak Lat G"), format!("{:.2} g", app.gforce_stats.max_lateral));
+    stat(tr("Peak Long G"), format!("{:.2} g", app.gforce_stats.max_longitudinal));
+    let max_rpm = app.dynamic_max_rpm.max(pkt.engine_max_rpm);
+    stat(tr("Max RPM"), format!("{max_rpm:.0}"));
 }
 
 /// Turbo/supercharger boost gauge — current value + a bar with the session-peak tick.

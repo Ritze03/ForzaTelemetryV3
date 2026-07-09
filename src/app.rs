@@ -354,6 +354,7 @@ pub struct ForzaApp {
     pub max_power_ps:  f32,
     pub max_torque_nm: f32,
     pub max_boost_psi: f32,
+    pub max_speed_kmh: f32,
     pub cached_engine_max_rpm: f64,
     pub fi_detected: bool,
     /// Highest RPM seen while making power (>0 W) — the dynamically detected redline. Per-car.
@@ -490,6 +491,7 @@ impl ForzaApp {
             max_power_ps: 0.0,
             max_torque_nm: 0.0,
             max_boost_psi: 0.0,
+            max_speed_kmh: 0.0,
             cached_engine_max_rpm: 0.0,
             fi_detected: false,
             dynamic_max_rpm: 0.0,
@@ -592,6 +594,7 @@ impl ForzaApp {
                 self.max_power_ps = 0.0;
                 self.max_torque_nm = 0.0;
                 self.max_boost_psi = 0.0;
+                self.max_speed_kmh = 0.0;
                 self.cached_engine_max_rpm = 0.0;
                 self.fi_detected = false;
                 self.dynamic_max_rpm = 0.0;
@@ -636,6 +639,7 @@ impl ForzaApp {
                     self.max_power_ps  = self.max_power_ps.max(pkt.power_ps());
                     self.max_torque_nm = self.max_torque_nm.max(pkt.torque_nm());
                     self.max_boost_psi = self.max_boost_psi.max(pkt.boost);
+                    self.max_speed_kmh = self.max_speed_kmh.max(pkt.speed * 3.6);
                 }
 
                 let lat  = pkt.acceleration_x / 9.81;
@@ -1108,7 +1112,7 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::Position, WidgetKind::Race,
                                         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
                                         WidgetKind::MiniMap, WidgetKind::CoopPlayers, WidgetKind::Trace,
-                                        WidgetKind::Boost,
+                                        WidgetKind::Boost, WidgetKind::SessionStats,
                                     ] {
                                         let mut enabled = !self.config.disabled_modules.contains(&kind);
                                         if ui.checkbox(&mut enabled, kind.label()).changed() {

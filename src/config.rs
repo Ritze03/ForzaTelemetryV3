@@ -114,6 +114,7 @@ pub enum WidgetKind {
     CoopPlayers,
     Trace,
     Boost,
+    SessionStats,
 }
 
 impl WidgetKind {
@@ -135,6 +136,7 @@ impl WidgetKind {
             WidgetKind::CoopPlayers => "Co-Op Players",
             WidgetKind::Trace       => "Speed Trace",
             WidgetKind::Boost       => "Boost",
+            WidgetKind::SessionStats => "Session Stats",
         })
     }
 }
@@ -400,6 +402,7 @@ pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
         WidgetKind::Position, WidgetKind::Race,
         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
         WidgetKind::MiniMap, WidgetKind::CoopPlayers, WidgetKind::Trace, WidgetKind::Boost,
+        WidgetKind::SessionStats,
     ];
     // Find highest row used so we can park new widgets below everything.
     let max_row = widgets.iter().map(|w| w.row + w.row_span).max().unwrap_or(0);
