@@ -21,7 +21,6 @@ fn recordings_dir() -> PathBuf {
 pub struct RecordState {
     writer: BufWriter<File>,
     start: Instant,
-    pub path: PathBuf,
     pub packets: u64,
 }
 
@@ -33,7 +32,7 @@ impl RecordState {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let path = dir.join(format!("rec-{ts}.ftr"));
         let writer = BufWriter::new(File::create(&path)?);
-        Ok(Self { writer, start: Instant::now(), path, packets: 0 })
+        Ok(Self { writer, start: Instant::now(), packets: 0 })
     }
 
     /// Append one packet with its elapsed-since-start timestamp.
