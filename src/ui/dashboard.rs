@@ -1396,6 +1396,36 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let painter = ui.painter_at(rect);
     painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 
+    // Co-op breadcrumb trails (drawn behind the car arrows). Each player's recent
+    // path fades from faint (old) to solid (recent) in their identity colour.
+    if !app.minimap_trails.is_empty() {
+        let to_screen = |wx: f32, wz: f32| -> Pos2 {
+            let dx = wx - car_x;
+            let dz = wz - car_z;
+            pos2(cx + (dx * cos_yaw - dz * sin_yaw) * scale,
+                 cy - (dx * sin_yaw + dz * cos_yaw) * scale)
+        };
+        let draw_trail = |pts: &std::collections::VecDeque<(f32, f32)>, col: Color32| {
+            let n = pts.len();
+            if n < 2 { return; }
+            for i in 1..n {
+                let (ax, az) = pts[i - 1];
+                let (bx, bz) = pts[i];
+                let alpha = 25 + (i as f32 / n as f32 * 200.0) as u8;
+                let c = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
+                painter.line_segment([to_screen(ax, az), to_screen(bx, bz)], Stroke::new(2.0, c));
+            }
+        };
+        if let Some(tr) = app.minimap_trails.get("local") {
+            draw_trail(tr, crate::ui::coop::hue_color(app.config.coop_hue));
+        }
+        for (info, _) in app.coop.remote_players() {
+            if let Some(tr) = app.minimap_trails.get(&info.id) {
+                draw_trail(tr, crate::ui::coop::hue_color(info.hue));
+            }
+        }
+    }
+
     let s = 7.0_f32;
 
     // Remote co-op players: place each on the map relative to the local car using

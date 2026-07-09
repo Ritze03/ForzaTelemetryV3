@@ -390,6 +390,9 @@ pub struct ForzaApp {
     pub minimap_smoothed_yaw: f32,        // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
+    /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
+    /// Only maintained/drawn while in a co-op session.
+    pub minimap_trails: HashMap<String, VecDeque<(f32, f32)>>,
 
     // Preset loader selected index (None = nothing selected)
     pub pending_preset: Option<usize>,
@@ -498,6 +501,7 @@ impl ForzaApp {
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
             minimap_cache_progress: None,
+            minimap_trails: HashMap::new(),
             pending_preset: None,
             coop: crate::coop::CoopState::new(&config_coop_name, config_coop_hue, config_coop_buffer_ms),
             coop_join_input: String::new(),
@@ -667,6 +671,44 @@ impl ForzaApp {
             }
         }
     }
+
+    /// Append current positions to each player's map trail. Only active during a
+    /// co-op session (local + remotes); cleared otherwise so solo behaviour is unchanged.
+    fn update_minimap_trails(&mut self) {
+        use std::collections::HashSet;
+        const MIN_MOVE: f32 = 4.0; // metres between recorded points
+        const MAX_PTS: usize = 400;
+
+        if self.coop.role() == crate::coop::Role::Off {
+            if !self.minimap_trails.is_empty() {
+                self.minimap_trails.clear();
+            }
+            return;
+        }
+
+        fn push(trails: &mut HashMap<String, VecDeque<(f32, f32)>>, key: String, x: f32, z: f32) {
+            let dq = trails.entry(key).or_default();
+            if dq.back().map_or(true, |&(px, pz)| (px - x).hypot(pz - z) >= MIN_MOVE) {
+                dq.push_back((x, z));
+                if dq.len() > MAX_PTS {
+                    dq.pop_front();
+                }
+            }
+        }
+
+        let mut present: HashSet<String> = HashSet::new();
+        present.insert("local".to_string());
+        if let Some(pkt) = &self.telemetry.latest {
+            if pkt.is_race_on != 0 {
+                push(&mut self.minimap_trails, "local".to_string(), pkt.position_x, pkt.position_z);
+            }
+        }
+        for (info, rp) in self.coop.remote_players() {
+            push(&mut self.minimap_trails, info.id.clone(), rp.position_x, rp.position_z);
+            present.insert(info.id);
+        }
+        self.minimap_trails.retain(|k, _| present.contains(k));
+    }
 }
 
 impl eframe::App for ForzaApp {
@@ -675,6 +717,7 @@ impl eframe::App for ForzaApp {
         self.drain_packets();
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
+        self.update_minimap_trails();
 
         // Poll minimap image receiver — drain all pending messages this frame
         if self.minimap_img_receiver.is_some() {
