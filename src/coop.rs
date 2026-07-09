@@ -853,6 +853,28 @@ mod tests {
     }
 
     #[test]
+    fn remote_buf_zero_delay_uses_latest() {
+        let mut b = RemoteBuf::new();
+        let mut p1 = ForzaPacket::default();
+        p1.speed = 10.0;
+        let mut p2 = ForzaPacket::default();
+        p2.speed = 20.0;
+        b.push(p1);
+        b.push(p2);
+        b.advance(Duration::ZERO);
+        assert_eq!(b.current.as_ref().unwrap().speed, 20.0, "zero delay = newest sample");
+    }
+
+    #[test]
+    fn remote_buf_delay_holds_back_fresh_packets() {
+        // With a big buffer, a just-arrived packet is not yet eligible for playback.
+        let mut b = RemoteBuf::new();
+        b.push(ForzaPacket::default());
+        b.advance(Duration::from_secs(10));
+        assert!(b.current.is_none(), "fresh packet held back by the jitter buffer");
+    }
+
+    #[test]
     fn control_messages_survive_json() {
         // Regression: the waypoint-clear (pos: None) must survive JSON — a NaN
         // sentinel serialised to `null` and failed to parse back into f32.
