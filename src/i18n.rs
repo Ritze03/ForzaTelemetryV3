@@ -569,6 +569,16 @@ fn de(s: &str) -> Option<&'static str> {
         "Peak Long G" => "Max. Längs-G",
         "Max RPM" => "Max. U/min",
         "Lock map north-up" => "Karte nach Norden ausrichten",
+        "Show compass" => "Kompass anzeigen",
+        "Tracer fade" => "Spur-Ausblendung",
+        "Fade after (time):" => "Ausblenden nach (Zeit):",
+        "Fade after (distance):" => "Ausblenden nach (Distanz):",
+        "Tracers fade out with whichever comes first — age or distance behind the player."
+            => "Spuren blenden aus – je nachdem, was zuerst eintritt: Alter oder Distanz hinter dem Spieler.",
+        "Show player list on map" => "Spielerliste auf der Karte anzeigen",
+        "Columns:" => "Spalten:",
+        "Distance" => "Distanz",
+        "Car class" => "Fahrzeugklasse",
 
         // ── Recording / replay ─────────────────────────────────────────
         "Recording" => "Aufnahme",

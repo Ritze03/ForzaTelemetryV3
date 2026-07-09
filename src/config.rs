@@ -253,6 +253,7 @@ pub struct AppConfig {
     pub minimap_use_movement_dir: bool,
     pub minimap_mirror_edges: bool,
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
+    pub minimap_show_compass: bool, // show the north compass on the map
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -303,6 +304,14 @@ pub struct AppConfig {
     pub coop_buffer_ms: u32,  // jitter buffer for remote players (pacing)
     pub coop_port: u16,       // local host port cloudflared points at
     pub coop_last_code: String, // last join code, prefilled next launch
+    // Co-Op map: tracer fade + on-map player list
+    pub coop_trail_fade_secs: f32, // trail fades out over this many seconds
+    pub coop_trail_fade_m: f32,    // …and over this distance behind the player
+    pub coop_map_playerlist: bool, // overlay a player list on the minimap
+    pub coop_list_distance: bool,
+    pub coop_list_speed: bool,
+    pub coop_list_gear: bool,
+    pub coop_list_class: bool,
 }
 
 impl Default for AppConfig {
@@ -348,6 +357,7 @@ impl Default for AppConfig {
             minimap_use_movement_dir: true,
             minimap_mirror_edges: true,
             minimap_north_up: false,
+            minimap_show_compass: true,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,
@@ -390,6 +400,13 @@ impl Default for AppConfig {
             coop_buffer_ms: 0,
             coop_port: crate::coop::DEFAULT_COOP_PORT,
             coop_last_code: String::new(),
+            coop_trail_fade_secs: 10.0,
+            coop_trail_fade_m: 500.0,
+            coop_map_playerlist: false,
+            coop_list_distance: true,
+            coop_list_speed: true,
+            coop_list_gear: true,
+            coop_list_class: false,
         }
     }
 }

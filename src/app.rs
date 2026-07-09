@@ -367,6 +367,14 @@ pub enum DashboardSubTab {
     MiniMap,
 }
 
+/// Nested sub-tabs inside the mini-settings "Map" tab.
+#[derive(PartialEq, Clone, Copy, Default)]
+pub enum MiniMapTab {
+    #[default]
+    General,
+    Coop,
+}
+
 // ── App ────────────────────────────────────────────────────────────
 
 pub struct ForzaApp {
@@ -430,6 +438,7 @@ pub struct ForzaApp {
     pub page_settings_opacity: f32,
     pub page_settings_tab: Tab,
     pub page_dashboard_sub_tab: DashboardSubTab,
+    pub page_map_sub_tab: MiniMapTab,
 
     // Dashboard widget drag / resize state
     pub dashboard_drag: Option<DashboardDragState>,
@@ -451,7 +460,7 @@ pub struct ForzaApp {
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
-    pub minimap_trails: HashMap<String, VecDeque<(f32, f32)>>,
+    pub minimap_trails: HashMap<String, VecDeque<(f32, f32, Instant)>>,
     /// Rolling ~30s trace of (time, speed km/h, rpm) for the Speed Trace widget.
     pub trace_history: VecDeque<(Instant, f32, f32)>,
 
@@ -565,6 +574,7 @@ impl ForzaApp {
             page_settings_opacity: 0.5,
             page_settings_tab: Tab::Dashboard,
             page_dashboard_sub_tab: DashboardSubTab::default(),
+            page_map_sub_tab: MiniMapTab::default(),
             dashboard_drag: None,
             dashboard_resize: None,
             minimap_texture: None,
@@ -826,19 +836,32 @@ impl ForzaApp {
             return;
         }
 
-        fn push(trails: &mut HashMap<String, VecDeque<(f32, f32)>>, key: String, x: f32, z: f32) {
+        // Drop points older than the fade window so trails stay bounded by time too.
+        let max_age = Duration::from_secs_f32(self.config.coop_trail_fade_secs.max(0.5));
+        let now = Instant::now();
+        fn push(
+            trails: &mut HashMap<String, VecDeque<(f32, f32, Instant)>>,
+            key: String,
+            x: f32,
+            z: f32,
+            now: Instant,
+            max_age: Duration,
+        ) {
             let dq = trails.entry(key).or_default();
             match dq.back() {
-                Some(&(px, pz)) => {
+                Some(&(px, pz, _)) => {
                     let moved = (px - x).hypot(pz - z);
                     if moved >= TELEPORT {
                         dq.clear(); // teleport (fast-travel / reset) — drop the stale line
-                        dq.push_back((x, z));
+                        dq.push_back((x, z, now));
                     } else if moved >= MIN_MOVE {
-                        dq.push_back((x, z));
+                        dq.push_back((x, z, now));
                     }
                 }
-                None => dq.push_back((x, z)),
+                None => dq.push_back((x, z, now)),
+            }
+            while dq.front().is_some_and(|&(_, _, t)| now.duration_since(t) > max_age) {
+                dq.pop_front();
             }
             if dq.len() > MAX_PTS {
                 dq.pop_front();
@@ -855,6 +878,8 @@ impl ForzaApp {
                     "local".to_string(),
                     pkt.position_x,
                     pkt.position_z,
+                    now,
+                    max_age,
                 );
             }
         }
@@ -865,6 +890,8 @@ impl ForzaApp {
                     info.id.clone(),
                     rp.position_x,
                     rp.position_z,
+                    now,
+                    max_age,
                 );
             }
             present.insert(info.id);
@@ -1164,7 +1191,7 @@ impl eframe::App for ForzaApp {
             let win_resp = egui::Window::new("page_settings_win")
                 .title_bar(false)
                 .resizable(false)
-                .fixed_size([600.0, 600.0])
+                .fixed_size([650.0, 650.0])
                 .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -36.0))
                 .frame(egui::Frame::window(&ctx.style()).multiply_with_opacity(opacity))
                 .show(ctx, |ui| {
@@ -1187,7 +1214,7 @@ impl eframe::App for ForzaApp {
                     });
                     ui.separator();
 
-                    ui.set_min_height(540.0);
+                    ui.set_min_height(590.0);
 
                     match self.page_settings_tab {
                         Tab::Dashboard => {
@@ -1432,6 +1459,18 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {
+                                        for (sub, lbl) in [
+                                            (MiniMapTab::General, "General"),
+                                            (MiniMapTab::Coop,    "Co-Op"),
+                                        ] {
+                                            ui.selectable_value(&mut self.page_map_sub_tab, sub, tr(lbl));
+                                        }
+                                    });
+                                    ui.separator();
+                                    ui.add_space(6.0);
+                                    match self.page_map_sub_tab {
+                                    MiniMapTab::General => {
+                                    ui.horizontal(|ui| {
                                         ui.checkbox(&mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit:"));
                                         if self.config.minimap_fps_limit_enabled {
                                             ui.add(
@@ -1447,6 +1486,7 @@ impl eframe::App for ForzaApp {
                                         ui.checkbox(&mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
                                     }
                                     ui.checkbox(&mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
+                                    ui.checkbox(&mut self.config.minimap_show_compass, tr("Show compass"));
                                     ui.add_space(4.0);
                                     ui.label(tr("Zoom when driving (radius, metres):"));
                                     ui.add(
@@ -1535,6 +1575,33 @@ impl eframe::App for ForzaApp {
                                             self.config.minimap_world_origin_z = 10738.0;
                                         }
                                     });
+                                    }
+                                    MiniMapTab::Coop => {
+                                        ui.label(crate::theme::section_label(tr("Tracer fade")));
+                                        ui.add_space(4.0);
+                                        ui.label(tr("Fade after (time):"));
+                                        ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
+                                        ui.add_space(4.0);
+                                        ui.label(tr("Fade after (distance):"));
+                                        ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
+                                        ui.label(
+                                            egui::RichText::new(tr("Tracers fade out with whichever comes first — age or distance behind the player."))
+                                                .size(11.0).color(egui::Color32::GRAY),
+                                        );
+                                        ui.add_space(10.0);
+                                        ui.separator();
+                                        ui.add_space(6.0);
+                                        ui.checkbox(&mut self.config.coop_map_playerlist, tr("Show player list on map"));
+                                        ui.add_enabled_ui(self.config.coop_map_playerlist, |ui| {
+                                            ui.add_space(2.0);
+                                            ui.label(egui::RichText::new(tr("Columns:")).size(11.0).color(egui::Color32::GRAY));
+                                            ui.checkbox(&mut self.config.coop_list_distance, tr("Distance"));
+                                            ui.checkbox(&mut self.config.coop_list_speed, tr("Speed"));
+                                            ui.checkbox(&mut self.config.coop_list_gear, tr("Gear"));
+                                            ui.checkbox(&mut self.config.coop_list_class, tr("Car class"));
+                                        });
+                                    }
+                                    }
                                 }
                             }
                         }

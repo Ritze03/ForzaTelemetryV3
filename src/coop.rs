@@ -871,16 +871,16 @@ fn spawn_tunnel(
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<Child> {
     inner.lock().unwrap().status = "Starting tunnel…".into();
-    let mut child = Command::new(bin)
-        .args([
-            "tunnel",
-            "--no-autoupdate",
-            "--url",
-            &format!("http://localhost:{port}"),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut cmd = Command::new(bin);
+    cmd.args([
+        "tunnel",
+        "--no-autoupdate",
+        "--url",
+        &format!("http://localhost:{port}"),
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = hidden(&mut cmd).spawn()?;
 
     for pipe in [child.stderr.take().map(Br::Err), child.stdout.take().map(Br::Out)]
         .into_iter()
@@ -926,6 +926,18 @@ fn extract_words(line: &str) -> Option<String> {
     Some(slug.to_string())
 }
 
+/// Suppress the console window Windows would otherwise flash when we spawn a
+/// helper process (curl / wget / cloudflared). No-op on other platforms.
+fn hidden(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// `app_data_dir()/cloudflared`, downloading it if absent. `progress(downloaded,
 /// total)` is called periodically during the download (total is `None` until the
 /// size is known). Returns immediately if the binary is already present.
@@ -959,17 +971,18 @@ pub fn ensure_cloudflared(
     // Spawn the downloader as a child and poll the growing file for progress,
     // instead of blocking on it, so the UI can show live bytes.
     let tmp_s = tmp.to_string_lossy().to_string();
-    let mut child = Command::new("curl")
-        .args(["-fsSL", "-o", &tmp_s, url.as_str()])
+    let mut curl = Command::new("curl");
+    curl.args(["-fsSL", "-o", &tmp_s, url.as_str()])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = hidden(&mut curl)
         .spawn()
         .or_else(|_| {
-            Command::new("wget")
-                .args(["-qO", &tmp_s, url.as_str()])
+            let mut wget = Command::new("wget");
+            wget.args(["-qO", &tmp_s, url.as_str()])
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
+                .stderr(Stdio::null());
+            hidden(&mut wget).spawn()
         })
         .map_err(|_| {
             "cloudflared missing and no curl/wget to fetch it (drop the binary in the data dir)"
@@ -1021,7 +1034,9 @@ pub fn ensure_cloudflared(
 /// Best-effort total download size via a HEAD request (follows redirects); the
 /// last `Content-Length` seen is the final asset's. `None` if it can't be read.
 fn head_content_length(url: &str) -> Option<u64> {
-    let out = Command::new("curl").args(["-sIL", url]).output().ok()?;
+    let mut cmd = Command::new("curl");
+    cmd.args(["-sIL", url]);
+    let out = hidden(&mut cmd).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut last = None;
     for line in text.lines() {

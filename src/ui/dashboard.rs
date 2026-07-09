@@ -1628,13 +1628,23 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             pos2(cx + (dx * cos_yaw - dz * sin_yaw) * scale,
                  cy - (dx * sin_yaw + dz * cos_yaw) * scale)
         };
-        let draw_trail = |pts: &std::collections::VecDeque<(f32, f32)>, col: Color32| {
+        let now = std::time::Instant::now();
+        let fade_secs = cfg.coop_trail_fade_secs.max(0.5);
+        let fade_m = cfg.coop_trail_fade_m.max(1.0);
+        let draw_trail = |pts: &std::collections::VecDeque<(f32, f32, std::time::Instant)>, col: Color32| {
             let n = pts.len();
             if n < 2 { return; }
+            let (hx, hz, _) = pts[n - 1]; // head = player's current position
             for i in 1..n {
-                let (ax, az) = pts[i - 1];
-                let (bx, bz) = pts[i];
-                let alpha = 25 + (i as f32 / n as f32 * 200.0) as u8;
+                let (ax, az, _) = pts[i - 1];
+                let (bx, bz, bt) = pts[i];
+                // Fade the segment out by whichever hits first: age or distance behind.
+                let age = now.duration_since(bt).as_secs_f32();
+                let dist = (ax - hx).hypot(az - hz);
+                let tf = (1.0 - age / fade_secs).clamp(0.0, 1.0);
+                let df = (1.0 - dist / fade_m).clamp(0.0, 1.0);
+                let alpha = (tf.min(df) * 220.0) as u8;
+                if alpha < 4 { continue; }
                 let c = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
                 painter.line_segment([to_screen(ax, az), to_screen(bx, bz)], Stroke::new(2.0, c));
             }
@@ -1805,7 +1815,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
 
     // North compass — the map is heading-up (rotates with the car), so show where
     // north is. `yaw` is the map rotation; screen-north is the up vector rotated by it.
-    {
+    if cfg.minimap_show_compass {
         let cc = rect.min + vec2(22.0, 22.0);
         let r = 12.0_f32;
         painter.circle_filled(cc, r + 2.0, Color32::from_black_alpha(130));
@@ -1815,6 +1825,69 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         painter.line_segment([cc, cc + north * r], Stroke::new(2.0, Color32::from_rgb(230, 80, 80)));
         painter.text(cc + north * (r + 6.0), egui::Align2::CENTER_CENTER, "N",
             egui::FontId::proportional(11.0), Color32::WHITE);
+    }
+
+    // On-map co-op player list — coloured dot + name and the selected columns.
+    if cfg.coop_map_playerlist && app.coop.role() != crate::coop::Role::Off {
+        let unit = if cfg.use_mph { "mph" } else { "km/h" };
+        let mut rows: Vec<(Color32, String)> = Vec::new();
+        let mut push_row = |hue: f32, name: &str, speed_ms: f32, gear: u8, class: &str, dist: f32, is_self: bool| {
+            let short = if name.chars().count() > 10 {
+                name.chars().take(9).collect::<String>() + "…"
+            } else {
+                name.to_string()
+            };
+            let mut s = format!("{short:<10}");
+            if cfg.coop_list_distance {
+                s += &if is_self {
+                    "       ".to_string()
+                } else if dist >= 1000.0 {
+                    format!(" {:>5.1}k", dist / 1000.0)
+                } else {
+                    format!(" {dist:>5.0}m")
+                };
+            }
+            if cfg.coop_list_speed {
+                let disp = if cfg.use_mph { speed_ms * 2.236_94 } else { speed_ms * 3.6 };
+                s += &format!(" {disp:>3.0}{unit}");
+            }
+            if cfg.coop_list_gear {
+                let g = match gear { 0 => "N".to_string(), g => g.to_string() };
+                s += &format!(" G{g}");
+            }
+            if cfg.coop_list_class {
+                s += &format!(" {class}");
+            }
+            rows.push((crate::ui::coop::hue_color(hue), s));
+        };
+        if let Some(p) = &app.telemetry.latest {
+            push_row(cfg.coop_hue, &cfg.coop_name, p.speed, p.gear, p.car_class_str(), 0.0, true);
+        }
+        for (info, pkt) in app.coop.remote_players() {
+            if pkt.is_paused() {
+                continue;
+            }
+            let dist = ((pkt.position_x - car_x).powi(2) + (pkt.position_z - car_z).powi(2)).sqrt();
+            push_row(info.hue, &info.name, pkt.speed, pkt.gear, pkt.car_class_str(), dist, false);
+        }
+        if !rows.is_empty() {
+            let font = egui::FontId::monospace(11.0);
+            let (dot_x, text_x, row_h, pad) = (6.0_f32, 16.0_f32, 15.0_f32, 5.0_f32);
+            let galleys: Vec<(Color32, std::sync::Arc<egui::Galley>)> = rows
+                .iter()
+                .map(|(c, s)| (*c, painter.layout_no_wrap(s.clone(), font.clone(), Color32::WHITE)))
+                .collect();
+            let w = text_x + galleys.iter().map(|(_, g)| g.size().x).fold(0.0, f32::max) + pad;
+            let h = pad * 2.0 + row_h * galleys.len() as f32;
+            let origin = rect.right_top() + vec2(-w - 6.0, 6.0);
+            let panel = egui::Rect::from_min_size(origin, vec2(w, h));
+            painter.rect_filled(panel, 4.0, Color32::from_black_alpha(160));
+            for (i, (c, g)) in galleys.into_iter().enumerate() {
+                let cy = panel.top() + pad + row_h * i as f32 + row_h * 0.5;
+                painter.circle_filled(pos2(panel.left() + dot_x, cy), 4.0, c);
+                painter.galley(pos2(panel.left() + text_x, cy - g.size().y * 0.5), g, Color32::WHITE);
+            }
+        }
     }
 }
 
