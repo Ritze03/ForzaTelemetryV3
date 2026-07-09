@@ -59,6 +59,13 @@ pub fn danger_button(text: impl Into<String>) -> egui::Button<'static> {
         .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xE1, 0x55, 0x54, 82)))
 }
 
+/// Secondary/neutral action: btn fill + border.
+pub fn secondary_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text.into()).color(TEXT))
+        .fill(BTN)
+        .stroke(Stroke::new(1.0, BTNBD))
+}
+
 /// An UPPERCASE section label in the accent colour.
 pub fn section_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase()).color(ACCENT).size(12.0).strong()

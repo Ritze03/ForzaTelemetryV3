@@ -189,6 +189,61 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // ── RIGHT COLUMN ─────────────────────────────────────────
             let right = &mut cols[1];
 
+            // ── Recording / Replay ───────────────────────────────────
+            right.group(|ui| {
+                ui.label(crate::theme::section_label(tr("Recording")));
+                ui.add_space(4.0);
+
+                let recording = app.recorder.is_some();
+                let rec_label = if recording {
+                    let n = app.recorder.as_ref().map(|r| r.packets).unwrap_or(0);
+                    format!("{}  {} ({} pkts)", crate::icons::STOP, tr("Stop Recording"), n)
+                } else {
+                    format!("{}  {}", crate::icons::CIRCLE, tr("Record"))
+                };
+                let rec_btn = if recording {
+                    crate::theme::danger_button(rec_label)
+                } else {
+                    crate::theme::secondary_button(rec_label)
+                };
+                if ui.add(rec_btn).clicked() {
+                    app.toggle_recording();
+                }
+                if recording {
+                    ui.label(RichText::new(tr("Recording live telemetry to a file…"))
+                        .size(11.0).color(Color32::from_rgb(225, 90, 90)));
+                }
+
+                ui.add_space(8.0);
+                let files = crate::recorder::list_recordings();
+                if files.is_empty() {
+                    ui.label(RichText::new(tr("No recordings yet.")).size(11.0).color(Color32::GRAY));
+                } else {
+                    let replaying = app.replay.is_some();
+                    ui.horizontal(|ui| {
+                        let sel = app.replay_selected.filter(|&i| i < files.len()).unwrap_or(0);
+                        egui::ComboBox::from_id_salt("replay_file")
+                            .selected_text(files[sel].1.clone())
+                            .show_ui(ui, |ui| {
+                                for (i, (_, name)) in files.iter().enumerate() {
+                                    ui.selectable_value(&mut app.replay_selected, Some(i), name.clone());
+                                }
+                            });
+                        if replaying {
+                            if ui.add(crate::theme::danger_button(format!("{}  {}", crate::icons::STOP, tr("Stop")))).clicked() {
+                                app.replay = None;
+                            }
+                        } else if ui.add(crate::theme::primary_button(tr("Replay"))).clicked() {
+                            app.start_replay(files[sel].0.clone());
+                        }
+                    });
+                    ui.label(RichText::new(tr("Replays into the app as if the game were live."))
+                        .size(11.0).color(Color32::GRAY));
+                }
+            });
+
+            right.add_space(8.0);
+
             // GitHub link
             right.group(|ui| {
                 ui.label(crate::theme::section_label(tr("Repository")));

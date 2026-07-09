@@ -416,6 +416,11 @@ pub struct ForzaApp {
     pub coop_join_input: String,
     pub coop_copied_at: Option<Instant>,
 
+    // Recording / replay
+    pub recorder: Option<crate::recorder::RecordState>,
+    pub replay: Option<crate::recorder::ReplayHandle>,
+    pub replay_selected: Option<usize>,
+
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
 }
@@ -522,6 +527,9 @@ impl ForzaApp {
             coop: crate::coop::CoopState::new(&config_coop_name, config_coop_hue, config_coop_buffer_ms),
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
+            recorder: None,
+            replay: None,
+            replay_selected: None,
             receiver,
             _network: network,
         }
@@ -533,6 +541,27 @@ impl ForzaApp {
         self.receiver = receiver;
         self._network = network;
         self.config.listen_port = port;
+    }
+
+    /// Start/stop recording received telemetry to a file.
+    pub fn toggle_recording(&mut self) {
+        if self.recorder.is_some() {
+            self.recorder = None; // Drop flushes and closes the file.
+        } else {
+            match crate::recorder::RecordState::start() {
+                Ok(r) => self.recorder = Some(r),
+                Err(e) => eprintln!("recording failed to start: {e}"),
+            }
+        }
+    }
+
+    /// Replay a recording file over UDP to our own listen port.
+    pub fn start_replay(&mut self, path: std::path::PathBuf) {
+        self.replay = None; // stop any in-progress replay first
+        match crate::recorder::start_replay(path, self.config.listen_port) {
+            Ok(h) => self.replay = Some(h),
+            Err(e) => eprintln!("replay failed to start: {e}"),
+        }
     }
 
     pub fn drain_packets(&mut self) {
@@ -686,6 +715,11 @@ impl ForzaApp {
 
             // Co-Op: relay our locally-received telemetry to peers.
             self.coop.push_local(&pkt);
+
+            // Recording: capture the packet with its timestamp.
+            if let Some(rec) = self.recorder.as_mut() {
+                rec.write_packet(&pkt.to_bytes());
+            }
 
             self.telemetry.update(pkt);
 

@@ -10,6 +10,7 @@ mod input;
 mod listeners;
 mod network;
 mod packet;
+mod recorder;
 mod telemetry;
 mod theme;
 mod ui;
