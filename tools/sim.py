@@ -118,6 +118,8 @@ def run(args):
     n = 0
     dist = 0.0
     fuel = 1.0
+    prev_speed = 0.0
+    prev_heading = None
     while True:
         t = time.time() - t0
         ts = int(t * 1000)
@@ -149,6 +151,33 @@ def run(args):
             pkt = build(True, ts, rpm, 0, 0, long_g, 0, 0, speed_ms, 0.0,
                         args.cx, 0.0, args.cz, speed_ms, power, torque, boost, fuel, dist,
                         args.car, gear, accel, brake, 0, 1, args.race_pos)
+
+        elif args.scenario == "figure8":
+            # Lemniscate of Gerono — rich lateral+longitudinal G for the traction circle.
+            w = args.speed / args.radius
+            a = w * t
+            R = args.radius
+            px = args.cx + R * math.cos(a)
+            pz = args.cz + R * math.sin(a) * math.cos(a)
+            vx = -R * w * math.sin(a)
+            vz = R * w * math.cos(2 * a)
+            speed_ms = math.hypot(vx, vz)
+            heading = math.atan2(vx, vz)
+            lat_a = long_a = 0.0
+            if prev_heading is not None and dt > 0:
+                long_a = (speed_ms - prev_speed) / dt
+                dyaw = math.atan2(math.sin(heading - prev_heading),
+                                  math.cos(heading - prev_heading)) / dt
+                lat_a = speed_ms * dyaw
+            prev_speed, prev_heading = speed_ms, heading
+            kmh = speed_ms * 3.6
+            gear = gear_for_speed(kmh)
+            rpm = rpm_for_speed(kmh, gear)
+            dist += speed_ms * dt
+            steer = clampi(lat_a * 6.0, -127, 127)
+            pkt = build(True, ts, rpm, lat_a, 0, long_a, vx, 0, vz, heading,
+                        px, 0.0, pz, speed_ms, 120000.0, 250.0, 6.0, fuel, dist,
+                        args.car, gear, 200, 0, steer, 1, args.race_pos)
 
         else:  # circle
             omega = args.speed / args.radius          # rad/s
@@ -191,7 +220,7 @@ if __name__ == "__main__":
     ap.add_argument("--ip", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=1337)
     ap.add_argument("--hz", type=float, default=60.0)
-    ap.add_argument("--scenario", choices=["circle", "accel", "idle"], default="circle")
+    ap.add_argument("--scenario", choices=["circle", "figure8", "accel", "idle"], default="circle")
     ap.add_argument("--car", type=int, default=1001)
     ap.add_argument("--phase", type=float, default=0.0, help="circle: starting angle offset (rad)")
     ap.add_argument("--radius", type=float, default=300.0, help="circle radius (m)")

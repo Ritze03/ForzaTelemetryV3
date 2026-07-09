@@ -229,10 +229,22 @@ pub struct GForceStats {
     pub peak_lateral:      f32,
     pub peak_longitudinal: f32,
     pub peak_reset_timer:  Option<Instant>,
+    /// Recent (lat, lon) samples for the traction-circle trail (~1.5 s window).
+    pub g_history:         VecDeque<(Instant, f32, f32)>,
 }
 
 impl GForceStats {
     pub fn update(&mut self, lat: f32, lon: f32, vert: f32) {
+        let now = Instant::now();
+        self.g_history.push_back((now, lat, lon));
+        while let Some(&(t, _, _)) = self.g_history.front() {
+            if now.duration_since(t) > Duration::from_millis(1500) {
+                self.g_history.pop_front();
+            } else {
+                break;
+            }
+        }
+
         let cur_mag  = (lat * lat + lon * lon).sqrt();
         let peak_mag = (self.peak_lateral.powi(2) + self.peak_longitudinal.powi(2)).sqrt();
 

@@ -1167,6 +1167,23 @@ fn draw_gforce_plot(ui: &mut Ui, lat: f32, lon: f32, stats: &GForceStats, size: 
         );
     }
 
+    // Fading trail of recent G-vectors — shows how load transferred over the last ~1.5 s.
+    let hist = &stats.g_history;
+    let n = hist.len();
+    if n >= 2 {
+        for i in 1..n {
+            let (_, la0, lo0) = hist[i - 1];
+            let (_, la1, lo1) = hist[i];
+            let (x0, y0) = clip_to_circle(-(la0 / max_g * radius), lo0 / max_g * radius, radius);
+            let (x1, y1) = clip_to_circle(-(la1 / max_g * radius), lo1 / max_g * radius, radius);
+            let alpha = 20 + (i as f32 / n as f32 * 170.0) as u8;
+            painter.line_segment(
+                [pos2(center.x + x0, center.y + y0), pos2(center.x + x1, center.y + y1)],
+                Stroke::new(2.0, Color32::from_rgba_unmultiplied(120, 180, 255, alpha)),
+            );
+        }
+    }
+
     let (dx, dy) = clip_to_circle(-(lat / max_g * radius), lon / max_g * radius, radius);
     painter.circle_filled(pos2(center.x + dx, center.y + dy), 4.0, Color32::WHITE);
 }
