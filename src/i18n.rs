@@ -123,6 +123,12 @@ fn de(s: &str) -> Option<&'static str> {
         "Bars" => "Balken",
         "Bar" => "Bar",
         "PSI" => "PSI",
+        "Bar Display Value:" => "Balken-Anzeigewert:",
+        "Temperature" => "Temperatur",
+        "Stacked" => "Gestapelt",
+        "Switch Values" => "Werte tauschen",
+        "Swaps temp and slip in the bars only; the text rows stay put."
+            => "Tauscht Temperatur und Schlupf nur in den Balken; die Textzeilen bleiben unverändert.",
         "Slip display style:" => "Schlupf-Anzeigestil:",
         "Values" => "Werte",
         "Graph" => "Diagramm",

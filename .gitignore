@@ -3,3 +3,4 @@
 /raw_assets
 CLAUDE.md
 Cargo.lock
+.claude/

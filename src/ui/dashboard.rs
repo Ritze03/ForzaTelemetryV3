@@ -500,7 +500,11 @@ fn show_session_stats(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 /// Turbo/supercharger boost gauge — current value + a bar with the session-peak tick.
+/// Adapts to its cell: taller-than-wide renders a vertical (bottom-up) gauge,
+/// square or wider keeps the default horizontal bar.
 fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    let full = ui.available_rect_before_wrap();
+    let vertical = full.height() > full.width();
     ui.label(crate::theme::section_label(tr("Boost")));
 
     let use_bar = app.config.use_bar;
@@ -515,6 +519,44 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         (200.0 - 120.0 * level) as u8,
         70,
     );
+    let scale = peak.max(cur).max(conv(7.0)) * 1.15;
+    let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
+
+    if vertical {
+        // Stacked readout, then a bottom-up bar filling the remaining height.
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
+            ui.label(RichText::new(format!("{unit} · {} {peak:.2}", tr("peak")))
+                .size(11.0).color(crate::theme::TEXT_DIM));
+        });
+        ui.add_space(4.0);
+
+        let rect = ui.available_rect_before_wrap();
+        let w = rect.width().min(26.0);
+        let bar = egui::Rect::from_min_size(
+            pos2(rect.center().x - w * 0.5, rect.top()),
+            egui::vec2(w, (rect.height() - 4.0).max(10.0)),
+        );
+        ui.allocate_rect(bar, egui::Sense::hover());
+        let painter = ui.painter_at(bar);
+        painter.rect_filled(bar, 4.0, Color32::from_rgb(22, 24, 27));
+
+        if scale > 0.0 {
+            let frac = (cur / scale).clamp(0.0, 1.0);
+            if frac > 0.001 {
+                let h = bar.height() * frac;
+                let fill = egui::Rect::from_min_max(pos2(bar.left(), bar.bottom() - h), bar.max);
+                painter.rect_filled(fill, 4.0, bar_col);
+            }
+            // Peak tick
+            let pf = (peak / scale).clamp(0.0, 1.0);
+            if pf > 0.001 {
+                let y = bar.bottom() - bar.height() * pf;
+                painter.line_segment([pos2(bar.left() + 2.0, y), pos2(bar.right() - 2.0, y)], tick);
+            }
+        }
+        return;
+    }
 
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
@@ -531,7 +573,6 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let painter = ui.painter_at(bar);
     painter.rect_filled(bar, 4.0, Color32::from_rgb(22, 24, 27));
 
-    let scale = peak.max(cur).max(conv(7.0)) * 1.15;
     if scale > 0.0 {
         let frac = (cur / scale).clamp(0.0, 1.0);
         if frac > 0.001 {
@@ -542,8 +583,7 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let pf = (peak / scale).clamp(0.0, 1.0);
         if pf > 0.001 {
             let x = bar.left() + bar.width() * pf;
-            painter.line_segment([pos2(x, bar.top() + 2.0), pos2(x, bar.bottom() - 2.0)],
-                Stroke::new(2.0, Color32::from_rgb(240, 220, 90)));
+            painter.line_segment([pos2(x, bar.top() + 2.0), pos2(x, bar.bottom() - 2.0)], tick);
         }
     }
 }
@@ -1218,21 +1258,77 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         p.text(pos2(cx, cy), egui::Align2::CENTER_CENTER, *lbl, fid.clone(), text_col);
     }
 
-    // ── Bars: fill = tire temp, normalized over 30..130 °C ────────
+    // ── Bars: what they visualize is configurable (temp / slip / both) ──
+    use crate::config::TireBarValue;
     let bar_top = origin.y + header_h;
+    let mode = app.config.tire_bar_value;
+    // "Switch Values" swaps temp/slip in the bars only — never in the text rows.
+    let swap = app.config.tire_bar_swap;
+    let slip_color = |slip: f32| {
+        let abs = slip.abs();
+        if abs >= 1.0 { Color32::from_rgb(220, 60, 60) }
+        else if abs >= 0.8 { Color32::from_rgb(230, 160, 40) }
+        else { Color32::from_rgb(60, 200, 90) }
+    };
+    // Each metric yields (fill fraction 0..1, fill colour). The bar uses the same
+    // temp_color helper as the value row, so bar and number always match.
+    let temp_metric = |i: usize| {
+        let t_c = ForzaPacket::tire_temp_celsius(temps_f[i]);
+        let frac = ((t_c - 30.0) / 100.0).clamp(0.0, 1.0);
+        (frac, temp_color(t_c, false))
+    };
+    let slip_metric = |i: usize| (slips[i].abs().clamp(0.0, 1.0), slip_color(slips[i]));
+
     for i in 0..4 {
         let x    = origin.x + label_w + i as f32 * bar_w;
         let rect = Rect::from_min_size(pos2(x + 4.0, bar_top), vec2(bar_w - 8.0, bar_h));
 
         p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
-        let t_c = ForzaPacket::tire_temp_celsius(temps_f[i]);
-        let c = ((t_c - 30.0) / 100.0).clamp(0.0, 1.0);
-        let fill = Rect::from_min_max(pos2(rect.left(), rect.bottom() - c * bar_h), rect.max);
-        let bar_color = if c < 0.33 { Color32::from_rgb(80, 120, 220) }
-                        else if c < 0.66 { Color32::from_rgb(50, 200, 80) }
-                        else { Color32::from_rgb(230, 140, 40) };
-        p.rect_filled(fill, 0.0, bar_color);
+        let fill_up = |r: Rect, (frac, col): (f32, Color32)| {
+            if frac > 0.001 {
+                p.rect_filled(
+                    Rect::from_min_max(pos2(r.left(), r.bottom() - frac * r.height()), r.max),
+                    0.0, col,
+                );
+            }
+        };
+        let (a, b) = if swap {
+            (slip_metric(i), temp_metric(i))
+        } else {
+            (temp_metric(i), slip_metric(i))
+        };
+        match mode {
+            TireBarValue::Temperature => fill_up(rect, temp_metric(i)),
+            TireBarValue::Slip => fill_up(rect, slip_metric(i)),
+            TireBarValue::Combined => {
+                // Two half-width bars side by side, 1 px seam.
+                let (l, r) = rect.split_left_right_at_fraction(0.5);
+                fill_up(Rect::from_min_max(l.min, pos2(l.max.x - 0.5, l.max.y)), a);
+                fill_up(Rect::from_min_max(pos2(r.min.x + 0.5, r.min.y), r.max), b);
+            }
+            TireBarValue::Stacked => {
+                // Split at the vertical middle: `a` grows upward, `b` downward.
+                let mid = rect.center().y;
+                let half = rect.height() * 0.5;
+                if a.0 > 0.001 {
+                    p.rect_filled(
+                        Rect::from_min_max(pos2(rect.left(), mid - a.0 * half), pos2(rect.right(), mid)),
+                        0.0, a.1,
+                    );
+                }
+                if b.0 > 0.001 {
+                    p.rect_filled(
+                        Rect::from_min_max(pos2(rect.left(), mid), pos2(rect.right(), mid + b.0 * half)),
+                        0.0, b.1,
+                    );
+                }
+                p.line_segment(
+                    [pos2(rect.left(), mid), pos2(rect.right(), mid)],
+                    Stroke::new(1.0, crate::theme::STROKE_MID),
+                );
+            }
+        }
 
         // Wet: water-blue inset outline, drawn inside so the bar keeps its size
         if puddles[i] != 0 {
@@ -1243,12 +1339,6 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // ── Text rows: Temp / Slip / pressure ──────────────────────────
     let temp_unit = if use_f { "°F" } else { "°C" };
     let press_lbl = if app.config.use_bar { tr("Bar") } else { tr("PSI") };
-    let slip_color = |slip: f32| {
-        let abs = slip.abs();
-        if abs >= 1.0 { Color32::from_rgb(220, 60, 60) }
-        else if abs >= 0.8 { Color32::from_rgb(230, 160, 40) }
-        else { Color32::from_rgb(60, 200, 90) }
-    };
     let text_top = bar_top + bar_h + gap_h;
     let rows: [(&str, [(String, Color32); 4]); 3] = [
         (tr("Temp"), std::array::from_fn(|i| {
@@ -2088,6 +2178,12 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         8000.0
     };
 
+    // The rotated y-axis label overhangs the plot's left edge (egui_plot draws it
+    // at rect.left() - gap), so give the plot a child rect with left padding or
+    // the widget cell clips the label.
+    let mut plot_rect = ui.available_rect_before_wrap();
+    plot_rect.min.x += 12.0;
+    let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
     Plot::new("dash_power_graph")
         .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
         .x_axis_label(tr("RPM"))
@@ -2099,7 +2195,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_zoom(false)
         .allow_scroll(false)
         .allow_boxed_zoom(false)
-        .show(ui, |plot_ui| {
+        .show(&mut plot_ui, |plot_ui| {
             plot_ui.line(
                 Line::new(tr("Power (PS)"), PlotPoints::new(power_series))
                     .color(Color32::from_rgb(80, 160, 240))
@@ -2178,6 +2274,10 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .collect();
 
     let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
+    // Left padding for the rotated y-axis label's overhang (see show_power_graph_widget).
+    let mut plot_rect = ui.available_rect_before_wrap();
+    plot_rect.min.x += 12.0;
+    let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
     Plot::new("dash_boost_graph")
         .x_axis_label(tr("RPM"))
         .y_axis_label(boost_label)
@@ -2189,7 +2289,7 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_zoom(false)
         .allow_scroll(false)
         .allow_boxed_zoom(false)
-        .show(ui, |plot_ui| {
+        .show(&mut plot_ui, |plot_ui| {
             plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
         });
 }

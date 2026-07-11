@@ -94,6 +94,18 @@ pub enum TireDisplayStyle {
     Bars,
 }
 
+/// What the "Bars" tire style visualizes in each corner's bar.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum TireBarValue {
+    #[default]
+    Temperature,
+    Slip,
+    /// Two bars side by side (temp + slip).
+    Combined,
+    /// One bar split at the vertical middle: one value fills up, the other down.
+    Stacked,
+}
+
 // ── Widget grid system ─────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -226,6 +238,8 @@ pub struct AppConfig {
     // Tires
     pub tire_display_style: TireDisplayStyle,
     pub tire_slip_style: TireSlipStyle,
+    pub tire_bar_value: TireBarValue, // what the Bars style shows in the bars
+    pub tire_bar_swap: bool,          // Combined/Stacked: swap temp and slip in the bars
     // Shift indicator (global, % of engine_max_rpm)
     pub shift_low_pct: f32,
     pub shift_high_pct: f32,
@@ -342,6 +356,8 @@ impl Default for AppConfig {
             sprint_show_other: true,
             tire_display_style: TireDisplayStyle::Combined,
             tire_slip_style: TireSlipStyle::Both,
+            tire_bar_value: TireBarValue::default(),
+            tire_bar_swap: false,
             shift_low_pct: 85.0,
             shift_high_pct: 95.0,
             power_curve_forced_induction: true,

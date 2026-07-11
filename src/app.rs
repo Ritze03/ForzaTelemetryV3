@@ -1109,11 +1109,8 @@ impl eframe::App for ForzaApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
         }
 
-        // Hotkeys: F9 start/stop recording, F10 toggle map orientation.
+        // Hotkey: F10 toggle map orientation.
         // (F-keys never conflict with text entry, so they're safe to handle unconditionally.)
-        if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
-            self.toggle_recording();
-        }
         if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
             self.config.minimap_north_up = !self.config.minimap_north_up;
         }
@@ -1464,6 +1461,34 @@ impl eframe::App for ForzaApp {
                                                 ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Bars,     tr("Bars"));
                                             });
                                     });
+                                    if self.config.tire_display_style == TireDisplayStyle::Bars {
+                                        use crate::config::TireBarValue;
+                                        ui.add_space(8.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label(tr("Bar Display Value:"));
+                                            egui::ComboBox::from_id_salt("tire_bar_value")
+                                                .selected_text(match self.config.tire_bar_value {
+                                                    TireBarValue::Temperature => tr("Temperature"),
+                                                    TireBarValue::Slip        => tr("Slip"),
+                                                    TireBarValue::Combined    => tr("Combined"),
+                                                    TireBarValue::Stacked     => tr("Stacked"),
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut self.config.tire_bar_value, TireBarValue::Temperature, tr("Temperature"));
+                                                    ui.selectable_value(&mut self.config.tire_bar_value, TireBarValue::Slip,        tr("Slip"));
+                                                    ui.selectable_value(&mut self.config.tire_bar_value, TireBarValue::Combined,    tr("Combined"));
+                                                    ui.selectable_value(&mut self.config.tire_bar_value, TireBarValue::Stacked,     tr("Stacked"));
+                                                });
+                                        });
+                                        if matches!(self.config.tire_bar_value, TireBarValue::Combined | TireBarValue::Stacked) {
+                                            ui.checkbox(&mut self.config.tire_bar_swap, tr("Switch Values"));
+                                            ui.label(
+                                                egui::RichText::new(tr("Swaps temp and slip in the bars only; the text rows stay put."))
+                                                    .size(11.0)
+                                                    .color(egui::Color32::GRAY),
+                                            );
+                                        }
+                                    }
                                     if self.config.tire_display_style == TireDisplayStyle::Separate {
                                         ui.add_space(8.0);
                                         ui.horizontal(|ui| {

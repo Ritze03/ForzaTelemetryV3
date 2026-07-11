@@ -61,7 +61,6 @@ In **Settings → Recording**:
 
 ## Hotkeys
 
-- **F9** — start/stop telemetry recording.
 - **F10** — toggle the minimap between heading-up and north-up.
 
 ## Testing without the game
