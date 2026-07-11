@@ -4,6 +4,7 @@ use std::time::Duration;
 use egui::{
     Align, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
+use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints};
 
 use crate::app::{
     DashboardDragState, DashboardResizeState, ForzaApp, GForceStats, ResizeEdge,
@@ -455,6 +456,8 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::Trace      => show_trace_widget(ui, app, pkt),
         WidgetKind::Boost      => show_boost_widget(ui, app, pkt),
         WidgetKind::SessionStats => show_session_stats(ui, app, pkt),
+        WidgetKind::PowerGraph => show_power_graph_widget(ui, app),
+        WidgetKind::BoostGraph => show_boost_graph_widget(ui, app),
     }
 }
 
@@ -2052,6 +2055,143 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             }
         }
     }
+}
+
+fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
+    ui.heading(tr("Power Graph"));
+    ui.add_space(4.0);
+
+    // Live capture, falling back to the saved reference curve (same data as the
+    // Power Curve tab).
+    let has_live_curve = !app.power_capture.power_series.is_empty();
+    let (power_series, torque_series) = if has_live_curve {
+        (
+            app.power_capture.power_series.clone(),
+            app.power_capture.torque_series.clone(),
+        )
+    } else if let Some(curve) = app.saved_power_curve.as_ref() {
+        (curve.power_series.clone(), curve.torque_series.clone())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    if power_series.is_empty() {
+        ui.centered_and_justified(|ui| {
+            ui.label(RichText::new(tr("Full-throttle to capture")).color(Color32::GRAY));
+        });
+        return;
+    }
+
+    let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
+        app.cached_engine_max_rpm
+    } else {
+        8000.0
+    };
+
+    Plot::new("dash_power_graph")
+        .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
+        .x_axis_label(tr("RPM"))
+        .y_axis_label("PS / Nm")
+        .include_x(0.0)
+        .include_x(engine_max_rpm)
+        .include_y(0.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .show(ui, |plot_ui| {
+            plot_ui.line(
+                Line::new(tr("Power (PS)"), PlotPoints::new(power_series))
+                    .color(Color32::from_rgb(80, 160, 240))
+                    .width(2.5),
+            );
+            plot_ui.line(
+                Line::new(tr("Torque (Nm)"), PlotPoints::new(torque_series))
+                    .color(Color32::from_rgb(240, 140, 40))
+                    .width(2.5),
+            );
+        });
+}
+
+fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
+    ui.heading(tr("Boost Graph"));
+    ui.add_space(4.0);
+
+    let saved_curve = app.saved_power_curve.as_ref();
+
+    // Same forced-induction visibility rule as the Power Curve tab:
+    // Detection ON  → show boost only when positive pressure was actually captured.
+    // Detection OFF → always show boost (no filtering).
+    let has_boost_data = if app.config.power_curve_forced_induction {
+        app.power_capture.boost_series.iter().any(|&[_, v]| v > 0.05)
+            || saved_curve
+                .map(|curve| curve.boost_series.iter().any(|&[_, v]| v > 0.05))
+                .unwrap_or(false)
+            || (app.config.power_curve_save_fi_state && app.fi_detected)
+    } else {
+        true
+    };
+
+    // Live capture, falling back to the saved reference curve.
+    let boost_series: &[[f64; 2]] = if !app.power_capture.boost_series.is_empty() {
+        &app.power_capture.boost_series
+    } else if let Some(curve) = saved_curve {
+        &curve.boost_series
+    } else {
+        &[]
+    };
+
+    if !has_boost_data || boost_series.is_empty() {
+        ui.centered_and_justified(|ui| {
+            ui.label(RichText::new(tr("Full-throttle to capture")).color(Color32::GRAY));
+        });
+        return;
+    }
+
+    let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
+        app.cached_engine_max_rpm
+    } else {
+        8000.0
+    };
+
+    let use_bar = app.config.use_bar;
+    let step = app.config.power_curve_step as f64;
+    let max_boost = boost_series
+        .iter()
+        .map(|&[_, psi]| if use_bar { psi * 0.0689476 } else { psi })
+        .fold(0.0_f64, f64::max);
+    let min_headroom = if use_bar { 0.25 } else { 3.0 };
+    let boost_top = if max_boost.is_finite() {
+        max_boost + (max_boost.abs() * 0.15).max(min_headroom)
+    } else {
+        min_headroom
+    };
+
+    let bars: Vec<Bar> = boost_series
+        .iter()
+        .map(|&[rpm, psi]| {
+            let val = if use_bar { psi * 0.0689476 } else { psi };
+            Bar::new(rpm, val)
+                .fill(Color32::from_rgb(180, 80, 220))
+                .width(step * 0.8)
+        })
+        .collect();
+
+    let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
+    Plot::new("dash_boost_graph")
+        .x_axis_label(tr("RPM"))
+        .y_axis_label(boost_label)
+        .include_x(0.0)
+        .include_x(engine_max_rpm)
+        .include_y(0.0)
+        .include_y(boost_top)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .show(ui, |plot_ui| {
+            plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
+        });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

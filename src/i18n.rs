@@ -473,6 +473,8 @@ fn de(s: &str) -> Option<&'static str> {
         "G-Forces" => "G-Kräfte",
         "Suspension" => "Federung",
         "Map" => "Karte",
+        "Power Graph" => "Leistungsdiagramm",
+        "Boost Graph" => "Ladedruckdiagramm",
 
         // ── Settings: Game ─────────────────────────────────────────────
         "Game" => "Spiel",
