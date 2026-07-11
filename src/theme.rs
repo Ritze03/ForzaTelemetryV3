@@ -38,6 +38,31 @@ pub const DANGER: Color32 = Color32::from_rgb(0xE1, 0x55, 0x54);
 /// Positive / connected (green).
 pub const GOOD: Color32 = Color32::from_rgb(0x6C, 0xC5, 0x51);
 
+// ---- Steel scale (dashboard neutrals) -------------------------------------
+// Widget chrome uses these blue-tinted neutrals instead of pure grays so the
+// dashboard leans toward the indigo accent. `lum` tracks the `from_gray` value
+// it replaces (green channel = lum keeps perceived brightness ~equal).
+
+/// Blue-tinted neutral: r ≈ 0.9·lum, g = lum, b ≈ 1.17·lum (saturating).
+pub const fn steel(lum: u8) -> Color32 {
+    let b = lum as u16 + lum as u16 / 6;
+    let b = if b > 255 { 255 } else { b };
+    Color32::from_rgb(lum - lum / 10, lum, b as u8)
+}
+
+/// Secondary widget text: unit labels, legends, muted values (was gray ~140–160).
+pub const TEXT_DIM: Color32 = steel(150);
+/// Faint hint / caption text: placeholders, sub-labels (was gray ~90–120).
+pub const TEXT_FAINT: Color32 = steel(105);
+/// Hairline gridlines & crosshairs inside gauges/plots (was gray ~45–55).
+pub const STROKE_DIM: Color32 = steel(50);
+/// Rims & rings around gauges (was gray ~80).
+pub const STROKE_MID: Color32 = steel(80);
+/// Recessed track behind bars & sliders (was gray ~40).
+pub const TRACK: Color32 = steel(40);
+/// Dark circular gauge well (was gray ~20–28).
+pub const WELL: Color32 = steel(24);
+
 // Derived selection / hover tints (premultiplied — const-friendly).
 pub const SEL: Color32 = Color32::from_rgba_premultiplied(0x0F, 0x16, 0x27, 0x29);
 pub const SELBD: Color32 = Color32::from_rgba_premultiplied(0x26, 0x3A, 0x65, 0x6B);

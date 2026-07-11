@@ -25,7 +25,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     "Waiting for telemetry…\n\nEnable Data Out in Forza:\nSETTINGS → HUD AND GAMEPLAY → Data Out",
                 ))
                 .size(18.0)
-                .color(Color32::GRAY),
+                .color(crate::theme::TEXT_DIM),
             );
         });
         return;
@@ -91,7 +91,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             .cloned()
             .collect();
         let occupied = compute_occupied(&active_widgets);
-        let empty_stroke = Stroke::new(1.0, Color32::from_rgb(38, 38, 38));
+        let empty_stroke = Stroke::new(1.0, crate::theme::steel(38));
         for row in 0..num_rows {
             for col in 0..grid_cols {
                 if !occupied.contains(&(col, row)) {
@@ -482,7 +482,7 @@ fn show_session_stats(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     let mut stat = |label: &str, value: String| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(label).color(Color32::from_gray(160)));
+            ui.label(RichText::new(label).color(crate::theme::TEXT_DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(value).strong().color(val_col));
             });
@@ -518,9 +518,9 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
-        ui.label(RichText::new(unit).size(12.0).color(Color32::GRAY));
+        ui.label(RichText::new(unit).size(12.0).color(crate::theme::TEXT_DIM));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{} {peak:.2}", tr("peak"))).size(11.0).color(Color32::from_gray(150)));
+            ui.label(RichText::new(format!("{} {peak:.2}", tr("peak"))).size(11.0).color(crate::theme::TEXT_DIM));
         });
     });
     ui.add_space(4.0);
@@ -575,7 +575,7 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let hist = &app.trace_history;
     if hist.len() < 2 {
         painter.text(rect.center(), egui::Align2::CENTER_CENTER,
-            tr("Collecting…"), egui::FontId::proportional(12.0), Color32::from_gray(90));
+            tr("Collecting…"), egui::FontId::proportional(12.0), crate::theme::TEXT_FAINT);
         return;
     }
 
@@ -588,7 +588,7 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     for f in [0.25_f32, 0.5, 0.75] {
         let y = rect.bottom() - f * rect.height();
         painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)],
-            Stroke::new(0.5, Color32::from_gray(45)));
+            Stroke::new(0.5, crate::theme::STROKE_DIM));
     }
 
     let x_of = |t: &std::time::Instant| {
@@ -617,9 +617,9 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     if app.coop.role() == Role::Off {
         ui.add_space(4.0);
-        ui.label(RichText::new(tr("Not in a session.")).size(12.0).color(Color32::GRAY));
+        ui.label(RichText::new(tr("Not in a session.")).size(12.0).color(crate::theme::TEXT_DIM));
         ui.label(RichText::new(tr("Host or join from the Co-Op tab."))
-            .size(11.0).color(Color32::from_gray(110)));
+            .size(11.0).color(crate::theme::TEXT_FAINT));
         return;
     }
 
@@ -692,7 +692,7 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             } else {
                 format!("{:.0}m", dist_m)
             };
-            cell(ui, dist_w, RichText::new(dtxt).monospace().size(11.0).color(Color32::from_gray(120)), true);
+            cell(ui, dist_w, RichText::new(dtxt).monospace().size(11.0).color(crate::theme::TEXT_FAINT), true);
 
             // The one flexible element: fill what's left after the fixed speed+gear cells.
             let bar_w = (ui.available_width() - speed_w - gear_w - 2.0 * spacing).max(20.0);
@@ -701,7 +701,7 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 .desired_width(bar_w));
 
             cell(ui, speed_w, RichText::new(format!("{disp:>3.0} {unit}")).monospace(), true);
-            cell(ui, gear_w, RichText::new(format!("G{gear_str}")).monospace().color(Color32::from_gray(150)), true);
+            cell(ui, gear_w, RichText::new(format!("G{gear_str}")).monospace().color(crate::theme::TEXT_DIM), true);
         });
         ui.add_space(2.0);
     }
@@ -712,7 +712,7 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 fn show_speed_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let speed = if app.config.use_mph { pkt.speed_mph() } else { pkt.speed_kmh() };
     let unit_str = if app.config.use_mph { "Mph" } else { "Km/h" };
-    let legend_color = Color32::from_rgb(140, 140, 140);
+    let legend_color = crate::theme::TEXT_DIM;
 
     let avail = ui.available_rect_before_wrap();
 
@@ -745,7 +745,7 @@ fn show_speed_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             let gray_str = "0".repeat(3 - digits) + &" ".repeat(digits);
             let white_str = format!("{:>3.0}", speed);
             p.text(center, egui::Align2::CENTER_CENTER,
-                gray_str, fid.clone(), Color32::from_rgb(70, 70, 70));
+                gray_str, fid.clone(), crate::theme::steel(70));
             p.text(center, egui::Align2::CENTER_CENTER,
                 white_str, fid, Color32::WHITE);
         }
@@ -779,7 +779,7 @@ fn show_gear_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         1..=9 => pkt.gear.to_string(),
         _ => "N".to_string(),
     };
-    let legend_color = Color32::from_rgb(140, 140, 140);
+    let legend_color = crate::theme::TEXT_DIM;
 
     let avail = ui.available_rect_before_wrap();
 
@@ -838,7 +838,7 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         ui.label(RichText::new(format!("{}: {:>5.0}", tr("max"), max_rpm))
-            .size((rpm_font * 0.45).max(9.0)).color(Color32::GRAY));
+            .size((rpm_font * 0.45).max(9.0)).color(crate::theme::TEXT_DIM));
     });
 
     let bar_h = (ui.available_height() - 4.0).max(4.0);
@@ -914,7 +914,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
         egui::pos2(drow.center().x - dsize.x * 0.5, drow.min.y), scale);
     if !cyl_text.is_empty() {
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(cyl_text).size(12.0).color(Color32::from_gray(180)));
+            ui.label(egui::RichText::new(cyl_text).size(12.0).color(crate::theme::steel(180)));
         });
     }
 }
@@ -966,11 +966,11 @@ fn show_position_block(ui: &mut Ui, pkt: &ForzaPacket) {
     ui.label(crate::theme::section_label(tr("Position")));
     ui.add_space(4.0);
     ui.columns(2, |cols| {
-        cols[0].label(RichText::new(tr("Position")).size(11.0).color(Color32::GRAY));
+        cols[0].label(RichText::new(tr("Position")).size(11.0).color(crate::theme::TEXT_DIM));
         cols[0].label(format!("X: {:>10.2} m", pkt.position_x));
         cols[0].label(format!("Y: {:>10.2} m", pkt.position_y));
         cols[0].label(format!("Z: {:>10.2} m", pkt.position_z));
-        cols[1].label(RichText::new(tr("Rotation")).size(11.0).color(Color32::GRAY));
+        cols[1].label(RichText::new(tr("Rotation")).size(11.0).color(crate::theme::TEXT_DIM));
         cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Yaw")), pkt.yaw.to_degrees()));
         cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Pitch")), pkt.pitch.to_degrees()));
         cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Roll")), pkt.roll.to_degrees()));
@@ -1134,9 +1134,9 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         ("RR", pkt.tire_temp_rr, pkt.tire_combined_slip_rr, pkt.wheel_in_puddle_rr),
     ];
 
-    let bg = Color32::from_rgb(20, 20, 20);
+    let bg = crate::theme::WELL;
     let puddle_c = Color32::from_rgb(80, 160, 220);
-    let rim_c = Color32::from_rgb(80, 80, 80);
+    let rim_c = crate::theme::STROKE_MID;
 
     let font_size = ((inner_r / 1.8) * 0.8).max(8.0);
     let line_h = font_size * 1.1;
@@ -1207,7 +1207,7 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     let p  = ui.painter();
     let fid = egui::FontId::proportional(11.0);
-    let gray = Color32::GRAY;
+    let dim = crate::theme::TEXT_DIM;
     let text_col = ui.visuals().text_color();
     let puddle_c = Color32::from_rgb(80, 160, 220);
 
@@ -1224,7 +1224,7 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let x    = origin.x + label_w + i as f32 * bar_w;
         let rect = Rect::from_min_size(pos2(x + 4.0, bar_top), vec2(bar_w - 8.0, bar_h));
 
-        p.rect_filled(rect, 2.0, Color32::from_rgb(40, 40, 40));
+        p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
         let t_c = ForzaPacket::tire_temp_celsius(temps_f[i]);
         let c = ((t_c - 30.0) / 100.0).clamp(0.0, 1.0);
@@ -1257,12 +1257,12 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         })),
         (tr("Slip"), std::array::from_fn(|i| (format!("{:.2}", slips[i]), slip_color(slips[i])))),
         // FH6 packets carry no per-tire pressure — placeholder values only
-        (press_lbl, std::array::from_fn(|_| ("--".to_string(), gray))),
+        (press_lbl, std::array::from_fn(|_| ("--".to_string(), dim))),
     ];
     for (row_i, (lbl, vals)) in rows.iter().enumerate() {
         let cy = text_top + (row_i as f32 + 0.5) * text_h;
         // Row label centered in its column
-        p.text(pos2(origin.x + label_w * 0.5, cy), egui::Align2::CENTER_CENTER, *lbl, fid.clone(), gray);
+        p.text(pos2(origin.x + label_w * 0.5, cy), egui::Align2::CENTER_CENTER, *lbl, fid.clone(), dim);
         // Values centered under each bar
         for (i, (val, color)) in vals.iter().enumerate() {
             let cx = origin.x + label_w + (i as f32 + 0.5) * bar_w;
@@ -1301,12 +1301,12 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         draw_gforce_plot(ui, lat, lon, &app.gforce_stats, plot_size);
         ui.add_space(gap);
         ui.vertical(|ui| {
-            ui.label(RichText::new(tr("Current:")).size(12.0).color(Color32::GRAY));
+            ui.label(RichText::new(tr("Current:")).size(12.0).color(crate::theme::TEXT_DIM));
             ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Lat")), lat));
             ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Long")), lon));
             ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Vert")), vert));
             ui.add_space(4.0);
-            ui.label(RichText::new(tr("Peak:")).size(12.0).color(Color32::GRAY));
+            ui.label(RichText::new(tr("Peak:")).size(12.0).color(crate::theme::TEXT_DIM));
             ui.colored_label(
                 Color32::YELLOW,
                 format!("  {:<5} {:.2} g", format!("{}:", tr("Lat")), app.gforce_stats.max_lateral),
@@ -1352,7 +1352,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let fid = egui::FontId::proportional(11.0);
     let red   = Color32::from_rgb(180,  80,  80);
     let green = Color32::from_rgb( 80, 180,  80);
-    let gray  = Color32::GRAY;
+    let dim   = crate::theme::TEXT_DIM;
     let text_col = ui.visuals().text_color();
 
     // ── Column header: FL / FR / RL / RR ──────────────────────────
@@ -1368,7 +1368,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let x    = origin.x + label_w + i as f32 * bar_w;
         let rect = Rect::from_min_size(pos2(x + 4.0, bar_top), vec2(bar_w - 8.0, bar_h));
 
-        p.rect_filled(rect, 2.0, Color32::from_rgb(40, 40, 40));
+        p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
         let c = cur.clamp(0.0, 1.0);
         let fill = Rect::from_min_max(pos2(rect.left(), rect.bottom() - c * bar_h), rect.max);
@@ -1389,7 +1389,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // ── Text rows: Cur / Min / Max ─────────────────────────────────
     let text_top = bar_top + bar_h + gap_h;
     let rows: [(&str, Color32, [String; 4]); 3] = [
-        (tr("Cur"), gray,  travels.map(|v| format!("{:.2}", v))),
+        (tr("Cur"), dim,   travels.map(|v| format!("{:.2}", v))),
         (tr("Min"), red,   std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.min[i]) } else { "0.00".into() })),
         (tr("Max"), green, std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.max[i]) } else { "0.00".into() })),
     ];
@@ -1413,7 +1413,7 @@ fn draw_steering(ui: &mut Ui, steer: i8) {
     let rect = rect.shrink2(vec2(3.0, 0.0));
     let painter = ui.painter();
 
-    painter.rect_filled(rect, 4.0, Color32::from_rgb(40, 40, 40));
+    painter.rect_filled(rect, 4.0, crate::theme::TRACK);
 
     let norm = (steer as f32 / 127.0).clamp(-1.0, 1.0);
     let cx = rect.center().x;
@@ -1442,18 +1442,18 @@ fn draw_gforce_plot(ui: &mut Ui, lat: f32, lon: f32, stats: &GForceStats, size: 
     let max_g = 3.0_f32;
     let radius = size / 2.0 - 4.0;
 
-    painter.circle_filled(center, radius, Color32::from_rgb(28, 28, 28));
-    painter.circle_stroke(center, radius, Stroke::new(1.0, Color32::from_rgb(80, 80, 80)));
+    painter.circle_filled(center, radius, crate::theme::WELL);
+    painter.circle_stroke(center, radius, Stroke::new(1.0, crate::theme::STROKE_MID));
 
     for g in [1.0_f32, 2.0] {
         painter.circle_stroke(
             center,
             g / max_g * radius,
-            Stroke::new(0.5, Color32::from_rgb(55, 55, 55)),
+            Stroke::new(0.5, crate::theme::STROKE_DIM),
         );
     }
 
-    let dim = Color32::from_rgb(55, 55, 55);
+    let dim = crate::theme::STROKE_DIM;
     painter.line_segment(
         [pos2(center.x - radius, center.y), pos2(center.x + radius, center.y)],
         Stroke::new(0.5, dim),
@@ -1517,8 +1517,8 @@ fn draw_slip_circle(ui: &mut Ui, slip: f32, show_value: bool) {
     let painter = ui.painter();
     let center = rect.center();
 
-    painter.circle_filled(center, r, Color32::from_rgb(20, 20, 20));
-    painter.circle_stroke(center, r, Stroke::new(1.0, Color32::from_rgb(80, 80, 80)));
+    painter.circle_filled(center, r, crate::theme::WELL);
+    painter.circle_stroke(center, r, Stroke::new(1.0, crate::theme::STROKE_MID));
 
     let fill_r = abs.min(1.0) * r;
     let base_color = if abs >= 1.0 {
@@ -1573,7 +1573,7 @@ fn draw_shift_bar(
     let low = (low_pct / 100.0).clamp(0.0, 1.0);
     let high = (high_pct / 100.0).clamp(0.0, 1.0);
 
-    painter.rect_filled(rect, 4.0, Color32::from_rgb(40, 40, 40));
+    painter.rect_filled(rect, 4.0, crate::theme::TRACK);
 
     let green_end = low.min(cur);
     if green_end > 0.0 {
@@ -1651,7 +1651,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::proportional(13.0),
-            Color32::GRAY,
+            crate::theme::TEXT_DIM,
         );
         if let Some(sub_text) = sub {
             p.text(
@@ -1659,7 +1659,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                 egui::Align2::CENTER_CENTER,
                 sub_text,
                 egui::FontId::proportional(11.0),
-                Color32::from_gray(100),
+                crate::theme::TEXT_FAINT,
             );
         }
         return;
@@ -1800,7 +1800,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             let sx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
             let sy = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
             let col = if paused {
-                Color32::from_gray(170)
+                crate::theme::steel(170)
             } else {
                 crate::ui::coop::hue_color(info.hue)
             };
@@ -1948,7 +1948,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         let cc = rect.min + vec2(22.0, 22.0);
         let r = 12.0_f32;
         painter.circle_filled(cc, r + 2.0, Color32::from_black_alpha(130));
-        painter.circle_stroke(cc, r, Stroke::new(1.0, Color32::from_gray(150)));
+        painter.circle_stroke(cc, r, Stroke::new(1.0, crate::theme::steel(150)));
         let (ns, nc) = yaw.sin_cos();
         let north = vec2(-ns, -nc); // screen direction of world-north
         painter.line_segment([cc, cc + north * r], Stroke::new(2.0, Color32::from_rgb(230, 80, 80)));
@@ -2077,7 +2077,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 
     if power_series.is_empty() {
         ui.centered_and_justified(|ui| {
-            ui.label(RichText::new(tr("Full-throttle to capture")).color(Color32::GRAY));
+            ui.label(RichText::new(tr("Full-throttle to capture")).color(crate::theme::TEXT_DIM));
         });
         return;
     }
@@ -2143,7 +2143,7 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 
     if !has_boost_data || boost_series.is_empty() {
         ui.centered_and_justified(|ui| {
-            ui.label(RichText::new(tr("Full-throttle to capture")).color(Color32::GRAY));
+            ui.label(RichText::new(tr("Full-throttle to capture")).color(crate::theme::TEXT_DIM));
         });
         return;
     }
@@ -2224,13 +2224,13 @@ fn sprint_row(
                         ui.label(
                             RichText::new(format!("({s:.3}s)"))
                                 .size(12.0)
-                                .color(Color32::GRAY),
+                                .color(crate::theme::TEXT_DIM),
                         );
                     }
                 }
             }
             None => {
-                ui.label(RichText::new("--").color(Color32::GRAY));
+                ui.label(RichText::new("--").color(crate::theme::TEXT_DIM));
             }
         }
     });
