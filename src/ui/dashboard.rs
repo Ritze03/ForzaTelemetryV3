@@ -1291,9 +1291,19 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     };
     let slip_metric = |i: usize| (slips[i].abs().clamp(0.0, 1.0), slip_color(slips[i]));
 
+    // Snap the bar rects to the physical pixel grid: bar_w is fractional, so
+    // unsnapped x-coords make fills/separators bleed 1 px on some bars only.
+    let ppp  = p.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let px   = 1.0 / ppp;
+    let bar_snap_w = snap(bar_w - 8.0).max(px);
+
     for i in 0..4 {
         let x    = origin.x + label_w + i as f32 * bar_w;
-        let rect = Rect::from_min_size(pos2(x + 4.0, bar_top), vec2(bar_w - 8.0, bar_h));
+        let rect = Rect::from_min_size(
+            pos2(snap(x + 4.0), snap(bar_top)),
+            vec2(bar_snap_w, snap(bar_h)),
+        );
 
         p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
@@ -1321,7 +1331,7 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             }
             TireBarValue::Stacked => {
                 // Split at the vertical middle: `a` grows upward, `b` downward.
-                let mid = rect.center().y;
+                let mid = snap(rect.center().y);
                 let half = rect.height() * 0.5;
                 if a.0 > 0.001 {
                     p.rect_filled(
@@ -1335,9 +1345,10 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                         0.0, b.1,
                     );
                 }
-                p.line_segment(
-                    [pos2(rect.left(), mid), pos2(rect.right(), mid)],
-                    Stroke::new(1.0, crate::theme::STROKE_MID),
+                // Separator: 1-physical-px filled rect exactly the bar's width.
+                p.rect_filled(
+                    Rect::from_min_size(pos2(rect.left(), mid), vec2(rect.width(), px)),
+                    0.0, crate::theme::STROKE_MID,
                 );
             }
         }
@@ -1348,9 +1359,17 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         }
     }
 
-    // ── Text rows: Temp / Slip / pressure ──────────────────────────
+    // ── Text rows: Temp / Slip / wheel speed ───────────────────────
     let temp_unit = if use_f { "°F" } else { "°C" };
-    let press_lbl = if app.config.use_bar { tr("Bar") } else { tr("PSI") };
+    let use_mph = app.config.use_mph;
+    let speed_lbl = if use_mph { tr("Mp/h") } else { tr("Km/h") };
+    let speed_factor = if use_mph { 2.236_94 } else { 3.6 };
+    let rotations = [
+        pkt.wheel_rotation_speed_fl,
+        pkt.wheel_rotation_speed_fr,
+        pkt.wheel_rotation_speed_rl,
+        pkt.wheel_rotation_speed_rr,
+    ];
     let text_top = bar_top + bar_h + gap_h;
     let rows: [(&str, [(String, Color32); 4]); 3] = [
         (tr("Temp"), std::array::from_fn(|i| {
@@ -1358,8 +1377,12 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             (format!("{val:.0}{temp_unit}"), temp_color(val, use_f))
         })),
         (tr("Slip"), std::array::from_fn(|i| (format!("{:.2}", slips[i]), slip_color(slips[i])))),
-        // FH6 packets carry no per-tire pressure — placeholder values only
-        (press_lbl, std::array::from_fn(|_| ("--".to_string(), dim))),
+        // Per-wheel speed from rotation × estimated radius; slip-coloured on wheelspin
+        (speed_lbl, std::array::from_fn(|i| {
+            let v = rotations[i] * app.wheel_radius_est[i] * speed_factor;
+            let col = if slips[i].abs() >= 0.8 { slip_color(slips[i]) } else { text_col };
+            (format!("{v:.0}"), col)
+        })),
     ];
     for (row_i, (lbl, vals)) in rows.iter().enumerate() {
         let cy = text_top + (row_i as f32 + 0.5) * text_h;

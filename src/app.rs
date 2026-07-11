@@ -428,6 +428,9 @@ pub struct ForzaApp {
     pub fi_detected: bool,
     /// Highest RPM seen while making power (>0 W) — the dynamically detected redline. Per-car.
     pub dynamic_max_rpm: f32,
+    /// Estimated tire radius per wheel [FL, FR, RL, RR], meters. The packet has no radius,
+    /// so it's derived from speed / wheel rotation while gripping (EMA-smoothed). Per-car.
+    pub wheel_radius_est: [f32; 4],
 
     // Session stats
     pub suspension_stats: SuspensionStats,
@@ -602,6 +605,7 @@ impl ForzaApp {
             cached_engine_max_rpm: 0.0,
             fi_detected: false,
             dynamic_max_rpm: 0.0,
+            wheel_radius_est: [0.33; 4],
             suspension_stats: SuspensionStats::default(),
             gforce_stats: GForceStats::default(),
             cached_car_class_str: String::new(),
@@ -715,6 +719,7 @@ impl ForzaApp {
                 self.cached_engine_max_rpm = 0.0;
                 self.fi_detected = false;
                 self.dynamic_max_rpm = 0.0;
+                self.wheel_radius_est = [0.33; 4];
 
                 // Opt-in: flush saved calibrations to disk (car change is a natural checkpoint),
                 // then restore the new car's profile and skip the manual 1st→2nd pull.
@@ -772,6 +777,27 @@ impl ForzaApp {
                     pkt.normalized_suspension_travel_rl,
                     pkt.normalized_suspension_travel_rr,
                 ]);
+
+                // Tire radius estimate: while a wheel is gripping at speed,
+                // radius ≈ vehicle speed / wheel rotation speed. EMA-smoothed.
+                let rotations = [
+                    pkt.wheel_rotation_speed_fl,
+                    pkt.wheel_rotation_speed_fr,
+                    pkt.wheel_rotation_speed_rl,
+                    pkt.wheel_rotation_speed_rr,
+                ];
+                let combined_slips = [
+                    pkt.tire_combined_slip_fl,
+                    pkt.tire_combined_slip_fr,
+                    pkt.tire_combined_slip_rl,
+                    pkt.tire_combined_slip_rr,
+                ];
+                for i in 0..4 {
+                    if combined_slips[i].abs() < 0.1 && pkt.speed > 5.0 && rotations[i] > 1.0 {
+                        let radius = pkt.speed / rotations[i];
+                        self.wheel_radius_est[i] += 0.02 * (radius - self.wheel_radius_est[i]);
+                    }
+                }
 
                 // Speed delta tracking — maintain 1-second rolling history
                 let cur_kmh = pkt.speed * 3.6;

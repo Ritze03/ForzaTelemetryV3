@@ -92,6 +92,7 @@ fn de(s: &str) -> Option<&'static str> {
         "General" => "Allgemein",
         "Modules" => "Module",
         "Km/h" => "km/h",
+        "Mp/h" => "mph",
         "Sprint" => "Sprint",
         "Shift" => "Schaltpunkt",
 
