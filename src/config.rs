@@ -246,6 +246,8 @@ pub struct AppConfig {
     // Power curve
     pub power_curve_forced_induction: bool,
     pub power_curve_save_fi_state: bool,
+    // Dashboard graph widgets
+    pub power_graph_show_boost: bool, // extra boost line in the Power Graph widget
     // Dashboard widget grid
     pub grid_cols: usize,
     pub grid_rows: usize,
@@ -362,6 +364,7 @@ impl Default for AppConfig {
             shift_high_pct: 95.0,
             power_curve_forced_induction: true,
             power_curve_save_fi_state: true,
+            power_graph_show_boost: false,
             grid_cols: 16,
             grid_rows: 10,
             dashboard_widgets: default_widget_layout(),

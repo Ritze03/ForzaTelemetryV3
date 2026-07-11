@@ -365,6 +365,7 @@ pub enum DashboardSubTab {
     Tires,
     Shift,
     Car,
+    Graphs,
     MiniMap,
 }
 
@@ -1350,6 +1351,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::Car,         "Car"),
+                                    (DashboardSubTab::Graphs,      "Graphs"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
@@ -1616,6 +1618,9 @@ impl eframe::App for ForzaApp {
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );
+                                }
+                                DashboardSubTab::Graphs => {
+                                    ui.checkbox(&mut self.config.power_graph_show_boost, tr("Show Boost"));
                                 }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {

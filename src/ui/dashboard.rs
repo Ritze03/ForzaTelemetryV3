@@ -2208,12 +2208,25 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         (Vec::new(), Vec::new())
     };
 
-    if power_series.is_empty() {
-        ui.centered_and_justified(|ui| {
-            ui.label(RichText::new(tr("Full-throttle to capture")).color(crate::theme::TEXT_DIM));
-        });
-        return;
-    }
+    // Optional boost line from the same series the Boost Graph uses.
+    let boost_series: Vec<[f64; 2]> = if app.config.power_graph_show_boost {
+        let raw: &[[f64; 2]] = if !app.power_capture.boost_series.is_empty() {
+            &app.power_capture.boost_series
+        } else if let Some(curve) = app.saved_power_curve.as_ref() {
+            &curve.boost_series
+        } else {
+            &[]
+        };
+        let use_bar = app.config.use_bar;
+        raw.iter()
+            .map(|&[rpm, psi]| {
+                let val = if use_bar { psi * 0.0689476 } else { psi };
+                [rpm, val.max(0.0)]
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
         app.cached_engine_max_rpm
@@ -2223,11 +2236,12 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 
     // The rotated y-axis label overhangs the plot's left edge (egui_plot draws it
     // at rect.left() - gap), so give the plot a child rect with left padding or
-    // the widget cell clips the label.
+    // the widget cell clips the label. Right padding keeps it off the cell edge.
     let mut plot_rect = ui.available_rect_before_wrap();
-    plot_rect.min.x += 12.0;
+    plot_rect.min.x += 8.0;
+    plot_rect.max.x -= 8.0;
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
-    Plot::new("dash_power_graph")
+    let mut plot = Plot::new("dash_power_graph")
         .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
         .x_axis_label(tr("RPM"))
         .y_axis_label("PS / Nm")
@@ -2237,8 +2251,13 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_drag(false)
         .allow_zoom(false)
         .allow_scroll(false)
-        .allow_boxed_zoom(false)
-        .show(&mut plot_ui, |plot_ui| {
+        .allow_boxed_zoom(false);
+    if power_series.is_empty() {
+        // No captured data yet — keep the empty plot's axes at a sensible extent.
+        plot = plot.include_y(100.0);
+    }
+    plot.show(&mut plot_ui, |plot_ui| {
+        if !power_series.is_empty() {
             plot_ui.line(
                 Line::new(tr("Power (PS)"), PlotPoints::new(power_series))
                     .color(Color32::from_rgb(80, 160, 240))
@@ -2249,7 +2268,16 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
                     .color(Color32::from_rgb(240, 140, 40))
                     .width(2.5),
             );
-        });
+        }
+        if !boost_series.is_empty() {
+            let boost_label = if app.config.use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
+            plot_ui.line(
+                Line::new(boost_label, PlotPoints::new(boost_series))
+                    .color(Color32::from_rgb(180, 80, 220))
+                    .width(2.0),
+            );
+        }
+    });
 }
 
 fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
@@ -2280,12 +2308,9 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         &[]
     };
 
-    if !has_boost_data || boost_series.is_empty() {
-        ui.centered_and_justified(|ui| {
-            ui.label(RichText::new(tr("Full-throttle to capture")).color(crate::theme::TEXT_DIM));
-        });
-        return;
-    }
+    // Forced-induction detection controls only whether bars are plotted; the
+    // plot itself (axes/grid) always renders.
+    let plot_bars = has_boost_data && !boost_series.is_empty();
 
     let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
         app.cached_engine_max_rpm
@@ -2306,20 +2331,25 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         min_headroom
     };
 
-    let bars: Vec<Bar> = boost_series
-        .iter()
-        .map(|&[rpm, psi]| {
-            let val = if use_bar { psi * 0.0689476 } else { psi };
-            Bar::new(rpm, val)
-                .fill(Color32::from_rgb(180, 80, 220))
-                .width(step * 0.8)
-        })
-        .collect();
+    let bars: Vec<Bar> = if plot_bars {
+        boost_series
+            .iter()
+            .map(|&[rpm, psi]| {
+                let val = if use_bar { psi * 0.0689476 } else { psi };
+                Bar::new(rpm, val)
+                    .fill(Color32::from_rgb(180, 80, 220))
+                    .width(step * 0.8)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
-    // Left padding for the rotated y-axis label's overhang (see show_power_graph_widget).
+    // Left/right padding for the rotated y-axis label's overhang (see show_power_graph_widget).
     let mut plot_rect = ui.available_rect_before_wrap();
-    plot_rect.min.x += 12.0;
+    plot_rect.min.x += 8.0;
+    plot_rect.max.x -= 8.0;
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
     Plot::new("dash_boost_graph")
         .x_axis_label(tr("RPM"))
@@ -2333,7 +2363,9 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_scroll(false)
         .allow_boxed_zoom(false)
         .show(&mut plot_ui, |plot_ui| {
-            plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
+            if !bars.is_empty() {
+                plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
+            }
         });
 }
 
