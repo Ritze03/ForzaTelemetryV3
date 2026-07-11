@@ -104,6 +104,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Show grid" => "Raster anzeigen",
         "Show widget outlines" => "Widget-Umrisse anzeigen",
         "Reset Layout" => "Layout zurücksetzen",
+        "Right-click a module to reset its position (auto-placed)."
+            => "Rechtsklick auf ein Modul setzt seine Position zurück (automatisch platziert).",
 
         // ── Alignment / speed-delta / sprint ───────────────────────────
         "Alignment:" => "Ausrichtung:",

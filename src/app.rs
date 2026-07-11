@@ -1405,6 +1405,12 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Modules => {
                                     use crate::config::WidgetKind;
+                                    ui.label(
+                                        egui::RichText::new(tr("Right-click a module to reset its position (auto-placed)."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                    ui.add_space(4.0);
                                     for kind in [
                                         WidgetKind::Speed, WidgetKind::Gear, WidgetKind::Rpm,
                                         WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Engine,
@@ -1415,7 +1421,12 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::PowerGraph, WidgetKind::BoostGraph,
                                     ] {
                                         let mut enabled = !self.config.disabled_modules.contains(&kind);
-                                        if ui.checkbox(&mut enabled, kind.label()).changed() {
+                                        let resp = ui.checkbox(&mut enabled, kind.label());
+                                        if resp.secondary_clicked() {
+                                            crate::config::park_widget(&mut self.config.dashboard_widgets, &kind);
+                                            self.config.save();
+                                        }
+                                        if resp.changed() {
                                             if enabled {
                                                 self.config.disabled_modules.retain(|k| k != &kind);
                                                 if kind == WidgetKind::MiniMap

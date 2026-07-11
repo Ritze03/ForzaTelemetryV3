@@ -438,9 +438,24 @@ impl Default for AppConfig {
     }
 }
 
+/// Remove `kind`'s layout entry (if any) and re-insert it parked below
+/// everything else, so the user can drag it into place from edit mode.
+pub fn park_widget(widgets: &mut Vec<WidgetLayout>, kind: &WidgetKind) {
+    widgets.retain(|w| w.kind != *kind);
+    // Find highest row used so we can park the widget below everything.
+    let max_row = widgets.iter().map(|w| w.row + w.row_span).max().unwrap_or(0);
+    widgets.push(WidgetLayout {
+        kind: kind.clone(),
+        col: 0,
+        row: max_row,
+        col_span: 2,
+        row_span: 2,
+    });
+}
+
 pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
     // Widget kinds that should always exist in the layout (skip Empty).
-    // If a kind is absent from the saved list, append it off to the side so
+    // If a kind is absent from the saved list, park it off to the side so
     // the user can drag it into place from edit mode.
     let all_kinds = [
         WidgetKind::Speed, WidgetKind::Gear, WidgetKind::Rpm,
@@ -451,19 +466,9 @@ pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
         WidgetKind::SessionStats,
         WidgetKind::PowerGraph, WidgetKind::BoostGraph,
     ];
-    // Find highest row used so we can park new widgets below everything.
-    let max_row = widgets.iter().map(|w| w.row + w.row_span).max().unwrap_or(0);
-    let mut col_cursor = 0usize;
     for kind in all_kinds {
         if !widgets.iter().any(|w| w.kind == kind) {
-            widgets.push(WidgetLayout {
-                kind,
-                col: col_cursor,
-                row: max_row,
-                col_span: 2,
-                row_span: 2,
-            });
-            col_cursor += 2;
+            park_widget(widgets, &kind);
         }
     }
 }
