@@ -292,6 +292,7 @@ pub struct AppConfig {
     pub backfire_accel_time_ms: u64,
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
+    pub inputs_filter_backfire_accel: bool, // Inputs widget shows Accel as 0 while Backfire is actively firing
     // DSG automatic gearbox
     pub dsg_enabled: bool,
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
@@ -311,6 +312,7 @@ pub struct AppConfig {
     pub dsg_show_debug_panel: bool, // show the gearbox Debug box at all (toggled from the status-bar cog)
     pub dsg_log_shifts: bool, // append each shift (pre/post RPM + speed, inputs) to a CSV for analysis
     pub dsg_save_calibration: bool, // opt-in: persist per-car calibration and auto-load it (skips the manual 1st-gear pull)
+    pub dsg_ignore_backfire_accel: bool, // shift logic + live throttle-bar viz ignore accel while Backfire is actively firing
     // Max-RPM source for the dashboard RPM widget
     pub max_rpm_mode: MaxRpmSource,
     // Acceleration / deceleration test parameters
@@ -397,6 +399,7 @@ impl Default for AppConfig {
             backfire_accel_time_ms: 8,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
+            inputs_filter_backfire_accel: true,
             dsg_enabled: false,
             dsg_shift_rpm_pct: 98.0,
             dsg_upshift_speed_pct: 80.0,
@@ -415,6 +418,7 @@ impl Default for AppConfig {
             dsg_show_debug_panel: false,
             dsg_log_shifts: false,
             dsg_save_calibration: false,
+            dsg_ignore_backfire_accel: true,
             max_rpm_mode: MaxRpmSource::GameProvided,
             accel_start_kmh: 0.0,
             accel_end_kmh: 100.0,

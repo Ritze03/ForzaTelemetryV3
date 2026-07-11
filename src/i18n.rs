@@ -201,6 +201,10 @@ fn de(s: &str) -> Option<&'static str> {
         "Disable if standing still" => "Im Stand deaktivieren",
         "Test mode (ignores throttle/RPM conditions)" =>
             "Testmodus (ignoriert Gas-/Drehzahl-Bedingungen)",
+        "Filter Accel while Backfire fires" => "Gas filtern, solange Fehlzündung auslöst",
+        "Hides the fake throttle blip Backfire injects, so the Accel bar reflects only your real pedal." =>
+            "Blendet den von der Fehlzündung eingespielten künstlichen Gasstoß aus, sodass die \
+             Gas-Anzeige nur dein echtes Pedal widerspiegelt.",
 
         // ── Engine swaps tab ───────────────────────────────────────────
         "Engine Swap Reference" => "Motortausch-Referenz",
@@ -281,6 +285,17 @@ fn de(s: &str) -> Option<&'static str> {
              den 1. Gang und die echte Drehzahlgrenze.",
         "On to drive automatically; off to shift yourself." =>
             "An, um automatisch zu fahren; aus, um selbst zu schalten.",
+        "Ignore Backfire input" => "Fehlzündungs-Eingabe ignorieren",
+        "Backfire briefly simulates a throttle key to force a fake accel reading for \
+                     its bang. This keeps the box's shift logic — and the live throttle-bar graph in \
+                     the right column — responding only to your real pedal, not that synthetic key." =>
+            "Die Fehlzündung simuliert kurz eine Gastaste, um für ihren Knall einen künstlichen \
+             Gaswert zu erzwingen. Dies sorgt dafür, dass die Schaltlogik der Automatik — und die \
+             Live-Gas-Anzeige in der rechten Spalte — nur auf dein echtes Pedal reagieren, nicht \
+             auf diese simulierte Taste.",
+        "Leave on unless you're deliberately testing how the box reacts to Backfire." =>
+            "Lass dies aktiviert, außer du testest bewusst, wie die Automatik auf die \
+             Fehlzündung reagiert.",
         "Upshift point as % of the detected redline — also the reference \
                                 every gear's shift speed scales to." =>
             "Hochschaltpunkt als % der erkannten Drehzahlgrenze — zugleich die Referenz, \

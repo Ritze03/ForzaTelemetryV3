@@ -163,6 +163,7 @@ impl DsgListener {
         cfg: &AppConfig,
         input: &InputSender,
         dynamic_max_rpm: f32,
+        suppress_accel: bool,
     ) {
         if pkt.is_race_on == 0 {
             return;
@@ -283,7 +284,7 @@ impl DsgListener {
         // upshift is suppressed) both WHILE the throttle is still pressed after a kickdown and for
         // the cooldown window after release — so easing off mid-pull doesn't immediately upshift
         // out of the gear we just grabbed. The hard redline upshift still fires for protection.
-        let throttle = curved_throttle(pkt, cfg);
+        let throttle = curved_throttle(pkt, cfg, suppress_accel);
         if throttle >= KICKDOWN_THROTTLE {
             self.kickdown_triggered = true;
         } else if self.kickdown_triggered && throttle <= 0.0 {
@@ -306,7 +307,7 @@ impl DsgListener {
         // Hold the lower gear while still on the throttle after a kickdown, and through the cooldown.
         let hold_lower_gear = self.kickdown_triggered || in_cooldown;
         let desired = self
-            .select_desired_gear(pkt, cfg, gear, effective_max_rpm, hold_lower_gear)
+            .select_desired_gear(pkt, cfg, gear, effective_max_rpm, hold_lower_gear, suppress_accel)
             .max(1);
         self.dbg_desired_gear = desired;
 
@@ -446,9 +447,10 @@ impl DsgListener {
         current_gear: i32,
         effective_max_rpm: f32,
         hold_lower_gear: bool,
+        suppress_accel: bool,
     ) -> i32 {
         let kmh = pkt.speed_kmh();
-        let throttle = curved_throttle(pkt, cfg);
+        let throttle = curved_throttle(pkt, cfg, suppress_accel);
         self.dbg_throttle = throttle;
         self.dbg_wheelspin = false;
 
@@ -672,7 +674,10 @@ fn write_shift_log(log: &PendingLog, rpm_post: f32, speed_post: f32) {
 /// Accelerator position (0..1) shaped by the active mode's gamma curve, or 0 when off-power.
 /// `effective = raw^gamma` — gamma > 1 softens the initial throttle, < 1 sharpens it. The endpoints
 /// (0 and full pedal) are unchanged, so flooring it always reads as full throttle.
-fn curved_throttle(pkt: &ForzaPacket, cfg: &AppConfig) -> f32 {
+fn curved_throttle(pkt: &ForzaPacket, cfg: &AppConfig, suppress: bool) -> f32 {
+    if suppress {
+        return 0.0;
+    }
     if pkt.power <= 0.0 {
         return 0.0;
     }

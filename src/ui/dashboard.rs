@@ -930,11 +930,15 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
 // ── Block renderers (unchanged) ────────────────────────────────────
 
-fn show_inputs_block(ui: &mut Ui, _app: &ForzaApp, pkt: &ForzaPacket) {
+fn show_inputs_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.label(crate::theme::section_label(tr("Inputs")));
     ui.add_space(4.0);
 
-    input_bar(ui, tr("Accel"),     pkt.accel,      Color32::from_rgb(60, 200, 90));
+    // Backfire briefly injects a synthetic 'W' keypress, which the game reports back as a real
+    // (but fake) pkt.accel for a few frames — hide that blip from the Accel bar when opted in.
+    let suppress = app.config.inputs_filter_backfire_accel && app.backfire.is_active();
+    let accel = if suppress { 0 } else { pkt.accel };
+    input_bar(ui, tr("Accel"),     accel,          Color32::from_rgb(60, 200, 90));
     input_bar(ui, tr("Brake"),     pkt.brake,      Color32::from_rgb(220, 60, 60));
     input_bar(ui, tr("Clutch"),    pkt.clutch,     Color32::from_rgb(80, 140, 220));
     input_bar(ui, tr("HandBrake"), pkt.hand_brake, Color32::from_rgb(230, 150, 40));

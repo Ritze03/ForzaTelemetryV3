@@ -1,12 +1,14 @@
 use crate::config::AppConfig;
 use crate::input::{char_to_key, InputSender};
 use crate::packet::ForzaPacket;
+use std::time::{Duration, Instant};
 
 pub struct BackfireListener {
     last_backfire_rpm: f32,
     last_kmh: f32,
     pub last_min_rpm: f32,
     pub last_max_rpm: f32,
+    active_until: Option<Instant>,
 }
 
 impl BackfireListener {
@@ -16,6 +18,16 @@ impl BackfireListener {
             last_kmh: 9999.0,
             last_min_rpm: 0.0,
             last_max_rpm: 0.0,
+            active_until: None,
+        }
+    }
+
+    /// True while the synthetic 'W' keypress is (or was very recently) held, meaning the game
+    /// may still be reporting an artificial pkt.accel from it in telemetry.
+    pub fn is_active(&self) -> bool {
+        match self.active_until {
+            Some(deadline) => Instant::now() < deadline,
+            None => false,
         }
     }
 
@@ -54,6 +66,13 @@ impl BackfireListener {
             self.last_backfire_rpm = rpm;
             if let Some(key) = char_to_key('w') {
                 input.press(key, cfg.backfire_accel_time_ms, 0);
+                // +150ms margin: the game/telemetry round-trip can still report the
+                // artificial accel value for a few frames after the key is released.
+                self.active_until = Some(
+                    Instant::now()
+                        + Duration::from_millis(cfg.backfire_accel_time_ms)
+                        + Duration::from_millis(150),
+                );
             }
         } else if !(off_throttle && no_brake && in_rpm_range) {
             self.last_backfire_rpm = 0.0;

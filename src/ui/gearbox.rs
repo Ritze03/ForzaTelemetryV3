@@ -33,6 +33,14 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("On to drive automatically; off to shift yourself."),
                 );
 
+                hover(
+                    ui.checkbox(&mut app.config.dsg_ignore_backfire_accel, tr("Ignore Backfire input")),
+                    tr("Backfire briefly simulates a throttle key to force a fake accel reading for \
+                     its bang. This keeps the box's shift logic — and the live throttle-bar graph in \
+                     the right column — responding only to your real pedal, not that synthetic key."),
+                    tr("Leave on unless you're deliberately testing how the box reacts to Backfire."),
+                );
+
                 let shift_what = {
                     let effective_max = if app.dsg.dbg_effective_max_rpm > 0.0 {
                         app.dsg.dbg_effective_max_rpm

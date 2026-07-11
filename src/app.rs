@@ -365,6 +365,7 @@ pub enum DashboardSubTab {
     Tires,
     Shift,
     Car,
+    Inputs,
     Graphs,
     MiniMap,
 }
@@ -864,8 +865,15 @@ impl ForzaApp {
             self.perf_test
                 .update(&pkt, accel_s, accel_e, decel_s, decel_e);
             self.backfire.update(&pkt, &fun_cfg, &self.input);
-            self.dsg
-                .update(&pkt, &fun_cfg, &self.input, self.dynamic_max_rpm);
+            let suppress_gearbox_accel =
+                self.config.dsg_ignore_backfire_accel && self.backfire.is_active();
+            self.dsg.update(
+                &pkt,
+                &fun_cfg,
+                &self.input,
+                self.dynamic_max_rpm,
+                suppress_gearbox_accel,
+            );
 
             // Opt-in: keep the in-memory per-car calibration current; it's written to its own
             // file on car change and on exit.
@@ -1351,6 +1359,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::Car,         "Car"),
+                                    (DashboardSubTab::Inputs,      "Inputs"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
@@ -1626,6 +1635,17 @@ impl eframe::App for ForzaApp {
                                     ui.checkbox(&mut self.config.car_show_cylinders, tr("Show cylinder count"));
                                     ui.label(
                                         egui::RichText::new(tr("Cylinder count (or Electric) under the class and drivetrain labels."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                }
+                                DashboardSubTab::Inputs => {
+                                    ui.checkbox(
+                                        &mut self.config.inputs_filter_backfire_accel,
+                                        tr("Filter Accel while Backfire fires"),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(tr("Hides the fake throttle blip Backfire injects, so the Accel bar reflects only your real pedal."))
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );
