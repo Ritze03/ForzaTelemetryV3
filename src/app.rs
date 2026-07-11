@@ -1455,10 +1455,12 @@ impl eframe::App for ForzaApp {
                                             .selected_text(match self.config.tire_display_style {
                                                 TireDisplayStyle::Separate => tr("Separate"),
                                                 TireDisplayStyle::Combined => tr("Combined"),
+                                                TireDisplayStyle::Bars     => tr("Bars"),
                                             })
                                             .show_ui(ui, |ui| {
                                                 ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Separate, tr("Separate"));
                                                 ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Combined, tr("Combined"));
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Bars,     tr("Bars"));
                                             });
                                     });
                                     if self.config.tire_display_style == TireDisplayStyle::Separate {

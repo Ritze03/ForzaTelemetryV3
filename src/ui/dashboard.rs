@@ -1041,6 +1041,7 @@ fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     match app.config.tire_display_style {
         TireDisplayStyle::Separate => show_tires_separate(ui, app, pkt),
         TireDisplayStyle::Combined => show_tires_combined(ui, app, pkt),
+        TireDisplayStyle::Bars     => show_tires_bars(ui, app, pkt),
     }
 }
 
@@ -1169,6 +1170,101 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         p.text(pos2(cx, cy - line_h), egui::Align2::CENTER_CENTER, label,    fid.clone(), Color32::WHITE);
         p.text(pos2(cx, cy),          egui::Align2::CENTER_CENTER, temp_str,  fid.clone(), temp_c);
         p.text(pos2(cx, cy + line_h), egui::Align2::CENTER_CENTER, slip_str,  fid.clone(), grip_color);
+    }
+}
+
+fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    let use_f = app.config.use_fahrenheit;
+    let temps_f = [pkt.tire_temp_fl, pkt.tire_temp_fr, pkt.tire_temp_rl, pkt.tire_temp_rr];
+    let slips = [
+        pkt.tire_combined_slip_fl,
+        pkt.tire_combined_slip_fr,
+        pkt.tire_combined_slip_rl,
+        pkt.tire_combined_slip_rr,
+    ];
+    let puddles = [
+        pkt.wheel_in_puddle_fl,
+        pkt.wheel_in_puddle_fr,
+        pkt.wheel_in_puddle_rl,
+        pkt.wheel_in_puddle_rr,
+    ];
+
+    let avail_h  = ui.available_rect_before_wrap().height();
+    let avail_w  = ui.available_width();
+    let label_w  = 36.0_f32;   // "Temp"/"Slip"/unit label column
+    let header_h = 18.0_f32;   // "FL"/"FR"/... row
+    let text_h   = 14.0_f32;   // height per text row
+    let bar_w    = (avail_w - label_w - 4.0) / 4.0;  // 4 px right margin
+    let gap_h    = 4.0_f32;                            // gap between bars and text rows
+    let bar_h    = (avail_h - header_h - gap_h - 3.0 * text_h).max(24.0);
+    let total_h  = header_h + bar_h + gap_h + 3.0 * text_h;
+
+    let origin = ui.cursor().min;
+    ui.allocate_exact_size(vec2(avail_w, total_h), egui::Sense::hover());
+
+    let p  = ui.painter();
+    let fid = egui::FontId::proportional(11.0);
+    let gray = Color32::GRAY;
+    let text_col = ui.visuals().text_color();
+    let puddle_c = Color32::from_rgb(80, 160, 220);
+
+    // ── Column header: FL / FR / RL / RR ──────────────────────────
+    for (i, lbl) in ["FL", "FR", "RL", "RR"].iter().enumerate() {
+        let cx = origin.x + label_w + (i as f32 + 0.5) * bar_w;
+        let cy = origin.y + header_h * 0.5;
+        p.text(pos2(cx, cy), egui::Align2::CENTER_CENTER, *lbl, fid.clone(), text_col);
+    }
+
+    // ── Bars: fill = tire temp, normalized over 30..130 °C ────────
+    let bar_top = origin.y + header_h;
+    for i in 0..4 {
+        let x    = origin.x + label_w + i as f32 * bar_w;
+        let rect = Rect::from_min_size(pos2(x + 4.0, bar_top), vec2(bar_w - 8.0, bar_h));
+
+        p.rect_filled(rect, 2.0, Color32::from_rgb(40, 40, 40));
+
+        let t_c = ForzaPacket::tire_temp_celsius(temps_f[i]);
+        let c = ((t_c - 30.0) / 100.0).clamp(0.0, 1.0);
+        let fill = Rect::from_min_max(pos2(rect.left(), rect.bottom() - c * bar_h), rect.max);
+        let bar_color = if c < 0.33 { Color32::from_rgb(80, 120, 220) }
+                        else if c < 0.66 { Color32::from_rgb(50, 200, 80) }
+                        else { Color32::from_rgb(230, 140, 40) };
+        p.rect_filled(fill, 0.0, bar_color);
+
+        // Wet: water-blue inset outline, drawn inside so the bar keeps its size
+        if puddles[i] != 0 {
+            p.rect_stroke(rect, 2.0, Stroke::new(2.0, puddle_c), egui::StrokeKind::Inside);
+        }
+    }
+
+    // ── Text rows: Temp / Slip / pressure ──────────────────────────
+    let temp_unit = if use_f { "°F" } else { "°C" };
+    let press_lbl = if app.config.use_bar { tr("Bar") } else { tr("PSI") };
+    let slip_color = |slip: f32| {
+        let abs = slip.abs();
+        if abs >= 1.0 { Color32::from_rgb(220, 60, 60) }
+        else if abs >= 0.8 { Color32::from_rgb(230, 160, 40) }
+        else { Color32::from_rgb(60, 200, 90) }
+    };
+    let text_top = bar_top + bar_h + gap_h;
+    let rows: [(&str, [(String, Color32); 4]); 3] = [
+        (tr("Temp"), std::array::from_fn(|i| {
+            let val = if use_f { temps_f[i] } else { ForzaPacket::tire_temp_celsius(temps_f[i]) };
+            (format!("{val:.0}{temp_unit}"), temp_color(val, use_f))
+        })),
+        (tr("Slip"), std::array::from_fn(|i| (format!("{:.2}", slips[i]), slip_color(slips[i])))),
+        // FH6 packets carry no per-tire pressure — placeholder values only
+        (press_lbl, std::array::from_fn(|_| ("--".to_string(), gray))),
+    ];
+    for (row_i, (lbl, vals)) in rows.iter().enumerate() {
+        let cy = text_top + (row_i as f32 + 0.5) * text_h;
+        // Row label centered in its column
+        p.text(pos2(origin.x + label_w * 0.5, cy), egui::Align2::CENTER_CENTER, *lbl, fid.clone(), gray);
+        // Values centered under each bar
+        for (i, (val, color)) in vals.iter().enumerate() {
+            let cx = origin.x + label_w + (i as f32 + 0.5) * bar_w;
+            p.text(pos2(cx, cy), egui::Align2::CENTER_CENTER, val, fid.clone(), *color);
+        }
     }
 }
 

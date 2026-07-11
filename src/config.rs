@@ -91,6 +91,7 @@ pub enum TireDisplayStyle {
     #[default]
     Separate,
     Combined,
+    Bars,
 }
 
 // ── Widget grid system ─────────────────────────────────────────────
