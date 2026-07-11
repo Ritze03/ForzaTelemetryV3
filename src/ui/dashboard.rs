@@ -523,19 +523,13 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
 
     if vertical {
-        // Stacked readout, then a bottom-up bar filling the remaining height.
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
-            ui.label(RichText::new(format!("{unit} · {} {peak:.2}", tr("peak")))
-                .size(11.0).color(crate::theme::TEXT_DIM));
-        });
-        ui.add_space(4.0);
-
+        // Bottom-up bar on top, stacked readout underneath it.
         let rect = ui.available_rect_before_wrap();
+        let text_h = 44.0; // reserved for the value + unit·peak lines at the bottom
         let w = rect.width().min(26.0);
         let bar = egui::Rect::from_min_size(
             pos2(rect.center().x - w * 0.5, rect.top()),
-            egui::vec2(w, (rect.height() - 4.0).max(10.0)),
+            egui::vec2(w, (rect.height() - text_h - 4.0).max(10.0)),
         );
         ui.allocate_rect(bar, egui::Sense::hover());
         let painter = ui.painter_at(bar);
@@ -555,6 +549,13 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 painter.line_segment([pos2(bar.left() + 2.0, y), pos2(bar.right() - 2.0, y)], tick);
             }
         }
+
+        ui.add_space(4.0);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
+            ui.label(RichText::new(format!("{unit} · {} {peak:.2}", tr("peak")))
+                .size(11.0).color(crate::theme::TEXT_DIM));
+        });
         return;
     }
 
@@ -1453,23 +1454,31 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     }
 
     // ── Bars ──────────────────────────────────────────────────────
+    // Snap track and fill rects to the physical pixel grid so fractional
+    // x accumulation (slots are avail/4 wide) never lets a fill overflow
+    // its track by a pixel.
+    let ppp  = p.ctx().pixels_per_point();
+    let px   = |v: f32| (v * ppp).round() / ppp;
     let bar_top = origin.y + header_h;
     for (i, &cur) in travels.iter().enumerate() {
         let x    = origin.x + label_w + i as f32 * bar_w;
-        let rect = Rect::from_min_size(pos2(x + 4.0, bar_top), vec2(bar_w - 8.0, bar_h));
+        let rect = Rect::from_min_max(
+            pos2(px(x + 4.0), px(bar_top)),
+            pos2(px(x + bar_w - 4.0), px(bar_top + bar_h)),
+        );
 
         p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
         let c = cur.clamp(0.0, 1.0);
-        let fill = Rect::from_min_max(pos2(rect.left(), rect.bottom() - c * bar_h), rect.max);
+        let fill = Rect::from_min_max(pos2(rect.left(), px(rect.bottom() - c * rect.height())), rect.max);
         let bar_color = if c < 0.33 { Color32::from_rgb(80, 120, 220) }
                         else if c < 0.66 { Color32::from_rgb(50, 200, 80) }
                         else { Color32::from_rgb(230, 140, 40) };
         p.rect_filled(fill, 0.0, bar_color);
 
         let alpha = if susp.initialized { 255u8 } else { 80u8 };
-        let min_y = rect.bottom() - susp.min[i].clamp(0.0, 1.0) * bar_h;
-        let max_y = rect.bottom() - susp.max[i].clamp(0.0, 1.0) * bar_h;
+        let min_y = rect.bottom() - susp.min[i].clamp(0.0, 1.0) * rect.height();
+        let max_y = rect.bottom() - susp.max[i].clamp(0.0, 1.0) * rect.height();
         p.line_segment([pos2(rect.left(), min_y), pos2(rect.right(), min_y)],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(180, 80, 80, alpha)));
         p.line_segment([pos2(rect.left(), max_y), pos2(rect.right(), max_y)],
