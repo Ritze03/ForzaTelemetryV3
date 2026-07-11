@@ -953,7 +953,6 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     let full_rect = ui.available_rect_before_wrap();
 
     ui.label(crate::theme::section_label(tr("Car")));
-    ui.add_space(4.0);
 
     let no_data = app.cached_car_class_str.is_empty();
     let class = if no_data { -1 } else { app.cached_car_class };
@@ -966,18 +965,11 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     } else {
         format!("{} {}", app.cached_num_cylinders, tr("cyl"))
     };
+    let has_caption = !cyl_text.is_empty();
 
-    // Cylinder/Electric caption sits at the top, right under the heading.
-    if !cyl_text.is_empty() {
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(cyl_text).size(12.0).color(crate::theme::steel(180)));
-        });
-    }
-
-    // Scale the labels to the space that truly remains below heading + caption
+    // Scale the labels to the space that truly remains below the heading
     // (drivetrain is the wider face; the two stacked labels plus the gap and
-    // row spacing between them set the height budget). Measuring after the
-    // caption is laid out keeps it in the budget, so nothing clips below.
+    // row spacing between them set the height budget).
     let gap = 4.0;
     let spacing = ui.spacing().item_spacing.y;
     let avail_w = full_rect.width();
@@ -991,19 +983,70 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     let csize = cnative * scale;
     let dsize = dnative * scale;
 
-    // Centre the label block in the remaining space.
-    let block_h = csize.y + spacing + gap + dsize.y;
-    ui.add_space(((avail_h - block_h) * 0.5).max(0.0));
+    // In a narrow/tall cell the label images are always width-bound (never
+    // height-bound), so there is usually a lot of vertical slack left over
+    // below the heading. Rather than dumping it all as one lump above the
+    // class label (leaving a dead blank strip at the bottom), spread it
+    // across every gap in the block — top margin, caption gap, the gap
+    // between the two label images, and a bottom margin — so the cell
+    // breathes evenly top-to-bottom. Each gap keeps today's fixed spacing
+    // as a floor, so wide/short cells with ~0 slack fall back to the
+    // original tight layout.
+    let floor_top = 4.0;
+    let floor_caption_gap = spacing;
+    let floor_mid = gap;
+    let floor_bottom = spacing;
+    let n_gaps = if has_caption { 4.0 } else { 3.0 };
+    let floor_total = floor_top
+        + if has_caption { floor_caption_gap } else { 0.0 }
+        + floor_mid
+        + floor_bottom;
+
+    // Let the caption grow with the slack instead of staying a fixed tiny
+    // size, so a generous cell gets a legible caption rather than an
+    // afterthought (its own height is small next to the labels, so it's
+    // left out of this first estimate to keep things simple).
+    let slack_estimate = (avail_h - floor_total - csize.y - dsize.y).max(0.0);
+    let caption_size = if has_caption {
+        (12.0 + slack_estimate * 0.06).clamp(12.0, 20.0)
+    } else {
+        12.0
+    };
+    let caption_font = egui::FontId::proportional(caption_size);
+    let caption_h = if has_caption {
+        ui.fonts_mut(|f| f.row_height(&caption_font))
+    } else {
+        0.0
+    };
+
+    // Now divide the real leftover slack evenly across the active gaps.
+    let slack = (avail_h - floor_total - caption_h - csize.y - dsize.y).max(0.0);
+    let extra = slack / n_gaps;
+    let top_margin = floor_top + extra;
+    let caption_gap = floor_caption_gap + extra;
+    let mid_gap = floor_mid + extra;
+    let bottom_margin = floor_bottom + extra;
+
+    ui.add_space(top_margin);
+
+    // Cylinder/Electric caption.
+    if has_caption {
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(cyl_text).font(caption_font).color(crate::theme::steel(180)));
+        });
+        ui.add_space(caption_gap);
+    }
 
     // Class label (centred), rating stamped into its box.
     let (crow, _) = ui.allocate_exact_size(egui::vec2(avail_w, csize.y), egui::Sense::hover());
     app.labels.paint_class(ui.painter(), class, pi,
         egui::pos2(crow.center().x - csize.x * 0.5, crow.min.y), scale);
-    ui.add_space(gap);
+    ui.add_space(mid_gap);
     // Drivetrain label (centred).
     let (drow, _) = ui.allocate_exact_size(egui::vec2(avail_w, dsize.y), egui::Sense::hover());
     app.labels.paint_drivetrain(ui.painter(), dt,
         egui::pos2(drow.center().x - dsize.x * 0.5, drow.min.y), scale);
+    ui.add_space(bottom_margin);
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
