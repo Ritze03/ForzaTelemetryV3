@@ -524,13 +524,30 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
 
     if vertical {
-        // Bottom-up bar on top, stacked readout underneath it.
+        // Bottom-up bar on top, stacked readout underneath it. Measure the two
+        // readout lines (unwrapped galleys, not a magic constant), reserve them
+        // first, and give the bar whatever truly remains.
         let rect = ui.available_rect_before_wrap();
-        let text_h = 44.0; // reserved for the value + unit·peak lines at the bottom
+        let spacing = ui.spacing().item_spacing.y;
+        let value_galley = ui.painter().layout_no_wrap(
+            format!("{cur:+.2}"), egui::FontId::proportional(22.0), bar_col);
+        let small_galley = ui.painter().layout_no_wrap(
+            format!("{unit} · {} {peak:.2}", tr("peak")),
+            egui::FontId::proportional(11.0), crate::theme::TEXT_DIM);
+        let bottom_margin = 2.0;
+        let min_bar_h = 10.0;
+        // Value line + unit·peak line + the spacing between them; drop the
+        // small line when the cell is too short for both plus a minimum bar.
+        let mut text_h = value_galley.size().y + spacing + small_galley.size().y;
+        let mut show_small = true;
+        if rect.height() - spacing - min_bar_h - bottom_margin < text_h {
+            show_small = false;
+            text_h = value_galley.size().y;
+        }
         let w = rect.width().min(26.0);
         let bar = egui::Rect::from_min_size(
             pos2(rect.center().x - w * 0.5, rect.top()),
-            egui::vec2(w, (rect.height() - text_h - 4.0).max(10.0)),
+            egui::vec2(w, (rect.height() - text_h - spacing - bottom_margin).max(min_bar_h)),
         );
         ui.allocate_rect(bar, egui::Sense::hover());
         let painter = ui.painter_at(bar);
@@ -551,12 +568,17 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             }
         }
 
-        ui.add_space(4.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
-            ui.label(RichText::new(format!("{unit} · {} {peak:.2}", tr("peak")))
-                .size(11.0).color(crate::theme::TEXT_DIM));
-        });
+        // Readout, centred under the bar (painted, so it never wraps).
+        let painter = ui.painter();
+        let cx = rect.center().x;
+        let text_top = bar.bottom() + spacing;
+        let value_size = value_galley.size();
+        painter.galley(pos2(cx - value_size.x * 0.5, text_top), value_galley, bar_col);
+        if show_small {
+            painter.galley(
+                pos2(cx - small_galley.size().x * 0.5, text_top + value_size.y + spacing),
+                small_galley, crate::theme::TEXT_DIM);
+        }
         return;
     }
 
@@ -941,18 +963,32 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
         format!("{} {}", app.cached_num_cylinders, tr("cyl"))
     };
 
-    // Scale the labels to fit the widget (drivetrain is the wider face at 136 px;
-    // two stacked labels + a cylinder caption set the height budget).
+    // Cylinder/Electric caption sits at the top, right under the heading.
+    if !cyl_text.is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(cyl_text).size(12.0).color(crate::theme::steel(180)));
+        });
+    }
+
+    // Scale the labels to the space that truly remains below heading + caption
+    // (drivetrain is the wider face; the two stacked labels plus the gap and
+    // row spacing between them set the height budget). Measuring after the
+    // caption is laid out keeps it in the budget, so nothing clips below.
+    let gap = 4.0;
+    let spacing = ui.spacing().item_spacing.y;
     let avail_w = full_rect.width();
     let used_h = ui.next_widget_position().y - full_rect.min.y;
-    let avail_h = (full_rect.height() - used_h).max(20.0);
-    let scale = (avail_w * 0.92 / 136.0).min(avail_h * 0.9 / 98.0).clamp(0.35, 1.4);
+    let avail_h = (full_rect.height() - used_h).max(0.0);
+    let cnative = app.labels.class_size(class, 1.0);
+    let dnative = app.labels.drivetrain_size(dt, 1.0);
+    let scale = (avail_w * 0.92 / cnative.x.max(dnative.x))
+        .min((avail_h - gap - spacing - 2.0) / (cnative.y + dnative.y))
+        .clamp(0.2, 1.4);
+    let csize = cnative * scale;
+    let dsize = dnative * scale;
 
-    let gap = 4.0;
-    let csize = app.labels.class_size(class, scale);
-    let dsize = app.labels.drivetrain_size(dt, scale);
-    let cyl_h = if cyl_text.is_empty() { 0.0 } else { 16.0 };
-    let block_h = csize.y + gap + dsize.y + cyl_h;
+    // Centre the label block in the remaining space.
+    let block_h = csize.y + spacing + gap + dsize.y;
     ui.add_space(((avail_h - block_h) * 0.5).max(0.0));
 
     // Class label (centred), rating stamped into its box.
@@ -964,11 +1000,6 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     let (drow, _) = ui.allocate_exact_size(egui::vec2(avail_w, dsize.y), egui::Sense::hover());
     app.labels.paint_drivetrain(ui.painter(), dt,
         egui::pos2(drow.center().x - dsize.x * 0.5, drow.min.y), scale);
-    if !cyl_text.is_empty() {
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(cyl_text).size(12.0).color(crate::theme::steel(180)));
-        });
-    }
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
