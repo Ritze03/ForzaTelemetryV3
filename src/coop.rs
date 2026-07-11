@@ -52,10 +52,11 @@ enum Control {
     Roster { players: Vec<PlayerInfo> },
     /// Client → host: change my name/hue.
     Update { name: String, hue: f32 },
-    /// A shared map waypoint (world [x,z] + setter's hue), or `None` to clear it.
-    /// Either direction; the host re-broadcasts a client's waypoint to everyone.
+    /// A per-player map ping (setter `id`, world [x,z], setter's hue), or `pos:
+    /// None` to clear that player's ping. Each player has their own, so several
+    /// show at once. Either direction; the host re-broadcasts with the setter's id.
     /// (Option — not NaN — so it survives JSON, which has no NaN.)
-    Waypoint { pos: Option<[f32; 2]>, hue: f32 },
+    Waypoint { id: String, pos: Option<[f32; 2]>, hue: f32 },
 }
 
 /// Per-remote jitter buffer: timestamped packets awaiting playback.
@@ -111,8 +112,8 @@ struct Inner {
     words: Option<String>,
     lan_url: Option<String>,
     buffer_ms: u32,
-    /// Shared map waypoint: (world_x, world_z, setter hue).
-    waypoint: Option<(f32, f32, f32)>,
+    /// Per-player map pings, keyed by setter id: (world_x, world_z, setter hue).
+    waypoints: HashMap<String, (f32, f32, f32)>,
     /// Running cloudflared tunnel child. Owned here (not on CoopState) so the
     /// background host-start thread can hand it off and `stop()` can still kill it.
     tunnel: Option<Child>,
@@ -170,7 +171,7 @@ impl CoopState {
             words: None,
             lan_url: None,
             buffer_ms,
-            waypoint: None,
+            waypoints: HashMap::new(),
             tunnel: None,
             download: None,
             // seed identity even while Off so the UI preview is stable
@@ -212,20 +213,34 @@ impl CoopState {
         self.inner.lock().unwrap().buffer_ms = ms;
     }
 
-    /// The active shared waypoint (world_x, world_z, hue), if any.
-    pub fn waypoint(&self) -> Option<(f32, f32, f32)> {
-        self.inner.lock().unwrap().waypoint
+    /// All active pings as (setter_id, world_x, world_z, hue).
+    pub fn waypoints(&self) -> Vec<(String, f32, f32, f32)> {
+        self.inner
+            .lock()
+            .unwrap()
+            .waypoints
+            .iter()
+            .map(|(id, &(x, z, h))| (id.clone(), x, z, h))
+            .collect()
     }
 
-    /// Drop a shared waypoint at a world position (hue = our colour). Pass `None` to clear.
+    /// Drop our own ping at a world position (hue = our colour). Pass `None` to clear it.
     pub fn set_waypoint(&self, pos: Option<(f32, f32)>, hue: f32) {
         let mut inner = self.inner.lock().unwrap();
         if inner.role == Role::Off {
             return;
         }
-        inner.waypoint = pos.map(|(x, z)| (x, z, hue));
+        let my_id = inner.my_id.clone();
+        match pos {
+            Some((x, z)) => {
+                inner.waypoints.insert(my_id.clone(), (x, z, hue));
+            }
+            None => {
+                inner.waypoints.remove(&my_id);
+            }
+        }
         let msg = Message::Text(
-            serde_json::to_string(&Control::Waypoint { pos: pos.map(|(x, z)| [x, z]), hue })
+            serde_json::to_string(&Control::Waypoint { id: my_id, pos: pos.map(|(x, z)| [x, z]), hue })
                 .unwrap_or_default(),
         );
         match inner.role {
@@ -325,7 +340,7 @@ impl CoopState {
         inner.roster.clear();
         inner.words = None;
         inner.lan_url = None;
-        inner.waypoint = None;
+        inner.waypoints.clear();
         inner.status = "Stopped".into();
         inner.error = None;
     }
@@ -548,11 +563,16 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
                     let msg = g.roster_msg();
                     g.broadcast(msg, None);
                 }
-                Ok(Control::Waypoint { pos, hue }) => {
+                Ok(Control::Waypoint { pos, hue, .. }) => {
+                    // Key by the connection's id (authoritative), not the message's.
                     let mut g = inner.lock().unwrap();
-                    g.waypoint = pos.map(|[x, z]| (x, z, hue));
+                    match pos {
+                        Some([x, z]) => { g.waypoints.insert(id.clone(), (x, z, hue)); }
+                        None => { g.waypoints.remove(&id); }
+                    }
                     let msg = Message::Text(
-                        serde_json::to_string(&Control::Waypoint { pos, hue }).unwrap_or_default(),
+                        serde_json::to_string(&Control::Waypoint { id: id.clone(), pos, hue })
+                            .unwrap_or_default(),
                     );
                     g.broadcast(msg, Some(&id)); // to the other clients
                 }
@@ -597,6 +617,7 @@ fn cleanup_client(inner: &Arc<Mutex<Inner>>, id: &str) {
     g.clients.retain(|(cid, _)| cid != id);
     g.roster.retain(|p| p.id != id);
     g.remote.remove(id);
+    g.waypoints.remove(id);
     let msg = g.roster_msg();
     g.broadcast(msg, None);
     let n = g.roster.len();
@@ -812,8 +833,11 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
                         Ok(Control::Roster { players }) => {
                             g.roster = players;
                         }
-                        Ok(Control::Waypoint { pos, hue }) => {
-                            g.waypoint = pos.map(|[x, z]| (x, z, hue));
+                        Ok(Control::Waypoint { id, pos, hue }) => {
+                            match pos {
+                                Some([x, z]) => { g.waypoints.insert(id, (x, z, hue)); }
+                                None => { g.waypoints.remove(&id); }
+                            }
                         }
                         _ => {}
                     }
@@ -1120,8 +1144,8 @@ mod tests {
         // Regression: the waypoint-clear (pos: None) must survive JSON — a NaN
         // sentinel serialised to `null` and failed to parse back into f32.
         for c in [
-            Control::Waypoint { pos: Some([1.5, -2.5]), hue: 200.0 },
-            Control::Waypoint { pos: None, hue: 0.0 },
+            Control::Waypoint { id: "abc".into(), pos: Some([1.5, -2.5]), hue: 200.0 },
+            Control::Waypoint { id: "abc".into(), pos: None, hue: 0.0 },
             Control::Hello { name: "Guest".into(), hue: 30.0 },
             Control::Update { name: "Guest2".into(), hue: 140.0 },
         ] {

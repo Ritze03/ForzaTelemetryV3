@@ -875,32 +875,45 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     ui.add_space(4.0);
 
     let no_data = app.cached_car_class_str.is_empty();
-    let line1 = if no_data {
-        format!("{} -- [---]", tr("Class"))
-    } else {
-        format!("{} {} [{}]", tr("Class"), app.cached_car_class_str, app.cached_car_pi)
-    };
-    let line2 = if no_data {
-        "XWD | ---".to_string()
+    let class = if no_data { -1 } else { app.cached_car_class };
+    let dt = if no_data { -1 } else { app.cached_drivetrain };
+    let pi = if no_data { 0 } else { app.cached_car_pi };
+    let cyl_text = if no_data || !app.config.car_show_cylinders {
+        String::new()
     } else if app.cached_num_cylinders == 0 {
-        format!("{} | {}", app.cached_drivetrain_str, tr("Electric"))
+        tr("Electric").to_string()
     } else {
-        format!("{} | {} {}", app.cached_drivetrain_str, app.cached_num_cylinders, tr("cyl"))
+        format!("{} {}", app.cached_num_cylinders, tr("cyl"))
     };
 
-    // Center data lines in the full widget rect so they sit at the widget's
-    // true vertical midpoint, independent of how tall the heading is.
-    let line_h  = ui.text_style_height(&egui::TextStyle::Body);
-    let block_h = 2.0 * line_h + ui.spacing().item_spacing.y;
-    let top_pad = ((full_rect.height() - block_h) * 0.5
-        - (ui.next_widget_position().y - full_rect.min.y)
-        + line_h * 0.5)
-        .max(0.0);
-    ui.add_space(top_pad);
-    ui.vertical_centered(|ui| {
-        ui.label(&line1);
-        ui.label(&line2);
-    });
+    // Scale the labels to fit the widget (drivetrain is the wider face at 136 px;
+    // two stacked labels + a cylinder caption set the height budget).
+    let avail_w = full_rect.width();
+    let used_h = ui.next_widget_position().y - full_rect.min.y;
+    let avail_h = (full_rect.height() - used_h).max(20.0);
+    let scale = (avail_w * 0.92 / 136.0).min(avail_h * 0.9 / 98.0).clamp(0.35, 1.4);
+
+    let gap = 4.0;
+    let csize = app.labels.class_size(class, scale);
+    let dsize = app.labels.drivetrain_size(dt, scale);
+    let cyl_h = if cyl_text.is_empty() { 0.0 } else { 16.0 };
+    let block_h = csize.y + gap + dsize.y + cyl_h;
+    ui.add_space(((avail_h - block_h) * 0.5).max(0.0));
+
+    // Class label (centred), rating stamped into its box.
+    let (crow, _) = ui.allocate_exact_size(egui::vec2(avail_w, csize.y), egui::Sense::hover());
+    app.labels.paint_class(ui.painter(), class, pi,
+        egui::pos2(crow.center().x - csize.x * 0.5, crow.min.y), scale);
+    ui.add_space(gap);
+    // Drivetrain label (centred).
+    let (drow, _) = ui.allocate_exact_size(egui::vec2(avail_w, dsize.y), egui::Sense::hover());
+    app.labels.paint_drivetrain(ui.painter(), dt,
+        egui::pos2(drow.center().x - dsize.x * 0.5, drow.min.y), scale);
+    if !cyl_text.is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(cyl_text).size(12.0).color(Color32::from_gray(180)));
+        });
+    }
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
@@ -1672,25 +1685,42 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         // side-by-side) can be nudged apart instead of stacking illegibly.
         let mut labels: Vec<(Pos2, String, Color32)> = Vec::new();
         for (info, pkt) in remotes {
-            if pkt.is_paused() {
-                continue; // paused teammate — don't draw their marker at the origin
-            }
-            let dx = pkt.position_x - car_x;
-            let dz = pkt.position_z - car_z;
+            let paused = pkt.is_paused();
+            // Paused players stop broadcasting a valid position; show them at their
+            // last-known spot in grey instead of drawing them at the world origin.
+            let (px, pz, pyaw) = if paused {
+                match app.coop_last_pos.get(&info.id) {
+                    Some(s) => (s.x, s.z, s.yaw),
+                    None => continue, // never seen at a valid spot — nothing to show
+                }
+            } else {
+                (pkt.position_x, pkt.position_z, pkt.yaw)
+            };
+            let dx = px - car_x;
+            let dz = pz - car_z;
             let sx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
             let sy = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
-            let col = crate::ui::coop::hue_color(info.hue);
+            let col = if paused {
+                Color32::from_gray(170)
+            } else {
+                crate::ui::coop::hue_color(info.hue)
+            };
 
             if rect.shrink(8.0).contains(pos2(sx, sy)) {
                 // On-screen: full heading arrow; name deferred to the 2nd pass.
-                let (sa, ca) = (pkt.yaw - yaw).sin_cos();
+                let (sa, ca) = (pyaw - yaw).sin_cos();
                 let rr = |vx: f32, vy: f32| pos2(sx + vx * ca - vy * sa, sy + vx * sa + vy * ca);
                 painter.add(egui::Shape::convex_polygon(
                     vec![rr(0.0, -s * 1.4), rr(s, s * 0.6), rr(-s, s * 0.6)],
                     col,
                     Stroke::new(1.5, Color32::BLACK),
                 ));
-                labels.push((pos2(sx, sy - s * 1.9), info.name.clone(), col));
+                let label = if paused {
+                    format!("{} {}", crate::icons::PAUSE, info.name)
+                } else {
+                    info.name.clone()
+                };
+                labels.push((pos2(sx, sy - s * 1.9), label, col));
             } else {
                 // Off-screen: clamp to the map edge and point a marker toward them,
                 // so you always know which way your teammates are.
@@ -1779,7 +1809,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             app.coop.set_waypoint(None, 0.0);
         }
     }
-    if let Some((wx, wz, hue)) = app.coop.waypoint() {
+    for (_pid, wx, wz, hue) in app.coop.waypoints() {
         let dx = wx - car_x;
         let dz = wz - car_z;
         let mut mx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
@@ -1827,65 +1857,95 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             egui::FontId::proportional(11.0), Color32::WHITE);
     }
 
-    // On-map co-op player list — coloured dot + name and the selected columns.
+    // On-map co-op player list. Fixed-width, space-padded columns so the panel
+    // never reflows (which would flicker). Front marker is a dot, or the ⏸ glyph
+    // (in the player's colour) when paused.
     if cfg.coop_map_playerlist && app.coop.role() != crate::coop::Role::Off {
         let unit = if cfg.use_mph { "mph" } else { "km/h" };
-        let mut rows: Vec<(Color32, String)> = Vec::new();
-        let mut push_row = |hue: f32, name: &str, speed_ms: f32, gear: u8, class: &str, dist: f32, is_self: bool| {
-            let short = if name.chars().count() > 10 {
-                name.chars().take(9).collect::<String>() + "…"
+        // (hue colour, paused, row text, class, PI). The class column is drawn as a
+        // label image (assets/labels) after the text, so it's excluded from the text.
+        let mut rows: Vec<(Color32, bool, String, i32, i32)> = Vec::new();
+        let mut push_row = |hue: f32, name: &str, speed_ms: f32, gear: u8, class: i32, pi: i32, dist: f32, is_self: bool, paused: bool| {
+            // Name: 12 cells, left-aligned, ellipsised if longer.
+            let mut s = if name.chars().count() > 12 {
+                name.chars().take(11).collect::<String>() + "…"
             } else {
-                name.to_string()
+                format!("{name:<12}")
             };
-            let mut s = format!("{short:<10}");
             if cfg.coop_list_distance {
-                s += &if is_self {
-                    "       ".to_string()
+                let d = if is_self {
+                    String::new()
                 } else if dist >= 1000.0 {
-                    format!(" {:>5.1}k", dist / 1000.0)
+                    format!("{:.1}km", dist / 1000.0)
                 } else {
-                    format!(" {dist:>5.0}m")
+                    format!("{dist:.0}m")
                 };
+                s += &format!(" {d:>6}"); // reserves up to "99.9km"
             }
             if cfg.coop_list_speed {
                 let disp = if cfg.use_mph { speed_ms * 2.236_94 } else { speed_ms * 3.6 };
                 s += &format!(" {disp:>3.0}{unit}");
             }
             if cfg.coop_list_gear {
-                let g = match gear { 0 => "N".to_string(), g => g.to_string() };
-                s += &format!(" G{g}");
+                let g = match gear {
+                    0 => "R".to_string(),
+                    11 => "N".to_string(),
+                    g => g.to_string(),
+                };
+                s += &format!(" G{g:<2}"); // "G10" / "G9 " / "GN " / "GR "
             }
-            if cfg.coop_list_class {
-                s += &format!(" {class}");
-            }
-            rows.push((crate::ui::coop::hue_color(hue), s));
+            rows.push((crate::ui::coop::hue_color(hue), paused, s, class, pi));
         };
         if let Some(p) = &app.telemetry.latest {
-            push_row(cfg.coop_hue, &cfg.coop_name, p.speed, p.gear, p.car_class_str(), 0.0, true);
+            // Our own class/PI come from the cache so a local pause doesn't blank them.
+            push_row(cfg.coop_hue, &cfg.coop_name, p.speed, p.gear, app.cached_car_class, app.cached_car_pi, 0.0, true, p.is_paused());
         }
         for (info, pkt) in app.coop.remote_players() {
-            if pkt.is_paused() {
-                continue;
-            }
-            let dist = ((pkt.position_x - car_x).powi(2) + (pkt.position_z - car_z).powi(2)).sqrt();
-            push_row(info.hue, &info.name, pkt.speed, pkt.gear, pkt.car_class_str(), dist, false);
+            let paused = pkt.is_paused();
+            let (px, pz) = if paused {
+                app.coop_last_pos.get(&info.id).map(|s| (s.x, s.z))
+                    .unwrap_or((pkt.position_x, pkt.position_z))
+            } else {
+                (pkt.position_x, pkt.position_z)
+            };
+            let dist = ((px - car_x).powi(2) + (pz - car_z).powi(2)).sqrt();
+            // Class/PI travel in the packet (the sender fills them in while paused).
+            push_row(info.hue, &info.name, pkt.speed, pkt.gear,
+                pkt.car_class, pkt.car_performance_index, dist, false, paused);
         }
         if !rows.is_empty() {
             let font = egui::FontId::monospace(11.0);
-            let (dot_x, text_x, row_h, pad) = (6.0_f32, 16.0_f32, 15.0_f32, 5.0_f32);
-            let galleys: Vec<(Color32, std::sync::Arc<egui::Galley>)> = rows
+            let (icon_x, text_x, row_h, pad) = (9.0_f32, 19.0_f32, 17.0_f32, 5.0_f32);
+            // Class label sized to the row with headroom; native art is 111×40.
+            let native = app.labels.class_size(0, 1.0);
+            let class_scale = (row_h - 2.0) / native.y;
+            let class_gap = 6.0;
+            let class_w = if cfg.coop_list_class { native.x * class_scale + class_gap } else { 0.0 };
+            let galleys: Vec<(Color32, bool, std::sync::Arc<egui::Galley>, i32, i32)> = rows
                 .iter()
-                .map(|(c, s)| (*c, painter.layout_no_wrap(s.clone(), font.clone(), Color32::WHITE)))
+                .map(|(c, paused, s, cl, pi)| (*c, *paused, painter.layout_no_wrap(s.clone(), font.clone(), Color32::WHITE), *cl, *pi))
                 .collect();
-            let w = text_x + galleys.iter().map(|(_, g)| g.size().x).fold(0.0, f32::max) + pad;
+            let text_w = galleys.iter().map(|(_, _, g, _, _)| g.size().x).fold(0.0, f32::max);
+            let w = text_x + text_w + class_w + pad;
             let h = pad * 2.0 + row_h * galleys.len() as f32;
             let origin = rect.right_top() + vec2(-w - 6.0, 6.0);
             let panel = egui::Rect::from_min_size(origin, vec2(w, h));
             painter.rect_filled(panel, 4.0, Color32::from_black_alpha(160));
-            for (i, (c, g)) in galleys.into_iter().enumerate() {
+            for (i, (c, paused, g, cl, pi)) in galleys.into_iter().enumerate() {
                 let cy = panel.top() + pad + row_h * i as f32 + row_h * 0.5;
-                painter.circle_filled(pos2(panel.left() + dot_x, cy), 4.0, c);
+                let icon_pos = pos2(panel.left() + icon_x, cy);
+                if paused {
+                    painter.text(icon_pos, egui::Align2::CENTER_CENTER, crate::icons::PAUSE,
+                        egui::FontId::monospace(10.0), c);
+                } else {
+                    painter.circle_filled(icon_pos, 4.0, c);
+                }
                 painter.galley(pos2(panel.left() + text_x, cy - g.size().y * 0.5), g, Color32::WHITE);
+                if cfg.coop_list_class {
+                    let cx0 = panel.left() + text_x + text_w + class_gap;
+                    let lbl = app.labels.class_size(cl, class_scale);
+                    app.labels.paint_class(&painter, cl, pi, pos2(cx0, cy - lbl.y * 0.5), class_scale);
+                }
             }
         }
     }

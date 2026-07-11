@@ -7,6 +7,7 @@ mod engines;
 mod i18n;
 mod icons;
 mod input;
+mod labels;
 mod listeners;
 mod network;
 mod packet;

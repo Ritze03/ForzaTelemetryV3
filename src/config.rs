@@ -254,6 +254,8 @@ pub struct AppConfig {
     pub minimap_mirror_edges: bool,
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
     pub minimap_show_compass: bool, // show the north compass on the map
+    // Car widget
+    pub car_show_cylinders: bool, // show the cylinder-count caption under the labels
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -358,6 +360,7 @@ impl Default for AppConfig {
             minimap_mirror_edges: true,
             minimap_north_up: false,
             minimap_show_compass: true,
+            car_show_cylinders: false,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,

@@ -364,6 +364,7 @@ pub enum DashboardSubTab {
     SprintTimes,
     Tires,
     Shift,
+    Car,
     MiniMap,
 }
 
@@ -375,11 +376,21 @@ pub enum MiniMapTab {
     Coop,
 }
 
+/// Last-known non-paused position of a co-op player, so a paused player can still
+/// be drawn at their last spot. (Class/PI travel in the packet — see push_local.)
+#[derive(Clone, Copy)]
+pub struct CoopSeen {
+    pub x: f32,
+    pub z: f32,
+    pub yaw: f32,
+}
+
 // ── App ────────────────────────────────────────────────────────────
 
 pub struct ForzaApp {
     pub config: AppConfig,
     pub engines: Vec<EngineRecord>,
+    pub labels: crate::labels::Labels,
     pub telemetry: TelemetryState,
     pub current_tab: Tab,
 
@@ -420,8 +431,10 @@ pub struct ForzaApp {
 
     // Cached car identity — persists when is_race_on == 0 (paused)
     pub cached_car_class_str: String,
+    pub cached_car_class: i32,
     pub cached_car_pi: i32,
     pub cached_drivetrain_str: String,
+    pub cached_drivetrain: i32,
     pub cached_num_cylinders: i32,
 
     // Speed delta tracking
@@ -461,6 +474,9 @@ pub struct ForzaApp {
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
     pub minimap_trails: HashMap<String, VecDeque<(f32, f32, Instant)>>,
+    /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
+    /// paused player still shows at their last spot with their real class/PI.
+    pub coop_last_pos: HashMap<String, CoopSeen>,
     /// Rolling ~30s trace of (time, speed km/h, rpm) for the Speed Trace widget.
     pub trace_history: VecDeque<(Instant, f32, f32)>,
 
@@ -538,6 +554,7 @@ impl ForzaApp {
         Self {
             config,
             engines,
+            labels: crate::labels::Labels::load(&_cc.egui_ctx),
             telemetry: TelemetryState::new(),
             current_tab: Tab::Dashboard,
             sprint_timer: SprintTimer::new(),
@@ -562,7 +579,9 @@ impl ForzaApp {
             suspension_stats: SuspensionStats::default(),
             gforce_stats: GForceStats::default(),
             cached_car_class_str: String::new(),
+            cached_car_class: -1,
             cached_car_pi: 0,
+            cached_drivetrain: -1,
             cached_drivetrain_str: "XWD".to_string(),
             cached_num_cylinders: 0,
             speed_delta_kmh: 0.0,
@@ -591,6 +610,7 @@ impl ForzaApp {
             minimap_img_receiver: map_rx,
             minimap_cache_progress: None,
             minimap_trails: HashMap::new(),
+            coop_last_pos: HashMap::new(),
             trace_history: VecDeque::new(),
             pending_preset: None,
             coop: crate::coop::CoopState::new(
@@ -683,8 +703,10 @@ impl ForzaApp {
             // Session maxima + cache car identity
             if pkt.is_race_on != 0 {
                 self.cached_car_class_str = pkt.car_class_str().to_string();
+                self.cached_car_class = pkt.car_class;
                 self.cached_car_pi = pkt.car_performance_index;
                 self.cached_drivetrain_str = pkt.drivetrain_str().to_string();
+                self.cached_drivetrain = pkt.drivetrain_type;
                 self.cached_num_cylinders = pkt.num_cylinders;
                 if pkt.engine_max_rpm > 0.0 {
                     self.cached_engine_max_rpm = pkt.engine_max_rpm as f64;
@@ -797,8 +819,17 @@ impl ForzaApp {
                 );
             }
 
-            // Co-Op: relay our locally-received telemetry to peers.
-            self.coop.push_local(&pkt);
+            // Co-Op: relay our locally-received telemetry to peers. A paused game
+            // zeroes car class/PI, so carry over the cached values (same as the Car
+            // widget) so peers keep showing our real class while we're paused.
+            if pkt.is_paused() && self.cached_car_pi != 0 {
+                let mut out = pkt.clone();
+                out.car_class = self.cached_car_class;
+                out.car_performance_index = self.cached_car_pi;
+                self.coop.push_local(&out);
+            } else {
+                self.coop.push_local(&pkt);
+            }
 
             // Recording: capture the packet with its timestamp.
             if let Some(rec) = self.recorder.as_mut() {
@@ -832,6 +863,9 @@ impl ForzaApp {
         if self.coop.role() == crate::coop::Role::Off {
             if !self.minimap_trails.is_empty() {
                 self.minimap_trails.clear();
+            }
+            if !self.coop_last_pos.is_empty() {
+                self.coop_last_pos.clear();
             }
             return;
         }
@@ -881,6 +915,10 @@ impl ForzaApp {
                     now,
                     max_age,
                 );
+                self.coop_last_pos.insert(
+                    "local".to_string(),
+                    CoopSeen { x: pkt.position_x, z: pkt.position_z, yaw: pkt.yaw },
+                );
             }
         }
         for (info, rp) in self.coop.remote_players() {
@@ -893,10 +931,15 @@ impl ForzaApp {
                     now,
                     max_age,
                 );
+                self.coop_last_pos.insert(
+                    info.id.clone(),
+                    CoopSeen { x: rp.position_x, z: rp.position_z, yaw: rp.yaw },
+                );
             }
             present.insert(info.id);
         }
         self.minimap_trails.retain(|k, _| present.contains(k));
+        self.coop_last_pos.retain(|k, _| present.contains(k));
     }
 }
 
@@ -1111,12 +1154,14 @@ impl eframe::App for ForzaApp {
                     use crate::i18n::tr;
                     use crate::icons;
                     // LEFT: connection status + pps
-                    let (color, icon, text) = if self.telemetry.is_connected {
-                        (crate::theme::GOOD, icons::PLUG, tr("Connected"))
+                    // NO_SIGNAL renders wider than its glyph advance, so it needs an
+                    // extra space to match PLUG's visual gap.
+                    let (color, label) = if self.telemetry.is_connected {
+                        (crate::theme::GOOD, format!("{} {}", icons::PLUG, tr("Connected")))
                     } else {
-                        (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
+                        (crate::theme::DANGER, format!("{}  {}", icons::NO_SIGNAL, tr("Disconnected")))
                     };
-                    ui.colored_label(color, format!("{icon} {text}"));
+                    ui.colored_label(color, label);
                     ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
 
                     // Co-Op indicator (visible from any tab)
@@ -1229,6 +1274,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::SprintTimes, "Sprint"),
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
+                                    (DashboardSubTab::Car,         "Car"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
@@ -1456,6 +1502,14 @@ impl eframe::App for ForzaApp {
                                                 .suffix("%"),
                                         );
                                     });
+                                }
+                                DashboardSubTab::Car => {
+                                    ui.checkbox(&mut self.config.car_show_cylinders, tr("Show cylinder count"));
+                                    ui.label(
+                                        egui::RichText::new(tr("Cylinder count (or Electric) under the class and drivetrain labels."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
                                 }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {

@@ -334,17 +334,7 @@ impl ForzaPacket {
     }
 
     pub fn car_class_str(&self) -> &'static str {
-        match self.car_class {
-            0 => "D",
-            1 => "C",
-            2 => "B",
-            3 => "A",
-            4 => "S1",
-            5 => "S2",
-            6 => "R",
-            7 => "X",
-            _ => "?",
-        }
+        car_class_name(self.car_class)
     }
 
     pub fn drivetrain_str(&self) -> &'static str {
@@ -360,6 +350,21 @@ impl ForzaPacket {
         (temp_f - 32.0) * 5.0 / 9.0
     }
 
+}
+
+/// Class letter for a raw `CarClass` int (0=D … 7=X).
+pub fn car_class_name(class: i32) -> &'static str {
+    match class {
+        0 => "D",
+        1 => "C",
+        2 => "B",
+        3 => "A",
+        4 => "S1",
+        5 => "S2",
+        6 => "R",
+        7 => "X",
+        _ => "?",
+    }
 }
 
 #[cfg(test)]

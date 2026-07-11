@@ -570,6 +570,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Max RPM" => "Max. U/min",
         "Lock map north-up" => "Karte nach Norden ausrichten",
         "Show compass" => "Kompass anzeigen",
+        "Show cylinder count" => "Zylinderanzahl anzeigen",
+        "Cylinder count (or Electric) under the class and drivetrain labels."
+            => "Zylinderanzahl (oder Elektrisch) unter den Klassen- und Antriebs-Labels.",
         "Tracer fade" => "Spur-Ausblendung",
         "Fade after (time):" => "Ausblenden nach (Zeit):",
         "Fade after (distance):" => "Ausblenden nach (Distanz):",
