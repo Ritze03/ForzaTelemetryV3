@@ -383,6 +383,10 @@ pub struct CoopSeen {
     pub x: f32,
     pub z: f32,
     pub yaw: f32,
+    /// Last non-empty car class/PI (a paused game transmits zeros — keep the
+    /// previous real values so the player list doesn't fall back to "D 0").
+    pub car_class: i32,
+    pub pi: i32,
 }
 
 // ── App ────────────────────────────────────────────────────────────
@@ -902,9 +906,32 @@ impl ForzaApp {
             }
         }
 
+        // Remember each player's last useful telemetry: position only from
+        // non-paused packets, class/PI only from packets that carry one (PI 0 =
+        // empty, e.g. paused) — so a pause never blanks either.
+        fn remember(seen: &mut HashMap<String, CoopSeen>, key: &str, p: &crate::packet::ForzaPacket) {
+            let e = seen.entry(key.to_string()).or_insert(CoopSeen {
+                x: p.position_x,
+                z: p.position_z,
+                yaw: p.yaw,
+                car_class: p.car_class,
+                pi: p.car_performance_index,
+            });
+            if !p.is_paused() {
+                e.x = p.position_x;
+                e.z = p.position_z;
+                e.yaw = p.yaw;
+            }
+            if p.car_performance_index != 0 {
+                e.car_class = p.car_class;
+                e.pi = p.car_performance_index;
+            }
+        }
+
         let mut present: HashSet<String> = HashSet::new();
         present.insert("local".to_string());
         if let Some(pkt) = &self.telemetry.latest {
+            remember(&mut self.coop_last_pos, "local", pkt);
             // Skip paused games (car at origin) so we don't draw a line to (0,0).
             if pkt.is_race_on != 0 && !pkt.is_paused() {
                 push(
@@ -915,13 +942,10 @@ impl ForzaApp {
                     now,
                     max_age,
                 );
-                self.coop_last_pos.insert(
-                    "local".to_string(),
-                    CoopSeen { x: pkt.position_x, z: pkt.position_z, yaw: pkt.yaw },
-                );
             }
         }
         for (info, rp) in self.coop.remote_players() {
+            remember(&mut self.coop_last_pos, &info.id, &rp);
             if !rp.is_paused() {
                 push(
                     &mut self.minimap_trails,
@@ -930,10 +954,6 @@ impl ForzaApp {
                     rp.position_z,
                     now,
                     max_age,
-                );
-                self.coop_last_pos.insert(
-                    info.id.clone(),
-                    CoopSeen { x: rp.position_x, z: rp.position_z, yaw: rp.yaw },
                 );
             }
             present.insert(info.id);

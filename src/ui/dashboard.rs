@@ -1902,16 +1902,23 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         }
         for (info, pkt) in app.coop.remote_players() {
             let paused = pkt.is_paused();
+            let last = app.coop_last_pos.get(&info.id);
             let (px, pz) = if paused {
-                app.coop_last_pos.get(&info.id).map(|s| (s.x, s.z))
+                last.map(|s| (s.x, s.z))
                     .unwrap_or((pkt.position_x, pkt.position_z))
             } else {
                 (pkt.position_x, pkt.position_z)
             };
             let dist = ((px - car_x).powi(2) + (pz - car_z).powi(2)).sqrt();
-            // Class/PI travel in the packet (the sender fills them in while paused).
-            push_row(info.hue, &info.name, pkt.speed, pkt.gear,
-                pkt.car_class, pkt.car_performance_index, dist, false, paused);
+            // PI 0 = empty (paused game transmits zeros) — fall back to the last
+            // real class/PI we saw from this player.
+            let (cl, pi) = if pkt.car_performance_index == 0 {
+                last.map(|s| (s.car_class, s.pi))
+                    .unwrap_or((pkt.car_class, pkt.car_performance_index))
+            } else {
+                (pkt.car_class, pkt.car_performance_index)
+            };
+            push_row(info.hue, &info.name, pkt.speed, pkt.gear, cl, pi, dist, false, paused);
         }
         if !rows.is_empty() {
             let font = egui::FontId::monospace(11.0);
