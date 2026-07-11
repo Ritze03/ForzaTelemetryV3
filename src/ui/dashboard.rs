@@ -462,7 +462,7 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
 }
 
 /// Per-car session maxima (reset on car change) — a quick run-review summary.
-fn show_session_stats(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+fn show_session_stats(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     ui.label(crate::theme::section_label(tr("Session Stats")));
     ui.add_space(4.0);
 
@@ -495,7 +495,8 @@ fn show_session_stats(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     stat(tr("Peak Boost"), format!("{boost:.2} {boost_u}"));
     stat(tr("Peak Lat G"), format!("{:.2} g", app.gforce_stats.max_lateral));
     stat(tr("Peak Long G"), format!("{:.2} g", app.gforce_stats.max_longitudinal));
-    let max_rpm = app.dynamic_max_rpm.max(pkt.engine_max_rpm);
+    // Cached max, not pkt.engine_max_rpm — the packet field zeroes while paused.
+    let max_rpm = app.dynamic_max_rpm.max(app.cached_engine_max_rpm as f32);
     stat(tr("Max RPM"), format!("{max_rpm:.0}"));
 }
 
@@ -620,8 +621,10 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         return;
     }
 
-    let window = 30.0_f32;
-    let now = std::time::Instant::now();
+    let window = crate::app::TRACE_WINDOW_SECS;
+    // Active-time axis: the newest sample sits at the right edge. Paused
+    // packets never enter the history, so a pause costs no plot width.
+    let t_now = hist.back().map_or(0.0, |&(t, ..)| t);
     let speed_max = if use_mph { 200.0 } else { 320.0 };
     let rpm_max = effective_max_rpm(app, pkt).max(1000.0);
 
@@ -632,19 +635,19 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             Stroke::new(0.5, crate::theme::STROKE_DIM));
     }
 
-    let x_of = |t: &std::time::Instant| {
-        let age = now.duration_since(*t).as_secs_f32().min(window);
+    let x_of = |t: f32| {
+        let age = (t_now - t).min(window);
         rect.right() - (age / window) * rect.width()
     };
     let y_of = |v: f32, vmax: f32| rect.bottom() - (v / vmax).clamp(0.0, 1.0) * (rect.height() - 2.0);
 
     let mut speed_pts = Vec::with_capacity(hist.len());
     let mut rpm_pts = Vec::with_capacity(hist.len());
-    for (t, spd_kmh, rpm) in hist.iter() {
+    for &(t, spd_kmh, rpm) in hist.iter() {
         let x = x_of(t);
-        let spd = if use_mph { spd_kmh / 1.609_34 } else { *spd_kmh };
+        let spd = if use_mph { spd_kmh / 1.609_34 } else { spd_kmh };
         speed_pts.push(pos2(x, y_of(spd, speed_max)));
-        rpm_pts.push(pos2(x, y_of(*rpm, rpm_max)));
+        rpm_pts.push(pos2(x, y_of(rpm, rpm_max)));
     }
     painter.add(egui::Shape::line(rpm_pts, Stroke::new(1.3, Color32::from_rgb(200, 140, 35))));
     painter.add(egui::Shape::line(speed_pts, Stroke::new(1.8, Color32::from_rgb(80, 200, 110))));
@@ -856,11 +859,19 @@ fn show_gear_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 /// Max RPM the dashboard uses (game-provided or dynamically detected redline).
+/// A paused game zeroes `engine_max_rpm`, so the game-provided value comes from
+/// the app's cache (which persists through pauses) and only falls back to the
+/// live packet before the cache is first filled.
 fn effective_max_rpm(app: &ForzaApp, pkt: &ForzaPacket) -> f32 {
+    let game_max = if app.cached_engine_max_rpm > 0.0 {
+        app.cached_engine_max_rpm as f32
+    } else {
+        pkt.engine_max_rpm
+    };
     match app.config.max_rpm_mode {
-        crate::config::MaxRpmSource::GameProvided => pkt.engine_max_rpm,
+        crate::config::MaxRpmSource::GameProvided => game_max,
         crate::config::MaxRpmSource::DetectDynamically => {
-            if app.dynamic_max_rpm > 0.0 { app.dynamic_max_rpm } else { pkt.engine_max_rpm }
+            if app.dynamic_max_rpm > 0.0 { app.dynamic_max_rpm } else { game_max }
         }
     }
     .max(1.0)

@@ -481,8 +481,14 @@ pub struct ForzaApp {
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
     pub coop_last_pos: HashMap<String, CoopSeen>,
-    /// Rolling ~30s trace of (time, speed km/h, rpm) for the Speed Trace widget.
-    pub trace_history: VecDeque<(Instant, f32, f32)>,
+    /// Rolling ~30 s trace of (t_active_secs, speed km/h, rpm) for the Speed
+    /// Trace widget. The x-axis is accumulated *active* time — it only advances
+    /// when a sample is accepted — so game pauses neither gap nor slide the plot.
+    pub trace_history: VecDeque<(f32, f32, f32)>,
+    /// Active-time seconds of the last accepted trace sample.
+    trace_active_secs: f32,
+    /// Wall-clock instant of the last accepted trace sample.
+    trace_last_sample: Option<Instant>,
 
     // Preset loader selected index (None = nothing selected)
     pub pending_preset: Option<usize>,
@@ -501,6 +507,22 @@ pub struct ForzaApp {
 
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
+}
+
+/// Speed Trace window length, in accepted-sample ("active") seconds.
+pub const TRACE_WINDOW_SECS: f32 = 30.0;
+
+/// Decide whether the Speed Trace accepts a new sample and, if so, where the
+/// active-time axis moves to. `dt_wall` is the wall-clock seconds since the
+/// last accepted sample (`None` = first sample ever). Samples are throttled to
+/// ~25 Hz, and a long gap — e.g. a game pause, during which no samples are
+/// accepted — is clamped to a single frame so the axis never jumps.
+fn trace_step(dt_wall: Option<f32>, t_active: f32) -> Option<f32> {
+    match dt_wall {
+        None => Some(t_active),
+        Some(dt) if dt < 0.04 => None,
+        Some(dt) => Some(t_active + dt.min(0.1)),
+    }
 }
 
 impl ForzaApp {
@@ -616,6 +638,8 @@ impl ForzaApp {
             minimap_trails: HashMap::new(),
             coop_last_pos: HashMap::new(),
             trace_history: VecDeque::new(),
+            trace_active_secs: 0.0,
+            trace_last_sample: None,
             pending_preset: None,
             coop: crate::coop::CoopState::new(
                 &config_coop_name,
@@ -761,17 +785,25 @@ impl ForzaApp {
                     }
                 }
 
-                // Speed/RPM trace history (~30 s window, ~25 Hz).
-                if self.trace_history.back().map_or(true, |&(t, ..)| {
-                    now.duration_since(t) >= Duration::from_millis(40)
-                }) {
-                    self.trace_history
-                        .push_back((now, cur_kmh, pkt.current_engine_rpm));
-                    while let Some(&(t, ..)) = self.trace_history.front() {
-                        if now.duration_since(t) > Duration::from_secs(30) {
-                            self.trace_history.pop_front();
-                        } else {
-                            break;
+                // Speed/RPM trace history (~30 s window, ~25 Hz) on an active-time
+                // axis: paused packets are skipped and the clock only advances when
+                // a sample is accepted (a long pause counts as one frame), so pauses
+                // neither gap nor slide the plot and resume appends seamlessly.
+                if !pkt.is_paused() {
+                    let dt_wall = self
+                        .trace_last_sample
+                        .map(|t| now.duration_since(t).as_secs_f32());
+                    if let Some(t) = trace_step(dt_wall, self.trace_active_secs) {
+                        self.trace_active_secs = t;
+                        self.trace_last_sample = Some(now);
+                        self.trace_history
+                            .push_back((t, cur_kmh, pkt.current_engine_rpm));
+                        while let Some(&(t0, ..)) = self.trace_history.front() {
+                            if t - t0 > TRACE_WINDOW_SECS {
+                                self.trace_history.pop_front();
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1827,5 +1859,30 @@ impl eframe::App for ForzaApp {
         if self.config.dsg_save_calibration {
             save_car_calibrations(&self.car_calibrations);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trace_step;
+
+    #[test]
+    fn trace_step_first_sample_starts_at_current_axis_time() {
+        assert_eq!(trace_step(None, 0.0), Some(0.0));
+        assert_eq!(trace_step(None, 12.5), Some(12.5));
+    }
+
+    #[test]
+    fn trace_step_throttles_to_25_hz() {
+        assert_eq!(trace_step(Some(0.01), 5.0), None);
+        assert_eq!(trace_step(Some(0.039), 5.0), None);
+        assert_eq!(trace_step(Some(0.05), 5.0), Some(5.05));
+    }
+
+    #[test]
+    fn trace_step_clamps_pause_gap_to_one_frame() {
+        // A 2-minute pause advances the active axis by at most 0.1 s, so the
+        // resumed line appends seamlessly instead of jumping.
+        assert_eq!(trace_step(Some(120.0), 30.0), Some(30.1));
     }
 }
