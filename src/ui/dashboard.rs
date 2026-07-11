@@ -4,7 +4,7 @@ use std::time::Duration;
 use egui::{
     Align, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
-use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints};
+use egui_plot::{AxisHints, Bar, BarChart, HPlacement, Legend, Line, Plot, PlotPoints};
 
 use crate::app::{
     DashboardDragState, DashboardResizeState, ForzaApp, GForceStats, ResizeEdge,
@@ -2240,6 +2240,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     };
 
     // Optional boost line from the same series the Boost Graph uses.
+    let use_bar = app.config.use_bar;
     let boost_series: Vec<[f64; 2]> = if app.config.power_graph_show_boost {
         let raw: &[[f64; 2]] = if !app.power_capture.boost_series.is_empty() {
             &app.power_capture.boost_series
@@ -2248,7 +2249,6 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         } else {
             &[]
         };
-        let use_bar = app.config.use_bar;
         raw.iter()
             .map(|&[rpm, psi]| {
                 let val = if use_bar { psi * 0.0689476 } else { psi };
@@ -2258,6 +2258,26 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     } else {
         Vec::new()
     };
+
+    // Boost values (bar/PSI) are tiny next to PS/Nm, so scale them into the
+    // shared plot space and expose the real values on a dedicated right axis.
+    let y_top = {
+        let m = power_series
+            .iter()
+            .chain(torque_series.iter())
+            .map(|&[_, v]| v)
+            .fold(0.0_f64, f64::max);
+        if m > 0.0 { m } else { 100.0 }
+    };
+    let boost_top = if boost_series.is_empty() {
+        if use_bar { 1.0 } else { 15.0 }
+    } else {
+        // Same headroom style as the Boost Graph widget.
+        let max_boost = boost_series.iter().map(|&[_, v]| v).fold(0.0_f64, f64::max);
+        let min_headroom = if use_bar { 0.25 } else { 3.0 };
+        max_boost + (max_boost.abs() * 0.15).max(min_headroom)
+    };
+    let boost_scale = y_top / boost_top;
 
     let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
         app.cached_engine_max_rpm
@@ -2272,10 +2292,22 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     plot_rect.min.x += 8.0;
     plot_rect.max.x -= 8.0;
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
+    // The default left axis, plus a dedicated right-side scale for the boost
+    // line (tick marks converted back to bar/PSI via the scale factor).
+    let mut y_axes = vec![AxisHints::new_y().label("PS / Nm")];
+    if !boost_series.is_empty() {
+        let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
+        y_axes.push(
+            AxisHints::new_y()
+                .label(boost_label)
+                .placement(HPlacement::Right)
+                .formatter(move |mark, _| format!("{:.1}", mark.value / boost_scale)),
+        );
+    }
     let mut plot = Plot::new("dash_power_graph")
         .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
         .x_axis_label(tr("RPM"))
-        .y_axis_label("PS / Nm")
+        .custom_y_axes(y_axes)
         .include_x(0.0)
         .include_x(engine_max_rpm)
         .include_y(0.0)
@@ -2301,9 +2333,13 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
             );
         }
         if !boost_series.is_empty() {
-            let boost_label = if app.config.use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
+            let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
+            let scaled: Vec<[f64; 2]> = boost_series
+                .iter()
+                .map(|&[rpm, v]| [rpm, v * boost_scale])
+                .collect();
             plot_ui.line(
-                Line::new(boost_label, PlotPoints::new(boost_series))
+                Line::new(boost_label, PlotPoints::new(scaled))
                     .color(Color32::from_rgb(180, 80, 220))
                     .width(2.0),
             );

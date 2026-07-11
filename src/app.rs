@@ -1322,7 +1322,7 @@ impl eframe::App for ForzaApp {
                     use crate::i18n::tr;
 
                     // Main tab row (no Settings tab here)
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for (tab, lbl) in [
                             (Tab::Dashboard,    "Dashboard"),
                             (Tab::Backfire,     "Backfire"),
@@ -1339,8 +1339,8 @@ impl eframe::App for ForzaApp {
 
                     match self.page_settings_tab {
                         Tab::Dashboard => {
-                            // Sub-tab row
-                            ui.horizontal(|ui| {
+                            // Sub-tab row (wraps onto extra lines when space runs out)
+                            ui.horizontal_wrapped(|ui| {
                                 for (sub, lbl) in [
                                     (DashboardSubTab::General,     "General"),
                                     (DashboardSubTab::Modules,     "Modules"),
@@ -1351,7 +1351,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::Car,         "Car"),
-                                    (DashboardSubTab::Graphs,      "Graphs"),
+                                    (DashboardSubTab::Graphs,      "Power Graph"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));

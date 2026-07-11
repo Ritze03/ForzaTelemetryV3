@@ -95,7 +95,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Mp/h" => "mph",
         "Sprint" => "Sprint",
         "Shift" => "Schaltpunkt",
-        "Graphs" => "Diagramme",
         "Show Boost" => "Ladedruck anzeigen",
 
         // ── Dashboard general ──────────────────────────────────────────
