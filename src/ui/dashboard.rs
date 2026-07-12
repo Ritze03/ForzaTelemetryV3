@@ -968,12 +968,14 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     let has_caption = !cyl_text.is_empty();
 
     // Gap floors (also reserved in the scale budget below, so the drivetrain
-    // label can never be pushed past the cell's bottom edge).
-    let gap = 4.0;
+    // label can never be pushed past the cell's bottom edge). Gaps here mean
+    // the TOTAL visual gap — egui's implicit item_spacing.y after each widget
+    // is part of it, so the add_space calls below subtract it back out.
+    let gap = 4.0_f32;
     let spacing = ui.spacing().item_spacing.y;
     let floor_top = 4.0;
     let floor_caption_gap = spacing;
-    let floor_mid = gap;
+    let floor_mid = gap.max(spacing);
     let floor_bottom = spacing;
     let n_gaps = if has_caption { 4.0 } else { 3.0 };
     let floor_total = floor_top
@@ -1030,24 +1032,44 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
 
     ui.add_space(top_margin);
 
-    // Cylinder/Electric caption.
+    // Cylinder/Electric caption. Painted (not laid out as a Label) so it can
+    // never wrap onto a second, unbudgeted row in a narrow cell; if the text
+    // would overflow the cell width, the font shrinks to fit instead.
     if has_caption {
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(cyl_text).font(caption_font).color(crate::theme::steel(180)));
-        });
-        ui.add_space(caption_gap);
+        let color = crate::theme::steel(180);
+        let mut galley = ui.painter().layout_no_wrap(cyl_text.clone(), caption_font, color);
+        if galley.size().x > avail_w * 0.95 {
+            let fitted = (caption_size * avail_w * 0.95 / galley.size().x).max(9.0);
+            galley = ui.painter().layout_no_wrap(
+                cyl_text.clone(),
+                egui::FontId::proportional(fitted),
+                color,
+            );
+        }
+        let (caprow, _) =
+            ui.allocate_exact_size(egui::vec2(avail_w, caption_h), egui::Sense::hover());
+        let gsize = galley.size();
+        ui.painter().galley(
+            egui::pos2(caprow.center().x - gsize.x * 0.5, caprow.center().y - gsize.y * 0.5),
+            galley,
+            color,
+        );
+        // The allocation above already advanced the cursor by item_spacing.y —
+        // it's part of the budgeted gap, not extra.
+        ui.add_space((caption_gap - spacing).max(0.0));
     }
 
     // Class label (centred), rating stamped into its box.
     let (crow, _) = ui.allocate_exact_size(egui::vec2(avail_w, csize.y), egui::Sense::hover());
     app.labels.paint_class(ui.painter(), class, pi,
         egui::pos2(crow.center().x - csize.x * 0.5, crow.min.y), scale);
-    ui.add_space(mid_gap);
+    // Same here: the class row's implicit item_spacing.y counts toward mid_gap.
+    ui.add_space((mid_gap - spacing).max(0.0));
     // Drivetrain label (centred).
     let (drow, _) = ui.allocate_exact_size(egui::vec2(avail_w, dsize.y), egui::Sense::hover());
     app.labels.paint_drivetrain(ui.painter(), dt,
         egui::pos2(drow.center().x - dsize.x * 0.5, drow.min.y), scale);
-    ui.add_space(bottom_margin);
+    ui.add_space((bottom_margin - spacing).max(0.0));
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
