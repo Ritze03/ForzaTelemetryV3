@@ -1676,20 +1676,25 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             let w_scale = if widest > avail { (avail / widest).max(0.5) } else { 1.0 };
 
             // Height budget: 8 lines, 7 inter-line gaps, plus the 4 px break between the
-            // Current and Peak blocks. Shrink to fit, never grow past the default size.
+            // Current and Peak blocks — as ONE unit that scales together (the gaps scale
+            // with the font too, otherwise the fixed gaps make it overflow). Sized to the
+            // plot's height so the two columns match; then centered in it.
             let lh = ui.painter()
                 .layout_no_wrap("0".to_owned(), body_font.clone(), Color32::WHITE).rect.height();
             let sp = ui.spacing().item_spacing.y;
-            let needed_h = 8.0 * lh + 7.0 * sp + 4.0;
-            let h_scale = if needed_h > avail_h { (avail_h / needed_h).max(0.5) } else { 1.0 };
+            let unit_h = 8.0 * lh + 7.0 * sp + 4.0;
+            let h_scale = (plot_size / unit_h).clamp(0.5, 1.0);
+            let scale = w_scale.min(h_scale);
+            let size = body_font.size * scale;
 
-            let size = body_font.size * w_scale.min(h_scale);
+            ui.add_space(((plot_size - unit_h * scale) * 0.5).max(0.0)); // center vertically
+            ui.spacing_mut().item_spacing.y = sp * scale;
 
             ui.label(RichText::new(hdr_cur).size(size).color(crate::theme::TEXT_DIM));
             ui.label(RichText::new(cur_lat).size(size));
             ui.label(RichText::new(cur_long).size(size));
             ui.label(RichText::new(cur_vert).size(size));
-            ui.add_space(4.0);
+            ui.add_space(4.0 * scale);
             ui.label(RichText::new(hdr_peak).size(size).color(crate::theme::TEXT_DIM));
             ui.label(RichText::new(pk_lat).size(size).color(Color32::YELLOW));
             ui.label(RichText::new(pk_long).size(size).color(Color32::YELLOW));
