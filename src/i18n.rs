@@ -96,6 +96,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Sprint" => "Sprint",
         "Shift" => "Schaltpunkt",
         "Show Boost" => "Ladedruck anzeigen",
+        "Compact" => "Kompakt",
+        "Compact style for small cells: hides title, legend and axes; peaks labelled inside the plot." => "Kompakter Stil für kleine Zellen: blendet Titel, Legende und Achsen aus; Spitzenwerte werden im Diagramm beschriftet.",
 
         // ── Dashboard general ──────────────────────────────────────────
         "Grid columns:" => "Rasterspalten:",

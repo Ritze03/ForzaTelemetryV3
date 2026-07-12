@@ -257,6 +257,7 @@ pub struct AppConfig {
     pub power_curve_save_fi_state: bool,
     // Dashboard graph widgets
     pub power_graph_show_boost: bool, // extra boost line in the Power Graph widget
+    pub power_graph_compact: bool, // compact style: no title/legend/axes, peaks annotated inside
     // Dashboard widget grid
     pub grid_cols: usize,
     pub grid_rows: usize,
@@ -384,6 +385,7 @@ impl Default for AppConfig {
             power_curve_forced_induction: true,
             power_curve_save_fi_state: true,
             power_graph_show_boost: false,
+            power_graph_compact: false,
             grid_cols: 16,
             grid_rows: 10,
             dashboard_widgets: default_widget_layout(),
@@ -551,7 +553,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
-    "power_graph_show_boost", "shift_high_pct", "shift_low_pct", "show_speed_delta",
+    "power_graph_compact", "power_graph_show_boost", "shift_high_pct", "shift_low_pct", "show_speed_delta",
     "speed_align", "speed_delta_mode", "sprint_show_other", "sprint_type", "tire_bar_swap",
     "tire_bar_value", "tire_display_style", "tire_slip_style",
 ];

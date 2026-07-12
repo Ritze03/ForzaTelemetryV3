@@ -1726,6 +1726,9 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Graphs => {
                                     crate::theme::styled_checkbox(ui, &mut self.config.power_graph_show_boost, tr("Show Boost"));
+                                    ui.add_space(6.0);
+                                    crate::theme::styled_checkbox(ui, &mut self.config.power_graph_compact, tr("Compact"));
+                                    ui.label(egui::RichText::new(tr("Compact style for small cells: hides title, legend and axes; peaks labelled inside the plot.")).size(11.0).color(egui::Color32::GRAY));
                                 }
                                 DashboardSubTab::Config => {
                                     ui.label(crate::theme::section_label(tr("Load Preset")));
