@@ -1093,19 +1093,24 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         format!("{}  {:5.2} {boost_unit}  ({} {:5.2})", tr("Boost:"), boost_cur, tr("max"), boost_max),
     ];
 
-    // When the widest full line would overflow the widget (i.e. wrap), drop the
-    // leading label and the "max" word so only "value unit (peak)" remains.
     let body_font = egui::TextStyle::Body.resolve(ui.style());
-    let widest = full.iter().fold(0.0_f32, |w, s| {
-        let gw = ui.painter().layout_no_wrap(s.clone(), body_font.clone(), Color32::WHITE).rect.width();
-        w.max(gw)
+    let avail = ui.available_width() - 2.0;
+    let widest = |lines: &[String]| lines.iter().fold(0.0_f32, |w, s| {
+        w.max(ui.painter().layout_no_wrap(s.clone(), body_font.clone(), Color32::WHITE).rect.width())
     });
-    if widest > ui.available_width() - 2.0 {
-        ui.label(format!("{:>5.0} PS   ({:>5.0})", power_cur, app.max_power_ps));
-        ui.label(format!("{:>5.0} Nm   ({:>5.0})", torque_cur, app.max_torque_nm));
-        ui.label(format!("{:5.2} {boost_unit}  ({:5.2})", boost_cur, boost_max));
-    } else {
+
+    if widest(&full) <= avail {
         for line in full { ui.label(line); }
+    } else {
+        // Too narrow: drop the label and the "max" word so only "value unit (peak)"
+        // remains. If even that doesn't fit, step the font down one notch.
+        let compact = [
+            format!("{:>5.0} PS   ({:>5.0})", power_cur, app.max_power_ps),
+            format!("{:>5.0} Nm   ({:>5.0})", torque_cur, app.max_torque_nm),
+            format!("{:5.2} {boost_unit}  ({:5.2})", boost_cur, boost_max),
+        ];
+        let size = if widest(&compact) > avail { body_font.size * 0.85 } else { body_font.size };
+        for line in compact { ui.label(egui::RichText::new(line).size(size)); }
     }
 
     if app.config.game_mode == GameMode::ForzaMotorsport7 {
