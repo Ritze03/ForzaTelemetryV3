@@ -960,26 +960,15 @@ fn effective_max_rpm(app: &ForzaApp, pkt: &ForzaPacket) -> f32 {
 
 fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let max_rpm = effective_max_rpm(app, pkt);
-    let avail_h = ui.available_rect_before_wrap().height();
-    let rpm_font = (avail_h * 0.20).min(28.0).max(12.0);
 
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.label(RichText::new(format!("{}: {:>5.0}", tr("RPM"), pkt.current_engine_rpm))
-            .size(rpm_font).strong());
-    });
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.label(RichText::new(format!("{}: {:>5.0}", tr("max"), max_rpm))
-            .size((rpm_font * 0.45).max(9.0)).color(crate::theme::TEXT_DIM));
-    });
-
+    // The current + max RPM values live on the bar itself (see draw_shift_bar),
+    // so the bar fills the whole widget height with just a tiny cell-edge margin.
     let bar_h = (ui.available_height() - 4.0).max(4.0);
     let bar_size = Vec2::new(ui.available_width(), bar_h);
     let (rect, _) = ui.allocate_exact_size(bar_size, egui::Sense::hover());
     draw_shift_bar(
         ui,
-        rect.shrink2(vec2(4.0, 0.0)),
+        rect.shrink2(vec2(4.0, 2.0)),
         pkt,
         app.config.shift_low_pct,
         app.config.shift_high_pct,
@@ -1984,21 +1973,37 @@ fn draw_shift_bar(
         painter.rect_filled(sub_rect(rect, high, cur), 0.0, Color32::from_rgb(220, 50, 50));
     }
 
-    for &pct in &[low, high] {
+    // Threshold lines coloured by meaning: warn (yellow) at the low mark,
+    // shift (red) at the high mark — matching the zone fills they border.
+    let warn_col = Color32::from_rgb(220, 180, 40);
+    let shift_col = Color32::from_rgb(220, 50, 50);
+    for &(pct, col) in &[(low, warn_col), (high, shift_col)] {
         let x = rect.left() + rect.width() * pct;
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(2.0, Color32::WHITE),
+            Stroke::new(2.0, col),
         );
     }
 
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        format!("{:.0} / {:.0}", pkt.current_engine_rpm, max_rpm),
-        egui::FontId::proportional(13.0),
+    // Centred value: current RPM bright + bold, the " / {max}" portion dimmed.
+    // Lay out both parts separately so the combined string stays centred.
+    let font = egui::FontId::proportional(13.0);
+    let cur_galley = painter.layout_no_wrap(
+        format!("{:.0}", pkt.current_engine_rpm),
+        font.clone(),
         Color32::WHITE,
     );
+    let max_galley = painter.layout_no_wrap(
+        format!(" / {:.0}", max_rpm),
+        font,
+        crate::theme::TEXT_DIM,
+    );
+    let total_w = cur_galley.size().x + max_galley.size().x;
+    let top = rect.center().y - cur_galley.size().y / 2.0;
+    let mut x = rect.center().x - total_w / 2.0;
+    painter.galley(pos2(x, top), cur_galley.clone(), Color32::WHITE);
+    x += cur_galley.size().x;
+    painter.galley(pos2(x, top), max_galley, crate::theme::TEXT_DIM);
 }
 
 fn sub_rect(r: egui::Rect, start: f32, end: f32) -> egui::Rect {
