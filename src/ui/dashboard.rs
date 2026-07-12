@@ -534,7 +534,9 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let peak_h = ui.painter()
             .layout_no_wrap(peak_text.clone(), peak_font.clone(), crate::theme::TEXT_DIM).size().y;
         let bar_h = (area.height() - peak_h - sp).max(20.0);
-        let bar = egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h));
+        // Leave a small side margin, matching the input bars.
+        let bar = egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h))
+            .shrink2(vec2(3.0, 0.0));
         ui.allocate_rect(
             egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h + sp + peak_h)),
             egui::Sense::hover(),
