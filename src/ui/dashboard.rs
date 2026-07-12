@@ -1081,28 +1081,32 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     } else {
         (pkt.boost, app.max_boost_psi, "PSI")
     };
+    let power_cur = pkt.power_ps().max(0.0);
+    let torque_cur = pkt.torque_nm().max(0.0);
+    let boost_cur = boost_cur.max(0.0);
+    let boost_max = boost_max.max(0.0);
 
-    ui.label(format!(
-        "{}  {:>5.0} PS   ({} {:>5.0})",
-        tr("Power:"),
-        pkt.power_ps().max(0.0),
-        tr("max"),
-        app.max_power_ps
-    ));
-    ui.label(format!(
-        "{} {:>5.0} Nm   ({} {:>5.0})",
-        tr("Torque:"),
-        pkt.torque_nm().max(0.0),
-        tr("max"),
-        app.max_torque_nm
-    ));
-    ui.label(format!(
-        "{}  {:5.2} {boost_unit}  ({} {:5.2})",
-        tr("Boost:"),
-        boost_cur.max(0.0),
-        tr("max"),
-        boost_max.max(0.0)
-    ));
+    // Full lines carry the "Power:/Torque:/Boost:" label and a "(max …)" tail.
+    let full = [
+        format!("{}  {:>5.0} PS   ({} {:>5.0})", tr("Power:"),  power_cur,  tr("max"), app.max_power_ps),
+        format!("{} {:>5.0} Nm   ({} {:>5.0})",  tr("Torque:"), torque_cur, tr("max"), app.max_torque_nm),
+        format!("{}  {:5.2} {boost_unit}  ({} {:5.2})", tr("Boost:"), boost_cur, tr("max"), boost_max),
+    ];
+
+    // When the widest full line would overflow the widget (i.e. wrap), drop the
+    // leading label and the "max" word so only "value unit (peak)" remains.
+    let body_font = egui::TextStyle::Body.resolve(ui.style());
+    let widest = full.iter().fold(0.0_f32, |w, s| {
+        let gw = ui.painter().layout_no_wrap(s.clone(), body_font.clone(), Color32::WHITE).rect.width();
+        w.max(gw)
+    });
+    if widest > ui.available_width() - 2.0 {
+        ui.label(format!("{:>5.0} PS   ({:>5.0})", power_cur, app.max_power_ps));
+        ui.label(format!("{:>5.0} Nm   ({:>5.0})", torque_cur, app.max_torque_nm));
+        ui.label(format!("{:5.2} {boost_unit}  ({:5.2})", boost_cur, boost_max));
+    } else {
+        for line in full { ui.label(line); }
+    }
 
     if app.config.game_mode == GameMode::ForzaMotorsport7 {
         ui.add_space(4.0);
