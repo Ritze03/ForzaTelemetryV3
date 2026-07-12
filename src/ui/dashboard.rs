@@ -1079,18 +1079,17 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         (compact, if cw > avail { (avail / cw).max(0.5) } else { 1.0 })
     };
 
-    // Height scale: the 3 value lines plus the optional type caption (at 0.8× the
-    // value font) must fit the space left in the cell below the heading. Same idea
-    // as the width fit — shrink to fit, but never grow past the default size.
+    // Height scale: all rows — the 3 value lines plus the optional type caption —
+    // are one uniform size, evenly spaced, sized to fill the space left in the cell
+    // below the heading. Shrink to fit, but never grow past the default size.
     let cap = app.config.engine_show_type;
+    let n = if cap { 4.0 } else { 3.0 };
     let used_h = ui.next_widget_position().y - full_rect.min.y;
     let avail_h = (full_rect.height() - used_h).max(0.0);
     let lh = ui.painter()
         .layout_no_wrap("0".to_owned(), body_font.clone(), Color32::WHITE).rect.height();
     let sp = ui.spacing().item_spacing.y;
-    let fixed = 2.0 * sp + if cap { sp + 2.0 } else { 0.0 };   // gaps that don't scale
-    let per_scale = (3.0 + if cap { 0.8 } else { 0.0 }) * lh;  // height that scales with font
-    let h_scale = if per_scale > 0.0 { ((avail_h - fixed) / per_scale).clamp(0.5, 1.0) } else { 1.0 };
+    let h_scale = (((avail_h - (n - 1.0) * sp) / (n * lh)).min(1.0)).max(0.5);
 
     let size = body_font.size * w_scale.min(h_scale);
     for line in lines { ui.label(egui::RichText::new(line).size(size)); }
@@ -1101,14 +1100,12 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         } else {
             format!("{} {}", app.cached_num_cylinders, tr("Cylinders"))
         };
-        // Smaller than the values (frees a little room above), centered, and shrunk
-        // further if it would still overflow the width.
-        let mut cap_size = size * 0.8;
+        // Same size as the value rows, centered; shrunk only if it would overflow width.
+        let mut cap_size = size;
         let tw = ui.painter()
             .layout_no_wrap(type_text.clone(), egui::FontId::proportional(cap_size), Color32::WHITE)
             .rect.width();
         if tw > avail { cap_size = (cap_size * avail / tw).max(8.0); }
-        ui.add_space(2.0);
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new(type_text).size(cap_size).color(crate::theme::TEXT_DIM));
         });
@@ -2592,11 +2589,12 @@ fn input_bar_full(ui: &mut Ui, label: &str, val: u8, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), egui::Sense::hover());
     let painter = ui.painter();
 
-    painter.rect_filled(rect, 3.0, crate::theme::TRACK);
+    let round = h / 2.0; // fully rounded (pill) ends, like the old progress bar
+    painter.rect_filled(rect, round, crate::theme::TRACK);
     let frac = (val as f32 / 255.0).clamp(0.0, 1.0);
     if frac > 0.0 {
         let fill = Rect::from_min_max(rect.min, pos2(rect.left() + frac * rect.width(), rect.bottom()));
-        painter.rect_filled(fill, 3.0, color);
+        painter.rect_filled(fill, round, color);
     }
 
     let font = egui::FontId::proportional(12.0);
