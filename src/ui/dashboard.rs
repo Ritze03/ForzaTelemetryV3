@@ -1137,9 +1137,16 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let type_text = if app.cached_num_cylinders == 0 {
             tr("Electric").to_string()
         } else {
-            format!("{} {}", app.cached_num_cylinders, tr("cyl"))
+            format!("{} {}", app.cached_num_cylinders, tr("Cylinders"))
         };
-        ui.label(egui::RichText::new(type_text).color(crate::theme::TEXT_DIM));
+        // Centered, and scaled down if it would otherwise overflow the widget width.
+        let tw = ui.painter()
+            .layout_no_wrap(type_text.clone(), body_font.clone(), Color32::WHITE).rect.width();
+        let sz = body_font.size * if tw > avail { (avail / tw).max(0.5) } else { 1.0 };
+        ui.add_space(2.0);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(type_text).size(sz).color(crate::theme::TEXT_DIM));
+        });
     }
 
     if app.config.game_mode == GameMode::ForzaMotorsport7 {
