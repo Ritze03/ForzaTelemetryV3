@@ -1194,7 +1194,11 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     if is_fh6 && pkt.race_position == 0 {
         // Captured before the heading so the height budget covers the whole cell.
         let full_rect = ui.available_rect_before_wrap();
-        ui.label(crate::theme::section_label(tr("Sprint")));
+        ui.add_space(SPRINT_EDGE); // top margin
+        ui.horizontal(|ui| {
+            ui.add_space(SPRINT_EDGE);
+            ui.label(crate::theme::section_label(tr("Sprint")));
+        });
         ui.add_space(4.0);
 
         let st = &app.sprint_timer;
@@ -1243,8 +1247,9 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 .rect
                 .width()
         };
-        // Width scale: widest row (label + main value + optional secondary) vs cell.
-        let avail_w = (ui.available_width() - 2.0).max(1.0);
+        // Width scale: widest row (label + main value + optional secondary) vs cell,
+        // leaving an edge margin on both sides.
+        let avail_w = (ui.available_width() - 2.0 * SPRINT_EDGE).max(1.0);
         let widest = rows.iter().fold(0.0_f32, |acc, &(lbl, seg, cum, so)| {
             let (main, secondary) = match stype {
                 SprintType::Incremental => (seg, cum),
@@ -1269,16 +1274,19 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         // Height scale: 5 rows sized to fill the space left below the heading.
         let n = rows.len() as f32;
         let used_h = ui.next_widget_position().y - full_rect.min.y;
-        let avail_h = (full_rect.height() - used_h).max(0.0);
+        let avail_h = (full_rect.height() - used_h - SPRINT_EDGE).max(0.0); // reserve bottom margin
         let lh = ui
             .painter()
             .layout_no_wrap("0".to_owned(), egui::FontId::proportional(SPRINT_MAIN_SIZE), Color32::WHITE)
             .rect
             .height();
         let sp = ui.spacing().item_spacing.y;
-        let h_scale = (((avail_h - (n - 1.0) * sp) / (n * lh)).min(1.0)).max(0.5);
+        // The inter-row spacing scales with the font too, so the rows fill the height
+        // proportionally instead of leaving fixed gaps when the font shrinks.
+        let h_scale = (avail_h / (n * lh + (n - 1.0) * sp)).clamp(0.5, 1.0);
 
         let scale = w_scale.min(h_scale);
+        ui.spacing_mut().item_spacing.y = sp * scale;
 
         sprint_row(ui, lbl0, st.zero_to_hundred, c100, stype, false, scale);
         sprint_row(ui, lbl1, st.hundred_to_two, c200, stype, show_other, scale);
@@ -2704,6 +2712,8 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 const SPRINT_LABEL_SIZE: f32 = 14.0;
 const SPRINT_MAIN_SIZE: f32 = 14.0;
 const SPRINT_SECONDARY_SIZE: f32 = 12.0;
+/// Edge margin around the sprint content (matches the input bars' side inset).
+const SPRINT_EDGE: f32 = 3.0;
 
 fn sprint_row(
     ui: &mut Ui,
@@ -2715,6 +2725,7 @@ fn sprint_row(
     scale: f32,
 ) {
     ui.horizontal(|ui| {
+        ui.add_space(SPRINT_EDGE); // left margin
         ui.label(RichText::new(format!("{label:12}")).size(SPRINT_LABEL_SIZE * scale).strong());
 
         let (main, secondary) = match stype {
