@@ -605,6 +605,10 @@ fn de(s: &str) -> Option<&'static str> {
         "Max values" => "Maximalwerte",
         "Cylinders" => "Zylinder",
         "Show engine type" => "Motortyp anzeigen",
+        "Full-width bars" => "Balken über volle Breite",
+        "Bars span the full width with the label and value drawn inside."
+            => "Balken über die volle Breite, Beschriftung und Wert im Balken.",
+        "Compact steering" => "Kompakte Lenkung",
         "Adds an \"Electric\" or cylinder-count caption under the values."
             => "Zeigt „Elektrisch\" oder die Zylinderanzahl unter den Werten an.",
         "G-Force" => "G-Kraft",

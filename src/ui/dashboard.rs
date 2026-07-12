@@ -938,13 +938,24 @@ fn show_inputs_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // (but fake) pkt.accel for a few frames — hide that blip from the Accel bar when opted in.
     let suppress = app.config.inputs_filter_backfire_accel && app.backfire_echo_active();
     let accel = if suppress { 0 } else { pkt.accel };
-    input_bar(ui, tr("Accel"),     accel,          Color32::from_rgb(60, 200, 90));
-    input_bar(ui, tr("Brake"),     pkt.brake,      Color32::from_rgb(220, 60, 60));
-    input_bar(ui, tr("Clutch"),    pkt.clutch,     Color32::from_rgb(80, 140, 220));
-    input_bar(ui, tr("HandBrake"), pkt.hand_brake, Color32::from_rgb(230, 150, 40));
+    let rows = [
+        (tr("Accel"),     accel,          Color32::from_rgb(60, 200, 90)),
+        (tr("Brake"),     pkt.brake,      Color32::from_rgb(220, 60, 60)),
+        (tr("Clutch"),    pkt.clutch,     Color32::from_rgb(80, 140, 220)),
+        (tr("HandBrake"), pkt.hand_brake, Color32::from_rgb(230, 150, 40)),
+    ];
+    for (lbl, val, color) in rows {
+        if app.config.input_bars_full_width {
+            input_bar_full(ui, lbl, val, color);
+        } else {
+            input_bar(ui, lbl, val, color);
+        }
+    }
 
     ui.add_space(6.0);
-    ui.label(tr("Steer"));
+    if !app.config.input_steer_compact {
+        ui.label(tr("Steer"));
+    }
     draw_steering(ui, pkt.steer);
 }
 
@@ -2554,6 +2565,28 @@ fn input_bar(ui: &mut Ui, label: &str, val: u8, color: Color32) {
         );
         ui.label(format!("{:.0}%", val as f32 / 255.0 * 100.0));
     });
+}
+
+/// Alternative input style: a full-width bar with the label drawn at the left
+/// and the value at the right, both inside the bar. Text is white for now.
+fn input_bar_full(ui: &mut Ui, label: &str, val: u8, color: Color32) {
+    let h = 18.0_f32;
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, h), egui::Sense::hover());
+    let painter = ui.painter();
+
+    painter.rect_filled(rect, 3.0, crate::theme::TRACK);
+    let frac = (val as f32 / 255.0).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let fill = Rect::from_min_max(rect.min, pos2(rect.left() + frac * rect.width(), rect.bottom()));
+        painter.rect_filled(fill, 3.0, color);
+    }
+
+    let font = egui::FontId::proportional(12.0);
+    painter.text(pos2(rect.left() + 6.0, rect.center().y),
+        egui::Align2::LEFT_CENTER, label, font.clone(), Color32::WHITE);
+    painter.text(pos2(rect.right() - 6.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER, format!("{:.0}%", frac * 100.0), font, Color32::WHITE);
 }
 
 fn tire_temp_label(ui: &mut Ui, temp_f: f32, use_f: bool) {

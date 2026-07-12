@@ -1686,7 +1686,22 @@ impl eframe::App for ForzaApp {
                                     );
                                 }
                                 DashboardSubTab::Inputs => {
-                                    crate::theme::styled_checkbox(ui, 
+                                    crate::theme::styled_checkbox(ui,
+                                        &mut self.config.input_bars_full_width,
+                                        tr("Full-width bars"),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(tr("Bars span the full width with the label and value drawn inside."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                    ui.add_space(6.0);
+                                    crate::theme::styled_checkbox(ui,
+                                        &mut self.config.input_steer_compact,
+                                        tr("Compact steering"),
+                                    );
+                                    ui.add_space(6.0);
+                                    crate::theme::styled_checkbox(ui,
                                         &mut self.config.inputs_filter_backfire_accel,
                                         tr("Filter Accel while Backfire fires"),
                                     );
