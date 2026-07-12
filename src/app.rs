@@ -466,6 +466,8 @@ pub struct ForzaApp {
     // Dashboard config export/import ("Config" sub-tab)
     pub config_import_buf: String,
     pub config_io_status: String,
+    pub config_export_minisettings: bool,
+    pub config_import_minisettings: bool,
 
     // Dashboard widget drag / resize state
     pub dashboard_drag: Option<DashboardDragState>,
@@ -633,6 +635,8 @@ impl ForzaApp {
             page_map_sub_tab: MiniMapTab::default(),
             config_import_buf: String::new(),
             config_io_status: String::new(),
+            config_export_minisettings: true,
+            config_import_minisettings: true,
             dashboard_drag: None,
             dashboard_resize: None,
             minimap_texture: None,
@@ -1689,12 +1693,14 @@ impl eframe::App for ForzaApp {
                                     ui.label(crate::theme::section_label(tr("Export")));
                                     ui.add_space(4.0);
                                     ui.label(
-                                        egui::RichText::new(tr("Copies your dashboard layout and mini-settings as JSON to the clipboard."))
+                                        egui::RichText::new(tr("Copies your dashboard layout as JSON to the clipboard."))
                                             .size(11.0).color(egui::Color32::GRAY),
                                     );
                                     ui.add_space(4.0);
+                                    ui.checkbox(&mut self.config_export_minisettings, tr("Include mini-settings"));
+                                    ui.add_space(4.0);
                                     if ui.button(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard"))).clicked() {
-                                        ui.ctx().copy_text(crate::config::export_preset(&self.config));
+                                        ui.ctx().copy_text(crate::config::export_preset(&self.config, self.config_export_minisettings));
                                         self.config_io_status = tr("Copied to clipboard.").to_string();
                                     }
 
@@ -1716,11 +1722,12 @@ impl eframe::App for ForzaApp {
                                             .code_editor()
                                             .hint_text(tr("Paste JSON here")),
                                     );
+                                    ui.add_space(4.0);
+                                    ui.checkbox(&mut self.config_import_minisettings, tr("Include mini-settings"));
                                     ui.add_space(6.0);
                                     ui.horizontal(|ui| {
                                         if ui.button(format!("{}  {}", crate::icons::FLOPPY, tr("Import"))).clicked() {
-                                            if serde_json::from_str::<serde_json::Value>(&self.config_import_buf).is_ok() {
-                                                crate::config::apply_preset(&mut self.config, &self.config_import_buf);
+                                            if crate::config::import_preset(&mut self.config, &self.config_import_buf, self.config_import_minisettings) {
                                                 self.config.save();
                                                 self.config_import_buf.clear();
                                                 self.config_io_status = tr("Imported.").to_string();

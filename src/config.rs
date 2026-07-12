@@ -484,8 +484,7 @@ pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
 // A preset is just a partial config: any AppConfig key present in the
 // preset JSON overwrites the current value, everything else is left as-is.
 // New minisettings fields travel automatically — no struct to maintain.
-pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
-    let Ok(overlay) = serde_json::from_str::<serde_json::Value>(preset_json) else { return; };
+fn apply_preset_overlay(cfg: &mut AppConfig, overlay: serde_json::Value) {
     let Ok(mut base) = serde_json::to_value(&*cfg) else { return; };
     if let (
         serde_json::Value::Object(base_map),
@@ -500,15 +499,21 @@ pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
     }
 }
 
-/// Config keys that make up a shareable "dashboard config": the dashboard layout
-/// plus every mini-settings (cog wheel) field. Hand-maintained — a new mini-setting
-/// that should travel with an export/preset gets added here. Anything outside this
-/// list (listen port, coop credentials, …) stays local and is never exported.
-pub const PRESET_KEYS: &[&str] = &[
-    // dashboard layout
+pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
+    if let Ok(overlay) = serde_json::from_str::<serde_json::Value>(preset_json) {
+        apply_preset_overlay(cfg, overlay);
+    }
+}
+
+/// Dashboard-layout keys: widget placement + grid. Always part of a preset.
+pub const LAYOUT_KEYS: &[&str] = &[
     "grid_cols", "grid_rows", "dashboard_widgets", "dashboard_edit_mode",
     "dashboard_show_grid", "dashboard_show_outlines", "disabled_modules",
-    // mini-settings
+];
+
+/// Mini-settings (cog wheel) keys: optional part of a preset, toggled on export/import.
+/// Hand-maintained — a new mini-setting that should travel gets added here.
+pub const MINISETTINGS_KEYS: &[&str] = &[
     "car_show_cylinders", "coop_list_class", "coop_list_distance", "coop_list_gear",
     "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
     "dsg_show_debug_panel", "gear_align", "gforce_show_text", "inputs_filter_backfire_accel",
@@ -522,14 +527,29 @@ pub const PRESET_KEYS: &[&str] = &[
     "tire_bar_value", "tire_display_style", "tire_slip_style",
 ];
 
-/// Serialize just the preset subset of the config as pretty JSON, for export.
-pub fn export_preset(cfg: &AppConfig) -> String {
+/// Serialize the dashboard layout as pretty JSON, optionally including mini-settings.
+pub fn export_preset(cfg: &AppConfig, include_minisettings: bool) -> String {
     let Ok(serde_json::Value::Object(map)) = serde_json::to_value(cfg) else { return String::new(); };
     let mut out = serde_json::Map::new();
-    for &k in PRESET_KEYS {
+    let keys = LAYOUT_KEYS.iter()
+        .chain(if include_minisettings { MINISETTINGS_KEYS } else { &[] });
+    for &k in keys {
         if let Some(v) = map.get(k) { out.insert(k.to_string(), v.clone()); }
     }
     serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_default()
+}
+
+/// Apply an exported JSON, optionally dropping the mini-settings so only the layout
+/// is imported. Returns false if the JSON didn't parse (nothing applied).
+pub fn import_preset(cfg: &mut AppConfig, json: &str, include_minisettings: bool) -> bool {
+    let Ok(mut overlay) = serde_json::from_str::<serde_json::Value>(json) else { return false; };
+    if !include_minisettings {
+        if let serde_json::Value::Object(ref mut m) = overlay {
+            for k in MINISETTINGS_KEYS { m.remove(*k); }
+        }
+    }
+    apply_preset_overlay(cfg, overlay);
+    true
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -676,22 +696,31 @@ mod tests {
     }
 
     #[test]
-    fn export_preset_roundtrips_and_stays_subset() {
+    fn export_import_respects_minisettings_toggle() {
         let mut src = AppConfig::default();
-        src.grid_cols = 33;
-        src.gforce_show_text = false;
-        let json = export_preset(&src);
-        // Export contains only whitelisted keys.
-        let serde_json::Value::Object(map) = serde_json::from_str(&json).unwrap() else { panic!() };
-        for k in map.keys() {
-            assert!(PRESET_KEYS.contains(&k.as_str()), "unexpected key exported: {k}");
-        }
-        assert!(!map.contains_key("listen_port"), "local key must not export");
-        // Importing onto a fresh config restores the exported fields.
+        src.grid_cols = 33;             // layout
+        src.gforce_show_text = false;   // mini-setting
+
+        // Export without mini-settings: only layout keys, no local keys.
+        let layout_only = export_preset(&src, false);
+        let serde_json::Value::Object(m) = serde_json::from_str(&layout_only).unwrap() else { panic!() };
+        assert!(m.contains_key("grid_cols"));
+        assert!(!m.contains_key("gforce_show_text"), "mini-setting leaked into layout-only export");
+        assert!(!m.contains_key("listen_port"), "local key must never export");
+
+        // Full export, but import ignoring mini-settings: layout applies, mini-setting does not.
+        let full = export_preset(&src, true);
         let mut dst = AppConfig::default();
-        apply_preset(&mut dst, &json);
-        assert_eq!(dst.grid_cols, 33);
-        assert!(!dst.gforce_show_text);
+        assert!(import_preset(&mut dst, &full, false));
+        assert_eq!(dst.grid_cols, 33);          // layout imported
+        assert!(dst.gforce_show_text);          // mini-setting kept at default (ignored)
+
+        // Import including mini-settings: both travel.
+        let mut dst2 = AppConfig::default();
+        assert!(import_preset(&mut dst2, &full, true));
+        assert!(!dst2.gforce_show_text);
+
+        assert!(!import_preset(&mut dst2, "not json", true)); // bad JSON → false
     }
 
     #[test]
