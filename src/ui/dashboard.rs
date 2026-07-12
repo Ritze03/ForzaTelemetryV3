@@ -1192,6 +1192,8 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
 
     if is_fh6 && pkt.race_position == 0 {
+        // Captured before the heading so the height budget covers the whole cell.
+        let full_rect = ui.available_rect_before_wrap();
         ui.label(crate::theme::section_label(tr("Sprint")));
         ui.add_space(4.0);
 
@@ -1224,11 +1226,65 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 ("0 → 100", "0 → 200", "0 → 300", "0 → 400", "0 → 500")
             }
         };
-        sprint_row(ui, lbl0, st.zero_to_hundred, c100, stype, false);
-        sprint_row(ui, lbl1, st.hundred_to_two, c200, stype, show_other);
-        sprint_row(ui, lbl2, st.two_to_three, c300, stype, show_other);
-        sprint_row(ui, lbl3, st.three_to_four, c400, stype, show_other);
-        sprint_row(ui, lbl4, st.four_to_five, c500, stype, show_other);
+        // Scale the rows to fit the cell, like the Engine widget: uniform size,
+        // evenly spaced, shrunk to fit but never grown past the base sizes.
+        let rows: [(&str, Option<f32>, Option<f32>, bool); 5] = [
+            (lbl0, st.zero_to_hundred, c100, false),
+            (lbl1, st.hundred_to_two,  c200, show_other),
+            (lbl2, st.two_to_three,    c300, show_other),
+            (lbl3, st.three_to_four,   c400, show_other),
+            (lbl4, st.four_to_five,    c500, show_other),
+        ];
+
+        let item_sp_x = ui.spacing().item_spacing.x;
+        let measure = |s: String, sz: f32| {
+            ui.painter()
+                .layout_no_wrap(s, egui::FontId::proportional(sz), Color32::WHITE)
+                .rect
+                .width()
+        };
+        // Width scale: widest row (label + main value + optional secondary) vs cell.
+        let avail_w = (ui.available_width() - 2.0).max(1.0);
+        let widest = rows.iter().fold(0.0_f32, |acc, &(lbl, seg, cum, so)| {
+            let (main, secondary) = match stype {
+                SprintType::Incremental => (seg, cum),
+                SprintType::Absolute    => (cum, seg),
+            };
+            let mut w = measure(format!("{lbl:12}"), SPRINT_LABEL_SIZE) + item_sp_x;
+            match main {
+                Some(t) => {
+                    w += measure(format!("{t:.3}s"), SPRINT_MAIN_SIZE);
+                    if so {
+                        if let Some(s) = secondary {
+                            w += item_sp_x + measure(format!("({s:.3}s)"), SPRINT_SECONDARY_SIZE);
+                        }
+                    }
+                }
+                None => w += measure("--".to_owned(), SPRINT_MAIN_SIZE),
+            }
+            acc.max(w)
+        });
+        let w_scale = if widest > avail_w { (avail_w / widest).max(0.5) } else { 1.0 };
+
+        // Height scale: 5 rows sized to fill the space left below the heading.
+        let n = rows.len() as f32;
+        let used_h = ui.next_widget_position().y - full_rect.min.y;
+        let avail_h = (full_rect.height() - used_h).max(0.0);
+        let lh = ui
+            .painter()
+            .layout_no_wrap("0".to_owned(), egui::FontId::proportional(SPRINT_MAIN_SIZE), Color32::WHITE)
+            .rect
+            .height();
+        let sp = ui.spacing().item_spacing.y;
+        let h_scale = (((avail_h - (n - 1.0) * sp) / (n * lh)).min(1.0)).max(0.5);
+
+        let scale = w_scale.min(h_scale);
+
+        sprint_row(ui, lbl0, st.zero_to_hundred, c100, stype, false, scale);
+        sprint_row(ui, lbl1, st.hundred_to_two, c200, stype, show_other, scale);
+        sprint_row(ui, lbl2, st.two_to_three, c300, stype, show_other, scale);
+        sprint_row(ui, lbl3, st.three_to_four, c400, stype, show_other, scale);
+        sprint_row(ui, lbl4, st.four_to_five, c500, stype, show_other, scale);
     } else {
         ui.label(crate::theme::section_label(tr("Race")));
         ui.add_space(4.0);
@@ -2570,6 +2626,12 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+/// Base font sizes for a sprint row, multiplied by the caller's `scale` so all
+/// rows shrink/grow together to fit the widget cell (see `show_race_block`).
+const SPRINT_LABEL_SIZE: f32 = 14.0;
+const SPRINT_MAIN_SIZE: f32 = 14.0;
+const SPRINT_SECONDARY_SIZE: f32 = 12.0;
+
 fn sprint_row(
     ui: &mut Ui,
     label: &str,
@@ -2577,9 +2639,10 @@ fn sprint_row(
     cumulative: Option<f32>,
     stype: &SprintType,
     show_other: bool,
+    scale: f32,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{label:12}")).size(14.0).strong());
+        ui.label(RichText::new(format!("{label:12}")).size(SPRINT_LABEL_SIZE * scale).strong());
 
         let (main, secondary) = match stype {
             SprintType::Incremental => (segment, cumulative),
@@ -2590,21 +2653,21 @@ fn sprint_row(
             Some(t) => {
                 ui.label(
                     RichText::new(format!("{t:.3}s"))
-                        .size(14.0)
+                        .size(SPRINT_MAIN_SIZE * scale)
                         .color(Color32::from_rgb(60, 210, 100)),
                 );
                 if show_other {
                     if let Some(s) = secondary {
                         ui.label(
                             RichText::new(format!("({s:.3}s)"))
-                                .size(12.0)
+                                .size(SPRINT_SECONDARY_SIZE * scale)
                                 .color(crate::theme::TEXT_DIM),
                         );
                     }
                 }
             }
             None => {
-                ui.label(RichText::new("--").color(crate::theme::TEXT_DIM));
+                ui.label(RichText::new("--").size(SPRINT_MAIN_SIZE * scale).color(crate::theme::TEXT_DIM));
             }
         }
     });
