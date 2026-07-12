@@ -20,6 +20,10 @@ FH6 broadcasts a fixed **324-byte little-endian UDP packet** at the game's frame
 - FH6-only fields vs Forza Motorsport: `CarGroup`, `SmashableVelDiff`, `SmashableMass` (after `NumCylinders`, before `PositionX`).
 - Full struct: @docs/forza-fh6-packet-format.md
 
+## Terminology
+
+Project vocabulary is defined in @docs/TERMINOLOGY.md. Use those meanings, ask before acting on an undefined non-standard term, and keep that file updated as terms are introduced.
+
 ## Code map
 
 - `src/packet.rs` — 324-byte packet parse/encode.
