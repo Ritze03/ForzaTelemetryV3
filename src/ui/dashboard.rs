@@ -523,9 +523,9 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let scale = peak.max(cur).max(conv(7.0)) * 1.15;
     let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
 
-    // Compact: a vertical bar (fills bottom-up) filling the widget, with the value
-    // drawn inside it and the peak in parens underneath. The unit is dropped (it's a
-    // global setting — no need to repeat it).
+    // Compact: the peak in parens on top, then a vertical bar (fills bottom-up)
+    // filling the rest of the widget, with the value drawn inside it. The unit is
+    // dropped (it's a global setting — no need to repeat it).
     if app.config.boost_in_bar {
         let area = ui.available_rect_before_wrap();
         let sp = ui.spacing().item_spacing.y;
@@ -534,11 +534,14 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let peak_h = ui.painter()
             .layout_no_wrap(peak_text.clone(), peak_font.clone(), crate::theme::TEXT_DIM).size().y;
         let bar_h = (area.height() - peak_h - sp).max(20.0);
-        // Leave a small side margin, matching the input bars.
-        let bar = egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h))
-            .shrink2(vec2(3.0, 0.0));
+        // Bar sits below the peak line. Leave a small side margin, matching the input bars.
+        let bar = egui::Rect::from_min_size(
+            pos2(area.left(), area.top() + peak_h + sp),
+            egui::vec2(area.width(), bar_h),
+        )
+        .shrink2(vec2(3.0, 0.0));
         ui.allocate_rect(
-            egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h + sp + peak_h)),
+            egui::Rect::from_min_size(area.min, egui::vec2(area.width(), peak_h + sp + bar_h)),
             egui::Sense::hover(),
         );
 
@@ -568,8 +571,8 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         if vw > bar.width() - 8.0 { vsize = (vsize * (bar.width() - 8.0) / vw).max(8.0); }
         painter.text(bar.center(), egui::Align2::CENTER_CENTER, val_text,
             egui::FontId::proportional(vsize), Color32::WHITE);
-        // Peak in parens, centered underneath.
-        painter.text(pos2(area.center().x, bar.bottom() + sp + peak_h * 0.5),
+        // Peak in parens, centered above the bar at the top of the area.
+        painter.text(pos2(area.center().x, area.top() + peak_h * 0.5),
             egui::Align2::CENTER_CENTER, peak_text, peak_font, crate::theme::TEXT_DIM);
         return;
     }
