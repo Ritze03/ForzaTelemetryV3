@@ -958,14 +958,6 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     let class = if no_data { -1 } else { app.cached_car_class };
     let dt = if no_data { -1 } else { app.cached_drivetrain };
     let pi = if no_data { 0 } else { app.cached_car_pi };
-    let cyl_text = if no_data || !app.config.car_show_cylinders {
-        String::new()
-    } else if app.cached_num_cylinders == 0 {
-        tr("Electric").to_string()
-    } else {
-        format!("{} {}", app.cached_num_cylinders, tr("cyl"))
-    };
-    let has_caption = !cyl_text.is_empty();
 
     // Gap floors (also reserved in the scale budget below, so the drivetrain
     // label can never be pushed past the cell's bottom edge). Gaps here mean
@@ -974,90 +966,35 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     let gap = 4.0_f32;
     let spacing = ui.spacing().item_spacing.y;
     let floor_top = 4.0;
-    let floor_caption_gap = spacing;
     let floor_mid = gap.max(spacing);
     let floor_bottom = spacing;
-    let n_gaps = if has_caption { 4.0 } else { 3.0 };
-    let floor_total = floor_top
-        + if has_caption { floor_caption_gap } else { 0.0 }
-        + floor_mid
-        + floor_bottom;
+    let n_gaps = 3.0;
+    let floor_total = floor_top + floor_mid + floor_bottom;
 
-    // Scale the labels to the space that truly remains below the heading —
-    // minus the gap floors AND the caption row. The caption is reserved at its
-    // minimum size here: it only grows when there is slack, i.e. when width
-    // (not height) is the binding constraint, so the estimate stays safe.
+    // Scale the labels to the space that truly remains below the heading, minus
+    // the gap floors.
     let avail_w = full_rect.width();
     let used_h = ui.next_widget_position().y - full_rect.min.y;
     let avail_h = (full_rect.height() - used_h).max(0.0);
-    let caption_min_h = if has_caption {
-        ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(12.0)))
-    } else {
-        0.0
-    };
     let cnative = app.labels.class_size(class, 1.0);
     let dnative = app.labels.drivetrain_size(dt, 1.0);
     let scale = (avail_w * 0.92 / cnative.x.max(dnative.x))
-        .min((avail_h - floor_total - caption_min_h).max(0.0) / (cnative.y + dnative.y))
+        .min((avail_h - floor_total).max(0.0) / (cnative.y + dnative.y))
         .clamp(0.2, 1.4);
     let csize = cnative * scale;
     let dsize = dnative * scale;
 
     // In a narrow/tall cell the label images are width-bound, leaving vertical
-    // slack. Spread it across every gap (top margin, caption gap, mid gap,
-    // bottom margin) instead of one lump, and let the caption grow with the
-    // slack so a generous cell gets a legible caption rather than an
-    // afterthought. Each gap keeps its floor, so tight cells fall back to the
-    // original layout.
-    let slack_estimate = (avail_h - floor_total - caption_min_h - csize.y - dsize.y).max(0.0);
-    let caption_size = if has_caption {
-        (12.0 + slack_estimate * 0.06).clamp(12.0, 20.0)
-    } else {
-        12.0
-    };
-    let caption_font = egui::FontId::proportional(caption_size);
-    let caption_h = if has_caption {
-        ui.fonts_mut(|f| f.row_height(&caption_font))
-    } else {
-        0.0
-    };
-
-    // Now divide the real leftover slack evenly across the active gaps.
-    let slack = (avail_h - floor_total - caption_h - csize.y - dsize.y).max(0.0);
+    // slack. Spread it across every gap (top margin, mid gap, bottom margin)
+    // instead of one lump. Each gap keeps its floor, so tight cells fall back to
+    // the original layout.
+    let slack = (avail_h - floor_total - csize.y - dsize.y).max(0.0);
     let extra = slack / n_gaps;
     let top_margin = floor_top + extra;
-    let caption_gap = floor_caption_gap + extra;
     let mid_gap = floor_mid + extra;
     let bottom_margin = floor_bottom + extra;
 
     ui.add_space(top_margin);
-
-    // Cylinder/Electric caption. Painted (not laid out as a Label) so it can
-    // never wrap onto a second, unbudgeted row in a narrow cell; if the text
-    // would overflow the cell width, the font shrinks to fit instead.
-    if has_caption {
-        let color = crate::theme::steel(180);
-        let mut galley = ui.painter().layout_no_wrap(cyl_text.clone(), caption_font, color);
-        if galley.size().x > avail_w * 0.95 {
-            let fitted = (caption_size * avail_w * 0.95 / galley.size().x).max(9.0);
-            galley = ui.painter().layout_no_wrap(
-                cyl_text.clone(),
-                egui::FontId::proportional(fitted),
-                color,
-            );
-        }
-        let (caprow, _) =
-            ui.allocate_exact_size(egui::vec2(avail_w, caption_h), egui::Sense::hover());
-        let gsize = galley.size();
-        ui.painter().galley(
-            egui::pos2(caprow.center().x - gsize.x * 0.5, caprow.center().y - gsize.y * 0.5),
-            galley,
-            color,
-        );
-        // The allocation above already advanced the cursor by item_spacing.y —
-        // it's part of the budgeted gap, not extra.
-        ui.add_space((caption_gap - spacing).max(0.0));
-    }
 
     // Class label (centred), rating stamped into its box.
     let (crow, _) = ui.allocate_exact_size(egui::vec2(avail_w, csize.y), egui::Sense::hover());

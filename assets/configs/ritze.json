@@ -138,7 +138,6 @@
     "Position",
     "CoopPlayers"
   ],
-  "car_show_cylinders": false,
   "coop_list_class": true,
   "coop_list_distance": true,
   "coop_list_gear": true,

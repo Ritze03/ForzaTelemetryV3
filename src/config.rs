@@ -284,8 +284,6 @@ pub struct AppConfig {
     pub minimap_mirror_edges: bool,
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
     pub minimap_show_compass: bool, // show the north compass on the map
-    // Car widget
-    pub car_show_cylinders: bool, // show the cylinder-count caption under the labels
     // G-Force widget
     pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
     // Engine widget
@@ -400,7 +398,6 @@ impl Default for AppConfig {
             minimap_mirror_edges: true,
             minimap_north_up: false,
             minimap_show_compass: true,
-            car_show_cylinders: false,
             gforce_show_text: true,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
@@ -536,7 +533,7 @@ pub const LAYOUT_KEYS: &[&str] = &[
 /// Mini-settings (cog wheel) keys: optional part of a preset, toggled on export/import.
 /// Hand-maintained — a new mini-setting that should travel gets added here.
 pub const MINISETTINGS_KEYS: &[&str] = &[
-    "car_show_cylinders", "coop_list_class", "coop_list_distance", "coop_list_gear",
+    "coop_list_class", "coop_list_distance", "coop_list_gear",
     "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
     "dsg_show_debug_panel", "engine_display_mode", "engine_show_type", "gear_align",
     "gforce_show_text", "inputs_filter_backfire_accel",

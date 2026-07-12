@@ -364,7 +364,6 @@ pub enum DashboardSubTab {
     SprintTimes,
     Tires,
     Shift,
-    Car,
     Engine,
     GForce,
     Inputs,
@@ -1385,7 +1384,6 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::SprintTimes, "Sprint"),
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
-                                    (DashboardSubTab::Car,         "Car"),
                                     (DashboardSubTab::Engine,      "Engine"),
                                     (DashboardSubTab::GForce,      "G-Force"),
                                     (DashboardSubTab::Inputs,      "Inputs"),
@@ -1660,14 +1658,6 @@ impl eframe::App for ForzaApp {
                                                 .suffix("%"),
                                         );
                                     });
-                                }
-                                DashboardSubTab::Car => {
-                                    ui.checkbox(&mut self.config.car_show_cylinders, tr("Show cylinder count"));
-                                    ui.label(
-                                        egui::RichText::new(tr("Cylinder count (or Electric) under the class and drivetrain labels."))
-                                            .size(11.0)
-                                            .color(egui::Color32::GRAY),
-                                    );
                                 }
                                 DashboardSubTab::Engine => {
                                     use crate::config::EngineDisplayMode as EDM;
