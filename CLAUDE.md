@@ -65,6 +65,16 @@ Note: `src/ui/acceleration.rs` and `deceleration.rs` are orphaned (not in `ui/mo
 This project uses parallel sub-agents by default to avoid unnecessary waiting.
 Follow these rules for every new request:
 
+### Default posture: dispatch, don't block
+Substantial or self-contained work (a feature, a widget change, a refactor,
+research) should be started as a **background sub-agent** rather than worked on
+inline in the main thread — even when nothing else is running. The main thread
+stays free to accept the user's next message. Only trivial, one-line, or
+tightly-coupled edits are done inline. When multiple such tasks arrive, fan them
+out to one background agent each and merge their worktree branches as they finish.
+Agents that edit files run with `isolation: worktree`; if several touch the same
+file but in far-apart regions, their branches still merge cleanly.
+
 ### Core Rule
 If a new user request arrives while a task is already running
 (or if a request contains multiple independent subtasks):
