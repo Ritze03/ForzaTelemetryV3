@@ -1515,16 +1515,20 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // advance_width = font_size × 0.60  (Hack's fixed advance ratio).
     // Widest possible line: "  Long: +99.00 g" = 16 chars.
     let body_h = ui.text_style_height(&egui::TextStyle::Body);
-    let text_col_w = 16.0 * body_h * 0.60 + 4.0;
+    let show_text = app.config.gforce_show_text;
+    // Text column takes width only when shown; otherwise the plot spans the widget.
+    let text_col_w = if show_text { 16.0 * body_h * 0.60 + 4.0 } else { 0.0 };
+    let effective_gap = if show_text { gap } else { 0.0 };
 
     // Plot fills remaining width, capped to a square by available height.
-    let plot_size = (avail_w - left_pad - right_pad - gap - text_col_w)
+    let plot_size = (avail_w - left_pad - right_pad - effective_gap - text_col_w)
         .min(avail_h)
         .max(40.0);
 
     ui.horizontal(|ui| {
         ui.add_space(left_pad);
         draw_gforce_plot(ui, lat, lon, &app.gforce_stats, plot_size);
+        if !show_text { return; }
         ui.add_space(gap);
         ui.vertical(|ui| {
             ui.label(RichText::new(tr("Current:")).size(12.0).color(crate::theme::TEXT_DIM));

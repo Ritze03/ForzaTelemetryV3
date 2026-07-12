@@ -603,6 +603,10 @@ fn de(s: &str) -> Option<&'static str> {
         "Show cylinder count" => "Zylinderanzahl anzeigen",
         "Cylinder count (or Electric) under the class and drivetrain labels."
             => "Zylinderanzahl (oder Elektrisch) unter den Klassen- und Antriebs-Labels.",
+        "G-Force" => "G-Kraft",
+        "Show text" => "Text anzeigen",
+        "Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."
+            => "Aktuell-/Spitzen-Anzeige neben dem Diagramm. Aus = das Diagramm füllt das ganze Widget.",
         "Tracer fade" => "Spur-Ausblendung",
         "Fade after (time):" => "Ausblenden nach (Zeit):",
         "Fade after (distance):" => "Ausblenden nach (Distanz):",

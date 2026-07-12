@@ -365,6 +365,7 @@ pub enum DashboardSubTab {
     Tires,
     Shift,
     Car,
+    GForce,
     Inputs,
     Graphs,
     MiniMap,
@@ -1374,6 +1375,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::Car,         "Car"),
+                                    (DashboardSubTab::GForce,      "G-Force"),
                                     (DashboardSubTab::Inputs,      "Inputs"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
                                     (DashboardSubTab::MiniMap,     "Map"),
@@ -1650,6 +1652,14 @@ impl eframe::App for ForzaApp {
                                     ui.checkbox(&mut self.config.car_show_cylinders, tr("Show cylinder count"));
                                     ui.label(
                                         egui::RichText::new(tr("Cylinder count (or Electric) under the class and drivetrain labels."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                }
+                                DashboardSubTab::GForce => {
+                                    ui.checkbox(&mut self.config.gforce_show_text, tr("Show text"));
+                                    ui.label(
+                                        egui::RichText::new(tr("Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."))
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );

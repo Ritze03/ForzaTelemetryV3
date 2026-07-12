@@ -277,6 +277,8 @@ pub struct AppConfig {
     pub minimap_show_compass: bool, // show the north compass on the map
     // Car widget
     pub car_show_cylinders: bool, // show the cylinder-count caption under the labels
+    // G-Force widget
+    pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -387,6 +389,7 @@ impl Default for AppConfig {
             minimap_north_up: false,
             minimap_show_compass: true,
             car_show_cylinders: false,
+            gforce_show_text: true,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,
