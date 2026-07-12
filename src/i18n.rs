@@ -618,6 +618,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Paste an exported JSON below and Import. Keys not in the JSON keep their current value."
             => "Exportiertes JSON unten einfügen und importieren. Nicht enthaltene Schlüssel behalten ihren aktuellen Wert.",
         "Paste JSON here" => "JSON hier einfügen",
+        "Preset loaded." => "Preset geladen.",
         "Imported." => "Importiert.",
         "Invalid JSON — nothing imported." => "Ungültiges JSON — nichts importiert.",
         "Clear" => "Leeren",

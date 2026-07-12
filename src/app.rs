@@ -1690,6 +1690,32 @@ impl eframe::App for ForzaApp {
                                     ui.checkbox(&mut self.config.power_graph_show_boost, tr("Show Boost"));
                                 }
                                 DashboardSubTab::Config => {
+                                    ui.label(crate::theme::section_label(tr("Load Preset")));
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let selected = self.pending_preset
+                                            .map(|i| crate::config::PRESET_NAMES[i])
+                                            .unwrap_or(tr("— select —"));
+                                        egui::ComboBox::from_id_salt("cfg_preset_combo")
+                                            .selected_text(selected)
+                                            .show_ui(ui, |ui| {
+                                                for (i, name) in crate::config::PRESET_NAMES.iter().enumerate() {
+                                                    ui.selectable_value(&mut self.pending_preset, Some(i), *name);
+                                                }
+                                            });
+                                        if ui.button(tr("Load Preset")).clicked() {
+                                            if let Some(idx) = self.pending_preset {
+                                                crate::config::apply_preset(&mut self.config, crate::config::PRESET_DATA[idx]);
+                                                self.config.save();
+                                                self.config_io_status = tr("Preset loaded.").to_string();
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_space(12.0);
+                                    ui.separator();
+                                    ui.add_space(8.0);
+
                                     ui.label(crate::theme::section_label(tr("Export")));
                                     ui.add_space(4.0);
                                     ui.label(

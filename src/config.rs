@@ -484,6 +484,14 @@ pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
 // A preset is just a partial config: any AppConfig key present in the
 // preset JSON overwrites the current value, everything else is left as-is.
 // New minisettings fields travel automatically — no struct to maintain.
+/// Bundled presets, selectable by index. Shared by the Settings page and the
+/// mini-settings Config sub-tab.
+pub const PRESET_NAMES: &[&str] = &["Ale (halb)", "Ritze (ganz)"];
+pub const PRESET_DATA: &[&str] = &[
+    include_str!("../assets/configs/ale.json"),
+    include_str!("../assets/configs/ritze.json"),
+];
+
 fn apply_preset_overlay(cfg: &mut AppConfig, overlay: serde_json::Value) {
     let Ok(mut base) = serde_json::to_value(&*cfg) else { return; };
     if let (
@@ -721,6 +729,20 @@ mod tests {
         assert!(!dst2.gforce_show_text);
 
         assert!(!import_preset(&mut dst2, "not json", true)); // bad JSON → false
+    }
+
+    #[test]
+    fn bundled_presets_apply_cleanly() {
+        // include_str! presets are never type-checked; guard that each one both
+        // parses and applies (a rejected key set would silently no-op).
+        for (name, data) in PRESET_NAMES.iter().zip(PRESET_DATA) {
+            let mut cfg = AppConfig::default();
+            assert!(import_preset(&mut cfg, data, true), "{name} failed to parse");
+            // A layout key from the preset must have taken effect.
+            let want: serde_json::Value = serde_json::from_str(data).unwrap();
+            let want_cols = want["grid_cols"].as_u64().unwrap() as usize;
+            assert_eq!(cfg.grid_cols, want_cols, "{name} did not apply (invalid value rejected?)");
+        }
     }
 
     #[test]

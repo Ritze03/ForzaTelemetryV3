@@ -1,23 +1,185 @@
 {
-  "grid_cols": 16,
-  "grid_rows": 18,
-  "dashboard_widgets": [
-    { "kind": "Speed",      "col": 12, "row":  0, "col_span": 3, "row_span": 2 },
-    { "kind": "Gear",       "col": 15, "row":  0, "col_span": 1, "row_span": 2 },
-    { "kind": "Rpm",        "col":  0, "row":  0, "col_span": 12, "row_span": 2 },
-    { "kind": "Suspension", "col":  0, "row":  2, "col_span": 4, "row_span": 7 },
-    { "kind": "Tires",      "col":  3, "row": 17, "col_span": 8, "row_span": 4 },
-    { "kind": "Car",        "col":  0, "row": 17, "col_span": 3, "row_span": 2 },
-    { "kind": "Engine",     "col":  0, "row": 19, "col_span": 3, "row_span": 2 },
-    { "kind": "Inputs",     "col":  0, "row": 13, "col_span": 4, "row_span": 4 },
-    { "kind": "MiniMap",    "col":  4, "row":  2, "col_span": 12, "row_span": 15 },
-    { "kind": "Race",       "col":  0, "row":  9, "col_span": 4, "row_span": 4 },
-    { "kind": "GForce",     "col": 11, "row": 17, "col_span": 5, "row_span": 4 }
-  ],
+  "car_show_cylinders": false,
+  "coop_list_class": false,
+  "coop_list_distance": true,
+  "coop_list_gear": true,
+  "coop_list_speed": true,
+  "coop_map_playerlist": false,
+  "coop_trail_fade_m": 500.0,
+  "coop_trail_fade_secs": 10.0,
   "dashboard_edit_mode": false,
   "dashboard_show_grid": true,
   "dashboard_show_outlines": true,
+  "dashboard_widgets": [
+    {
+      "col": 19,
+      "col_span": 2,
+      "kind": "Speed",
+      "row": 0,
+      "row_span": 3
+    },
+    {
+      "col": 17,
+      "col_span": 2,
+      "kind": "Gear",
+      "row": 0,
+      "row_span": 3
+    },
+    {
+      "col": 0,
+      "col_span": 17,
+      "kind": "Rpm",
+      "row": 0,
+      "row_span": 3
+    },
+    {
+      "col": 0,
+      "col_span": 5,
+      "kind": "Tires",
+      "row": 24,
+      "row_span": 8
+    },
+    {
+      "col": 21,
+      "col_span": 3,
+      "kind": "Car",
+      "row": 0,
+      "row_span": 3
+    },
+    {
+      "col": 0,
+      "col_span": 4,
+      "kind": "Engine",
+      "row": 15,
+      "row_span": 5
+    },
+    {
+      "col": 0,
+      "col_span": 5,
+      "kind": "Inputs",
+      "row": 3,
+      "row_span": 7
+    },
+    {
+      "col": 0,
+      "col_span": 5,
+      "kind": "Race",
+      "row": 10,
+      "row_span": 6
+    },
+    {
+      "col": 19,
+      "col_span": 5,
+      "kind": "GForce",
+      "row": 24,
+      "row_span": 8
+    },
+    {
+      "col": 0,
+      "col_span": 5,
+      "kind": "Suspension",
+      "row": 16,
+      "row_span": 8
+    },
+    {
+      "col": 5,
+      "col_span": 19,
+      "kind": "MiniMap",
+      "row": 3,
+      "row_span": 21
+    },
+    {
+      "col": 0,
+      "col_span": 4,
+      "kind": "CoopPlayers",
+      "row": 20,
+      "row_span": 6
+    },
+    {
+      "col": 0,
+      "col_span": 5,
+      "kind": "Trace",
+      "row": 26,
+      "row_span": 6
+    },
+    {
+      "col": 3,
+      "col_span": 4,
+      "kind": "Boost",
+      "row": 22,
+      "row_span": 4
+    },
+    {
+      "col": 7,
+      "col_span": 5,
+      "kind": "SessionStats",
+      "row": 22,
+      "row_span": 4
+    },
+    {
+      "col": 5,
+      "col_span": 14,
+      "kind": "PowerGraph",
+      "row": 24,
+      "row_span": 8
+    },
+    {
+      "col": 4,
+      "col_span": 6,
+      "kind": "BoostGraph",
+      "row": 24,
+      "row_span": 8
+    },
+    {
+      "col": 0,
+      "col_span": 2,
+      "kind": "Position",
+      "row": 32,
+      "row_span": 2
+    }
+  ],
+  "disabled_modules": [
+    "SessionStats",
+    "Boost",
+    "Engine",
+    "BoostGraph",
+    "CoopPlayers",
+    "Trace",
+    "Position"
+  ],
+  "dsg_show_debug_panel": true,
+  "gear_align": "Center",
+  "gforce_show_text": true,
+  "grid_cols": 24,
+  "grid_rows": 24,
+  "inputs_filter_backfire_accel": true,
+  "max_rpm_mode": "GameProvided",
   "minimap_fps_limit": 60.0,
   "minimap_fps_limit_enabled": true,
-  "disabled_modules": ["Position"]
+  "minimap_mirror_edges": true,
+  "minimap_north_up": false,
+  "minimap_px_per_m": 0.37220001220703125,
+  "minimap_quality": 100.0,
+  "minimap_show_compass": false,
+  "minimap_smooth_rotation": true,
+  "minimap_use_movement_dir": true,
+  "minimap_world_origin_x": -12540.0,
+  "minimap_world_origin_z": 10738.0,
+  "minimap_zoom_driving_m": 1500.0,
+  "minimap_zoom_stopped_m": 6000.0,
+  "power_curve_forced_induction": true,
+  "power_curve_save_fi_state": true,
+  "power_curve_step": 100.0,
+  "power_graph_show_boost": true,
+  "shift_high_pct": 95.0,
+  "shift_low_pct": 85.0,
+  "show_speed_delta": true,
+  "speed_align": "RightPlaceholder",
+  "speed_delta_mode": "Calculate",
+  "sprint_show_other": true,
+  "sprint_type": "Absolute",
+  "tire_bar_swap": false,
+  "tire_bar_value": "Temperature",
+  "tire_display_style": "Bars",
+  "tire_slip_style": "Both"
 }

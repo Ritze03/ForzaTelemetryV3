@@ -4,11 +4,7 @@ use crate::app::ForzaApp;
 use crate::config::GameMode;
 use crate::i18n::{tr, Language};
 
-static PRESET_ALE:   &str = include_str!("../../assets/configs/ale.json");
-static PRESET_RITZE: &str = include_str!("../../assets/configs/ritze.json");
-
-const PRESET_NAMES: &[&str] = &["Ale (halb)", "Ritze (ganz)"];
-const PRESET_DATA:  &[&str] = &[PRESET_ALE, PRESET_RITZE];
+use crate::config::{PRESET_DATA, PRESET_NAMES};
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
