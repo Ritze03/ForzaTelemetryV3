@@ -2450,10 +2450,10 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
 
 fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     let compact = app.config.power_graph_compact;
-    if !compact {
-        ui.heading(tr("Power Graph"));
-        ui.add_space(4.0);
-    }
+    // Small section title in both modes (matches G-Forces / Sprint widgets); in
+    // compact it naturally sits just above the graph.
+    ui.label(crate::theme::section_label(tr("Power Graph")));
+    ui.add_space(4.0);
 
     // Live capture, falling back to the saved reference curve (same data as the
     // Power Curve tab).
@@ -2543,8 +2543,8 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_scroll(false)
         .allow_boxed_zoom(false);
     if compact {
-        // No title, legend or axes — let the plot fill the cell.
-        plot = plot.show_axes([false, false]).show_grid([false, false]);
+        // No legend or axis ticks/labels — but keep the grid lines for reference.
+        plot = plot.show_axes([false, false]);
     } else {
         // The default left axis, plus a dedicated right-side scale for the boost
         // line (tick marks converted back to bar/PSI via the scale factor).
@@ -2593,33 +2593,37 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
             );
         }
         if compact {
-            // Replace the legend with peak labels drawn at each series' max point,
-            // in the series colour. Power (topmost) anchors below its point to
-            // avoid clipping at the top edge; the others sit above their point.
-            if let Some([rpm, v]) = peak_power {
-                plot_ui.text(
-                    Text::new("", PlotPoint::new(rpm, v), egui::RichText::new(format!("{:.0} PS", v)).size(10.0))
-                        .color(Color32::from_rgb(80, 160, 240))
-                        .anchor(egui::Align2::CENTER_TOP),
-                );
-            }
-            if let Some([rpm, v]) = peak_torque {
-                plot_ui.text(
-                    Text::new("", PlotPoint::new(rpm, v), egui::RichText::new(format!("{:.0} Nm", v)).size(10.0))
-                        .color(Color32::from_rgb(240, 140, 40))
-                        .anchor(egui::Align2::CENTER_BOTTOM),
-                );
-            }
-            if let Some([rpm, v]) = peak_boost {
-                // Boost is plotted scaled into PS/Nm space; place the label at the
-                // scaled y but show the real value in the current unit.
-                let label = if use_bar { format!("{:.2} bar", v) } else { format!("{:.1} PSI", v) };
-                plot_ui.text(
-                    Text::new("", PlotPoint::new(rpm, v * boost_scale), egui::RichText::new(label).size(10.0))
-                        .color(Color32::from_rgb(180, 80, 220))
-                        .anchor(egui::Align2::CENTER_BOTTOM),
-                );
-            }
+            // Replace the legend with, per series: a thin vertical guide line at
+            // the peak's RPM, and the peak value drawn along the BOTTOM of the plot
+            // (anchored just above the bottom axis) so the three values sit in a row
+            // instead of stacking near the peaks and clipping at the top edge.
+            let mut annotate = |peak: Option<[f64; 2]>, color: Color32, label: String| {
+                if let Some([rpm, _]) = peak {
+                    plot_ui.vline(egui_plot::VLine::new("", rpm).color(color).width(1.0));
+                    plot_ui.text(
+                        Text::new("", PlotPoint::new(rpm, 0.0), egui::RichText::new(label).size(10.0))
+                            .color(color)
+                            .anchor(egui::Align2::CENTER_BOTTOM),
+                    );
+                }
+            };
+            annotate(
+                peak_power,
+                Color32::from_rgb(80, 160, 240),
+                peak_power.map(|[_, v]| format!("{:.0} PS", v)).unwrap_or_default(),
+            );
+            annotate(
+                peak_torque,
+                Color32::from_rgb(240, 140, 40),
+                peak_torque.map(|[_, v]| format!("{:.0} Nm", v)).unwrap_or_default(),
+            );
+            // Boost peak's y is the real value (bar/PSI) from series construction;
+            // the guide line and label use the real RPM and real boost value.
+            annotate(
+                peak_boost,
+                Color32::from_rgb(180, 80, 220),
+                peak_boost.map(|[_, v]| format!("{:.2}", v)).unwrap_or_default(),
+            );
         }
     });
 }
