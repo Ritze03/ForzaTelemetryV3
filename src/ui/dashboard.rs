@@ -1096,13 +1096,15 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ];
     let labels = [tr("Power:"), tr("Torque:"), tr("Boost:")];
 
-    // {unit:<3} pads "PS"/"Nm" so the "(" column lines up with "bar" across all lines.
+    // Pad the label to the widest one (labels differ per language) so the value column
+    // lines up; {unit:<3} pads "PS"/"Nm" so the "(" column matches "bar".
+    let lw = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     // Full lines carry the "Power:/Torque:/Boost:" label; Both also gets a "(max …)" tail.
     let full: Vec<String> = rows.iter().zip(labels).map(|(&(cur, max, unit, dec), lbl)| {
         match app.config.engine_display_mode {
-            EDM::Current => format!("{lbl}  {cur:>6.dec$} {unit}"),
-            EDM::Max     => format!("{lbl}  {max:>6.dec$} {unit}"),
-            EDM::Both    => format!("{lbl}  {cur:>6.dec$} {unit:<3}  ({} {max:>6.dec$})", tr("max")),
+            EDM::Current => format!("{lbl:<lw$}  {cur:>6.dec$} {unit}"),
+            EDM::Max     => format!("{lbl:<lw$}  {max:>6.dec$} {unit}"),
+            EDM::Both    => format!("{lbl:<lw$}  {cur:>6.dec$} {unit:<3}  ({} {max:>6.dec$})", tr("max")),
         }
     }).collect();
     // Compact lines drop the label (and, for Both, the "max" word).
