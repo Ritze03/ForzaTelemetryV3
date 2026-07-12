@@ -1197,11 +1197,8 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     if is_fh6 && pkt.race_position == 0 {
         // Captured before the heading so the height budget covers the whole cell.
         let full_rect = ui.available_rect_before_wrap();
-        ui.add_space(SPRINT_EDGE); // top margin
-        ui.horizontal(|ui| {
-            ui.add_space(SPRINT_EDGE);
-            ui.label(crate::theme::section_label(tr("Sprint")));
-        });
+        // Title flush like every other widget; the edge margin applies to the rows only.
+        ui.label(crate::theme::section_label(tr("Sprint")));
         ui.add_space(4.0);
 
         let st = &app.sprint_timer;
@@ -2450,10 +2447,13 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
 
 fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     let compact = app.config.power_graph_compact;
-    // Small section title in both modes (matches G-Forces / Sprint widgets); in
-    // compact it naturally sits just above the graph.
-    ui.label(crate::theme::section_label(tr("Power Graph")));
-    ui.add_space(4.0);
+    // Normal mode: a section title above the plot, like other widgets. Compact mode
+    // has no title row — it's painted over the top-left of the plot below, so it
+    // costs no vertical space.
+    if !compact {
+        ui.label(crate::theme::section_label(tr("Power Graph")));
+        ui.add_space(4.0);
+    }
 
     // Live capture, falling back to the saved reference curve (same data as the
     // Power Curve tab).
@@ -2626,6 +2626,17 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
             );
         }
     });
+
+    if compact {
+        // Title painted over the plot's top-left corner (no vertical space cost).
+        ui.painter().text(
+            plot_rect.min + vec2(4.0, 2.0),
+            egui::Align2::LEFT_TOP,
+            tr("Power Graph").to_uppercase(),
+            egui::FontId::proportional(12.0),
+            crate::theme::ACCENT,
+        );
+    }
 }
 
 fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
