@@ -699,12 +699,8 @@ impl ForzaApp {
     /// limit is added as grace, since a slow frame cadence delays packet
     /// processing past the raw window.
     pub fn backfire_echo_active(&self) -> bool {
-        let grace = if self.config.fps_limit_enabled {
-            std::time::Duration::from_secs_f32(1.0 / self.config.fps_limit.max(1.0))
-        } else {
-            std::time::Duration::ZERO
-        };
-        self.input.synthetic_active(grace)
+        self.input
+            .synthetic_active(crate::listeners::backfire::echo_grace(&self.config))
     }
 
     pub fn drain_packets(&mut self) {

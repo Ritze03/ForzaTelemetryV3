@@ -7,6 +7,18 @@ use std::time::Duration;
 /// telemetry (empirical round-trip margin).
 pub const ECHO_MS: u64 = 150;
 
+/// Grace to add on top of the echo window when CHECKING it: with a render-FPS
+/// limit active, packets sit in the drain queue for up to one frame interval,
+/// so a packet generated inside the window can be processed after it expired.
+/// Single source of truth — every echo-window consumer must use the same grace.
+pub fn echo_grace(cfg: &AppConfig) -> Duration {
+    if cfg.fps_limit_enabled {
+        Duration::from_secs_f32(1.0 / cfg.fps_limit.max(1.0))
+    } else {
+        Duration::ZERO
+    }
+}
+
 pub struct BackfireListener {
     last_backfire_rpm: f32,
     last_kmh: f32,
@@ -64,7 +76,7 @@ impl BackfireListener {
                 input.press_tracked(key, cfg.backfire_accel_time_ms, 0, ECHO_MS);
             }
         } else if !(off_throttle && no_brake && in_rpm_range)
-            && !input.synthetic_active(Duration::ZERO)
+            && !input.synthetic_active(echo_grace(cfg))
         {
             // Don't react to our OWN echo: the fake accel makes off_throttle false
             // for a few frames, and zeroing last_backfire_rpm here would make
