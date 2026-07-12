@@ -146,3 +146,19 @@ seemingly simple but sensitive task).
   instead of nesting deeply.
 - Maximum of 4 parallel sub-agents at once, to keep token cost and
   rate limits in check.
+
+### How this maps to the runtime (accuracy notes)
+- **Background is real.** Sub-agents launched with the Task/Agent tool run
+  in the background by default; the main thread is notified when each one
+  finishes and keeps working in the meantime. The main agent decides per
+  subtask *when* to start it and *whether* to block on another task's result
+  — that dependency check is the whole point of the rules above.
+- **The main agent is event-driven, not always-on.** It acts when the user
+  sends a message or when a background sub-agent completes — it does not poll
+  on its own between those events. In practice this still covers the core
+  rule: a new request that arrives mid-work is seen and can be dispatched to a
+  parallel agent immediately, without waiting for the running task (unless a
+  dependency or shared file forces sequencing).
+- **"Ultracode" is a mode, not a model.** It refers to multi-agent workflow
+  orchestration. The actual selectable sub-agent models are Sonnet / Opus /
+  Haiku; read "Ultracode, XHigh" as "use a workflow and/or the highest effort."
