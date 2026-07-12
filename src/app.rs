@@ -367,6 +367,7 @@ pub enum DashboardSubTab {
     Engine,
     GForce,
     Inputs,
+    Boost,
     Graphs,
     MiniMap,
     Config,
@@ -1387,6 +1388,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Engine,      "Engine"),
                                     (DashboardSubTab::GForce,      "G-Force"),
                                     (DashboardSubTab::Inputs,      "Inputs"),
+                                    (DashboardSubTab::Boost,       "Boost"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
                                     (DashboardSubTab::MiniMap,     "Map"),
                                     (DashboardSubTab::Config,      "Config"),
@@ -1707,6 +1709,17 @@ impl eframe::App for ForzaApp {
                                     );
                                     ui.label(
                                         egui::RichText::new(tr("Hides the fake throttle blip Backfire injects, so the Accel bar reflects only your real pedal."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                }
+                                DashboardSubTab::Boost => {
+                                    crate::theme::styled_checkbox(ui,
+                                        &mut self.config.boost_in_bar,
+                                        tr("Value inside the bar"),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(tr("Compact: draws the current value inside a full-width bar, with the peak in parentheses below."))
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );

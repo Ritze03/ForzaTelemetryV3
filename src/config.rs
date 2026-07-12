@@ -292,6 +292,8 @@ pub struct AppConfig {
     // Inputs widget
     pub input_bars_full_width: bool, // full-width bars with the label + value drawn inside
     pub input_steer_compact: bool,   // compact steering: drop the "Steer" heading
+    // Boost widget
+    pub boost_in_bar: bool,          // compact: draw the value inside a full-width bar, peak below
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -406,6 +408,7 @@ impl Default for AppConfig {
             engine_show_type: false,
             input_bars_full_width: false,
             input_steer_compact: false,
+            boost_in_bar: false,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,
@@ -538,7 +541,7 @@ pub const LAYOUT_KEYS: &[&str] = &[
 /// Mini-settings (cog wheel) keys: optional part of a preset, toggled on export/import.
 /// Hand-maintained — a new mini-setting that should travel gets added here.
 pub const MINISETTINGS_KEYS: &[&str] = &[
-    "coop_list_class", "coop_list_distance", "coop_list_gear",
+    "boost_in_bar", "coop_list_class", "coop_list_distance", "coop_list_gear",
     "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
     "dsg_show_debug_panel", "engine_display_mode", "engine_show_type", "gear_align",
     "gforce_show_text", "input_bars_full_width", "input_steer_compact",

@@ -609,6 +609,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Bars span the full width with the label and value drawn inside."
             => "Balken über die volle Breite, Beschriftung und Wert im Balken.",
         "Compact steering" => "Kompakte Lenkung",
+        "Value inside the bar" => "Wert in der Leiste",
+        "Compact: draws the current value inside a full-width bar, with the peak in parentheses below."
+            => "Kompakt: zeichnet den aktuellen Wert in eine Leiste über die volle Breite, den Höchstwert in Klammern darunter.",
         "Adds an \"Electric\" or cylinder-count caption under the values."
             => "Zeigt „Elektrisch\" oder die Zylinderanzahl unter den Werten an.",
         "G-Force" => "G-Kraft",
