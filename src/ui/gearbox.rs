@@ -460,7 +460,10 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
     p.line_segment([r.left_bottom(), r.right_top()], egui::Stroke::new(1.0, Color32::from_gray(55)));
 
     let pkt = app.telemetry.latest.as_ref();
-    let accel = pkt.map(|q| q.accel as f32 / 255.0).unwrap_or(0.0);
+    // Same suppression as the shift logic (dsg::curved_throttle) — the live pedal
+    // dots must not jump on Backfire's simulated keypresses.
+    let suppress = app.config.dsg_ignore_backfire_accel && app.backfire.is_active();
+    let accel = if suppress { 0.0 } else { pkt.map(|q| q.accel as f32 / 255.0).unwrap_or(0.0) };
     let speed = pkt.map(|q| q.speed_kmh()).unwrap_or(0.0);
     let in_race = pkt.map(|q| q.race_position != 0).unwrap_or(false);
     let mode = app.config.dsg_effective_mode(in_race);
@@ -573,7 +576,11 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
     let rpm = pkt.map(|p| p.current_engine_rpm).unwrap_or(0.0);
     let kmh = pkt.map(|p| p.speed_kmh()).unwrap_or(0.0);
     let gear = pkt.map(|p| p.gear as i32).unwrap_or(0);
-    let accel = pkt.map(|p| p.accel as f32 / 255.0).unwrap_or(0.0);
+    // Same suppression as the shift logic (dsg::curved_throttle) — the THR bar
+    // (both the gamma'd fill and the raw ghost) must not show Backfire's
+    // simulated keypresses when "Ignore Backfire input" is on.
+    let suppress = app.config.dsg_ignore_backfire_accel && app.backfire.is_active();
+    let accel = if suppress { 0.0 } else { pkt.map(|p| p.accel as f32 / 255.0).unwrap_or(0.0) };
     let brake = pkt.map(|p| p.brake as f32 / 255.0).unwrap_or(0.0);
     let in_race = pkt.map(|p| p.race_position != 0).unwrap_or(false);
 
