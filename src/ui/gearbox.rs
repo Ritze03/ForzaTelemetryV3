@@ -26,7 +26,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.add_space(2.0);
 
                 hover(
-                    ui.checkbox(&mut app.config.dsg_enabled, tr("Enabled")),
+                    crate::theme::styled_checkbox(ui, &mut app.config.dsg_enabled, tr("Enabled")),
                     tr("Lets the box send shift inputs. Stays hands-off until you do one full \
                      first-gear pull to redline and shift to 2nd manually — that calibrates 1st \
                      gear and the true redline."),
@@ -34,7 +34,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 );
 
                 hover(
-                    ui.checkbox(&mut app.config.dsg_ignore_backfire_accel, tr("Ignore Backfire input")),
+                    crate::theme::styled_checkbox(ui, &mut app.config.dsg_ignore_backfire_accel, tr("Ignore Backfire input")),
                     tr("Backfire briefly simulates a throttle key to force a fake accel reading for \
                      its bang. This keeps the box's shift logic — and the live throttle-bar graph in \
                      the right column — responding only to your real pedal, not that synthetic key."),
@@ -109,7 +109,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     },
                 );
                 hover(
-                    ui.checkbox(&mut app.config.dsg_auto_race_mode, tr("Auto Race mode in races")),
+                    crate::theme::styled_checkbox(ui, &mut app.config.dsg_auto_race_mode, tr("Auto Race mode in races")),
                     tr("Forces Race mode whenever you're in an actual race (position P1+), and \
                      reverts to your chosen mode in free-roam."),
                     tr("Off to keep your selected mode everywhere."),
@@ -135,7 +135,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 }
 
                 hover(
-                    ui.checkbox(&mut app.config.dsg_save_calibration, tr("Remember calibration per car")),
+                    crate::theme::styled_checkbox(ui, &mut app.config.dsg_save_calibration, tr("Remember calibration per car")),
                     tr("Saves each car's measured gear speeds and redline. When you get back into \
                      a saved car, the calibration loads automatically and the manual first-gear \
                      pull is no longer needed."),
@@ -292,14 +292,14 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.add_space(6.0);
                 ui.group(|ui| {
                     hover(
-                        ui.checkbox(&mut app.config.dsg_debug, tr("Debug")),
+                        crate::theme::styled_checkbox(ui, &mut app.config.dsg_debug, tr("Debug")),
                         tr("Shows the live decision state (current/target gear, redline, active rule, \
                          cooldown, desyncs) and reveals the shift-log toggle."),
                         tr("For tuning or diagnosing shifts."),
                     );
                     if app.config.dsg_debug {
                         hover(
-                            ui.checkbox(&mut app.config.dsg_log_shifts, tr("Log shifts to CSV")),
+                            crate::theme::styled_checkbox(ui, &mut app.config.dsg_log_shifts, tr("Log shifts to CSV")),
                             tr("Appends every shift (pre/post RPM + speed, throttle, brake) to a CSV \
                              for offline analysis; cleared on each launch."),
                             tr("On to capture a session."),

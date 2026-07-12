@@ -1431,8 +1431,8 @@ impl eframe::App for ForzaApp {
                                         egui::Slider::new(&mut self.config.grid_rows, 1..=40_usize),
                                     );
                                     ui.add_space(4.0);
-                                    ui.checkbox(&mut self.config.dashboard_show_grid, tr("Show grid"));
-                                    ui.checkbox(&mut self.config.dashboard_show_outlines, tr("Show widget outlines"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.dashboard_show_grid, tr("Show grid"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.dashboard_show_outlines, tr("Show widget outlines"));
                                     ui.add_space(8.0);
                                     if ui.button(tr("Reset Layout")).clicked() {
                                         self.config.dashboard_widgets =
@@ -1458,7 +1458,7 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::PowerGraph, WidgetKind::BoostGraph,
                                     ] {
                                         let mut enabled = !self.config.disabled_modules.contains(&kind);
-                                        let resp = ui.checkbox(&mut enabled, kind.label());
+                                        let resp = crate::theme::styled_checkbox(ui, &mut enabled, kind.label());
                                         if resp.secondary_clicked() {
                                             crate::config::park_widget(&mut self.config.dashboard_widgets, &kind);
                                             self.config.save();
@@ -1505,7 +1505,7 @@ impl eframe::App for ForzaApp {
                                             });
                                     });
                                     ui.add_space(8.0);
-                                    ui.checkbox(&mut self.config.show_speed_delta, tr("Show Accel/Decel Tracker"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.show_speed_delta, tr("Show Accel/Decel Tracker"));
                                     if self.config.show_speed_delta {
                                         ui.add_space(4.0);
                                         ui.horizontal(|ui| {
@@ -1550,7 +1550,7 @@ impl eframe::App for ForzaApp {
                                             });
                                     });
                                     ui.add_space(8.0);
-                                    ui.checkbox(&mut self.config.sprint_show_other,
+                                    crate::theme::styled_checkbox(ui, &mut self.config.sprint_show_other,
                                         tr("Show other type in parentheses"));
                                 }
                                 DashboardSubTab::Tires => {
@@ -1589,7 +1589,7 @@ impl eframe::App for ForzaApp {
                                                 });
                                         });
                                         if matches!(self.config.tire_bar_value, TireBarValue::Combined | TireBarValue::Stacked) {
-                                            ui.checkbox(&mut self.config.tire_bar_swap, tr("Switch Values"));
+                                            crate::theme::styled_checkbox(ui, &mut self.config.tire_bar_swap, tr("Switch Values"));
                                             ui.label(
                                                 egui::RichText::new(tr("Swaps temp and slip in the bars only; the text rows stay put."))
                                                     .size(11.0)
@@ -1671,14 +1671,14 @@ impl eframe::App for ForzaApp {
                                         ui.radio_value(&mut self.config.engine_display_mode, mode, tr(lbl));
                                     }
                                     ui.add_space(8.0);
-                                    ui.checkbox(&mut self.config.engine_show_type, tr("Show engine type"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.engine_show_type, tr("Show engine type"));
                                     ui.label(
                                         egui::RichText::new(tr("Adds an \"Electric\" or cylinder-count caption under the values."))
                                             .size(11.0).color(egui::Color32::GRAY),
                                     );
                                 }
                                 DashboardSubTab::GForce => {
-                                    ui.checkbox(&mut self.config.gforce_show_text, tr("Show text"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.gforce_show_text, tr("Show text"));
                                     ui.label(
                                         egui::RichText::new(tr("Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."))
                                             .size(11.0)
@@ -1686,7 +1686,7 @@ impl eframe::App for ForzaApp {
                                     );
                                 }
                                 DashboardSubTab::Inputs => {
-                                    ui.checkbox(
+                                    crate::theme::styled_checkbox(ui, 
                                         &mut self.config.inputs_filter_backfire_accel,
                                         tr("Filter Accel while Backfire fires"),
                                     );
@@ -1697,7 +1697,7 @@ impl eframe::App for ForzaApp {
                                     );
                                 }
                                 DashboardSubTab::Graphs => {
-                                    ui.checkbox(&mut self.config.power_graph_show_boost, tr("Show Boost"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.power_graph_show_boost, tr("Show Boost"));
                                 }
                                 DashboardSubTab::Config => {
                                     ui.label(crate::theme::section_label(tr("Load Preset")));
@@ -1733,7 +1733,7 @@ impl eframe::App for ForzaApp {
                                             .size(11.0).color(egui::Color32::GRAY),
                                     );
                                     ui.add_space(4.0);
-                                    ui.checkbox(&mut self.config_export_minisettings, tr("Include mini-settings"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config_export_minisettings, tr("Include mini-settings"));
                                     ui.add_space(4.0);
                                     if ui.button(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard"))).clicked() {
                                         ui.ctx().copy_text(crate::config::export_preset(&self.config, self.config_export_minisettings));
@@ -1759,7 +1759,7 @@ impl eframe::App for ForzaApp {
                                             .hint_text(tr("Paste JSON here")),
                                     );
                                     ui.add_space(4.0);
-                                    ui.checkbox(&mut self.config_import_minisettings, tr("Include mini-settings"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config_import_minisettings, tr("Include mini-settings"));
                                     ui.add_space(6.0);
                                     ui.horizontal(|ui| {
                                         if ui.button(format!("{}  {}", crate::icons::FLOPPY, tr("Import"))).clicked() {
@@ -1799,7 +1799,7 @@ impl eframe::App for ForzaApp {
                                     match self.page_map_sub_tab {
                                     MiniMapTab::General => {
                                     ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit:"));
+                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit:"));
                                         if self.config.minimap_fps_limit_enabled {
                                             ui.add(
                                                 egui::Slider::new(&mut self.config.minimap_fps_limit, 5.0..=120.0)
@@ -1808,13 +1808,13 @@ impl eframe::App for ForzaApp {
                                             );
                                         }
                                     });
-                                    ui.checkbox(&mut self.config.minimap_north_up, tr("Lock map north-up")).on_hover_text("F10");
+                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up, tr("Lock map north-up")).on_hover_text("F10");
                                     if !self.config.minimap_north_up {
-                                        ui.checkbox(&mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
-                                        ui.checkbox(&mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
+                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
+                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
                                     }
-                                    ui.checkbox(&mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
-                                    ui.checkbox(&mut self.config.minimap_show_compass, tr("Show compass"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
                                     ui.add_space(4.0);
                                     ui.label(tr("Zoom when driving (radius, metres):"));
                                     ui.add(
@@ -1919,14 +1919,14 @@ impl eframe::App for ForzaApp {
                                         ui.add_space(10.0);
                                         ui.separator();
                                         ui.add_space(6.0);
-                                        ui.checkbox(&mut self.config.coop_map_playerlist, tr("Show player list on map"));
+                                        crate::theme::styled_checkbox(ui, &mut self.config.coop_map_playerlist, tr("Show player list on map"));
                                         ui.add_enabled_ui(self.config.coop_map_playerlist, |ui| {
                                             ui.add_space(2.0);
                                             ui.label(egui::RichText::new(tr("Columns:")).size(11.0).color(egui::Color32::GRAY));
-                                            ui.checkbox(&mut self.config.coop_list_distance, tr("Distance"));
-                                            ui.checkbox(&mut self.config.coop_list_speed, tr("Speed"));
-                                            ui.checkbox(&mut self.config.coop_list_gear, tr("Gear"));
-                                            ui.checkbox(&mut self.config.coop_list_class, tr("Car class"));
+                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_distance, tr("Distance"));
+                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_speed, tr("Speed"));
+                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_gear, tr("Gear"));
+                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_class, tr("Car class"));
                                         });
                                     }
                                     }
@@ -1943,7 +1943,7 @@ impl eframe::App for ForzaApp {
                                 );
                             });
                             ui.add_space(8.0);
-                            ui.checkbox(
+                            crate::theme::styled_checkbox(ui, 
                                 &mut self.config.power_curve_forced_induction,
                                 tr("Forced induction detection"),
                             );
@@ -1958,7 +1958,7 @@ impl eframe::App for ForzaApp {
                             );
                             if self.config.power_curve_forced_induction {
                                 ui.add_space(8.0);
-                                ui.checkbox(
+                                crate::theme::styled_checkbox(ui, 
                                     &mut self.config.power_curve_save_fi_state,
                                     tr("Save Forced Induction State"),
                                 );
@@ -1974,7 +1974,7 @@ impl eframe::App for ForzaApp {
                             }
                         }
                         Tab::Gearbox => {
-                            ui.checkbox(
+                            crate::theme::styled_checkbox(ui, 
                                 &mut self.config.dsg_show_debug_panel,
                                 tr("Show debug panel"),
                             );

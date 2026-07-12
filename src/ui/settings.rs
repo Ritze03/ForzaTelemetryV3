@@ -167,7 +167,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 });
 
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut app.config.fps_limit_enabled, tr("FPS limit:"));
+                    crate::theme::styled_checkbox(ui, &mut app.config.fps_limit_enabled, tr("FPS limit:"));
                     if app.config.fps_limit_enabled {
                         ui.add(
                             egui::Slider::new(&mut app.config.fps_limit, 5.0..=120.0)
@@ -177,7 +177,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     }
                 });
 
-                ui.checkbox(&mut app.config.always_on_top, tr("Always on top"));
+                crate::theme::styled_checkbox(ui, &mut app.config.always_on_top, tr("Always on top"));
             });
 
             // ── RIGHT COLUMN ─────────────────────────────────────────
@@ -230,7 +230,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                         } else if ui.add(crate::theme::primary_button(tr("Replay"))).clicked() {
                             app.start_replay(files[sel].0.clone());
                         }
-                        ui.checkbox(&mut app.replay_loop, tr("Loop"));
+                        crate::theme::styled_checkbox(ui, &mut app.replay_loop, tr("Loop"));
                         if ui.add(crate::theme::secondary_button(tr("Export CSV"))).clicked() {
                             app.csv_export_msg = Some(match crate::recorder::export_csv(&files[sel].0) {
                                 Ok(p) => format!("{} {}", tr("Saved"), p.display()),

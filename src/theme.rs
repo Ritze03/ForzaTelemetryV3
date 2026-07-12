@@ -96,6 +96,78 @@ pub fn section_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase()).color(ACCENT).size(12.0).strong()
 }
 
+// ---- Checkbox ------------------------------------------------------------
+
+/// Outline of an unchecked box — light enough to read on the panel.
+pub const CHECK_OUTLINE: Color32 = steel(150);
+
+/// A checkbox styled like the Ritz launcher: an 18px rounded box (accent-filled
+/// with a white check when on, hairline outline when off) followed by the label,
+/// the whole row a single click target with a subtle hover wash. Drop-in
+/// replacement for `crate::theme::styled_checkbox(ui, &mut x, label)` — returns the row's response.
+pub fn styled_checkbox(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    label: impl Into<String>,
+) -> egui::Response {
+    const BOX: f32 = 18.0;
+    const GAP: f32 = 7.0;
+    let on = *checked;
+
+    let font = TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(label.into(), font, TEXT);
+    let gsize = galley.size();
+    let size = egui::vec2(BOX + GAP + gsize.x, BOX.max(gsize.y));
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if resp.hovered() {
+            painter.rect_filled(rect.expand2(egui::vec2(4.0, 2.0)), CornerRadius::same(6), HOV);
+        }
+        let box_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), rect.center().y - BOX / 2.0),
+            egui::Vec2::splat(BOX),
+        )
+        .shrink(1.0);
+        let round = CornerRadius::same(5);
+        if on {
+            painter.rect_filled(box_rect, round, ACCENT);
+            let g = painter.layout_no_wrap(
+                crate::icons::CHECK.to_owned(),
+                FontId::proportional(11.0),
+                Color32::WHITE,
+            );
+            // Centre on the glyph's ink, not its advance box (Nerd glyphs are offset).
+            let ink = g
+                .rows
+                .first()
+                .and_then(|r| r.glyphs.first())
+                .map(|gl| gl.pos.to_vec2() + gl.uv_rect.offset + gl.uv_rect.size * 0.5)
+                .unwrap_or_else(|| g.size() * 0.5);
+            painter.galley(box_rect.center() - ink, g, Color32::WHITE);
+        } else {
+            painter.rect_stroke(
+                box_rect,
+                round,
+                Stroke::new(1.5, CHECK_OUTLINE),
+                egui::StrokeKind::Inside,
+            );
+        }
+        painter.galley(
+            egui::pos2(box_rect.right() + GAP, rect.center().y - gsize.y / 2.0),
+            galley,
+            TEXT,
+        );
+    }
+
+    if resp.clicked() {
+        *checked = !*checked;
+        resp.mark_changed();
+    }
+    resp
+}
+
 // ---- Apply ---------------------------------------------------------------
 
 /// Install the Graphite visuals + type scale. Call once at startup.

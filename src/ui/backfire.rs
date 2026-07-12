@@ -15,10 +15,10 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
             );
             ui.add_space(8.0);
 
-            ui.checkbox(&mut app.config.backfire_enabled, tr("Enabled"));
+            crate::theme::styled_checkbox(ui, &mut app.config.backfire_enabled, tr("Enabled"));
             ui.add_space(4.0);
 
-            ui.checkbox(&mut app.config.backfire_dynamic_rpm, tr("Dynamic RPM"));
+            crate::theme::styled_checkbox(ui, &mut app.config.backfire_dynamic_rpm, tr("Dynamic RPM"));
             if app.config.backfire_dynamic_rpm {
                 ui.horizontal(|ui| {
                     ui.label(tr("Min:"));
@@ -82,11 +82,11 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 );
             });
             ui.add_space(4.0);
-            ui.checkbox(
+            crate::theme::styled_checkbox(ui, 
                 &mut app.config.backfire_disable_standstill,
                 tr("Disable if standing still"),
             );
-            ui.checkbox(
+            crate::theme::styled_checkbox(ui, 
                 &mut app.config.backfire_test_mode,
                 tr("Test mode (ignores throttle/RPM conditions)"),
             );

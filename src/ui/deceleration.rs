@@ -42,7 +42,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.config.decel_dynamic_mode, "Dynamic mode");
+        crate::theme::styled_checkbox(ui, &mut app.config.decel_dynamic_mode, "Dynamic mode");
         ui.label(
             RichText::new("(auto-starts on deceleration, aborts if re-accelerating for >500 ms)")
                 .size(11.0)
