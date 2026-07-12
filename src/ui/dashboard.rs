@@ -1086,12 +1086,32 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let boost_cur = boost_cur.max(0.0);
     let boost_max = boost_max.max(0.0);
 
-    // Full lines carry the "Power:/Torque:/Boost:" label and a "(max …)" tail.
-    let full = [
-        format!("{}  {:>5.0} PS   ({} {:>5.0})", tr("Power:"),  power_cur,  tr("max"), app.max_power_ps),
-        format!("{} {:>5.0} Nm   ({} {:>5.0})",  tr("Torque:"), torque_cur, tr("max"), app.max_torque_nm),
-        format!("{}  {:5.2} {boost_unit}  ({} {:5.2})", tr("Boost:"), boost_cur, tr("max"), boost_max),
+    // Per line, the current value, the max value, and their units — the display mode
+    // decides which are shown.
+    use crate::config::EngineDisplayMode as EDM;
+    let rows: [(f32, f32, &str, usize); 3] = [
+        (power_cur,  app.max_power_ps,  "PS", 0),
+        (torque_cur, app.max_torque_nm, "Nm", 0),
+        (boost_cur,  boost_max,         boost_unit, 2),
     ];
+    let labels = [tr("Power:"), tr("Torque:"), tr("Boost:")];
+
+    // Full lines carry the "Power:/Torque:/Boost:" label; Both also gets a "(max …)" tail.
+    let full: Vec<String> = rows.iter().zip(labels).map(|(&(cur, max, unit, dec), lbl)| {
+        match app.config.engine_display_mode {
+            EDM::Current => format!("{lbl}  {cur:>6.dec$} {unit}"),
+            EDM::Max     => format!("{lbl}  {max:>6.dec$} {unit}"),
+            EDM::Both    => format!("{lbl}  {cur:>6.dec$} {unit}   ({} {max:>6.dec$})", tr("max")),
+        }
+    }).collect();
+    // Compact lines drop the label (and, for Both, the "max" word).
+    let compact: Vec<String> = rows.iter().map(|&(cur, max, unit, dec)| {
+        match app.config.engine_display_mode {
+            EDM::Current => format!("{cur:>6.dec$} {unit}"),
+            EDM::Max     => format!("{max:>6.dec$} {unit}"),
+            EDM::Both    => format!("{cur:>6.dec$} {unit}   ({max:>6.dec$})"),
+        }
+    }).collect();
 
     let body_font = egui::TextStyle::Body.resolve(ui.style());
     let avail = ui.available_width() - 2.0;
@@ -1102,14 +1122,11 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     if widest(&full) <= avail {
         for line in full { ui.label(line); }
     } else {
-        // Too narrow: drop the label and the "max" word so only "value unit (peak)"
-        // remains. If even that doesn't fit, step the font down one notch.
-        let compact = [
-            format!("{:>5.0} PS   ({:>5.0})", power_cur, app.max_power_ps),
-            format!("{:>5.0} Nm   ({:>5.0})", torque_cur, app.max_torque_nm),
-            format!("{:5.2} {boost_unit}  ({:5.2})", boost_cur, boost_max),
-        ];
-        let size = if widest(&compact) > avail { body_font.size * 0.85 } else { body_font.size };
+        // Too narrow: use the compact lines, and scale the font down just enough to
+        // fit (never up, and not below half size).
+        let cw = widest(&compact);
+        let scale = if cw > avail { (avail / cw).max(0.5) } else { 1.0 };
+        let size = body_font.size * scale;
         for line in compact { ui.label(egui::RichText::new(line).size(size)); }
     }
 

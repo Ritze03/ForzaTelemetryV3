@@ -365,6 +365,7 @@ pub enum DashboardSubTab {
     Tires,
     Shift,
     Car,
+    Engine,
     GForce,
     Inputs,
     Graphs,
@@ -1385,6 +1386,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Tires,       "Tires"),
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::Car,         "Car"),
+                                    (DashboardSubTab::Engine,      "Engine"),
                                     (DashboardSubTab::GForce,      "G-Force"),
                                     (DashboardSubTab::Inputs,      "Inputs"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
@@ -1666,6 +1668,18 @@ impl eframe::App for ForzaApp {
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );
+                                }
+                                DashboardSubTab::Engine => {
+                                    use crate::config::EngineDisplayMode as EDM;
+                                    ui.label(tr("Show per line:"));
+                                    ui.add_space(4.0);
+                                    for (mode, lbl) in [
+                                        (EDM::Current, "Current values"),
+                                        (EDM::Max,     "Max values"),
+                                        (EDM::Both,    "Both"),
+                                    ] {
+                                        ui.radio_value(&mut self.config.engine_display_mode, mode, tr(lbl));
+                                    }
                                 }
                                 DashboardSubTab::GForce => {
                                     ui.checkbox(&mut self.config.gforce_show_text, tr("Show text"));

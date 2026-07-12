@@ -94,6 +94,15 @@ pub enum TireDisplayStyle {
     Bars,
 }
 
+/// Which values the Engine widget shows per line.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum EngineDisplayMode {
+    Current,
+    Max,
+    #[default]
+    Both,
+}
+
 /// What the "Bars" tire style visualizes in each corner's bar.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum TireBarValue {
@@ -279,6 +288,8 @@ pub struct AppConfig {
     pub car_show_cylinders: bool, // show the cylinder-count caption under the labels
     // G-Force widget
     pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
+    // Engine widget
+    pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     // Global FPS limiter toggle
     pub fps_limit_enabled: bool,
     // Disabled widget modules (empty = all enabled)
@@ -390,6 +401,7 @@ impl Default for AppConfig {
             minimap_show_compass: true,
             car_show_cylinders: false,
             gforce_show_text: true,
+            engine_display_mode: EngineDisplayMode::Both,
             fps_limit_enabled: false,
             disabled_modules: vec![WidgetKind::Position],
             backfire_enabled: false,
@@ -524,7 +536,8 @@ pub const LAYOUT_KEYS: &[&str] = &[
 pub const MINISETTINGS_KEYS: &[&str] = &[
     "car_show_cylinders", "coop_list_class", "coop_list_distance", "coop_list_gear",
     "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
-    "dsg_show_debug_panel", "gear_align", "gforce_show_text", "inputs_filter_backfire_accel",
+    "dsg_show_debug_panel", "engine_display_mode", "gear_align", "gforce_show_text",
+    "inputs_filter_backfire_accel",
     "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges",
     "minimap_north_up", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
