@@ -607,6 +607,19 @@ fn de(s: &str) -> Option<&'static str> {
         "Show text" => "Text anzeigen",
         "Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."
             => "Aktuell-/Spitzen-Anzeige neben dem Diagramm. Aus = das Diagramm füllt das ganze Widget.",
+        "Config" => "Konfiguration",
+        "Export" => "Exportieren",
+        "Import" => "Importieren",
+        "Copy to clipboard" => "In Zwischenablage kopieren",
+        "Copies your dashboard layout and mini-settings as JSON to the clipboard."
+            => "Kopiert dein Dashboard-Layout und die Mini-Einstellungen als JSON in die Zwischenablage.",
+        "Copied to clipboard." => "In Zwischenablage kopiert.",
+        "Paste an exported JSON below and Import. Keys not in the JSON keep their current value."
+            => "Exportiertes JSON unten einfügen und importieren. Nicht enthaltene Schlüssel behalten ihren aktuellen Wert.",
+        "Paste JSON here" => "JSON hier einfügen",
+        "Imported." => "Importiert.",
+        "Invalid JSON — nothing imported." => "Ungültiges JSON — nichts importiert.",
+        "Clear" => "Leeren",
         "Tracer fade" => "Spur-Ausblendung",
         "Fade after (time):" => "Ausblenden nach (Zeit):",
         "Fade after (distance):" => "Ausblenden nach (Distanz):",

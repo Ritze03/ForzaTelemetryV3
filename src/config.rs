@@ -500,6 +500,38 @@ pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
     }
 }
 
+/// Config keys that make up a shareable "dashboard config": the dashboard layout
+/// plus every mini-settings (cog wheel) field. Hand-maintained — a new mini-setting
+/// that should travel with an export/preset gets added here. Anything outside this
+/// list (listen port, coop credentials, …) stays local and is never exported.
+pub const PRESET_KEYS: &[&str] = &[
+    // dashboard layout
+    "grid_cols", "grid_rows", "dashboard_widgets", "dashboard_edit_mode",
+    "dashboard_show_grid", "dashboard_show_outlines", "disabled_modules",
+    // mini-settings
+    "car_show_cylinders", "coop_list_class", "coop_list_distance", "coop_list_gear",
+    "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
+    "dsg_show_debug_panel", "gear_align", "gforce_show_text", "inputs_filter_backfire_accel",
+    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges",
+    "minimap_north_up", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
+    "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
+    "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
+    "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
+    "power_graph_show_boost", "shift_high_pct", "shift_low_pct", "show_speed_delta",
+    "speed_align", "speed_delta_mode", "sprint_show_other", "sprint_type", "tire_bar_swap",
+    "tire_bar_value", "tire_display_style", "tire_slip_style",
+];
+
+/// Serialize just the preset subset of the config as pretty JSON, for export.
+pub fn export_preset(cfg: &AppConfig) -> String {
+    let Ok(serde_json::Value::Object(map)) = serde_json::to_value(cfg) else { return String::new(); };
+    let mut out = serde_json::Map::new();
+    for &k in PRESET_KEYS {
+        if let Some(v) = map.get(k) { out.insert(k.to_string(), v.clone()); }
+    }
+    serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_default()
+}
+
 // ──────────────────────────────────────────────────────────────────
 
 impl AppConfig {
@@ -641,6 +673,25 @@ mod tests {
         // Bad JSON is a no-op, not a reset.
         apply_preset(&mut cfg, "not json");
         assert_eq!(cfg.grid_cols, 37);
+    }
+
+    #[test]
+    fn export_preset_roundtrips_and_stays_subset() {
+        let mut src = AppConfig::default();
+        src.grid_cols = 33;
+        src.gforce_show_text = false;
+        let json = export_preset(&src);
+        // Export contains only whitelisted keys.
+        let serde_json::Value::Object(map) = serde_json::from_str(&json).unwrap() else { panic!() };
+        for k in map.keys() {
+            assert!(PRESET_KEYS.contains(&k.as_str()), "unexpected key exported: {k}");
+        }
+        assert!(!map.contains_key("listen_port"), "local key must not export");
+        // Importing onto a fresh config restores the exported fields.
+        let mut dst = AppConfig::default();
+        apply_preset(&mut dst, &json);
+        assert_eq!(dst.grid_cols, 33);
+        assert!(!dst.gforce_show_text);
     }
 
     #[test]

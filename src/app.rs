@@ -369,6 +369,7 @@ pub enum DashboardSubTab {
     Inputs,
     Graphs,
     MiniMap,
+    Config,
 }
 
 /// Nested sub-tabs inside the mini-settings "Map" tab.
@@ -462,6 +463,9 @@ pub struct ForzaApp {
     pub page_settings_tab: Tab,
     pub page_dashboard_sub_tab: DashboardSubTab,
     pub page_map_sub_tab: MiniMapTab,
+    // Dashboard config export/import ("Config" sub-tab)
+    pub config_import_buf: String,
+    pub config_io_status: String,
 
     // Dashboard widget drag / resize state
     pub dashboard_drag: Option<DashboardDragState>,
@@ -627,6 +631,8 @@ impl ForzaApp {
             page_settings_tab: Tab::Dashboard,
             page_dashboard_sub_tab: DashboardSubTab::default(),
             page_map_sub_tab: MiniMapTab::default(),
+            config_import_buf: String::new(),
+            config_io_status: String::new(),
             dashboard_drag: None,
             dashboard_resize: None,
             minimap_texture: None,
@@ -1379,6 +1385,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Inputs,      "Inputs"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
                                     (DashboardSubTab::MiniMap,     "Map"),
+                                    (DashboardSubTab::Config,      "Config"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
                                 }
@@ -1677,6 +1684,63 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Graphs => {
                                     ui.checkbox(&mut self.config.power_graph_show_boost, tr("Show Boost"));
+                                }
+                                DashboardSubTab::Config => {
+                                    ui.label(crate::theme::section_label(tr("Export")));
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(tr("Copies your dashboard layout and mini-settings as JSON to the clipboard."))
+                                            .size(11.0).color(egui::Color32::GRAY),
+                                    );
+                                    ui.add_space(4.0);
+                                    if ui.button(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard"))).clicked() {
+                                        ui.ctx().copy_text(crate::config::export_preset(&self.config));
+                                        self.config_io_status = tr("Copied to clipboard.").to_string();
+                                    }
+
+                                    ui.add_space(12.0);
+                                    ui.separator();
+                                    ui.add_space(8.0);
+
+                                    ui.label(crate::theme::section_label(tr("Import")));
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(tr("Paste an exported JSON below and Import. Keys not in the JSON keep their current value."))
+                                            .size(11.0).color(egui::Color32::GRAY),
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.config_import_buf)
+                                            .desired_rows(6)
+                                            .desired_width(f32::INFINITY)
+                                            .code_editor()
+                                            .hint_text(tr("Paste JSON here")),
+                                    );
+                                    ui.add_space(6.0);
+                                    ui.horizontal(|ui| {
+                                        if ui.button(format!("{}  {}", crate::icons::FLOPPY, tr("Import"))).clicked() {
+                                            if serde_json::from_str::<serde_json::Value>(&self.config_import_buf).is_ok() {
+                                                crate::config::apply_preset(&mut self.config, &self.config_import_buf);
+                                                self.config.save();
+                                                self.config_import_buf.clear();
+                                                self.config_io_status = tr("Imported.").to_string();
+                                            } else {
+                                                self.config_io_status = tr("Invalid JSON — nothing imported.").to_string();
+                                            }
+                                        }
+                                        if !self.config_import_buf.is_empty()
+                                            && ui.button(tr("Clear")).clicked()
+                                        {
+                                            self.config_import_buf.clear();
+                                        }
+                                    });
+                                    if !self.config_io_status.is_empty() {
+                                        ui.add_space(6.0);
+                                        ui.label(
+                                            egui::RichText::new(&self.config_io_status)
+                                                .size(11.0).color(egui::Color32::from_rgb(120, 200, 120)),
+                                        );
+                                    }
                                 }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {
