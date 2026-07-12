@@ -59,3 +59,90 @@ Note: `src/ui/acceleration.rs` and `deceleration.rs` are orphaned (not in `ui/mo
 ## Not in V3
 
 - Data relay to another IP/port; loopback companion app / .bat scripts (localhost works natively); Android APK web server; Imgur screenshot upload.
+
+## Sub-Agent Orchestration
+
+This project uses parallel sub-agents by default to avoid unnecessary waiting.
+Follow these rules for every new request:
+
+### Core Rule
+If a new user request arrives while a task is already running
+(or if a request contains multiple independent subtasks):
+- Immediately start a separate sub-agent via the Task tool for each
+  independent subtask, instead of working sequentially.
+- Do NOT wait on your own initiative until the current task is finished
+  before accepting the new one — first check whether a dependency exists.
+
+### When to Dispatch in Parallel (all conditions must be met)
+- The new task does not need the result of the currently running task.
+- There is no shared state (e.g. the same file being edited).
+- The task is clearly scoped and self-contained.
+
+→ In this case: spawn a new sub-agent in parallel (Task tool), keep the
+main thread free for further input.
+
+### When to Work Sequentially / Wait (any one condition applies)
+- The new task depends on the result of the currently running task.
+- Both tasks touch the same files or the same code section
+  (merge conflict risk).
+- The scope of the new task is unclear — clarify or briefly analyze
+  before delegating.
+
+→ In this case: give a short heads-up ("waiting on X before starting Y")
+and only start / attach afterward.
+
+### Background Dispatch
+- Research, analysis, and read-only tasks (no file changes) should
+  generally be started as background agents so the main thread doesn't block.
+- File-modifying tasks (edit/write) should only be run in parallel if they
+  touch different, clearly separated directories/files.
+
+### Isolation for Parallel File Changes
+- Sub-agents that modify code while running in parallel with others use
+  `isolation: worktree` so agents don't overwrite each other.
+- Each agent commits its changes to its own worktree branch.
+
+### Reporting
+- Each sub-agent returns a short, concise summary at the end
+  (no raw logs, no intermediate steps).
+- When multiple sub-agents run in parallel, consolidate their results
+  into a single overview in the main thread at the end.
+- Briefly state what each spawned sub-agent is responsible for
+  (e.g. "Sub-agent A: Auth research" / "Sub-agent B: DB layer refactor").
+
+### Model and Effort Selection for Sub-Agents (dynamic)
+
+The main agent decides independently which model and which effort level
+are appropriate for a task. The following values are guidelines, not fixed
+rules — deviate from them whenever the task calls for it.
+
+**Available models:** Sonnet, Opus, Ultracode
+**Available effort levels:** Low, Medium, High, XHigh
+
+#### Guidelines for Estimation
+- **Small, simple adjustments** (e.g. value changes, simple formatting,
+  trivial config edits) → Sonnet, Medium
+- **Tasks involving logic** (e.g. new features, business logic,
+  non-trivial refactoring) → Opus, High/XHigh
+- **Bug fixing** → ALWAYS Opus, at least High, XHigh for complex/unclear bugs
+- **Very complex or critical tasks** (e.g. architecture decisions,
+  security-relevant code, hard-to-trace bugs) → Ultracode, XHigh if needed
+
+This mapping is guidance only. The main agent should assess the actual
+complexity of each subtask itself and choose model/effort accordingly —
+even if that means deviating from the guidelines (e.g. Opus for a
+seemingly simple but sensitive task).
+
+#### User Override
+- If I (the user) explicitly name a model or effort level
+  (e.g. "use Sonnet for this" or "with low effort"), that ALWAYS takes
+  precedence over the automatic estimation — switch immediately.
+- Without explicit input from me, the main agent decides independently
+  based on the guidelines above.
+
+### Limits
+- Sub-agents cannot spawn further sub-agents themselves (no nested
+  delegation). For multi-step workflows, let the main thread coordinate
+  instead of nesting deeply.
+- Maximum of 4 parallel sub-agents at once, to keep token cost and
+  rate limits in check.
