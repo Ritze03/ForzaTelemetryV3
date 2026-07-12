@@ -533,8 +533,8 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let peak_text = format!("({peak:.2})");
         let peak_h = ui.painter()
             .layout_no_wrap(peak_text.clone(), peak_font.clone(), crate::theme::TEXT_DIM).size().y;
-        let bar_h = (area.height() - peak_h - sp).max(20.0);
-        // Bar sits below the peak line. Leave a small side margin, matching the input bars.
+        let bar_h = (area.height() - peak_h - sp - 3.0).max(20.0); // 3px bottom margin
+        // Bar sits below the peak line, with a 3px margin on the left, right, and bottom.
         let bar = egui::Rect::from_min_size(
             pos2(area.left(), area.top() + peak_h + sp),
             egui::vec2(area.width(), bar_h),
@@ -682,8 +682,13 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         ui.colored_label(Color32::from_rgb(230, 160, 40), format!("{:.0} rpm", pkt.current_engine_rpm));
     });
 
-    let rect = ui.available_rect_before_wrap();
-    ui.allocate_rect(rect, egui::Sense::hover());
+    let full = ui.available_rect_before_wrap();
+    ui.allocate_rect(full, egui::Sense::hover());
+    // 3px margin on the left, right and bottom to match the Boost widget's spacing.
+    let rect = egui::Rect::from_min_max(
+        pos2(full.left() + 3.0, full.top()),
+        pos2(full.right() - 3.0, full.bottom() - 3.0),
+    );
     if rect.height() < 10.0 || rect.width() < 10.0 {
         return;
     }
