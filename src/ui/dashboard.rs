@@ -1096,57 +1096,39 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ];
     let labels = [tr("Power:"), tr("Torque:"), tr("Boost:")];
 
+    // {unit:<3} pads "PS"/"Nm" so the "(" column lines up with "bar" across all lines.
     // Full lines carry the "Power:/Torque:/Boost:" label; Both also gets a "(max …)" tail.
     let full: Vec<String> = rows.iter().zip(labels).map(|(&(cur, max, unit, dec), lbl)| {
         match app.config.engine_display_mode {
             EDM::Current => format!("{lbl}  {cur:>6.dec$} {unit}"),
             EDM::Max     => format!("{lbl}  {max:>6.dec$} {unit}"),
-            EDM::Both    => format!("{lbl}  {cur:>6.dec$} {unit}   ({} {max:>6.dec$})", tr("max")),
+            EDM::Both    => format!("{lbl}  {cur:>6.dec$} {unit:<3}  ({} {max:>6.dec$})", tr("max")),
         }
     }).collect();
+    // Compact lines drop the label (and, for Both, the "max" word).
+    let compact: Vec<String> = rows.iter().map(|&(cur, max, unit, dec)| {
+        match app.config.engine_display_mode {
+            EDM::Current => format!("{cur:>6.dec$} {unit}"),
+            EDM::Max     => format!("{max:>6.dec$} {unit}"),
+            EDM::Both    => format!("{cur:>6.dec$} {unit:<3}  ({max:>6.dec$})"),
+        }
+    }).collect();
+
     let body_font = egui::TextStyle::Body.resolve(ui.style());
     let avail = ui.available_width() - 2.0;
-    let text_w = |s: &str| ui.painter()
-        .layout_no_wrap(s.to_string(), body_font.clone(), Color32::WHITE).rect.width();
-    let widest_full = full.iter().fold(0.0_f32, |w, s| w.max(text_w(s)));
+    let widest = |lines: &[String]| lines.iter().fold(0.0_f32, |w, s| {
+        w.max(ui.painter().layout_no_wrap(s.clone(), body_font.clone(), Color32::WHITE).rect.width())
+    });
 
-    if widest_full <= avail {
+    if widest(&full) <= avail {
         for line in full { ui.label(line); }
     } else {
-        // Too narrow for a single line: stack each metric — the unit as a dim header,
-        // then the current value on the left and the max on the right (uses the spare
-        // vertical space). Scale the font down just enough to fit the widest pair.
-        let dim = crate::theme::TEXT_DIM;
-        let cur = |i: usize| format!("{:>6.*}", rows[i].3, rows[i].0);
-        let max = |i: usize| format!("{:>6.*}", rows[i].3, rows[i].1);
-        let gap = text_w("  ");
-        let need = (0..3).fold(0.0_f32, |acc, i| {
-            let vals = match app.config.engine_display_mode {
-                EDM::Current => text_w(&cur(i)),
-                EDM::Max     => text_w(&max(i)),
-                EDM::Both    => text_w(&cur(i)) + gap + text_w(&max(i)),
-            };
-            acc.max(vals).max(text_w(rows[i].2))
-        });
-        let scale = if need > avail { (avail / need).max(0.5) } else { 1.0 };
-        let sz = body_font.size * scale;
-
-        for i in 0..3 {
-            ui.label(egui::RichText::new(rows[i].2).size(sz).color(dim));
-            match app.config.engine_display_mode {
-                EDM::Current => { ui.label(egui::RichText::new(cur(i)).size(sz)); }
-                EDM::Max     => { ui.label(egui::RichText::new(max(i)).size(sz)); }
-                EDM::Both    => {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(cur(i)).size(sz));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(max(i)).size(sz));
-                        });
-                    });
-                }
-            }
-            if i < 2 { ui.add_space(2.0); }
-        }
+        // Too narrow: use the compact lines, and scale the font down just enough to
+        // fit (never up, and not below half size).
+        let cw = widest(&compact);
+        let scale = if cw > avail { (avail / cw).max(0.5) } else { 1.0 };
+        let size = body_font.size * scale;
+        for line in compact { ui.label(egui::RichText::new(line).size(size)); }
     }
 
     if app.config.game_mode == GameMode::ForzaMotorsport7 {
