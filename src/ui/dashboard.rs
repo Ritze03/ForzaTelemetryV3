@@ -1021,6 +1021,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
 }
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    let full_rect = ui.available_rect_before_wrap();
     ui.label(crate::theme::section_label(tr("Engine")));
     ui.add_space(4.0);
 
@@ -1070,30 +1071,46 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         w.max(ui.painter().layout_no_wrap(s.clone(), body_font.clone(), Color32::WHITE).rect.width())
     });
 
-    if widest(&full) <= avail {
-        for line in full { ui.label(line); }
+    // Width scale: full lines if they fit at full size, else compact scaled to width.
+    let (lines, w_scale) = if widest(&full) <= avail {
+        (full, 1.0)
     } else {
-        // Too narrow: use the compact lines, and scale the font down just enough to
-        // fit (never up, and not below half size).
         let cw = widest(&compact);
-        let scale = if cw > avail { (avail / cw).max(0.5) } else { 1.0 };
-        let size = body_font.size * scale;
-        for line in compact { ui.label(egui::RichText::new(line).size(size)); }
-    }
+        (compact, if cw > avail { (avail / cw).max(0.5) } else { 1.0 })
+    };
 
-    if app.config.engine_show_type {
+    // Height scale: the 3 value lines plus the optional type caption (at 0.8× the
+    // value font) must fit the space left in the cell below the heading. Same idea
+    // as the width fit — shrink to fit, but never grow past the default size.
+    let cap = app.config.engine_show_type;
+    let used_h = ui.next_widget_position().y - full_rect.min.y;
+    let avail_h = (full_rect.height() - used_h).max(0.0);
+    let lh = ui.painter()
+        .layout_no_wrap("0".to_owned(), body_font.clone(), Color32::WHITE).rect.height();
+    let sp = ui.spacing().item_spacing.y;
+    let fixed = 2.0 * sp + if cap { sp + 2.0 } else { 0.0 };   // gaps that don't scale
+    let per_scale = (3.0 + if cap { 0.8 } else { 0.0 }) * lh;  // height that scales with font
+    let h_scale = if per_scale > 0.0 { ((avail_h - fixed) / per_scale).clamp(0.5, 1.0) } else { 1.0 };
+
+    let size = body_font.size * w_scale.min(h_scale);
+    for line in lines { ui.label(egui::RichText::new(line).size(size)); }
+
+    if cap {
         let type_text = if app.cached_num_cylinders == 0 {
             tr("Electric").to_string()
         } else {
             format!("{} {}", app.cached_num_cylinders, tr("Cylinders"))
         };
-        // Centered, and scaled down if it would otherwise overflow the widget width.
+        // Smaller than the values (frees a little room above), centered, and shrunk
+        // further if it would still overflow the width.
+        let mut cap_size = size * 0.8;
         let tw = ui.painter()
-            .layout_no_wrap(type_text.clone(), body_font.clone(), Color32::WHITE).rect.width();
-        let sz = body_font.size * if tw > avail { (avail / tw).max(0.5) } else { 1.0 };
+            .layout_no_wrap(type_text.clone(), egui::FontId::proportional(cap_size), Color32::WHITE)
+            .rect.width();
+        if tw > avail { cap_size = (cap_size * avail / tw).max(8.0); }
         ui.add_space(2.0);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(type_text).size(sz).color(crate::theme::TEXT_DIM));
+            ui.label(egui::RichText::new(type_text).size(cap_size).color(crate::theme::TEXT_DIM));
         });
     }
 
