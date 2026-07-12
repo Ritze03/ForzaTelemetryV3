@@ -606,6 +606,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Show per line:" => "Pro Zeile anzeigen:",
         "Current values" => "Aktuelle Werte",
         "Max values" => "Maximalwerte",
+        "Show engine type" => "Motortyp anzeigen",
+        "Adds an \"Electric\" or cylinder-count caption under the values."
+            => "Zeigt „Elektrisch\" oder die Zylinderanzahl unter den Werten an.",
         "G-Force" => "G-Kraft",
         "Show text" => "Text anzeigen",
         "Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."

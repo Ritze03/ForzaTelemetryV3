@@ -1133,6 +1133,15 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         for line in compact { ui.label(egui::RichText::new(line).size(size)); }
     }
 
+    if app.config.engine_show_type {
+        let type_text = if app.cached_num_cylinders == 0 {
+            tr("Electric").to_string()
+        } else {
+            format!("{} {}", app.cached_num_cylinders, tr("cyl"))
+        };
+        ui.label(egui::RichText::new(type_text).color(crate::theme::TEXT_DIM));
+    }
+
     if app.config.game_mode == GameMode::ForzaMotorsport7 {
         ui.add_space(4.0);
         ui.label(format!("{}   {:.0}%", tr("Fuel:"), pkt.fuel * 100.0));

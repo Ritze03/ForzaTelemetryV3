@@ -1680,6 +1680,12 @@ impl eframe::App for ForzaApp {
                                     ] {
                                         ui.radio_value(&mut self.config.engine_display_mode, mode, tr(lbl));
                                     }
+                                    ui.add_space(8.0);
+                                    ui.checkbox(&mut self.config.engine_show_type, tr("Show engine type"));
+                                    ui.label(
+                                        egui::RichText::new(tr("Adds an \"Electric\" or cylinder-count caption under the values."))
+                                            .size(11.0).color(egui::Color32::GRAY),
+                                    );
                                 }
                                 DashboardSubTab::GForce => {
                                     ui.checkbox(&mut self.config.gforce_show_text, tr("Show text"));
