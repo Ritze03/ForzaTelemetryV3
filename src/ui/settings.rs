@@ -1,7 +1,7 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
-use crate::config::{DashboardPreset, GameMode};
+use crate::config::GameMode;
 use crate::i18n::{tr, Language};
 
 static PRESET_ALE:   &str = include_str!("../../assets/configs/ale.json");
@@ -72,9 +72,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
                     if ui.button(tr("Load Preset")).clicked() {
                         if let Some(idx) = app.pending_preset {
-                            if let Ok(preset) = serde_json::from_str::<DashboardPreset>(PRESET_DATA[idx]) {
-                                preset.apply_to(&mut app.config);
-                            }
+                            crate::config::apply_preset(&mut app.config, PRESET_DATA[idx]);
                             app.pending_preset = None;
                         }
                     }

@@ -477,35 +477,23 @@ pub fn inject_missing_widget_kinds(widgets: &mut Vec<WidgetLayout>) {
     }
 }
 
-// ── Dashboard preset (dashboard fields only) ───────────────────────
-
-#[derive(Deserialize, Default)]
-pub struct DashboardPreset {
-    pub grid_cols:                 Option<usize>,
-    pub grid_rows:                 Option<usize>,
-    pub dashboard_widgets:         Option<Vec<WidgetLayout>>,
-    pub dashboard_edit_mode:       Option<bool>,
-    pub dashboard_show_grid:       Option<bool>,
-    pub dashboard_show_outlines:   Option<bool>,
-    pub minimap_fps_limit:         Option<f32>,
-    pub minimap_fps_limit_enabled: Option<bool>,
-    pub disabled_modules:          Option<Vec<WidgetKind>>,
-}
-
-impl DashboardPreset {
-    pub fn apply_to(&self, cfg: &mut AppConfig) {
-        if let Some(v) = self.grid_cols               { cfg.grid_cols = v; }
-        if let Some(v) = self.grid_rows               { cfg.grid_rows = v; }
-        if let Some(ref v) = self.dashboard_widgets {
-            cfg.dashboard_widgets = v.clone();
-            inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
-        }
-        if let Some(v) = self.dashboard_edit_mode     { cfg.dashboard_edit_mode = v; }
-        if let Some(v) = self.dashboard_show_grid     { cfg.dashboard_show_grid = v; }
-        if let Some(v) = self.dashboard_show_outlines { cfg.dashboard_show_outlines = v; }
-        if let Some(v) = self.minimap_fps_limit       { cfg.minimap_fps_limit = v; }
-        if let Some(v) = self.minimap_fps_limit_enabled { cfg.minimap_fps_limit_enabled = v; }
-        if let Some(ref v) = self.disabled_modules    { cfg.disabled_modules = v.clone(); }
+// ── Dashboard preset ───────────────────────────────────────────────
+// A preset is just a partial config: any AppConfig key present in the
+// preset JSON overwrites the current value, everything else is left as-is.
+// New minisettings fields travel automatically — no struct to maintain.
+pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
+    let Ok(overlay) = serde_json::from_str::<serde_json::Value>(preset_json) else { return; };
+    let Ok(mut base) = serde_json::to_value(&*cfg) else { return; };
+    if let (
+        serde_json::Value::Object(base_map),
+        serde_json::Value::Object(over),
+    ) = (&mut base, overlay)
+    {
+        for (k, v) in over { base_map.insert(k, v); }
+    }
+    if let Ok(new_cfg) = serde_json::from_value::<AppConfig>(base) {
+        *cfg = new_cfg;
+        inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
     }
 }
 
@@ -637,6 +625,20 @@ mod tests {
 
     // Keep the expected default in sync without importing the coop module into the test.
     const DEFAULT_COOP_PORT_TEST: u16 = 7071;
+
+    #[test]
+    fn preset_overlay_applies_and_leaves_other_keys_untouched() {
+        let mut cfg = AppConfig::default();
+        let listen = cfg.listen_port; // not in the preset → must survive
+        let preset = r#"{ "grid_cols": 37, "minimap_north_up": true }"#;
+        apply_preset(&mut cfg, preset);
+        assert_eq!(cfg.grid_cols, 37);          // overwritten from preset
+        assert!(cfg.minimap_north_up);          // overwritten from preset
+        assert_eq!(cfg.listen_port, listen);    // untouched
+        // Bad JSON is a no-op, not a reset.
+        apply_preset(&mut cfg, "not json");
+        assert_eq!(cfg.grid_cols, 37);
+    }
 
     #[test]
     fn injected_widgets_appended_not_duplicated() {
