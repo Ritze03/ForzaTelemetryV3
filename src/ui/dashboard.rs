@@ -967,31 +967,10 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     };
     let has_caption = !cyl_text.is_empty();
 
-    // Scale the labels to the space that truly remains below the heading
-    // (drivetrain is the wider face; the two stacked labels plus the gap and
-    // row spacing between them set the height budget).
+    // Gap floors (also reserved in the scale budget below, so the drivetrain
+    // label can never be pushed past the cell's bottom edge).
     let gap = 4.0;
     let spacing = ui.spacing().item_spacing.y;
-    let avail_w = full_rect.width();
-    let used_h = ui.next_widget_position().y - full_rect.min.y;
-    let avail_h = (full_rect.height() - used_h).max(0.0);
-    let cnative = app.labels.class_size(class, 1.0);
-    let dnative = app.labels.drivetrain_size(dt, 1.0);
-    let scale = (avail_w * 0.92 / cnative.x.max(dnative.x))
-        .min((avail_h - gap - spacing - 2.0) / (cnative.y + dnative.y))
-        .clamp(0.2, 1.4);
-    let csize = cnative * scale;
-    let dsize = dnative * scale;
-
-    // In a narrow/tall cell the label images are always width-bound (never
-    // height-bound), so there is usually a lot of vertical slack left over
-    // below the heading. Rather than dumping it all as one lump above the
-    // class label (leaving a dead blank strip at the bottom), spread it
-    // across every gap in the block — top margin, caption gap, the gap
-    // between the two label images, and a bottom margin — so the cell
-    // breathes evenly top-to-bottom. Each gap keeps today's fixed spacing
-    // as a floor, so wide/short cells with ~0 slack fall back to the
-    // original tight layout.
     let floor_top = 4.0;
     let floor_caption_gap = spacing;
     let floor_mid = gap;
@@ -1002,11 +981,33 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
         + floor_mid
         + floor_bottom;
 
-    // Let the caption grow with the slack instead of staying a fixed tiny
-    // size, so a generous cell gets a legible caption rather than an
-    // afterthought (its own height is small next to the labels, so it's
-    // left out of this first estimate to keep things simple).
-    let slack_estimate = (avail_h - floor_total - csize.y - dsize.y).max(0.0);
+    // Scale the labels to the space that truly remains below the heading —
+    // minus the gap floors AND the caption row. The caption is reserved at its
+    // minimum size here: it only grows when there is slack, i.e. when width
+    // (not height) is the binding constraint, so the estimate stays safe.
+    let avail_w = full_rect.width();
+    let used_h = ui.next_widget_position().y - full_rect.min.y;
+    let avail_h = (full_rect.height() - used_h).max(0.0);
+    let caption_min_h = if has_caption {
+        ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(12.0)))
+    } else {
+        0.0
+    };
+    let cnative = app.labels.class_size(class, 1.0);
+    let dnative = app.labels.drivetrain_size(dt, 1.0);
+    let scale = (avail_w * 0.92 / cnative.x.max(dnative.x))
+        .min((avail_h - floor_total - caption_min_h).max(0.0) / (cnative.y + dnative.y))
+        .clamp(0.2, 1.4);
+    let csize = cnative * scale;
+    let dsize = dnative * scale;
+
+    // In a narrow/tall cell the label images are width-bound, leaving vertical
+    // slack. Spread it across every gap (top margin, caption gap, mid gap,
+    // bottom margin) instead of one lump, and let the caption grow with the
+    // slack so a generous cell gets a legible caption rather than an
+    // afterthought. Each gap keeps its floor, so tight cells fall back to the
+    // original layout.
+    let slack_estimate = (avail_h - floor_total - caption_min_h - csize.y - dsize.y).max(0.0);
     let caption_size = if has_caption {
         (12.0 + slack_estimate * 0.06).clamp(12.0, 20.0)
     } else {
