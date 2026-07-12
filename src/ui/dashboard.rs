@@ -1630,14 +1630,15 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // Widest possible line: "  Long: +99.00 g" = 16 chars.
     let body_h = ui.text_style_height(&egui::TextStyle::Body);
     let show_text = app.config.gforce_show_text;
-    // Text column takes width only when shown; otherwise the plot spans the widget.
-    let text_col_w = if show_text { 16.0 * body_h * 0.60 + 4.0 } else { 0.0 };
     let effective_gap = if show_text { gap } else { 0.0 };
 
-    // Plot fills remaining width, capped to a square by available height.
-    let plot_size = (avail_w - left_pad - right_pad - effective_gap - text_col_w)
-        .min(avail_h)
-        .max(40.0);
+    // The plot gets priority: a square sized by the available HEIGHT so it's as big as
+    // the cell allows. When text is shown we only hold back the minimum width the text
+    // needs at its smallest (0.5×) size; the rest is the text column and the font scales
+    // up to fill it (capped at the default body size). When hidden, the plot spans all.
+    let min_text_w = if show_text { 16.0 * body_h * 0.60 * 0.5 } else { 0.0 };
+    let plot_cap_w = (avail_w - left_pad - right_pad - effective_gap - min_text_w).max(40.0);
+    let plot_size = avail_h.max(40.0).min(plot_cap_w);
 
     ui.horizontal(|ui| {
         ui.add_space(left_pad);
@@ -1645,24 +1646,46 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         if !show_text { return; }
         ui.add_space(gap);
         ui.vertical(|ui| {
-            ui.label(RichText::new(tr("Current:")).size(12.0).color(crate::theme::TEXT_DIM));
-            ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Lat")), lat));
-            ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Long")), lon));
-            ui.label(format!("  {:<5} {:+.2} g", format!("{}:", tr("Vert")), vert));
+            // Build the 8 lines up front so we can measure the widest and scale to fit.
+            let hdr_cur  = tr("Current:").to_string();
+            let hdr_peak = tr("Peak:").to_string();
+            let cur_lat  = format!("  {:<5} {:+.2} g", format!("{}:", tr("Lat")),  lat);
+            let cur_long = format!("  {:<5} {:+.2} g", format!("{}:", tr("Long")), lon);
+            let cur_vert = format!("  {:<5} {:+.2} g", format!("{}:", tr("Vert")), vert);
+            let pk_lat  = format!("  {:<5} {:.2} g", format!("{}:", tr("Lat")),  app.gforce_stats.max_lateral);
+            let pk_long = format!("  {:<5} {:.2} g", format!("{}:", tr("Long")), app.gforce_stats.max_longitudinal);
+            let pk_vert = format!("  {:<5} {:.2} g", format!("{}:", tr("Vert")), app.gforce_stats.max_vertical);
+
+            // Dynamic font scaling, same approach as the Engine widget: measure at the
+            // default body size, then derive width/height scales, clamped to 0.5..=1.0.
+            let body_font = egui::TextStyle::Body.resolve(ui.style());
+            let avail = (ui.available_width() - 2.0).max(1.0);
+            let widest = [&hdr_cur, &cur_lat, &cur_long, &cur_vert, &hdr_peak, &pk_lat, &pk_long, &pk_vert]
+                .iter()
+                .fold(0.0_f32, |w, s| {
+                    w.max(ui.painter().layout_no_wrap((*s).clone(), body_font.clone(), Color32::WHITE).rect.width())
+                });
+            let w_scale = if widest > avail { (avail / widest).max(0.5) } else { 1.0 };
+
+            // Height budget: 8 lines, 7 inter-line gaps, plus the 4 px break between the
+            // Current and Peak blocks. Shrink to fit, never grow past the default size.
+            let lh = ui.painter()
+                .layout_no_wrap("0".to_owned(), body_font.clone(), Color32::WHITE).rect.height();
+            let sp = ui.spacing().item_spacing.y;
+            let needed_h = 8.0 * lh + 7.0 * sp + 4.0;
+            let h_scale = if needed_h > avail_h { (avail_h / needed_h).max(0.5) } else { 1.0 };
+
+            let size = body_font.size * w_scale.min(h_scale);
+
+            ui.label(RichText::new(hdr_cur).size(size).color(crate::theme::TEXT_DIM));
+            ui.label(RichText::new(cur_lat).size(size));
+            ui.label(RichText::new(cur_long).size(size));
+            ui.label(RichText::new(cur_vert).size(size));
             ui.add_space(4.0);
-            ui.label(RichText::new(tr("Peak:")).size(12.0).color(crate::theme::TEXT_DIM));
-            ui.colored_label(
-                Color32::YELLOW,
-                format!("  {:<5} {:.2} g", format!("{}:", tr("Lat")), app.gforce_stats.max_lateral),
-            );
-            ui.colored_label(
-                Color32::YELLOW,
-                format!("  {:<5} {:.2} g", format!("{}:", tr("Long")), app.gforce_stats.max_longitudinal),
-            );
-            ui.colored_label(
-                Color32::YELLOW,
-                format!("  {:<5} {:.2} g", format!("{}:", tr("Vert")), app.gforce_stats.max_vertical),
-            );
+            ui.label(RichText::new(hdr_peak).size(size).color(crate::theme::TEXT_DIM));
+            ui.label(RichText::new(pk_lat).size(size).color(Color32::YELLOW));
+            ui.label(RichText::new(pk_long).size(size).color(Color32::YELLOW));
+            ui.label(RichText::new(pk_vert).size(size).color(Color32::YELLOW));
         });
     });
 }
