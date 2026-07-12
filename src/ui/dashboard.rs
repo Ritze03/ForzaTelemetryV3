@@ -523,8 +523,9 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let scale = peak.max(cur).max(conv(7.0)) * 1.15;
     let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
 
-    // Compact: value drawn inside a full-width bar, peak in parens underneath. The
-    // unit is dropped (it's a global setting — no need to repeat it).
+    // Compact: a vertical bar (fills bottom-up) filling the widget, with the value
+    // drawn inside it and the peak in parens underneath. The unit is dropped (it's a
+    // global setting — no need to repeat it).
     if app.config.boost_in_bar {
         let area = ui.available_rect_before_wrap();
         let sp = ui.spacing().item_spacing.y;
@@ -532,7 +533,7 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let peak_text = format!("({peak:.2})");
         let peak_h = ui.painter()
             .layout_no_wrap(peak_text.clone(), peak_font.clone(), crate::theme::TEXT_DIM).size().y;
-        let bar_h = (area.height() - peak_h - sp).clamp(12.0, 40.0);
+        let bar_h = (area.height() - peak_h - sp).max(20.0);
         let bar = egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h));
         ui.allocate_rect(
             egui::Rect::from_min_size(area.min, egui::vec2(area.width(), bar_h + sp + peak_h)),
@@ -540,24 +541,26 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         );
 
         let painter = ui.painter();
-        let round = (bar_h * 0.5).min(8.0);
+        let round = 4.0;
         painter.rect_filled(bar, round, Color32::from_rgb(22, 24, 27));
         if scale > 0.0 {
             let frac = (cur / scale).clamp(0.0, 1.0);
             if frac > 0.001 {
-                let fill = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * frac, bar.height()));
+                let fh = bar.height() * frac;
+                let fill = egui::Rect::from_min_max(pos2(bar.left(), bar.bottom() - fh), bar.max);
                 painter.rect_filled(fill, round, bar_col);
             }
+            // Peak tick — a horizontal line across the bar.
             let pf = (peak / scale).clamp(0.0, 1.0);
             if pf > 0.001 {
-                let x = bar.left() + bar.width() * pf;
-                painter.line_segment([pos2(x, bar.top() + 2.0), pos2(x, bar.bottom() - 2.0)], tick);
+                let y = bar.bottom() - bar.height() * pf;
+                painter.line_segment([pos2(bar.left() + 2.0, y), pos2(bar.right() - 2.0, y)], tick);
             }
         }
 
-        // Value inside the bar, sized to the bar height and shrunk if too wide.
+        // Value inside the bar, shrunk to fit the width.
         let val_text = format!("{cur:+.2}");
-        let mut vsize = (bar_h * 0.6).clamp(10.0, 22.0);
+        let mut vsize = (bar_h * 0.5).clamp(12.0, 24.0);
         let vw = painter
             .layout_no_wrap(val_text.clone(), egui::FontId::proportional(vsize), Color32::WHITE).size().x;
         if vw > bar.width() - 8.0 { vsize = (vsize * (bar.width() - 8.0) / vw).max(8.0); }
