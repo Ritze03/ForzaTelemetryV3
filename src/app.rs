@@ -693,6 +693,20 @@ impl ForzaApp {
         }
     }
 
+    /// True while Backfire's simulated keypress may still be echoing back in
+    /// telemetry as a fake accel value. The window is anchored by the input
+    /// worker at actual key emission (input::EchoWindow); an active render-FPS
+    /// limit is added as grace, since a slow frame cadence delays packet
+    /// processing past the raw window.
+    pub fn backfire_echo_active(&self) -> bool {
+        let grace = if self.config.fps_limit_enabled {
+            std::time::Duration::from_secs_f32(1.0 / self.config.fps_limit.max(1.0))
+        } else {
+            std::time::Duration::ZERO
+        };
+        self.input.synthetic_active(grace)
+    }
+
     pub fn drain_packets(&mut self) {
         let step = self.config.power_curve_step;
         let accel_s = self.config.accel_start_kmh;
@@ -861,12 +875,17 @@ impl ForzaApp {
             }
 
             self.sprint_timer.update(&pkt);
-            self.power_capture.update(&pkt, step);
+            // Backfire's synthetic W press echoes back as accel ≥ 245 while
+            // coasting — without this gate every pop seeds the power curve with
+            // bogus low-power points in RPM buckets no real pull has covered yet.
+            if !self.backfire_echo_active() {
+                self.power_capture.update(&pkt, step);
+            }
             self.perf_test
                 .update(&pkt, accel_s, accel_e, decel_s, decel_e);
             self.backfire.update(&pkt, &fun_cfg, &self.input);
             let suppress_gearbox_accel =
-                self.config.dsg_ignore_backfire_accel && self.backfire.is_active();
+                self.config.dsg_ignore_backfire_accel && self.backfire_echo_active();
             self.dsg.update(
                 &pkt,
                 &fun_cfg,
