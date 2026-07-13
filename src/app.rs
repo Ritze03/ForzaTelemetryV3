@@ -362,8 +362,7 @@ pub enum PageSettingsTab {
     Tab(Tab),
 }
 
-/// Compact tab button: an icon centered in a fixed 30px-wide cell (height matched
-/// to the normal-mode selectable button), reusing egui's
+/// Compact tab button: an icon centered in a fixed 30×30 cell, reusing egui's
 /// own selectable visuals so the selected/hover look matches the labelled tabs.
 /// `selectable_value` sizes to the glyph advance (which varies per icon) and even
 /// `Align2::CENTER_CENTER` only centres the layout box, not the ink — so the cache
@@ -376,11 +375,7 @@ fn compact_tab(
     icon: &str,
 ) {
     let selected = *current == tab;
-    // Match the normal-mode selectable_value height exactly (galley + button padding)
-    // so both modes center the same in the fixed row → identical top/bottom spacing.
-    let tab_h = ui.text_style_height(&egui::TextStyle::Button)
-        + 2.0 * ui.spacing().button_padding.y;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, tab_h), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
     let vis = ui.style().interact_selectable(&resp, selected);
     if selected || resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, vis.bg_fill);
@@ -1289,10 +1284,12 @@ impl eframe::App for ForzaApp {
             .show(ctx, |ui| {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    // Fixed row height so the bar is identical in normal and compact
-                    // mode (compact's 30px squares are taller than the text buttons);
-                    // the horizontal's Align::Center then vertically centers both.
+                    // Both modes use 30px-tall buttons filling a fixed 30px row, so the
+                    // bar is pixel-identical. Bump the selectable button padding so the
+                    // normal-mode text buttons are 30px too (compact uses a fixed 30px).
                     ui.set_min_height(30.0);
+                    let text_h = ui.text_style_height(&egui::TextStyle::Button);
+                    ui.spacing_mut().button_padding.y = ((30.0 - text_h) / 2.0).max(0.0);
                     use crate::i18n::tr;
                     use crate::icons;
                     let compact = self.config.compact_tabs;
