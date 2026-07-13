@@ -620,6 +620,12 @@ fn de(s: &str) -> Option<&'static str> {
         "Show text" => "Text anzeigen",
         "Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."
             => "Aktuell-/Spitzen-Anzeige neben dem Diagramm. Aus = das Diagramm füllt das ganze Widget.",
+        "Show labels" => "Beschriftungen anzeigen",
+        "Show the \"Current:\"/\"Peak:\" header rows. Off = only the value rows."
+            => "Zeigt die Kopfzeilen „Aktuell:\"/„Spitze:\". Aus = nur die Wertzeilen.",
+        "Hide widget titles" => "Widget-Titel ausblenden",
+        "Hide every widget's title row so the content gets the space."
+            => "Blendet die Titelzeile jedes Widgets aus, damit der Inhalt mehr Platz bekommt.",
         "Config" => "Konfiguration",
         "Export" => "Exportieren",
         "Import" => "Importieren",

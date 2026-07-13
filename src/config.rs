@@ -278,6 +278,9 @@ pub struct AppConfig {
     pub minimap_show_compass: bool, // show the north compass on the map
     // G-Force widget
     pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
+    pub gforce_show_labels: bool, // show the "Current:"/"Peak:" header rows above the value rows
+    // Global
+    pub hide_widget_titles: bool, // hide every dashboard widget's title row
     // Engine widget
     pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     pub engine_show_type: bool,   // show an "Electric"/"N cyl" caption under the values
@@ -397,6 +400,8 @@ impl Default for AppConfig {
             minimap_north_up: false,
             minimap_show_compass: true,
             gforce_show_text: true,
+            gforce_show_labels: true,
+            hide_widget_titles: false,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
             input_bars_full_width: false,
@@ -549,7 +554,8 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "boost_in_bar", "coop_list_class", "coop_list_distance", "coop_list_gear",
     "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
     "dsg_show_debug_panel", "engine_display_mode", "engine_show_type", "gear_align",
-    "gforce_show_text", "input_bars_full_width", "input_steer_compact",
+    "gforce_show_labels", "gforce_show_text", "hide_widget_titles",
+    "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
     "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges",
     "minimap_north_up", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",

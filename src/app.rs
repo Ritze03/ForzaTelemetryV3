@@ -1454,6 +1454,12 @@ impl eframe::App for ForzaApp {
                                     ui.add_space(4.0);
                                     crate::theme::styled_checkbox(ui, &mut self.config.dashboard_show_grid, tr("Show grid"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.dashboard_show_outlines, tr("Show widget outlines"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.hide_widget_titles, tr("Hide widget titles"));
+                                    ui.label(
+                                        egui::RichText::new(tr("Hide every widget's title row so the content gets the space."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
                                     ui.add_space(8.0);
                                     if ui.button(tr("Reset Layout")).clicked() {
                                         self.config.dashboard_widgets =
@@ -1683,6 +1689,12 @@ impl eframe::App for ForzaApp {
                                     crate::theme::styled_checkbox(ui, &mut self.config.gforce_show_text, tr("Show text"));
                                     ui.label(
                                         egui::RichText::new(tr("Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
+                                    crate::theme::styled_checkbox(ui, &mut self.config.gforce_show_labels, tr("Show labels"));
+                                    ui.label(
+                                        egui::RichText::new(tr("Show the \"Current:\"/\"Peak:\" header rows. Off = only the value rows."))
                                             .size(11.0)
                                             .color(egui::Color32::GRAY),
                                     );

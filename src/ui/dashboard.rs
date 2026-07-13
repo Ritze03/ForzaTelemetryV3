@@ -437,6 +437,15 @@ fn commit_drag(
 
 // ── Widget dispatcher ──────────────────────────────────────────────
 
+/// Draw a dashboard widget's title row, unless the master "hide widget titles"
+/// mini-setting is on. The reclaimed space flows to the widget content, which
+/// sizes to `available_rect_before_wrap`.
+fn widget_title(ui: &mut Ui, app: &ForzaApp, text: &str) {
+    if !app.config.hide_widget_titles {
+        ui.label(crate::theme::section_label(text));
+    }
+}
+
 fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKind) {
     match kind {
         WidgetKind::Empty      => {}
@@ -446,7 +455,7 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
         WidgetKind::Inputs     => show_inputs_block(ui, app, pkt),
         WidgetKind::Car        => show_car_block(ui, app, pkt),
         WidgetKind::Engine     => show_engine_block(ui, app, pkt),
-        WidgetKind::Position   => show_position_block(ui, pkt),
+        WidgetKind::Position   => show_position_block(ui, app, pkt),
         WidgetKind::Race       => show_race_block(ui, app, pkt),
         WidgetKind::Tires      => show_tires_block(ui, app, pkt),
         WidgetKind::GForce     => show_gforce_block(ui, app, pkt),
@@ -463,7 +472,7 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
 
 /// Per-car session maxima (reset on car change) — a quick run-review summary.
 fn show_session_stats(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
-    ui.label(crate::theme::section_label(tr("Session Stats")));
+    widget_title(ui, app, tr("Session Stats"));
     ui.add_space(4.0);
 
     let use_mph = app.config.use_mph;
@@ -506,7 +515,7 @@ fn show_session_stats(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
 fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let full = ui.available_rect_before_wrap();
     let vertical = full.height() > full.width();
-    ui.label(crate::theme::section_label(tr("Boost")));
+    widget_title(ui, app, tr("Boost"));
 
     let use_bar = app.config.use_bar;
     let conv = |psi: f32| if use_bar { psi * 0.068_947_6 } else { psi };
@@ -676,7 +685,7 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // under the title to match the Boost widget's tight vertical-mode title→content
     // gap. It stays in effect for the legend→graph gap too, unchanged from before.
     ui.spacing_mut().item_spacing.y = 2.0;
-    ui.label(crate::theme::section_label(tr("Speed Trace")));
+    widget_title(ui, app, tr("Speed Trace"));
 
     let use_mph = app.config.use_mph;
     let unit = if use_mph { "mph" } else { "km/h" };
@@ -744,7 +753,7 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 /// speed bar, current speed and gear. Sorted fastest-first.
 fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     use crate::coop::Role;
-    ui.label(crate::theme::section_label(tr("Co-Op")));
+    widget_title(ui, app, tr("Co-Op"));
 
     if app.coop.role() == Role::Off {
         ui.add_space(4.0);
@@ -987,7 +996,7 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 // ── Block renderers (unchanged) ────────────────────────────────────
 
 fn show_inputs_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.label(crate::theme::section_label(tr("Inputs")));
+    widget_title(ui, app, tr("Inputs"));
     ui.add_space(4.0);
 
     // Backfire briefly injects a synthetic 'W' keypress, which the game reports back as a real
@@ -1019,7 +1028,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     // Capture the full widget rect before the heading consumes any space.
     let full_rect = ui.available_rect_before_wrap();
 
-    ui.label(crate::theme::section_label(tr("Car")));
+    widget_title(ui, app, tr("Car"));
 
     let no_data = app.cached_car_class_str.is_empty();
     let class = if no_data { -1 } else { app.cached_car_class };
@@ -1078,7 +1087,7 @@ fn show_car_block(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
 
 fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let full_rect = ui.available_rect_before_wrap();
-    ui.label(crate::theme::section_label(tr("Engine")));
+    widget_title(ui, app, tr("Engine"));
     ui.add_space(4.0);
 
     let (boost_cur, boost_max, boost_unit) = if app.config.use_bar {
@@ -1186,8 +1195,8 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     }
 }
 
-fn show_position_block(ui: &mut Ui, pkt: &ForzaPacket) {
-    ui.label(crate::theme::section_label(tr("Position")));
+fn show_position_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+    widget_title(ui, app, tr("Position"));
     ui.add_space(4.0);
     ui.columns(2, |cols| {
         cols[0].label(RichText::new(tr("Position")).size(11.0).color(crate::theme::TEXT_DIM));
@@ -1208,7 +1217,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         // Captured before the heading so the height budget covers the whole cell.
         let full_rect = ui.available_rect_before_wrap();
         // Title flush like every other widget; the edge margin applies to the rows only.
-        ui.label(crate::theme::section_label(tr("Sprint")));
+        widget_title(ui, app, tr("Sprint"));
         ui.add_space(4.0);
 
         let st = &app.sprint_timer;
@@ -1304,7 +1313,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         sprint_row(ui, lbl3, st.three_to_four, c400, stype, show_other, scale);
         sprint_row(ui, lbl4, st.four_to_five, c500, stype, show_other, scale);
     } else {
-        ui.label(crate::theme::section_label(tr("Race")));
+        widget_title(ui, app, tr("Race"));
         ui.add_space(4.0);
 
         ui.label(format!("{} P{}", tr("Position:"), pkt.race_position));
@@ -1324,7 +1333,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.label(crate::theme::section_label(tr("Tires")));
+    widget_title(ui, app, tr("Tires"));
     ui.add_space(4.0);
     match app.config.tire_display_style {
         TireDisplayStyle::Tires => show_tires_tiles(ui, app, pkt),
@@ -1633,7 +1642,7 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.label(crate::theme::section_label(tr("G-Forces")));
+    widget_title(ui, app, tr("G-Forces"));
     ui.add_space(4.0);
 
     let lat = pkt.acceleration_x / 9.81;
@@ -1667,7 +1676,10 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         if !show_text { return; }
         ui.add_space(gap);
         ui.vertical(|ui| {
-            // Build the 8 lines up front so we can measure the widest and scale to fit.
+            let show_labels = app.config.gforce_show_labels;
+            // Peak marker orange, matching the peak ring drawn by draw_gforce_plot.
+            let peak_col = Color32::from_rgb(255, 140, 0);
+            // Build the lines up front so we can measure the widest and scale to fit.
             let hdr_cur  = tr("Current:").to_string();
             let hdr_peak = tr("Peak:").to_string();
             let cur_lat  = format!("  {:<5} {:+.2} g", format!("{}:", tr("Lat")),  lat);
@@ -1679,40 +1691,47 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
             // Dynamic font scaling, same approach as the Engine widget: measure at the
             // default body size, then derive width/height scales, clamped to 0.5..=1.0.
+            // The header rows only participate (in width and in the height budget) when shown.
             let body_font = egui::TextStyle::Body.resolve(ui.style());
             let avail = (ui.available_width() - 2.0).max(1.0);
-            let widest = [&hdr_cur, &cur_lat, &cur_long, &cur_vert, &hdr_peak, &pk_lat, &pk_long, &pk_vert]
-                .iter()
-                .fold(0.0_f32, |w, s| {
-                    w.max(ui.painter().layout_no_wrap((*s).clone(), body_font.clone(), Color32::WHITE).rect.width())
-                });
+            let mut lines: Vec<&String> = vec![&cur_lat, &cur_long, &cur_vert, &pk_lat, &pk_long, &pk_vert];
+            if show_labels { lines.push(&hdr_cur); lines.push(&hdr_peak); }
+            let widest = lines.iter().fold(0.0_f32, |w, s| {
+                w.max(ui.painter().layout_no_wrap((*s).clone(), body_font.clone(), Color32::WHITE).rect.width())
+            });
             let w_scale = if widest > avail { (avail / widest).max(0.5) } else { 1.0 };
 
-            // Height budget: 8 lines, 7 inter-line gaps, plus the 4 px break between the
-            // Current and Peak blocks — as ONE unit that scales together (the gaps scale
-            // with the font too, otherwise the fixed gaps make it overflow). Sized to the
-            // full cell height below the heading so the text can fill the cell even when
-            // the plot is smaller; then centered in that height.
+            // Height budget: value rows plus the two header rows when shown (8 lines) or
+            // just the 6 value rows when hidden — plus the 2 px break between the Current
+            // and Peak blocks — as ONE unit that scales together (the gaps scale with the
+            // font too, otherwise the fixed gaps make it overflow). Reserve a ~4 px bottom
+            // margin so the block never clips the very bottom edge, then center in it.
             let lh = ui.painter()
                 .layout_no_wrap("0".to_owned(), body_font.clone(), Color32::WHITE).rect.height();
             let sp = ui.spacing().item_spacing.y;
-            let unit_h = 8.0 * lh + 7.0 * sp + 4.0;
-            let h_scale = (avail_h / unit_h).clamp(0.5, 1.0);
+            let n_lines = if show_labels { 8.0 } else { 6.0 };
+            let text_avail_h = (avail_h - 4.0).max(1.0);
+            let unit_h = n_lines * lh + (n_lines - 1.0) * sp + 2.0;
+            let h_scale = (text_avail_h / unit_h).clamp(0.5, 1.0);
             let scale = w_scale.min(h_scale);
             let size = body_font.size * scale;
 
-            ui.add_space(((avail_h - unit_h * scale) * 0.5).max(0.0)); // center vertically
+            ui.add_space(((text_avail_h - unit_h * scale) * 0.5).max(0.0)); // center vertically
             ui.spacing_mut().item_spacing.y = sp * scale;
 
-            ui.label(RichText::new(hdr_cur).size(size).color(crate::theme::TEXT_DIM));
+            if show_labels {
+                ui.label(RichText::new(hdr_cur).size(size).color(crate::theme::TEXT_DIM));
+            }
             ui.label(RichText::new(cur_lat).size(size));
             ui.label(RichText::new(cur_long).size(size));
             ui.label(RichText::new(cur_vert).size(size));
-            ui.add_space(4.0 * scale);
-            ui.label(RichText::new(hdr_peak).size(size).color(crate::theme::TEXT_DIM));
-            ui.label(RichText::new(pk_lat).size(size).color(Color32::YELLOW));
-            ui.label(RichText::new(pk_long).size(size).color(Color32::YELLOW));
-            ui.label(RichText::new(pk_vert).size(size).color(Color32::YELLOW));
+            ui.add_space(2.0 * scale);
+            if show_labels {
+                ui.label(RichText::new(hdr_peak).size(size).color(crate::theme::TEXT_DIM));
+            }
+            ui.label(RichText::new(pk_lat).size(size).color(peak_col));
+            ui.label(RichText::new(pk_long).size(size).color(peak_col));
+            ui.label(RichText::new(pk_vert).size(size).color(peak_col));
         });
     });
 }
@@ -1726,7 +1745,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         pkt.normalized_suspension_travel_rr,
     ];
 
-    ui.label(crate::theme::section_label(tr("Suspension")));
+    widget_title(ui, app, tr("Suspension"));
     ui.add_space(4.0);
 
     let avail_h  = ui.available_rect_before_wrap().height();
@@ -2429,7 +2448,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     // Normal mode: a section title above the plot, like other widgets. Compact mode
     // has no title row — it's painted over the top-left of the plot below, so it
     // costs no vertical space.
-    if !compact {
+    if !compact && !app.config.hide_widget_titles {
         ui.label(crate::theme::section_label(tr("Power Graph")));
         ui.add_space(4.0);
     }
@@ -2641,8 +2660,10 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 }
 
 fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
-    ui.heading(tr("Boost Graph"));
-    ui.add_space(4.0);
+    if !app.config.hide_widget_titles {
+        ui.heading(tr("Boost Graph"));
+        ui.add_space(4.0);
+    }
 
     let saved_curve = app.saved_power_curve.as_ref();
 
