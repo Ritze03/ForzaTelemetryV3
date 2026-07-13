@@ -4,7 +4,6 @@ use crate::app::ForzaApp;
 use crate::i18n::tr;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    ui.heading(tr("Engine Swap Reference"));
     ui.label(
         RichText::new(tr("Display-only reference table. All engines available in Forza Horizon 6."))
             .color(Color32::GRAY),

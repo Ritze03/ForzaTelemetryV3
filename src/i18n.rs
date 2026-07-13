@@ -217,7 +217,6 @@ fn de(s: &str) -> Option<&'static str> {
              Gas-Anzeige nur dein echtes Pedal widerspiegelt.",
 
         // ── Engine swaps tab ───────────────────────────────────────────
-        "Engine Swap Reference" => "Motortausch-Referenz",
         "Display-only reference table. All engines available in Forza Horizon 6." =>
             "Reine Anzeigetabelle. Alle in Forza Horizon 6 verfügbaren Motoren.",
         "Search:" => "Suche:",

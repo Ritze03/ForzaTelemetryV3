@@ -136,8 +136,6 @@ static SECTIONS: LazyLock<Vec<Section>> =
 /// Render the "What's New" viewer.
 pub fn show(ui: &mut egui::Ui, app: &mut crate::app::ForzaApp) {
     ui.add_space(6.0);
-    ui.heading(tr("What's New"));
-    ui.add_space(6.0);
 
     // ── Filter bar ────────────────────────────────────────────────────
     ui.horizontal(|ui| {

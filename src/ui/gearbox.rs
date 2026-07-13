@@ -15,7 +15,6 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
         .id_salt("gearbox_scroll")
         .show(&mut cols[0], |ui| {
             ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the column
-            ui.heading(tr("Automatic Gearbox"));
             ui.add_space(6.0);
 
             let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;

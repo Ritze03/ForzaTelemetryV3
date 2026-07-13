@@ -8,7 +8,6 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
         .auto_shrink([false, false])
         .id_salt("backfire_scroll")
         .show(ui, |ui| {
-            ui.heading(tr("Backfire"));
             ui.label(
                 RichText::new(tr("Triggers Backfire by spamming 'W'"))
                     .color(Color32::GRAY),
