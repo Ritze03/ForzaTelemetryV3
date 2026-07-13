@@ -24,6 +24,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Backfire packet-based tap mode**: a second dynamic mode that holds the throttle key until the next packet arrives — an exact one-frame tap rather than an estimate; a safety timeout releases the key if telemetry stops.
 - **Map "North up when stopped"**: in heading-up mode, the map now smoothly eases to north when you come to a stop and swings back to your heading as you drive off.
 - **Keyboard shortcuts**: Ctrl+S opens the mini-settings for the current tab; Ctrl+E toggles Dashboard edit mode.
+- **Compact tabs**: a new General page in the mini-settings hides the tab labels and shows only each tab's icon.
 - **Suspension invert + end labels** (on by default): the bars now read as ride height (extension up), with rotated Compressed/Extended labels beside them; a mini-setting toggles back to raw compression.
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
 
@@ -42,3 +43,4 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ### Info
 - **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
 - **Setup tab**: "Settings" is renamed "Setup" and moved to the far right, next to What's New.
+- **Tab order**: reordered to Dashboard, Power Curve, Co-Op, Backfire, Automatic Gearbox, Engine Swaps.

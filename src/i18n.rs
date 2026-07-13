@@ -109,6 +109,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Grid rows:" => "Rasterzeilen:",
         "Show grid" => "Raster anzeigen",
         "Show widget outlines" => "Widget-Umrisse anzeigen",
+        "Compact tabs" => "Kompakte Tabs",
+        "Show only the icon on each tab, without its label." => "Nur das Symbol pro Tab anzeigen, ohne Beschriftung.",
         "Reset Layout" => "Layout zurücksetzen",
         "Right-click a module to reset its position (auto-placed)."
             => "Rechtsklick auf ein Modul setzt seine Position zurück (automatisch platziert).",

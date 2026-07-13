@@ -354,6 +354,14 @@ pub enum Tab {
     Changelog,
 }
 
+/// Which page the mini-settings popup shows. `General` is a global page not tied
+/// to any app tab; everything else mirrors a real `Tab`.
+#[derive(PartialEq, Clone, Copy)]
+pub enum PageSettingsTab {
+    General,
+    Tab(Tab),
+}
+
 #[derive(PartialEq, Clone, Copy, Default)]
 pub enum DashboardSubTab {
     #[default]
@@ -463,7 +471,7 @@ pub struct ForzaApp {
     // Page-specific settings popup
     pub page_settings_open: bool,
     pub page_settings_opacity: f32,
-    pub page_settings_tab: Tab,
+    pub page_settings_tab: PageSettingsTab,
     pub page_dashboard_sub_tab: DashboardSubTab,
     pub page_map_sub_tab: MiniMapTab,
     // Dashboard config export/import ("Config" sub-tab)
@@ -637,7 +645,7 @@ impl ForzaApp {
             power_plot_auto_bounds: false,
             page_settings_open: false,
             page_settings_opacity: 0.5,
-            page_settings_tab: Tab::Dashboard,
+            page_settings_tab: PageSettingsTab::Tab(Tab::Dashboard),
             page_dashboard_sub_tab: DashboardSubTab::default(),
             page_map_sub_tab: MiniMapTab::default(),
             config_import_buf: String::new(),
@@ -1225,7 +1233,7 @@ impl eframe::App for ForzaApp {
         // Ctrl+S: toggle the mini-settings popup for the current tab (mirrors the cog button).
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
             self.page_settings_open = !self.page_settings_open;
-            self.page_settings_tab = self.current_tab;
+            self.page_settings_tab = PageSettingsTab::Tab(self.current_tab);
             if !self.page_settings_open {
                 self.config.save();
             }
@@ -1246,36 +1254,40 @@ impl eframe::App for ForzaApp {
                 ui.horizontal(|ui| {
                     use crate::i18n::tr;
                     use crate::icons;
+                    let compact = self.config.compact_tabs;
+                    // Compact mode drops the label and shows only the icon.
+                    let lbl = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{}  {}", icon, text) };
+                    // BOLT reads too wide with two spaces, so it uses one when labelled.
+                    let lbl1 = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{} {}", icon, text) };
                     ui.selectable_value(
                         &mut self.current_tab,
                         Tab::Dashboard,
-                        format!("{}  {}", icons::DASHBOARD, tr("Dashboard")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Coop,
-                        format!("{}  {}", icons::USERS, tr("Co-Op")),
-                    );
-                    // Intentional single space, otherwise spacing looks too large
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Backfire,
-                        format!("{} {}", icons::BOLT, tr("Backfire")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Gearbox,
-                        format!("{}  {}", icons::GAMEPAD, tr("Automatic Gearbox")),
+                        lbl(icons::DASHBOARD, tr("Dashboard")),
                     );
                     ui.selectable_value(
                         &mut self.current_tab,
                         Tab::PowerCurve,
-                        format!("{}  {}", icons::LINE_CHART, tr("Power Curve")),
+                        lbl(icons::LINE_CHART, tr("Power Curve")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Coop,
+                        lbl(icons::USERS, tr("Co-Op")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Backfire,
+                        lbl1(icons::BOLT, tr("Backfire")),
+                    );
+                    ui.selectable_value(
+                        &mut self.current_tab,
+                        Tab::Gearbox,
+                        lbl(icons::GAMEPAD, tr("Automatic Gearbox")),
                     );
                     ui.selectable_value(
                         &mut self.current_tab,
                         Tab::EngineSwaps,
-                        format!("{}  {}", icons::WRENCH, tr("Engine Swaps")),
+                        lbl(icons::WRENCH, tr("Engine Swaps")),
                     );
                     // RIGHT-bound tabs. A right_to_left layout places items
                     // right→left, so Setup is added first (rightmost) and
@@ -1284,12 +1296,12 @@ impl eframe::App for ForzaApp {
                         ui.selectable_value(
                             &mut self.current_tab,
                             Tab::Settings,
-                            format!("{}  {}", icons::COG, tr("Setup")),
+                            lbl(icons::COG, tr("Setup")),
                         );
                         ui.selectable_value(
                             &mut self.current_tab,
                             Tab::Changelog,
-                            format!("{}  {}", icons::BULLHORN, tr("What's New")),
+                            lbl(icons::BULLHORN, tr("What's New")),
                         );
                     });
                 });
@@ -1365,7 +1377,7 @@ impl eframe::App for ForzaApp {
                         );
                         if resp.clicked() {
                             self.page_settings_open = !self.page_settings_open;
-                            self.page_settings_tab = self.current_tab;
+                            self.page_settings_tab = PageSettingsTab::Tab(self.current_tab);
                             if !self.page_settings_open {
                                 self.config.save();
                             }
@@ -1390,8 +1402,9 @@ impl eframe::App for ForzaApp {
                     use crate::icons;
                     use crate::i18n::tr;
 
-                    // Main tab row (no Settings tab here)
+                    // Main tab row (no Settings tab here). General is a global page.
                     ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(&mut self.page_settings_tab, PageSettingsTab::General, tr("General"));
                         for (tab, lbl) in [
                             (Tab::Dashboard,    "Dashboard"),
                             (Tab::Backfire,     "Backfire"),
@@ -1399,7 +1412,7 @@ impl eframe::App for ForzaApp {
                             (Tab::PowerCurve,   "Power"),
                             (Tab::EngineSwaps,  "Engines"),
                         ] {
-                            ui.selectable_value(&mut self.page_settings_tab, tab, tr(lbl));
+                            ui.selectable_value(&mut self.page_settings_tab, PageSettingsTab::Tab(tab), tr(lbl));
                         }
                     });
                     ui.separator();
@@ -1407,7 +1420,11 @@ impl eframe::App for ForzaApp {
                     ui.set_min_height(590.0);
 
                     match self.page_settings_tab {
-                        Tab::Dashboard => {
+                        PageSettingsTab::General => {
+                            crate::theme::styled_checkbox(ui, &mut self.config.compact_tabs, tr("Compact tabs"))
+                                .on_hover_text(tr("Show only the icon on each tab, without its label."));
+                        }
+                        PageSettingsTab::Tab(Tab::Dashboard) => {
                             // Sub-tab row (wraps onto extra lines when space runs out)
                             ui.horizontal_wrapped(|ui| {
                                 for (sub, lbl) in [
@@ -2003,7 +2020,7 @@ impl eframe::App for ForzaApp {
                                 }
                             }
                         }
-                        Tab::PowerCurve => {
+                        PageSettingsTab::Tab(Tab::PowerCurve) => {
                             ui.horizontal(|ui| {
                                 ui.label(tr("RPM step size:"));
                                 ui.add(
@@ -2043,8 +2060,8 @@ impl eframe::App for ForzaApp {
                                 );
                             }
                         }
-                        Tab::Gearbox => {
-                            crate::theme::styled_checkbox(ui, 
+                        PageSettingsTab::Tab(Tab::Gearbox) => {
+                            crate::theme::styled_checkbox(ui,
                                 &mut self.config.dsg_show_debug_panel,
                                 tr("Show debug panel"),
                             );
