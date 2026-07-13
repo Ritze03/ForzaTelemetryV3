@@ -1251,16 +1251,26 @@ impl eframe::App for ForzaApp {
             }
         }
 
+        // Shared "stopped" state: under 5 km/h for at least 1.5 s. Both the
+        // ease-to-north and the zoom-out read it, so they kick in together.
+        let speed_kmh = self
+            .telemetry
+            .latest
+            .as_ref()
+            .map(|p| p.speed * 3.6)
+            .unwrap_or(0.0);
+        let minimap_stopped = if speed_kmh >= 5.0 {
+            self.minimap_stopped_at = None;
+            false
+        } else {
+            let stopped_at = self.minimap_stopped_at.get_or_insert_with(Instant::now);
+            stopped_at.elapsed().as_secs_f32() >= 1.5
+        };
+
         // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame
         {
-            // In heading-up mode, optionally ease the map to north once the car stops.
-            let stopped_north = self.config.minimap_north_up_when_stopped
-                && self
-                    .telemetry
-                    .latest
-                    .as_ref()
-                    .map(|p| p.speed * 3.6 < 5.0)
-                    .unwrap_or(true);
+            // In heading-up mode, ease the map to north once the car has been stopped.
+            let stopped_north = self.config.minimap_north_up_when_stopped && minimap_stopped;
 
             let target = if let Some(ref pkt) = self.telemetry.latest {
                 if pkt.is_race_on != 0 {
@@ -1289,24 +1299,15 @@ impl eframe::App for ForzaApp {
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
         {
             let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-            let speed_kmh = self
-                .telemetry
-                .latest
-                .as_ref()
-                .map(|p| p.speed * 3.6)
-                .unwrap_or(0.0);
             let lerp_t = (3.0 * dt).min(1.0);
-            if speed_kmh >= 5.0 {
-                self.minimap_stopped_at = None;
+            if minimap_stopped {
+                self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
+                    + self.config.minimap_zoom_stopped_m * lerp_t;
+            } else if speed_kmh >= 5.0 {
                 self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
                     + self.config.minimap_zoom_driving_m * lerp_t;
-            } else {
-                let stopped_at = self.minimap_stopped_at.get_or_insert_with(Instant::now);
-                if stopped_at.elapsed().as_secs_f32() >= 1.5 {
-                    self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
-                        + self.config.minimap_zoom_stopped_m * lerp_t;
-                }
             }
+            // else: under 5 km/h but not yet 1.5 s — hold the current zoom.
         }
 
         // F11 fullscreen toggle (Windows only)
@@ -1389,28 +1390,21 @@ impl eframe::App for ForzaApp {
                             });
                         }
                         TopBarStyle::Modern => {
-                            use crate::config::ModernBarContent;
                             let bar = ui.max_rect();
                             let spacing = ui.spacing().item_spacing.x;
-                            let show_title = self.config.modern_bar_content != ModernBarContent::SelectionOnly;
-                            let show_sel = self.config.modern_bar_content != ModernBarContent::TitleOnly;
-                            // LEFT: wordmark and/or current-page pill (divider only when both).
+                            // LEFT: wordmark, and optionally a divider + current-page pill.
                             ui.add_space(4.0);
-                            if show_title {
-                                ui.label(
-                                    egui::RichText::new("Forza Telemetry V3")
-                                        .color(crate::theme::ACCENT)
-                                        .size(16.0)
-                                        .strong(),
-                                );
-                            }
-                            if show_title && show_sel {
+                            ui.label(
+                                egui::RichText::new("Forza Telemetry V3")
+                                    .color(crate::theme::ACCENT)
+                                    .size(16.0)
+                                    .strong(),
+                            );
+                            if self.config.modern_show_pill {
                                 ui.add_space(8.0);
                                 let (div, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
                                 ui.painter().rect_filled(div, 0.0, crate::theme::BORDER);
                                 ui.add_space(8.0);
-                            }
-                            if show_sel {
                                 page_pill(ui, tr(tab_title(self.current_tab)));
                             }
                             // CENTER: icon tabs, centred across the full bar width.
@@ -1548,7 +1542,7 @@ impl eframe::App for ForzaApp {
 
                     match self.page_settings_tab {
                         PageSettingsTab::General => {
-                            use crate::config::{ModernBarContent, TopBarStyle};
+                            use crate::config::TopBarStyle;
                             ui.horizontal(|ui| {
                                 ui.label(tr("Top Bar Style:"));
                                 egui::ComboBox::from_id_salt("top_bar_style")
@@ -1564,20 +1558,7 @@ impl eframe::App for ForzaApp {
                                     });
                             });
                             if self.config.top_bar_style == TopBarStyle::Modern {
-                                ui.horizontal(|ui| {
-                                    ui.label(tr("Title and Selection:"));
-                                    egui::ComboBox::from_id_salt("modern_bar_content")
-                                        .selected_text(match self.config.modern_bar_content {
-                                            ModernBarContent::TitleOnly => tr("Title only"),
-                                            ModernBarContent::SelectionOnly => tr("Selection only"),
-                                            ModernBarContent::Both => tr("Both"),
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.config.modern_bar_content, ModernBarContent::TitleOnly, tr("Title only"));
-                                            ui.selectable_value(&mut self.config.modern_bar_content, ModernBarContent::SelectionOnly, tr("Selection only"));
-                                            ui.selectable_value(&mut self.config.modern_bar_content, ModernBarContent::Both, tr("Both"));
-                                        });
-                                });
+                                crate::theme::styled_checkbox(ui, &mut self.config.modern_show_pill, tr("Show current tab pill"));
                             }
                         }
                         PageSettingsTab::Tab(Tab::Dashboard) => {
@@ -2052,9 +2033,9 @@ impl eframe::App for ForzaApp {
                                     });
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up, tr("Lock map north-up")).on_hover_text("F10");
                                     if !self.config.minimap_north_up {
+                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up_when_stopped, tr("North up when stopped"));
                                         crate::theme::styled_checkbox(ui, &mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
                                         crate::theme::styled_checkbox(ui, &mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up_when_stopped, tr("North up when stopped"));
                                     }
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
