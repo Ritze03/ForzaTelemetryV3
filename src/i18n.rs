@@ -606,6 +606,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Current values" => "Aktuelle Werte",
         "Max values" => "Maximalwerte",
         "Cylinders" => "Zylinder",
+        "Reset settings" => "Einstellungen zurücksetzen",
+        "Resets the sliders below to the default tune. Modes and toggles are left unchanged."
+            => "Setzt die Regler unten auf die Standardabstimmung zurück. Modi und Schalter bleiben unverändert.",
         "Show engine type" => "Motortyp anzeigen",
         "Full-width bars" => "Balken über volle Breite",
         "Bars span the full width with the label and value drawn inside."

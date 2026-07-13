@@ -595,6 +595,23 @@ pub fn import_preset(cfg: &mut AppConfig, json: &str, include_minisettings: bool
 // ──────────────────────────────────────────────────────────────────
 
 impl AppConfig {
+    /// Reset the gearbox **slider / numeric** values to the tuned baseline (Ritze's
+    /// current settings). Deliberately leaves the mode dropdown, the toggles, and the
+    /// per-car calibrations untouched — only sliders and numeric fields change.
+    pub fn reset_gearbox_numeric(&mut self) {
+        self.dsg_shift_rpm_pct = 98.0;
+        self.dsg_upshift_speed_pct = 80.0;
+        self.dsg_race_gear_overlap_pct = 10.0;
+        self.dsg_kickdown_cooldown_secs = 5.0;
+        self.dsg_downshift_deadzone_pct = 90.0;
+        self.dsg_full_throttle_pct = 95.0;
+        self.dsg_downshift_powerband_buffer_pct = 20.0;
+        self.dsg_kickdown_powerband_buffer_pct = 30.0;
+        self.dsg_tuning_street = GearboxTuning { cruise_rpm_pct: 30.0, accel_gamma: 3.0 };
+        self.dsg_tuning_sport  = GearboxTuning { cruise_rpm_pct: 50.0, accel_gamma: 3.0 };
+        self.dsg_tuning_race   = GearboxTuning { cruise_rpm_pct: 85.0, accel_gamma: 1.0 };
+    }
+
     /// Tuning parameters for the currently selected gearbox mode.
     pub fn dsg_active_tuning(&self) -> GearboxTuning {
         match self.dsg_gearbox_mode {

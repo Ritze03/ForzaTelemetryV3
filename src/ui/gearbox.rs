@@ -166,6 +166,17 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.label(RichText::new(tr("Advanced Settings")).strong());
                 ui.add_space(2.0);
 
+                if ui.button(tr("Reset settings")).clicked() {
+                    app.config.reset_gearbox_numeric();
+                    app.config.save();
+                }
+                ui.label(
+                    RichText::new(tr("Resets the sliders below to the default tune. Modes and toggles are left unchanged."))
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(4.0);
+
                 slider_row(
                     ui,
                     tr("Accelerator gamma"),
