@@ -362,6 +362,32 @@ pub enum PageSettingsTab {
     Tab(Tab),
 }
 
+/// Compact tab button: an icon centered in a fixed square, reusing egui's own
+/// selectable visuals so the selected/hover look matches the labelled tabs.
+/// `selectable_value` sizes to the glyph advance (which varies per icon), leaving
+/// icons visually off-centre — this keeps every icon on the same grid.
+fn compact_tab(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, icon: &str) {
+    let selected = *current == tab;
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let h = ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, h), egui::Sense::click());
+    let vis = ui.style().interact_selectable(&resp, selected);
+    if selected || resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, vis.bg_fill);
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        font,
+        vis.text_color(),
+    );
+    if resp.clicked() {
+        *current = tab;
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+}
+
 #[derive(PartialEq, Clone, Copy, Default)]
 pub enum DashboardSubTab {
     #[default]
@@ -1255,54 +1281,37 @@ impl eframe::App for ForzaApp {
                     use crate::i18n::tr;
                     use crate::icons;
                     let compact = self.config.compact_tabs;
-                    // Compact mode drops the label and shows only the icon.
-                    let lbl = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{}  {}", icon, text) };
-                    // BOLT reads too wide with two spaces, so it uses one when labelled.
-                    let lbl1 = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{} {}", icon, text) };
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Dashboard,
-                        lbl(icons::DASHBOARD, tr("Dashboard")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::PowerCurve,
-                        lbl(icons::LINE_CHART, tr("Power Curve")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Coop,
-                        lbl(icons::USERS, tr("Co-Op")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Backfire,
-                        lbl1(icons::BOLT, tr("Backfire")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Gearbox,
-                        lbl(icons::GAMEPAD, tr("Automatic Gearbox")),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::EngineSwaps,
-                        lbl(icons::WRENCH, tr("Engine Swaps")),
-                    );
+                    // (tab, icon, label, single-space?) — BOLT reads too wide with two spaces.
+                    let left = [
+                        (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard",         false),
+                        (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve",        false),
+                        (Tab::Coop,        icons::USERS,      "Co-Op",              false),
+                        (Tab::Backfire,    icons::BOLT,       "Backfire",           true),
+                        (Tab::Gearbox,     icons::GAMEPAD,    "Automatic Gearbox",  false),
+                        (Tab::EngineSwaps, icons::WRENCH,     "Engine Swaps",       false),
+                    ];
+                    for (tab, icon, text, tight) in left {
+                        if compact {
+                            compact_tab(ui, &mut self.current_tab, tab, icon);
+                        } else {
+                            let gap = if tight { " " } else { "  " };
+                            ui.selectable_value(&mut self.current_tab, tab, format!("{}{}{}", icon, gap, tr(text)));
+                        }
+                    }
                     // RIGHT-bound tabs. A right_to_left layout places items
                     // right→left, so Setup is added first (rightmost) and
                     // What's New lands to its left.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.selectable_value(
-                            &mut self.current_tab,
-                            Tab::Settings,
-                            lbl(icons::COG, tr("Setup")),
-                        );
-                        ui.selectable_value(
-                            &mut self.current_tab,
-                            Tab::Changelog,
-                            lbl(icons::BULLHORN, tr("What's New")),
-                        );
+                        for (tab, icon, text) in [
+                            (Tab::Settings,  icons::COG,      "Setup"),
+                            (Tab::Changelog, icons::BULLHORN, "What's New"),
+                        ] {
+                            if compact {
+                                compact_tab(ui, &mut self.current_tab, tab, icon);
+                            } else {
+                                ui.selectable_value(&mut self.current_tab, tab, format!("{}  {}", icon, tr(text)));
+                            }
+                        }
                     });
                 });
                 ui.add_space(2.0);
