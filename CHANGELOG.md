@@ -31,6 +31,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ### Removed
 - **Separate tyre style**: folded into the single adaptive "Tires" view (was three styles, now Tires + Bars).
 - **Duplicate engine-type caption** in the Car widget — it now lives in the Engine widget instead.
+- **Recording replay**: the replay/loop playback was removed; recording, CSV export, and delete stay.
+- **Load Preset in Setup**: preset loading now lives only in the dashboard mini-settings (it was in both).
 
 ### Info
 - **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
+- **Setup tab**: "Settings" is renamed "Setup" and moved to the far right, next to What's New.
