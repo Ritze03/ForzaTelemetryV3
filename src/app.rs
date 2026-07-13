@@ -351,6 +351,7 @@ pub enum Tab {
     EngineSwaps,
     Coop,
     Settings,
+    Changelog,
 }
 
 #[derive(PartialEq, Clone, Copy, Default)]
@@ -469,6 +470,12 @@ pub struct ForzaApp {
     pub config_io_status: String,
     pub config_export_minisettings: bool,
     pub config_import_minisettings: bool,
+
+    // "What's New" changelog viewer: per-category filter toggles (transient UI state)
+    pub changelog_show_added: bool,
+    pub changelog_show_fixed: bool,
+    pub changelog_show_removed: bool,
+    pub changelog_show_info: bool,
 
     // Dashboard widget drag / resize state
     pub dashboard_drag: Option<DashboardDragState>,
@@ -638,6 +645,10 @@ impl ForzaApp {
             config_io_status: String::new(),
             config_export_minisettings: true,
             config_import_minisettings: true,
+            changelog_show_added: true,
+            changelog_show_fixed: true,
+            changelog_show_removed: true,
+            changelog_show_info: true,
             dashboard_drag: None,
             dashboard_resize: None,
             minimap_texture: None,
@@ -1253,6 +1264,14 @@ impl eframe::App for ForzaApp {
                         Tab::Settings,
                         format!("{}  {}", icons::COG, tr("Settings")),
                     );
+                    // RIGHT-bound "What's New" changelog button.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Changelog,
+                            format!("{}  {}", icons::BULLHORN, tr("What's New")),
+                        );
+                    });
                 });
                 ui.add_space(2.0);
             });
@@ -2052,6 +2071,7 @@ impl eframe::App for ForzaApp {
             Tab::EngineSwaps => crate::ui::engine_swaps::show(ui, self),
             Tab::Coop => crate::ui::coop::show(ui, self),
             Tab::Settings => crate::ui::settings::show(ui, self),
+            Tab::Changelog => crate::ui::changelog::show(ui, self),
         });
 
         // FPS limiter

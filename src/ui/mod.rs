@@ -1,4 +1,5 @@
 pub mod backfire;
+pub mod changelog;
 pub mod coop;
 pub mod dashboard;
 pub mod engine_swaps;
