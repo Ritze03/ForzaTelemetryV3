@@ -1439,7 +1439,7 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     let avail_h  = ui.available_rect_before_wrap().height();
     let avail_w  = ui.available_width();
-    let label_w  = 36.0_f32;   // "Temp"/"Slip"/unit label column
+    let label_w  = four_mono_chars(ui);   // "Temp"/"Slip"/unit column — matches Suspension
     let header_h = 18.0_f32;   // "FL"/"FR"/... row
     let text_h   = 14.0_f32;   // height per text row
     let bar_w    = (avail_w - label_w - 4.0) / 4.0;  // 4 px right margin
@@ -1748,7 +1748,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     let avail_h  = ui.available_rect_before_wrap().height();
     let avail_w  = ui.available_width();
-    let label_w  = 28.0_f32;   // "Cur"/"Min"/"Max" label column
+    let label_w  = four_mono_chars(ui);   // "Cur"/"Min"/"Max" column — matches Tires
     let header_h = 18.0_f32;   // "FL"/"FR"/... row
     let text_h   = 14.0_f32;   // height per text row
     let bar_w    = (avail_w - label_w - 4.0) / 4.0;  // 4 px right margin
@@ -1864,6 +1864,15 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             p.text(pos2(cx, cy), egui::Align2::CENTER_CENTER, val, fid.clone(), *color);
         }
     }
+}
+
+/// Width of four monospace characters at the row font size (11pt) — the fixed
+/// label-column width shared by the Tires and Suspension widgets so they align.
+fn four_mono_chars(ui: &Ui) -> f32 {
+    ui.painter()
+        .layout_no_wrap("0000".to_owned(), egui::FontId::monospace(11.0), crate::theme::TEXT_DIM)
+        .size()
+        .x
 }
 
 // ── Visual widgets ─────────────────────────────────────────────────
