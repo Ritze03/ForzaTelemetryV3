@@ -362,26 +362,28 @@ pub enum PageSettingsTab {
     Tab(Tab),
 }
 
-/// Compact tab button: an icon centered in a fixed square, reusing egui's own
-/// selectable visuals so the selected/hover look matches the labelled tabs.
-/// `selectable_value` sizes to the glyph advance (which varies per icon), leaving
-/// icons visually off-centre — this keeps every icon on the same grid.
-fn compact_tab(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, icon: &str) {
+/// Compact tab button: an icon centered in a fixed 24×24 square, reusing egui's
+/// own selectable visuals so the selected/hover look matches the labelled tabs.
+/// `selectable_value` sizes to the glyph advance (which varies per icon) and even
+/// `Align2::CENTER_CENTER` only centres the layout box, not the ink — so the cache
+/// supplies the true ink-centred draw position and every icon lands on the grid.
+fn compact_tab(
+    ui: &mut egui::Ui,
+    current: &mut Tab,
+    cache: &mut crate::iconcache::IconCenterCache,
+    tab: Tab,
+    icon: &str,
+) {
     let selected = *current == tab;
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let h = ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, h), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
     let vis = ui.style().interact_selectable(&resp, selected);
     if selected || resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, vis.bg_fill);
     }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        font,
-        vis.text_color(),
-    );
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let pos = cache.centered_pos(ui, icon, font.clone(), rect.center());
+    ui.painter()
+        .text(pos, egui::Align2::LEFT_TOP, icon, font, vis.text_color());
     if resp.clicked() {
         *current = tab;
     }
@@ -472,6 +474,9 @@ pub struct ForzaApp {
     /// Estimated tire radius per wheel [FL, FR, RL, RR], meters. The packet has no radius,
     /// so it's derived from speed / wheel rotation while gripping (EMA-smoothed). Per-car.
     pub wheel_radius_est: [f32; 4],
+
+    // Reusable icon-centering cache for icon-in-a-box rendering (compact tabs, …).
+    pub icon_center_cache: crate::iconcache::IconCenterCache,
 
     // Session stats
     pub suspension_stats: SuspensionStats,
@@ -656,6 +661,7 @@ impl ForzaApp {
             fi_detected: false,
             dynamic_max_rpm: 0.0,
             wheel_radius_est: [0.33; 4],
+            icon_center_cache: crate::iconcache::IconCenterCache::new(),
             suspension_stats: SuspensionStats::default(),
             gforce_stats: GForceStats::default(),
             cached_car_class_str: String::new(),
@@ -1292,7 +1298,7 @@ impl eframe::App for ForzaApp {
                     ];
                     for (tab, icon, text, tight) in left {
                         if compact {
-                            compact_tab(ui, &mut self.current_tab, tab, icon);
+                            compact_tab(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon);
                         } else {
                             let gap = if tight { " " } else { "  " };
                             ui.selectable_value(&mut self.current_tab, tab, format!("{}{}{}", icon, gap, tr(text)));
@@ -1307,7 +1313,7 @@ impl eframe::App for ForzaApp {
                             (Tab::Changelog, icons::BULLHORN, "What's New"),
                         ] {
                             if compact {
-                                compact_tab(ui, &mut self.current_tab, tab, icon);
+                                compact_tab(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon);
                             } else {
                                 ui.selectable_value(&mut self.current_tab, tab, format!("{}  {}", icon, tr(text)));
                             }

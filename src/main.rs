@@ -5,6 +5,7 @@ mod config;
 mod coop;
 mod engines;
 mod i18n;
+mod iconcache;
 mod icons;
 mod input;
 mod labels;
