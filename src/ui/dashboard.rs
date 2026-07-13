@@ -2583,7 +2583,6 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
     let mut plot = Plot::new("dash_power_graph")
         .include_x(0.0)
-        .include_x(engine_max_rpm)
         .include_y(0.0)
         .allow_drag(false)
         .allow_zoom(false)
@@ -2615,7 +2614,8 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     }
     if power_series.is_empty() {
         // No captured data yet — keep the empty plot's axes at a sensible extent.
-        plot = plot.include_y(100.0);
+        // With a curve, the RPM axis auto-fits the data so it fills the width.
+        plot = plot.include_x(engine_max_rpm).include_y(100.0);
     }
     let resp = plot.show(&mut plot_ui, |plot_ui| {
         if !power_series.is_empty() {
@@ -2781,22 +2781,25 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     plot_rect.min.x += 8.0;
     plot_rect.max.x -= 8.0;
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
-    Plot::new("dash_boost_graph")
+    let mut plot = Plot::new("dash_boost_graph")
         .x_axis_label(tr("RPM"))
         .y_axis_label(boost_label)
         .include_x(0.0)
-        .include_x(engine_max_rpm)
         .include_y(0.0)
         .include_y(boost_top)
         .allow_drag(false)
         .allow_zoom(false)
         .allow_scroll(false)
-        .allow_boxed_zoom(false)
-        .show(&mut plot_ui, |plot_ui| {
-            if !bars.is_empty() {
-                plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
-            }
-        });
+        .allow_boxed_zoom(false);
+    if bars.is_empty() {
+        // No data yet — span the full rev range; otherwise the RPM axis auto-fits.
+        plot = plot.include_x(engine_max_rpm);
+    }
+    plot.show(&mut plot_ui, |plot_ui| {
+        if !bars.is_empty() {
+            plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
+        }
+    });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
