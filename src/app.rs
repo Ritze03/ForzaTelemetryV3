@@ -391,16 +391,16 @@ fn tab_button(
     };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::click());
     let vis = ui.style().interact_selectable(&resp, selected);
+    let hc = high_contrast && full.is_none();
+    let normal_icon = vis.text_color(); // colour the icon uses without high contrast
     if selected || resp.hovered() {
-        ui.painter().rect_filled(rect, 4.0, vis.bg_fill); // fill only — no outline
+        // In high contrast the active tab takes the normal icon colour as its
+        // background, so the white icon reads against a solid block.
+        let bg = if hc && selected { normal_icon } else { vis.bg_fill };
+        ui.painter().rect_filled(rect, 4.0, bg); // fill only — no outline
     }
-    // Icon-only (compact) buttons can be forced white for high contrast; the
-    // selection still reads from the button's fill highlight.
-    let color = if high_contrast && full.is_none() {
-        egui::Color32::WHITE
-    } else {
-        vis.text_color()
-    };
+    // Icon-only (compact) buttons can be forced white for high contrast.
+    let color = if hc { egui::Color32::WHITE } else { normal_icon };
     match full {
         None => {
             let pos = cache.centered_pos(ui, icon, font.clone(), rect.center());
