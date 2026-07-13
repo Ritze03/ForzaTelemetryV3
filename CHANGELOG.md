@@ -33,6 +33,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Duplicate engine-type caption** in the Car widget — it now lives in the Engine widget instead.
 - **Recording replay**: the replay/loop playback was removed; recording, CSV export, and delete stay.
 - **Load Preset in Setup**: preset loading now lives only in the dashboard mini-settings (it was in both).
+- **Forza Motorsport 7 mode**: dropped entirely — the app is now Forza Horizon 6 only, and the game-selection dropdown in Setup is gone.
 
 ### Info
 - **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
