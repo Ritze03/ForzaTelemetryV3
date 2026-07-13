@@ -2562,6 +2562,14 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         8000.0
     };
 
+    // Highest recorded RPM across the plotted series — the axis runs 0..this+1000.
+    let data_max_rpm = power_series
+        .iter()
+        .chain(torque_series.iter())
+        .chain(boost_series.iter())
+        .map(|&[rpm, _]| rpm)
+        .fold(0.0_f64, f64::max);
+
     // Peak points (max y and its x) for compact-mode inline annotations. Compute
     // before the series are moved into the plot below.
     let peak = |s: &[[f64; 2]]| -> Option<[f64; 2]> {
@@ -2582,6 +2590,8 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     }
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
     let mut plot = Plot::new("dash_power_graph")
+        // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
+        .set_margin_fraction(egui::vec2(0.0, 0.05))
         .include_x(0.0)
         .include_y(0.0)
         .allow_drag(false)
@@ -2613,10 +2623,15 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
             .custom_y_axes(y_axes);
     }
     if power_series.is_empty() {
-        // No captured data yet — keep the empty plot's axes at a sensible extent.
-        // With a curve, the RPM axis auto-fits the data so it fills the width.
-        plot = plot.include_x(engine_max_rpm).include_y(100.0);
+        // No captured data yet — keep the empty plot's y-axis at a sensible extent.
+        plot = plot.include_y(100.0);
     }
+    // Right edge: 1000 RPM past the highest recorded point (full rev range when empty).
+    plot = if data_max_rpm > 0.0 {
+        plot.include_x(data_max_rpm + 1000.0)
+    } else {
+        plot.include_x(engine_max_rpm)
+    };
     let resp = plot.show(&mut plot_ui, |plot_ui| {
         if !power_series.is_empty() {
             plot_ui.line(
@@ -2781,9 +2796,17 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     plot_rect.min.x += 8.0;
     plot_rect.max.x -= 8.0;
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
+    // Highest recorded RPM (only when bars are actually shown).
+    let data_max_rpm = if plot_bars {
+        boost_series.iter().map(|&[rpm, _]| rpm).fold(0.0_f64, f64::max)
+    } else {
+        0.0
+    };
     let mut plot = Plot::new("dash_boost_graph")
         .x_axis_label(tr("RPM"))
         .y_axis_label(boost_label)
+        // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
+        .set_margin_fraction(egui::vec2(0.0, 0.05))
         .include_x(0.0)
         .include_y(0.0)
         .include_y(boost_top)
@@ -2791,10 +2814,12 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_zoom(false)
         .allow_scroll(false)
         .allow_boxed_zoom(false);
-    if bars.is_empty() {
-        // No data yet — span the full rev range; otherwise the RPM axis auto-fits.
-        plot = plot.include_x(engine_max_rpm);
-    }
+    // Right edge: 1000 RPM past the highest recorded point (full rev range when empty).
+    plot = if data_max_rpm > 0.0 {
+        plot.include_x(data_max_rpm + 1000.0)
+    } else {
+        plot.include_x(engine_max_rpm)
+    };
     plot.show(&mut plot_ui, |plot_ui| {
         if !bars.is_empty() {
             plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));

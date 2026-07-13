@@ -91,13 +91,31 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         let power_pts: PlotPoints = PlotPoints::new(app.power_capture.power_series.clone());
         let torque_pts: PlotPoints = PlotPoints::new(app.power_capture.torque_series.clone());
 
-        let power_resp = Plot::new("power_plot")
+        // Highest recorded RPM across live + saved series — axis runs 0..this+1000.
+        let data_max_rpm = app
+            .power_capture
+            .power_series
+            .iter()
+            .chain(app.power_capture.torque_series.iter())
+            .chain(saved_power_series.iter().flatten())
+            .chain(saved_torque_series.iter().flatten())
+            .map(|&[rpm, _]| rpm)
+            .fold(0.0_f64, f64::max);
+
+        let mut power_plot = Plot::new("power_plot")
             .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
             .height(power_h)
             .x_axis_label(tr("RPM"))
             .y_axis_label("PS / Nm")
-            .include_x(0.0)
-            .include_x(engine_max_rpm)
+            // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
+            .set_margin_fraction(egui::vec2(0.0, 0.05))
+            .include_x(0.0);
+        power_plot = if data_max_rpm > 0.0 {
+            power_plot.include_x(data_max_rpm + 1000.0)
+        } else {
+            power_plot.include_x(engine_max_rpm)
+        };
+        let power_resp = power_plot
             .show(ui, |plot_ui| {
                 if apply_auto_bounds {
                     plot_ui.set_auto_bounds([true, true]);
@@ -212,13 +230,26 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             }
 
             let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
-            let boost_resp = Plot::new("boost_plot")
+            // Highest recorded RPM across live + saved boost — axis runs 0..this+1000.
+            let live_boost_rpm = app.power_capture.boost_series.iter().map(|&[r, _]| r).fold(0.0_f64, f64::max);
+            let saved_boost_rpm = saved_curve
+                .map(|c| c.boost_series.iter().map(|&[r, _]| r).fold(0.0_f64, f64::max))
+                .unwrap_or(0.0);
+            let data_max_rpm = live_boost_rpm.max(saved_boost_rpm);
+            let mut boost_plot = Plot::new("boost_plot")
                 .height(boost_h)
                 .x_axis_label(tr("RPM"))
                 .y_axis_label(boost_label)
+                // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
+                .set_margin_fraction(egui::vec2(0.0, 0.05))
                 .include_x(0.0)
-                .include_x(engine_max_rpm)
-                .include_y(boost_top)
+                .include_y(boost_top);
+            boost_plot = if data_max_rpm > 0.0 {
+                boost_plot.include_x(data_max_rpm + 1000.0)
+            } else {
+                boost_plot.include_x(engine_max_rpm)
+            };
+            let boost_resp = boost_plot
                 .show(ui, |plot_ui| {
                     if apply_auto_bounds {
                         plot_ui.set_auto_bounds([true, true]);
