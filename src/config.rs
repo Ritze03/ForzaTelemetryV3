@@ -34,6 +34,16 @@ pub enum TopBarStyle {
     Legacy, // full labelled buttons
 }
 
+/// What the Modern top bar shows on the left: the app title, the current-page
+/// pill, or both.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum ModernBarContent {
+    TitleOnly,
+    SelectionOnly,
+    #[default]
+    Both,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum BackfireDynamicMode {
     TimeBased,   // hold length estimated from packets/sec
@@ -292,6 +302,7 @@ pub struct AppConfig {
     // Global
     pub hide_widget_titles: bool, // hide every dashboard widget's title row
     pub top_bar_style: TopBarStyle, // Modern (title+pill), Simple (icon-only), or Legacy (labelled buttons)
+    pub modern_bar_content: ModernBarContent, // what the Modern bar shows: title, selection, or both
     // Engine widget
     pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     pub engine_show_type: bool,   // show an "Electric"/"N cyl" caption under the values
@@ -417,6 +428,7 @@ impl Default for AppConfig {
             gforce_show_labels: true,
             hide_widget_titles: false,
             top_bar_style: TopBarStyle::Modern,
+            modern_bar_content: ModernBarContent::Both,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
             input_bars_full_width: false,
@@ -574,7 +586,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "gforce_show_labels", "gforce_show_text", "hide_widget_titles",
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
-    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges",
+    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges", "modern_bar_content",
     "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",

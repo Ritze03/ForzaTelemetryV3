@@ -113,6 +113,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Modern" => "Modern",
         "Simple" => "Einfach",
         "Legacy" => "Klassisch",
+        "Title and Selection:" => "Titel und Auswahl:",
+        "Title only" => "Nur Titel",
+        "Selection only" => "Nur Auswahl",
         "Reset Layout" => "Layout zurücksetzen",
         "Right-click a module to reset its position (auto-placed)."
             => "Rechtsklick auf ein Modul setzt seine Position zurück (automatisch platziert).",

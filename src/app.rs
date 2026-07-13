@@ -1389,21 +1389,30 @@ impl eframe::App for ForzaApp {
                             });
                         }
                         TopBarStyle::Modern => {
+                            use crate::config::ModernBarContent;
                             let bar = ui.max_rect();
                             let spacing = ui.spacing().item_spacing.x;
-                            // LEFT: wordmark + divider + current-page pill.
+                            let show_title = self.config.modern_bar_content != ModernBarContent::SelectionOnly;
+                            let show_sel = self.config.modern_bar_content != ModernBarContent::TitleOnly;
+                            // LEFT: wordmark and/or current-page pill (divider only when both).
                             ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new("Telemetry V3")
-                                    .color(crate::theme::ACCENT)
-                                    .size(16.0)
-                                    .strong(),
-                            );
-                            ui.add_space(8.0);
-                            let (div, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
-                            ui.painter().rect_filled(div, 0.0, crate::theme::BORDER);
-                            ui.add_space(8.0);
-                            page_pill(ui, tr(tab_title(self.current_tab)));
+                            if show_title {
+                                ui.label(
+                                    egui::RichText::new("Forza Telemetry V3")
+                                        .color(crate::theme::ACCENT)
+                                        .size(16.0)
+                                        .strong(),
+                                );
+                            }
+                            if show_title && show_sel {
+                                ui.add_space(8.0);
+                                let (div, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
+                                ui.painter().rect_filled(div, 0.0, crate::theme::BORDER);
+                                ui.add_space(8.0);
+                            }
+                            if show_sel {
+                                page_pill(ui, tr(tab_title(self.current_tab)));
+                            }
                             // CENTER: icon tabs, centred across the full bar width.
                             let used = ui.cursor().min.x - bar.left();
                             let n = left.len() as f32;
@@ -1539,7 +1548,7 @@ impl eframe::App for ForzaApp {
 
                     match self.page_settings_tab {
                         PageSettingsTab::General => {
-                            use crate::config::TopBarStyle;
+                            use crate::config::{ModernBarContent, TopBarStyle};
                             ui.horizontal(|ui| {
                                 ui.label(tr("Top Bar Style:"));
                                 egui::ComboBox::from_id_salt("top_bar_style")
@@ -1554,6 +1563,22 @@ impl eframe::App for ForzaApp {
                                         ui.selectable_value(&mut self.config.top_bar_style, TopBarStyle::Legacy, tr("Legacy"));
                                     });
                             });
+                            if self.config.top_bar_style == TopBarStyle::Modern {
+                                ui.horizontal(|ui| {
+                                    ui.label(tr("Title and Selection:"));
+                                    egui::ComboBox::from_id_salt("modern_bar_content")
+                                        .selected_text(match self.config.modern_bar_content {
+                                            ModernBarContent::TitleOnly => tr("Title only"),
+                                            ModernBarContent::SelectionOnly => tr("Selection only"),
+                                            ModernBarContent::Both => tr("Both"),
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.config.modern_bar_content, ModernBarContent::TitleOnly, tr("Title only"));
+                                            ui.selectable_value(&mut self.config.modern_bar_content, ModernBarContent::SelectionOnly, tr("Selection only"));
+                                            ui.selectable_value(&mut self.config.modern_bar_content, ModernBarContent::Both, tr("Both"));
+                                        });
+                                });
+                            }
                         }
                         PageSettingsTab::Tab(Tab::Dashboard) => {
                             // Sub-tab row (wraps onto extra lines when space runs out)
