@@ -79,26 +79,24 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 use crate::config::BackfireDynamicMode;
                 ui.horizontal(|ui| {
                     ui.add_space(16.0);
-                    ui.selectable_value(
-                        &mut app.config.backfire_dynamic_mode,
-                        BackfireDynamicMode::TimeBased,
-                        tr("Time-based"),
-                    );
-                    ui.selectable_value(
-                        &mut app.config.backfire_dynamic_mode,
-                        BackfireDynamicMode::PacketBased,
-                        tr("Packet-based"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new(tr(
-                            "Packet-based holds W until the next packet — an exact one-frame tap.",
-                        ))
-                        .size(11.0)
-                        .color(Color32::GRAY),
-                    );
+                    ui.label(tr("Mode:"));
+                    egui::ComboBox::from_id_salt("backfire_dyn_mode")
+                        .selected_text(match app.config.backfire_dynamic_mode {
+                            BackfireDynamicMode::TimeBased => tr("Time-based"),
+                            BackfireDynamicMode::PacketBased => tr("Packet-based"),
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut app.config.backfire_dynamic_mode,
+                                BackfireDynamicMode::TimeBased,
+                                tr("Time-based"),
+                            );
+                            ui.selectable_value(
+                                &mut app.config.backfire_dynamic_mode,
+                                BackfireDynamicMode::PacketBased,
+                                tr("Packet-based"),
+                            );
+                        });
                 });
             } else {
                 ui.horizontal(|ui| {

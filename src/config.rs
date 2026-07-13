@@ -28,8 +28,8 @@ impl MaxRpmSource {
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum BackfireDynamicMode {
-    #[default]
     TimeBased,   // hold length estimated from packets/sec
+    #[default]
     PacketBased, // hold until the next packet arrives (exact one frame)
 }
 
@@ -421,7 +421,7 @@ impl Default for AppConfig {
             backfire_interval_rpm: 100.0,
             backfire_accel_time_ms: 8,
             backfire_dynamic_duration: true,
-            backfire_dynamic_mode: BackfireDynamicMode::TimeBased,
+            backfire_dynamic_mode: BackfireDynamicMode::PacketBased,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             inputs_filter_backfire_accel: true,
