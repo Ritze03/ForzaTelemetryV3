@@ -1799,10 +1799,16 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         let alpha = if susp.initialized { 255u8 } else { 80u8 };
         let min_y = rect.bottom() - disp(susp.min[i]).clamp(0.0, 1.0) * rect.height();
         let max_y = rect.bottom() - disp(susp.max[i]).clamp(0.0, 1.0) * rect.height();
-        p.line_segment([pos2(rect.left(), min_y), pos2(rect.right(), min_y)],
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(180, 80, 80, alpha)));
-        p.line_segment([pos2(rect.left(), max_y), pos2(rect.right(), max_y)],
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 180, 80, alpha)));
+        // Track-coloured lines above and below make the thin marker pop against the fill.
+        let marker = |y: f32, col: Color32| {
+            p.line_segment([pos2(rect.left(), y - 1.0), pos2(rect.right(), y - 1.0)],
+                Stroke::new(1.0, crate::theme::TRACK));
+            p.line_segment([pos2(rect.left(), y + 1.0), pos2(rect.right(), y + 1.0)],
+                Stroke::new(1.0, crate::theme::TRACK));
+            p.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0, col));
+        };
+        marker(min_y, Color32::from_rgba_premultiplied(180, 80, 80, alpha));
+        marker(max_y, Color32::from_rgba_premultiplied(80, 180, 80, alpha));
     }
 
     // ── Left-column legend: which end of the bar is which ──────────
