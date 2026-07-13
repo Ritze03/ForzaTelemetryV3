@@ -1290,6 +1290,12 @@ impl eframe::App for ForzaApp {
                     ui.set_min_height(30.0);
                     let text_h = ui.text_style_height(&egui::TextStyle::Button);
                     ui.spacing_mut().button_padding.y = ((30.0 - text_h) / 2.0).max(0.0);
+                    // No outline on the tab buttons — selected/hover show only a fill.
+                    let vis = ui.visuals_mut();
+                    vis.selection.stroke = egui::Stroke::NONE;
+                    vis.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                    vis.widgets.active.bg_stroke = egui::Stroke::NONE;
+                    vis.widgets.inactive.bg_stroke = egui::Stroke::NONE;
                     use crate::i18n::tr;
                     use crate::icons;
                     let compact = self.config.compact_tabs;
