@@ -1222,6 +1222,22 @@ impl eframe::App for ForzaApp {
             self.config.minimap_north_up = !self.config.minimap_north_up;
         }
 
+        // Ctrl+S: toggle the mini-settings popup for the current tab (mirrors the cog button).
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
+            self.page_settings_open = !self.page_settings_open;
+            self.page_settings_tab = self.current_tab;
+            if !self.page_settings_open {
+                self.config.save();
+            }
+        }
+
+        // Ctrl+E: toggle dashboard edit mode (Dashboard tab only).
+        if self.current_tab == Tab::Dashboard
+            && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::E))
+        {
+            self.config.dashboard_edit_mode = !self.config.dashboard_edit_mode;
+        }
+
         // Tab bar
         egui::TopBottomPanel::top("tab_bar")
             .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD))
