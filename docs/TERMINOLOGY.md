@@ -8,3 +8,4 @@ Project-specific vocabulary. When the user uses a term defined here, use the sam
 
 - **Mini-Settings** — the settings accessible through the cog wheel on the status bar.
 - **Widget / Module** — an individual module on the Dashboard.
+- **Category** — a bordered card with a blue uppercase title that groups related controls in a tab (e.g. "SESSION", "RPM Range"). Rendered via `theme::card`. See @docs/STYLING-GUIDE.md.

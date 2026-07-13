@@ -8,6 +8,7 @@ Guidance for Claude Code when working in this repository.
 
 - **Rust** / **Cargo**; GUI is **egui** (immediate-mode) via **eframe**.
 - Single dark "Graphite" theme in `src/theme.rs` — reference chrome colours by role token (`ACCENT`, `PANEL`, `TEXT_DIM`…), never hard-code hex at call sites. Semantic data colours (tyre temps, input bars) live at their call sites.
+- Settings-style UI (cards/"categories", control rows, reserved spinner widths) follows @docs/STYLING-GUIDE.md — use the `theme::card` / `slider_row` / `checkbox_row` helpers so tabs stay consistent.
 - All user-facing strings go through `tr("...")` in `src/i18n.rs` (English source → German). Add the English key + German value there; duplicate keys warn at compile time.
 - Predecessors (FH4/FH5) are compiled JARs only under `old_versions/` — no source.
 

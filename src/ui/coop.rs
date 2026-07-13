@@ -10,20 +10,7 @@ pub fn hue_color(hue: f32) -> Color32 {
 }
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    use crate::icons;
     let role = app.coop.role();
-
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (col, txt) = match role {
-                Role::Off => (crate::theme::FAINT, tr("Offline")),
-                Role::Host => (crate::theme::ACCENT, tr("Hosting")),
-                Role::Client => (crate::theme::GOOD, tr("Joined")),
-            };
-            ui.colored_label(col, format!("{}  {}", icons::CIRCLE, txt));
-        });
-    });
-    ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.columns(2, |cols| {
@@ -35,42 +22,43 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
+    ui.add_space(8.0);
     crate::theme::card(ui, tr("Your Identity"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr("Name:"));
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut app.config.coop_name)
                     .hint_text(tr("Player"))
-                    .desired_width(180.0),
+                    .desired_width(ui.available_width()),
             );
             if resp.changed() {
                 let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
                 app.coop.update_identity(&n, h);
             }
         });
-        ui.add_space(6.0);
 
-        ui.horizontal(|ui| {
-            ui.label(tr("Colour:"));
-            // Swatch preview
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, hue_color(app.config.coop_hue));
-            ui.painter().rect_stroke(
-                rect,
-                4.0,
-                egui::Stroke::new(1.0, Color32::from_gray(40)),
-                egui::StrokeKind::Inside,
-            );
-            let resp = ui.add(
-                egui::Slider::new(&mut app.config.coop_hue, 0.0..=360.0)
-                    .show_value(false)
-                    .suffix("°"),
-            );
-            if resp.changed() {
-                let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
-                app.coop.update_identity(&n, h);
-            }
+        // Colour: label | slider + a swatch preview pinned to the right (where a
+        // value spinner sits on other rows).
+        let changed = ui.columns(2, |c| {
+            c[0].label(tr("Color"));
+            c[1].horizontal(|ui| {
+                const SW: f32 = 22.0;
+                let rail = (ui.available_width() - SW - ui.spacing().item_spacing.x).max(40.0);
+                ui.spacing_mut().slider_width = rail;
+                let r = ui.add(egui::Slider::new(&mut app.config.coop_hue, 0.0..=360.0).show_value(false));
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(SW, ui.spacing().interact_size.y), egui::Sense::hover());
+                let sq = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(SW.min(rect.height())));
+                ui.painter().rect_filled(sq, 4.0, hue_color(app.config.coop_hue));
+                ui.painter().rect_stroke(sq, 4.0, egui::Stroke::new(1.0, Color32::from_gray(40)), egui::StrokeKind::Inside);
+                r.changed()
+            })
+            .inner
         });
+        if changed {
+            let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
+            app.coop.update_identity(&n, h);
+        }
+
         ui.label(
             RichText::new(tr("Others see this name + colour; your own map arrow uses the colour only."))
                 .size(11.0)
@@ -79,17 +67,9 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     crate::theme::card(ui, tr("Pacing"), |ui| {
-        ui.horizontal(|ui| {
-            ui.label(tr("Buffer:"));
-            let resp = ui.add(
-                egui::Slider::new(&mut app.config.coop_buffer_ms, 0..=500)
-                    .suffix(" ms")
-                    .step_by(10.0),
-            );
-            if resp.changed() {
-                app.coop.set_buffer_ms(app.config.coop_buffer_ms);
-            }
-        });
+        if crate::theme::slider_row(ui, tr("Buffer:"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms").changed() {
+            app.coop.set_buffer_ms(app.config.coop_buffer_ms);
+        }
         ui.label(
             RichText::new(tr(
                 "Delays remote players by this much to smooth out network jitter.\n\
@@ -104,7 +84,15 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
 fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     use crate::icons;
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
+    ui.add_space(8.0);
     crate::theme::card(ui, tr("Session"), |ui| {
+        // Connection status badge (moved here from the top of the tab).
+        let (col, txt) = match role {
+            Role::Off => (crate::theme::FAINT, tr("Offline")),
+            Role::Host => (crate::theme::ACCENT, tr("Hosting")),
+            Role::Client => (crate::theme::GOOD, tr("Joined")),
+        };
+        ui.colored_label(col, format!("{}  {}", icons::CIRCLE, txt));
         // Status line
         let status = app.coop.status();
         if !status.is_empty() {
@@ -133,31 +121,38 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                 }
                 ui.add_space(8.0);
                 ui.label(tr("…or join with a code:"));
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut app.coop_join_input)
-                            .hint_text("blue-fox-rapid-owl")
-                            .desired_width(180.0),
-                    );
+                ui.add_space(2.0);
+                // Join button pinned to the right; the code field fills the rest.
+                let join_clicked = ui.horizontal(|ui| {
                     let can_join = !app.coop_join_input.trim().is_empty();
-                    if ui
-                        .add_enabled(
-                            can_join,
-                            egui::Button::new(format!("{}  {}", icons::LINK, tr("Join"))),
-                        )
-                        .clicked()
-                    {
-                        let (words, n, h, b) = (
-                            app.coop_join_input.clone(),
-                            app.config.coop_name.clone(),
-                            app.config.coop_hue,
-                            app.config.coop_buffer_ms,
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let clicked = ui
+                            .add_enabled(
+                                can_join,
+                                egui::Button::new(format!("{}  {}", icons::LINK, tr("Join"))),
+                            )
+                            .clicked();
+                        ui.add(
+                            egui::TextEdit::singleline(&mut app.coop_join_input)
+                                .hint_text("blue-fox-rapid-owl")
+                                .desired_width(ui.available_width()),
                         );
-                        app.config.coop_last_code = words.clone();
-                        app.config.save();
-                        app.coop.start_client(&words, &n, h, b);
-                    }
-                });
+                        clicked
+                    })
+                    .inner
+                })
+                .inner;
+                if join_clicked {
+                    let (words, n, h, b) = (
+                        app.coop_join_input.clone(),
+                        app.config.coop_name.clone(),
+                        app.config.coop_hue,
+                        app.config.coop_buffer_ms,
+                    );
+                    app.config.coop_last_code = words.clone();
+                    app.config.save();
+                    app.coop.start_client(&words, &n, h, b);
+                }
             }
             Role::Host => {
                 if let Some((got, total)) = app.coop.download() {
