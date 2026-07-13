@@ -1789,12 +1789,20 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
         p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
-        let c = disp(cur).clamp(0.0, 1.0);
-        let fill = Rect::from_min_max(pos2(rect.left(), px(rect.bottom() - c * rect.height())), rect.max);
-        let bar_color = if c < 0.33 { Color32::from_rgb(80, 120, 220) }
-                        else if c < 0.66 { Color32::from_rgb(50, 200, 80) }
-                        else { Color32::from_rgb(230, 140, 40) };
+        // Diverging bar: grows up or down from a 0.5 baseline instead of filling
+        // from the bottom. Colour tracks the physical state (raw cur), so it stays
+        // correct whether or not the invert toggle flips the display direction.
+        let c     = disp(cur).clamp(0.0, 1.0);
+        let mid_y = px(rect.top() + rect.height() * 0.5);
+        let c_y   = px(rect.bottom() - c * rect.height());
+        let (fy0, fy1) = if c_y <= mid_y { (c_y, mid_y) } else { (mid_y, c_y) };
+        let fill = Rect::from_min_max(pos2(rect.left(), fy0), pos2(rect.right(), fy1));
+        let bar_color = if cur.clamp(0.0, 1.0) >= 0.5 { Color32::from_rgb(215, 85, 70) }  // compressed
+                        else { Color32::from_rgb(75, 190, 95) };                          // extended
         p.rect_filled(fill, 0.0, bar_color);
+        // Baseline so the 0.5 zero point is readable.
+        p.line_segment([pos2(rect.left(), mid_y), pos2(rect.right(), mid_y)],
+            Stroke::new(1.0, crate::theme::TEXT_DIM));
 
         let alpha = if susp.initialized { 255u8 } else { 80u8 };
         let min_y = rect.bottom() - disp(susp.min[i]).clamp(0.0, 1.0) * rect.height();
