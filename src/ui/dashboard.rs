@@ -670,7 +670,10 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 /// the lightweight dashboard widgets.
 fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.label(crate::theme::section_label(tr("Speed Trace")));
-    ui.add_space(2.0);
+    // Tuck the legend snug under the title. The old add_space(2.0) sat on top of
+    // the default item-spacing, leaving a noticeably large gap above the legend;
+    // trimming the inter-row spacing pulls it up to match the other widgets.
+    ui.spacing_mut().item_spacing.y = 2.0;
 
     let use_mph = app.config.use_mph;
     let unit = if use_mph { "mph" } else { "km/h" };
@@ -963,12 +966,14 @@ fn show_rpm_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     // The current + max RPM values live on the bar itself (see draw_shift_bar),
     // so the bar fills the whole widget height with just a tiny cell-edge margin.
-    let bar_h = (ui.available_height() - 4.0).max(4.0);
+    // Allocate the full height and inset equally (4 px) on all four sides so the
+    // bar is centered with matching top and bottom gaps that mirror left/right.
+    let bar_h = ui.available_height().max(4.0);
     let bar_size = Vec2::new(ui.available_width(), bar_h);
     let (rect, _) = ui.allocate_exact_size(bar_size, egui::Sense::hover());
     draw_shift_bar(
         ui,
-        rect.shrink2(vec2(4.0, 2.0)),
+        rect.shrink2(vec2(4.0, 4.0)),
         pkt,
         app.config.shift_low_pct,
         app.config.shift_high_pct,
@@ -1139,7 +1144,15 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let sp = ui.spacing().item_spacing.y;
     let h_scale = (((avail_h - (n - 1.0) * sp) / (n * lh)).min(1.0)).max(0.5);
 
-    let size = body_font.size * w_scale.min(h_scale);
+    let scale = w_scale.min(h_scale);
+    let size = body_font.size * scale;
+
+    // Center the value block (+ optional type caption) vertically in the space
+    // below the heading, mirroring show_gforce_block: shift down by half the
+    // slack between the available height and the scaled content height.
+    let content_h = n * lh * scale + (n - 1.0) * sp * scale;
+    ui.add_space(((avail_h - content_h) * 0.5).max(0.0));
+
     for line in lines { ui.label(egui::RichText::new(line).size(size)); }
 
     if cap {
@@ -1713,16 +1726,17 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             // Height budget: 8 lines, 7 inter-line gaps, plus the 4 px break between the
             // Current and Peak blocks — as ONE unit that scales together (the gaps scale
             // with the font too, otherwise the fixed gaps make it overflow). Sized to the
-            // plot's height so the two columns match; then centered in it.
+            // full cell height below the heading so the text can fill the cell even when
+            // the plot is smaller; then centered in that height.
             let lh = ui.painter()
                 .layout_no_wrap("0".to_owned(), body_font.clone(), Color32::WHITE).rect.height();
             let sp = ui.spacing().item_spacing.y;
             let unit_h = 8.0 * lh + 7.0 * sp + 4.0;
-            let h_scale = (plot_size / unit_h).clamp(0.5, 1.0);
+            let h_scale = (avail_h / unit_h).clamp(0.5, 1.0);
             let scale = w_scale.min(h_scale);
             let size = body_font.size * scale;
 
-            ui.add_space(((plot_size - unit_h * scale) * 0.5).max(0.0)); // center vertically
+            ui.add_space(((avail_h - unit_h * scale) * 0.5).max(0.0)); // center vertically
             ui.spacing_mut().item_spacing.y = sp * scale;
 
             ui.label(RichText::new(hdr_cur).size(size).color(crate::theme::TEXT_DIM));
