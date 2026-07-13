@@ -362,7 +362,7 @@ pub enum PageSettingsTab {
     Tab(Tab),
 }
 
-/// Compact tab button: an icon centered in a fixed 24×24 square, reusing egui's
+/// Compact tab button: an icon centered in a fixed 30×30 square, reusing egui's
 /// own selectable visuals so the selected/hover look matches the labelled tabs.
 /// `selectable_value` sizes to the glyph advance (which varies per icon) and even
 /// `Align2::CENTER_CENTER` only centres the layout box, not the ink — so the cache
@@ -375,7 +375,7 @@ fn compact_tab(
     icon: &str,
 ) {
     let selected = *current == tab;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
     let vis = ui.style().interact_selectable(&resp, selected);
     if selected || resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, vis.bg_fill);
