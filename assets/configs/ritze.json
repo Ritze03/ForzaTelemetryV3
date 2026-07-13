@@ -1,104 +1,104 @@
 {
-  "grid_cols": 16,
-  "grid_rows": 10,
+  "grid_cols": 32,
+  "grid_rows": 19,
   "dashboard_widgets": [
     {
       "kind": "Speed",
       "col": 0,
       "row": 0,
-      "col_span": 1,
-      "row_span": 1
+      "col_span": 2,
+      "row_span": 2
     },
     {
       "kind": "Gear",
-      "col": 1,
+      "col": 2,
       "row": 0,
-      "col_span": 1,
-      "row_span": 1
+      "col_span": 2,
+      "row_span": 2
     },
     {
       "kind": "Rpm",
-      "col": 2,
+      "col": 4,
       "row": 0,
-      "col_span": 13,
-      "row_span": 1
+      "col_span": 24,
+      "row_span": 2
     },
     {
       "kind": "Suspension",
       "col": 0,
-      "row": 1,
-      "col_span": 3,
-      "row_span": 3
+      "row": 5,
+      "col_span": 4,
+      "row_span": 7
     },
     {
       "kind": "Tires",
-      "col": 3,
-      "row": 1,
-      "col_span": 3,
-      "row_span": 3
+      "col": 0,
+      "row": 12,
+      "col_span": 4,
+      "row_span": 7
     },
     {
       "kind": "Car",
-      "col": 15,
+      "col": 30,
       "row": 0,
-      "col_span": 1,
-      "row_span": 1
+      "col_span": 2,
+      "row_span": 2
     },
     {
       "kind": "Engine",
-      "col": 14,
-      "row": 1,
+      "col": 28,
+      "row": 0,
       "col_span": 2,
-      "row_span": 1
+      "row_span": 2
     },
     {
       "kind": "Inputs",
       "col": 0,
-      "row": 4,
-      "col_span": 2,
-      "row_span": 2
+      "row": 2,
+      "col_span": 4,
+      "row_span": 3
     },
     {
       "kind": "MiniMap",
-      "col": 3,
-      "row": 4,
-      "col_span": 13,
-      "row_span": 6
+      "col": 4,
+      "row": 5,
+      "col_span": 28,
+      "row_span": 14
     },
     {
       "kind": "Race",
-      "col": 0,
-      "row": 6,
-      "col_span": 3,
-      "row_span": 2
+      "col": 4,
+      "row": 2,
+      "col_span": 4,
+      "row_span": 3
     },
     {
       "kind": "GForce",
-      "col": 0,
-      "row": 8,
-      "col_span": 3,
-      "row_span": 2
+      "col": 8,
+      "row": 2,
+      "col_span": 5,
+      "row_span": 3
     },
     {
       "kind": "Position",
       "col": 0,
       "row": 10,
-      "col_span": 4,
+      "col_span": 3,
       "row_span": 2
     },
     {
       "kind": "Trace",
-      "col": 14,
+      "col": 28,
       "row": 2,
-      "col_span": 2,
-      "row_span": 2
+      "col_span": 4,
+      "row_span": 3
     },
     {
       "kind": "Boost",
-      "col": 2,
-      "row": 4,
+      "col": 27,
+      "row": 2,
       "col_span": 1,
-      "row_span": 2
+      "row_span": 3
     },
     {
       "kind": "SessionStats",
@@ -109,9 +109,9 @@
     },
     {
       "kind": "PowerGraph",
-      "col": 6,
-      "row": 1,
-      "col_span": 8,
+      "col": 13,
+      "row": 2,
+      "col_span": 14,
       "row_span": 3
     },
     {
@@ -135,18 +135,26 @@
   "disabled_modules": [
     "SessionStats",
     "BoostGraph",
-    "Position",
-    "CoopPlayers"
+    "CoopPlayers",
+    "Position"
   ],
+  "boost_in_bar": true,
   "coop_list_class": true,
   "coop_list_distance": true,
-  "coop_list_gear": true,
+  "coop_list_gear": false,
   "coop_list_speed": true,
   "coop_map_playerlist": true,
   "coop_trail_fade_m": 500.0,
   "coop_trail_fade_secs": 10.0,
   "dsg_show_debug_panel": true,
+  "engine_display_mode": "Both",
+  "engine_show_type": true,
   "gear_align": "Center",
+  "gforce_show_labels": true,
+  "gforce_show_text": true,
+  "hide_widget_titles": false,
+  "input_bars_full_width": true,
+  "input_steer_compact": true,
   "inputs_filter_backfire_accel": true,
   "max_rpm_mode": "GameProvided",
   "minimap_fps_limit": 60.0,
@@ -165,7 +173,9 @@
   "power_curve_forced_induction": true,
   "power_curve_save_fi_state": true,
   "power_curve_step": 100.0,
+  "power_graph_compact": true,
   "power_graph_show_boost": true,
+  "power_graph_show_grid": false,
   "shift_high_pct": 95.0,
   "shift_low_pct": 85.0,
   "show_speed_delta": true,
@@ -175,6 +185,5 @@
   "sprint_type": "Absolute",
   "tire_bar_swap": false,
   "tire_bar_value": "Stacked",
-  "tire_display_style": "Bars",
-  "gforce_show_text": true
+  "tire_display_style": "Bars"
 }
