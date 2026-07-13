@@ -166,6 +166,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::app::ForzaApp) {
         Category::Info => app.changelog_show_info,
     };
 
+    // Fixed width for the category-tag column so the entry text lines up regardless of
+    // the tag's length (which varies by category and by language).
+    let tag_font = egui::TextStyle::Small.resolve(ui.style());
+    let tag_col_w = [Category::Added, Category::Fixed, Category::Removed, Category::Info]
+        .iter()
+        .map(|c| ui.painter()
+            .layout_no_wrap(c.button_label().to_owned(), tag_font.clone(), egui::Color32::WHITE)
+            .rect.width())
+        .fold(0.0_f32, f32::max)
+        + 6.0;
+
     // ── Section list ──────────────────────────────────────────────────
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -190,14 +201,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::app::ForzaApp) {
 
                 for entry in visible {
                     ui.horizontal_top(|ui| {
-                        // Category tag
-                        ui.label(
+                        // Category tag, padded to a fixed column width so titles line up.
+                        let resp = ui.label(
                             egui::RichText::new(entry.category.button_label())
                                 .color(entry.category.color())
                                 .small()
                                 .strong(),
                         );
-                        ui.add_space(4.0);
+                        ui.add_space((tag_col_w - resp.rect.width()).max(0.0));
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(&entry.title).strong());
                             if let Some(body) = &entry.body {
