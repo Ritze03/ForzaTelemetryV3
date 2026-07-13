@@ -412,7 +412,9 @@ fn slider_row(
     decimals: usize,
     suffix: &str,
 ) {
-    const VALUE_W: f32 = 60.0; // fits "100.0%" — the widest value
+    // Wide enough that the DragValue never grows at its widest value ("100.0%"),
+    // which would otherwise push the row layout as digits are added.
+    const VALUE_W: f32 = 72.0;
     ui.columns(2, |c| {
         hover(c[0].label(label), what, when);
         c[1].horizontal(|ui| {

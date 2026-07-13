@@ -4,6 +4,9 @@ use crate::app::ForzaApp;
 use crate::i18n::tr;
 
 pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
+    // Fixed spinner width — fits the widest value ("20000") so the number boxes
+    // don't grow/shift as digits are added.
+    const SPIN_W: f32 = 64.0;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("backfire_scroll")
@@ -30,6 +33,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                         ui.add(
                             egui::Slider::new(&mut app.config.backfire_dynamic_min_pct, 0.0..=100.0)
                                 .suffix("%")
+                                .fixed_decimals(1)
                                 .step_by(1.0),
                         );
                     });
@@ -38,6 +42,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                         ui.add(
                             egui::Slider::new(&mut app.config.backfire_dynamic_max_pct, 0.0..=100.0)
                                 .suffix("%")
+                                .fixed_decimals(1)
                                 .step_by(1.0),
                         );
                     });
@@ -52,7 +57,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 } else {
                     ui.horizontal(|ui| {
                         ui.label(tr("Min RPM:"));
-                        ui.add(
+                        ui.add_sized(
+                            [SPIN_W, ui.spacing().interact_size.y],
                             egui::DragValue::new(&mut app.config.backfire_min_rpm)
                                 .range(0.0..=20000.0)
                                 .speed(50.0),
@@ -60,7 +66,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                     });
                     ui.horizontal(|ui| {
                         ui.label(tr("Max RPM:"));
-                        ui.add(
+                        ui.add_sized(
+                            [SPIN_W, ui.spacing().interact_size.y],
                             egui::DragValue::new(&mut app.config.backfire_max_rpm)
                                 .range(0.0..=20000.0)
                                 .speed(50.0),
@@ -71,7 +78,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(tr("RPM interval:"));
-                    ui.add(
+                    ui.add_sized(
+                        [SPIN_W, ui.spacing().interact_size.y],
                         egui::DragValue::new(&mut app.config.backfire_interval_rpm)
                             .range(0.0..=2000.0)
                             .speed(10.0),
@@ -88,7 +96,6 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 if app.config.backfire_dynamic_duration {
                     use crate::config::BackfireDynamicMode;
                     ui.horizontal(|ui| {
-                        ui.add_space(16.0);
                         ui.label(tr("Mode:"));
                         egui::ComboBox::from_id_salt("backfire_dyn_mode")
                             .selected_text(match app.config.backfire_dynamic_mode {
@@ -111,7 +118,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 } else {
                     ui.horizontal(|ui| {
                         ui.label(tr("Key press duration:"));
-                        ui.add(
+                        ui.add_sized(
+                            [SPIN_W, ui.spacing().interact_size.y],
                             egui::DragValue::new(&mut app.config.backfire_accel_time_ms)
                                 .range(1..=50)
                                 .speed(1.0)
