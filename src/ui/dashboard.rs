@@ -2514,6 +2514,9 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .allow_zoom(false)
         .allow_scroll(false)
         .allow_boxed_zoom(false);
+    // Grid lines toggle applies regardless of compact/normal mode.
+    let g = app.config.power_graph_show_grid;
+    plot = plot.show_grid([g, g]);
     if compact {
         // No legend or axis ticks/labels — but keep the grid lines for reference.
         plot = plot.show_axes([false, false]);
@@ -2601,13 +2604,19 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 
     if compact {
         // Title painted over the plot's top-left corner (no vertical space cost).
-        ui.painter().text(
-            plot_rect.min + vec2(4.0, 2.0),
-            egui::Align2::LEFT_TOP,
+        let pos = plot_rect.min + vec2(4.0, 2.0);
+        let galley = ui.painter().layout_no_wrap(
             tr("Power Graph").to_uppercase(),
             egui::FontId::proportional(12.0),
             crate::theme::ACCENT,
         );
+        if app.config.power_graph_show_grid {
+            // Gridlines run under the title — back it with a small filled box so it
+            // stays readable. Only drawn when the grid is on.
+            let bg_rect = egui::Rect::from_min_size(pos, galley.size()).expand(3.0);
+            ui.painter().rect_filled(bg_rect, 3.0, egui::Color32::from_black_alpha(160));
+        }
+        ui.painter().galley(pos, galley, crate::theme::ACCENT);
     }
 }
 

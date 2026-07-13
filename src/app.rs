@@ -1710,6 +1710,8 @@ impl eframe::App for ForzaApp {
                                     ui.add_space(6.0);
                                     crate::theme::styled_checkbox(ui, &mut self.config.power_graph_compact, tr("Compact"));
                                     ui.label(egui::RichText::new(tr("Compact style for small cells: hides title, legend and axes; peaks labelled inside the plot.")).size(11.0).color(egui::Color32::GRAY));
+                                    ui.add_space(6.0);
+                                    crate::theme::styled_checkbox(ui, &mut self.config.power_graph_show_grid, tr("Show grid"));
                                 }
                                 DashboardSubTab::Config => {
                                     ui.label(crate::theme::section_label(tr("Load Preset")));
