@@ -606,6 +606,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Current values" => "Aktuelle Werte",
         "Max values" => "Maximalwerte",
         "Cylinders" => "Zylinder",
+        "Dynamic key press duration" => "Dynamische Tastendruckdauer",
+        "Holds the throttle key for one game frame, derived from the packet rate (packets/sec). Off = use the fixed value below."
+            => "Hält die Gas-Taste für ein Spiel-Frame, abgeleitet aus der Paketrate (Pakete/s). Aus = fester Wert unten.",
         "Reset settings" => "Einstellungen zurücksetzen",
         "Resets the sliders below to the default tune. Modes and toggles are left unchanged."
             => "Setzt die Regler unten auf die Standardabstimmung zurück. Modi und Schalter bleiben unverändert.",

@@ -36,10 +36,20 @@ impl BackfireListener {
         }
     }
 
-    pub fn update(&mut self, pkt: &ForzaPacket, cfg: &AppConfig, input: &InputSender) {
+    pub fn update(&mut self, pkt: &ForzaPacket, cfg: &AppConfig, input: &InputSender, pps: f32) {
         if !cfg.backfire_enabled || pkt.is_race_on == 0 {
             return;
         }
+
+        // Dynamic duration: hold the key for one game frame, derived from the current
+        // packet rate (the game emits one packet per frame). Clamped so a stalled/slow
+        // feed can't produce an absurd length; falls back to the fixed value if the rate
+        // isn't usable yet.
+        let press_ms = if cfg.backfire_dynamic_duration && pps >= 1.0 {
+            (1000.0 / pps).round().clamp(4.0, 40.0) as u64
+        } else {
+            cfg.backfire_accel_time_ms
+        };
 
         let kmh = pkt.speed_kmh();
         let rpm = pkt.current_engine_rpm;
@@ -73,7 +83,7 @@ impl BackfireListener {
                 // Tracked: the input worker anchors the echo window at the ACTUAL
                 // key emission (see input::EchoWindow), so queued presses ahead of
                 // this one can't erode it.
-                input.press_tracked(key, cfg.backfire_accel_time_ms, 0, ECHO_MS);
+                input.press_tracked(key, press_ms, 0, ECHO_MS);
             }
         } else if !(off_throttle && no_brake && in_rpm_range)
             && !input.synthetic_active(echo_grace(cfg))

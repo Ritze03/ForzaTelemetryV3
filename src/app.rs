@@ -902,7 +902,7 @@ impl ForzaApp {
             }
             self.perf_test
                 .update(&pkt, accel_s, accel_e, decel_s, decel_e);
-            self.backfire.update(&pkt, &fun_cfg, &self.input);
+            self.backfire.update(&pkt, &fun_cfg, &self.input, self.telemetry.packets_per_sec);
             let suppress_gearbox_accel =
                 self.config.dsg_ignore_backfire_accel && self.backfire_echo_active();
             self.dsg.update(

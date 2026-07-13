@@ -302,6 +302,7 @@ pub struct AppConfig {
     pub backfire_min_rpm: f32,
     pub backfire_interval_rpm: f32,
     pub backfire_accel_time_ms: u64,
+    pub backfire_dynamic_duration: bool, // key-press length = one frame (from packets/sec) instead of the fixed ms
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
     pub inputs_filter_backfire_accel: bool, // Inputs widget shows Accel as 0 while Backfire is actively firing
@@ -417,6 +418,7 @@ impl Default for AppConfig {
             backfire_min_rpm: 4000.0,
             backfire_interval_rpm: 100.0,
             backfire_accel_time_ms: 8,
+            backfire_dynamic_duration: true,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             inputs_filter_backfire_accel: true,
