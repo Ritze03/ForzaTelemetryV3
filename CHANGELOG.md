@@ -17,6 +17,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Tyre bar labels**: rotated Temp/Slip labels in the Bars style so it's clear which half of each bar is which.
 - **RPM bar**: a more compact bar with the current/peak values drawn on it and the warning/shift lines colour-coded.
 - **Dashboard config export/import**: copy your dashboard layout and mini-settings to/from JSON, with a checkbox to include or skip the mini-settings on each side; plus a preset loader in the mini-settings.
+- **Hide widget titles**: a master mini-setting (General) that hides the title on every widget that has one, for a cleaner, denser dashboard.
+- **G-Force label toggle**: show or hide the "Current" / "Peak" row labels; the peak readout now matches the orange of the peak marker on the plot.
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
 
 ### Fixed
