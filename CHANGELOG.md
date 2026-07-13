@@ -26,7 +26,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Backfire packet-based tap mode**: a second dynamic mode that holds the throttle key until the next packet arrives — an exact one-frame tap rather than an estimate; a safety timeout releases the key if telemetry stops.
 - **Map "North up when stopped"**: in heading-up mode, the map now smoothly eases to north when you come to a stop and swings back to your heading as you drive off — timed to the same stop as the zoom-out.
 - **Keyboard shortcuts**: Ctrl+S opens the mini-settings for the current tab; Ctrl+E toggles Dashboard edit mode.
-- **Top bar styles**: a new General page in the mini-settings lets you pick the top bar look — Modern (app title + current-page pill with centered icon tabs), Simple (icon-only tabs), or Legacy (the full labelled buttons). Modern adds a "Show current tab pill" toggle.
+- **Top bar styles**: a new General page in the mini-settings lets you pick the top bar look — Modern (app title + current-page pill with centered icon tabs), Simple (icon-only tabs), or Legacy (the full labelled buttons). Modern adds a "Show current tab pill" toggle, and a "High contrast icons" toggle draws the compact tab icons white instead of the accent tone.
 - **Suspension invert + end labels** (on by default): the bars now read as ride height (extension up), with rotated Compressed/Extended labels beside them; a mini-setting toggles back to raw compression.
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
 

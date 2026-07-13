@@ -114,6 +114,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Simple" => "Einfach",
         "Legacy" => "Klassisch",
         "Show current tab pill" => "Aktuellen Tab als Pille anzeigen",
+        "High contrast icons" => "Symbole mit hohem Kontrast",
         "Reset Layout" => "Layout zurücksetzen",
         "Right-click a module to reset its position (auto-placed)."
             => "Rechtsklick auf ein Modul setzt seine Position zurück (automatisch platziert).",

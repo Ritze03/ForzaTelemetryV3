@@ -374,6 +374,7 @@ fn tab_button(
     tab: Tab,
     icon: &str,
     label: Option<&str>,
+    high_contrast: bool,
 ) {
     let selected = *current == tab;
     let font = egui::TextStyle::Button.resolve(ui.style());
@@ -393,7 +394,13 @@ fn tab_button(
     if selected || resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, vis.bg_fill); // fill only — no outline
     }
-    let color = vis.text_color();
+    // Icon-only (compact) buttons can be forced white for high contrast; the
+    // selection still reads from the button's fill highlight.
+    let color = if high_contrast && full.is_none() {
+        egui::Color32::WHITE
+    } else {
+        vis.text_color()
+    };
     match full {
         None => {
             let pos = cache.centered_pos(ui, icon, font.clone(), rect.center());
@@ -1381,11 +1388,11 @@ impl eframe::App for ForzaApp {
                         }
                         TopBarStyle::Simple => {
                             for (tab, icon, _) in left {
-                                tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                                tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None, self.config.high_contrast_icons);
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 for (tab, icon, _) in right {
-                                    tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                                    tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None, self.config.high_contrast_icons);
                                 }
                             });
                         }
@@ -1414,12 +1421,12 @@ impl eframe::App for ForzaApp {
                             let center_start = (bar.width() - center_w) / 2.0;
                             ui.add_space((center_start - used).max(spacing));
                             for (tab, icon, _) in left {
-                                tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                                tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None, self.config.high_contrast_icons);
                             }
                             // RIGHT: icon tabs, right-aligned in the remaining space.
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 for (tab, icon, _) in right {
-                                    tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                                    tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None, self.config.high_contrast_icons);
                                 }
                             });
                         }
@@ -1559,6 +1566,9 @@ impl eframe::App for ForzaApp {
                             });
                             if self.config.top_bar_style == TopBarStyle::Modern {
                                 crate::theme::styled_checkbox(ui, &mut self.config.modern_show_pill, tr("Show current tab pill"));
+                            }
+                            if matches!(self.config.top_bar_style, TopBarStyle::Modern | TopBarStyle::Simple) {
+                                crate::theme::styled_checkbox(ui, &mut self.config.high_contrast_icons, tr("High contrast icons"));
                             }
                         }
                         PageSettingsTab::Tab(Tab::Dashboard) => {

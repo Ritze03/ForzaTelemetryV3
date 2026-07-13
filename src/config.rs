@@ -294,6 +294,7 @@ pub struct AppConfig {
     pub hide_widget_titles: bool, // hide every dashboard widget's title row
     pub top_bar_style: TopBarStyle, // Modern (title+pill), Simple (icon-only), or Legacy (labelled buttons)
     pub modern_show_pill: bool, // Modern bar: show the current-tab pill next to the title
+    pub high_contrast_icons: bool, // draw compact tab icons white instead of the accent tone
     // Engine widget
     pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     pub engine_show_type: bool,   // show an "Electric"/"N cyl" caption under the values
@@ -420,6 +421,7 @@ impl Default for AppConfig {
             hide_widget_titles: false,
             top_bar_style: TopBarStyle::Modern,
             modern_show_pill: true,
+            high_contrast_icons: false,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
             input_bars_full_width: false,
@@ -574,7 +576,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "boost_in_bar", "coop_list_class", "coop_list_distance", "coop_list_gear",
     "coop_list_speed", "coop_map_playerlist", "coop_trail_fade_m", "coop_trail_fade_secs",
     "dsg_show_debug_panel", "engine_display_mode", "engine_show_type", "gear_align",
-    "gforce_show_labels", "gforce_show_text", "hide_widget_titles",
+    "gforce_show_labels", "gforce_show_text", "hide_widget_titles", "high_contrast_icons",
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
     "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges", "modern_show_pill",
