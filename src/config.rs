@@ -79,18 +79,9 @@ pub enum SprintType {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
-pub enum TireSlipStyle {
-    #[default]
-    Values,
-    Graph,
-    Both,
-}
-
-#[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum TireDisplayStyle {
     #[default]
-    Separate,
-    Combined,
+    Tires,
     Bars,
 }
 
@@ -246,7 +237,6 @@ pub struct AppConfig {
     pub sprint_show_other: bool,
     // Tires
     pub tire_display_style: TireDisplayStyle,
-    pub tire_slip_style: TireSlipStyle,
     pub tire_bar_value: TireBarValue, // what the Bars style shows in the bars
     pub tire_bar_swap: bool,          // Combined/Stacked: swap temp and slip in the bars
     // Shift indicator (global, % of engine_max_rpm)
@@ -376,8 +366,7 @@ impl Default for AppConfig {
             speed_delta_mode: SpeedDeltaMode::Calculate,
             sprint_type: SprintType::Absolute,
             sprint_show_other: true,
-            tire_display_style: TireDisplayStyle::Combined,
-            tire_slip_style: TireSlipStyle::Both,
+            tire_display_style: TireDisplayStyle::Tires,
             tire_bar_value: TireBarValue::default(),
             tire_bar_swap: false,
             shift_low_pct: 85.0,
@@ -513,7 +502,19 @@ pub const PRESET_DATA: &[&str] = &[
     include_str!("../assets/configs/ritze.json"),
 ];
 
-fn apply_preset_overlay(cfg: &mut AppConfig, overlay: serde_json::Value) {
+/// Rewrite the removed `tire_display_style` values ("Separate", "Combined")
+/// onto the surviving "Tires" variant so older saved configs and presets keep
+/// a valid value instead of failing to deserialize.
+fn migrate_tire_display_style(map: &mut serde_json::Map<String, serde_json::Value>) {
+    if let Some("Separate" | "Combined") = map.get("tire_display_style").and_then(|v| v.as_str()) {
+        map.insert("tire_display_style".to_string(), serde_json::json!("Tires"));
+    }
+}
+
+fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) {
+    if let serde_json::Value::Object(ref mut m) = overlay {
+        migrate_tire_display_style(m);
+    }
     let Ok(mut base) = serde_json::to_value(&*cfg) else { return; };
     if let (
         serde_json::Value::Object(base_map),
@@ -555,7 +556,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
     "power_graph_compact", "power_graph_show_boost", "shift_high_pct", "shift_low_pct", "show_speed_delta",
     "speed_align", "speed_delta_mode", "sprint_show_other", "sprint_type", "tire_bar_swap",
-    "tire_bar_value", "tire_display_style", "tire_slip_style",
+    "tire_bar_value", "tire_display_style",
 ];
 
 /// Serialize the dashboard layout as pretty JSON, optionally including mini-settings.
@@ -646,6 +647,7 @@ impl AppConfig {
             if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
                 map.insert("theme".to_string(), serde_json::json!("Dark"));
             }
+            migrate_tire_display_style(map);
         }
         let mut cfg: AppConfig = serde_json::from_value(val).unwrap_or(default);
         // Ensure every widget kind has at least one entry in the layout.

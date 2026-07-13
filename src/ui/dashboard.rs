@@ -10,7 +10,7 @@ use crate::app::{
     DashboardDragState, DashboardResizeState, ForzaApp, GForceStats, ResizeEdge,
 };
 use crate::config::{
-    GameMode, SprintType, TextAlign, TireDisplayStyle, TireSlipStyle, WidgetKind, WidgetLayout,
+    GameMode, SprintType, TextAlign, TireDisplayStyle, WidgetKind, WidgetLayout,
 };
 use crate::i18n::tr;
 use crate::packet::ForzaPacket;
@@ -1324,90 +1324,13 @@ fn show_tires_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     ui.label(crate::theme::section_label(tr("Tires")));
     ui.add_space(4.0);
     match app.config.tire_display_style {
-        TireDisplayStyle::Separate => show_tires_separate(ui, app, pkt),
-        TireDisplayStyle::Combined => show_tires_combined(ui, app, pkt),
-        TireDisplayStyle::Bars     => show_tires_bars(ui, app, pkt),
+        TireDisplayStyle::Tires => show_tires_tiles(ui, app, pkt),
+        TireDisplayStyle::Bars  => show_tires_bars(ui, app, pkt),
     }
 }
 
-fn show_tires_separate(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
+fn show_tires_tiles(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let use_f = app.config.use_fahrenheit;
-    let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
-    let slip_style = &app.config.tire_slip_style;
-
-    egui::Grid::new("tire_grid")
-        .num_columns(5)
-        .spacing([12.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("");
-            for lbl in ["FL", "FR", "RL", "RR"] {
-                ui.label(RichText::new(lbl).strong());
-            }
-            ui.end_row();
-
-            ui.label(tr("Temp"));
-            tire_temp_label(ui, pkt.tire_temp_fl, use_f);
-            tire_temp_label(ui, pkt.tire_temp_fr, use_f);
-            tire_temp_label(ui, pkt.tire_temp_rl, use_f);
-            tire_temp_label(ui, pkt.tire_temp_rr, use_f);
-            ui.end_row();
-
-            ui.label(tr("Slip"));
-            for &slip in &[
-                pkt.tire_combined_slip_fl,
-                pkt.tire_combined_slip_fr,
-                pkt.tire_combined_slip_rl,
-                pkt.tire_combined_slip_rr,
-            ] {
-                match slip_style {
-                    TireSlipStyle::Values => slip_label(ui, slip),
-                    TireSlipStyle::Graph  => draw_slip_circle(ui, slip, false),
-                    TireSlipStyle::Both   => draw_slip_circle(ui, slip, true),
-                }
-            }
-            ui.end_row();
-
-            let water_icon = |v: i32| if v != 0 { crate::icons::TINT } else { "  " };
-            ui.label(tr("Water"));
-            ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_fl));
-            ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_fr));
-            ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_rl));
-            ui.colored_label(Color32::from_rgb(80, 160, 220), water_icon(pkt.wheel_in_puddle_rr));
-            ui.end_row();
-
-            if !is_fh6 {
-                let rumble = |v: i32| if v != 0 { crate::icons::CIRCLE } else { "  " };
-                ui.label(tr("Rumble"));
-                ui.label(rumble(pkt.wheel_on_rumble_strip_fl));
-                ui.label(rumble(pkt.wheel_on_rumble_strip_fr));
-                ui.label(rumble(pkt.wheel_on_rumble_strip_rl));
-                ui.label(rumble(pkt.wheel_on_rumble_strip_rr));
-                ui.end_row();
-            }
-        });
-}
-
-fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    let use_f = app.config.use_fahrenheit;
-
-    let n = 4_f32;
-    let gap = 8.0_f32;
-    let left_pad = 5.0_f32;
-    let right_pad = 5.0_f32;
-    let avail = ui.available_rect_before_wrap();
-    let avail_w = avail.width();
-    let avail_h = avail.height();
-    // Cap circle size by both available width and height
-    let cell = ((avail_w - left_pad - right_pad - (n - 1.0) * gap) / n)
-        .min(avail_h - 4.0)
-        .max(10.0);
-    let outer_r = cell / 2.0;
-    let inner_r = outer_r * 0.55;
-    let total_w = left_pad + n * cell + (n - 1.0) * gap;
-
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(total_w, cell), egui::Sense::hover());
-    let hole_bg = ui.visuals().panel_fill;
-    let p = ui.painter();
 
     let tires = [
         ("FL", pkt.tire_temp_fl, pkt.tire_combined_slip_fl, pkt.wheel_in_puddle_fl),
@@ -1415,6 +1338,38 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         ("RL", pkt.tire_temp_rl, pkt.tire_combined_slip_rl, pkt.wheel_in_puddle_rl),
         ("RR", pkt.tire_temp_rr, pkt.tire_combined_slip_rr, pkt.wheel_in_puddle_rr),
     ];
+
+    // Choose a grid shape from the widget's aspect ratio:
+    //   wide  → 1×4 (single horizontal row)
+    //   square→ 2×2 (FL FR / RL RR)
+    //   tall  → 4×1 (single vertical column)
+    let avail = ui.available_rect_before_wrap();
+    let avail_w = avail.width();
+    let avail_h = avail.height();
+    let (cols, rows) = if avail_w > avail_h * 1.3 {
+        (4usize, 1usize)
+    } else if avail_h > avail_w * 1.3 {
+        (1usize, 4usize)
+    } else {
+        (2usize, 2usize)
+    };
+
+    let gap = 8.0_f32;
+    let left_pad = 5.0_f32;
+    let right_pad = 5.0_f32;
+    // Cap the cell (circle) size by both the per-cell width and height so nothing clips.
+    let cell_w = (avail_w - left_pad - right_pad - (cols as f32 - 1.0) * gap) / cols as f32;
+    let cell_h = (avail_h - (rows as f32 - 1.0) * gap) / rows as f32;
+    let cell = cell_w.min(cell_h).max(10.0);
+    let outer_r = cell / 2.0;
+    let inner_r = outer_r * 0.55;
+
+    let grid_w = left_pad + cols as f32 * cell + (cols as f32 - 1.0) * gap;
+    let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap;
+
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(grid_w, grid_h), egui::Sense::hover());
+    let hole_bg = ui.visuals().panel_fill;
+    let p = ui.painter();
 
     let bg = crate::theme::WELL;
     let puddle_c = Color32::from_rgb(80, 160, 220);
@@ -1425,8 +1380,11 @@ fn show_tires_combined(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let fid = egui::FontId::proportional(font_size);
 
     for (i, &(label, temp_f, slip, puddle)) in tires.iter().enumerate() {
-        let cx = rect.left() + left_pad + i as f32 * (cell + gap) + outer_r;
-        let cy = rect.center().y;
+        // Reading order (row-major): FL FR on top, RL RR on bottom for 2×2.
+        let col = i % cols;
+        let row = i / cols;
+        let cx = rect.left() + left_pad + col as f32 * (cell + gap) + outer_r;
+        let cy = rect.top() + row as f32 * (cell + gap) + outer_r;
         let center = pos2(cx, cy);
 
         let slip_abs = slip.abs();
@@ -1943,57 +1901,6 @@ fn clip_to_circle(dx: f32, dy: f32, r: f32) -> (f32, f32) {
         (dx * s, dy * s)
     } else {
         (dx, dy)
-    }
-}
-
-
-fn draw_slip_circle(ui: &mut Ui, slip: f32, show_value: bool) {
-    let abs = slip.abs();
-    let r = 13.0_f32;
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(r * 2.0 + 2.0), egui::Sense::hover());
-    let painter = ui.painter();
-    let center = rect.center();
-
-    painter.circle_filled(center, r, crate::theme::WELL);
-    painter.circle_stroke(center, r, Stroke::new(1.0, crate::theme::STROKE_MID));
-
-    let fill_r = abs.min(1.0) * r;
-    let base_color = if abs >= 1.0 {
-        let t = ((abs - 1.0) / 1.0).clamp(0.0, 1.0);
-        Color32::from_rgb(
-            (220.0 - 110.0 * t) as u8,
-            (60.0 - 30.0 * t) as u8,
-            (60.0 - 30.0 * t) as u8,
-        )
-    } else if abs >= 0.8 {
-        Color32::from_rgb(230, 160, 40)
-    } else {
-        Color32::from_rgb(60, 200, 90)
-    };
-
-    let brightness: f32 = if show_value {
-        if abs >= 1.0 { 0.25 } else { 0.5 }
-    } else {
-        1.0
-    };
-    let fill_color = Color32::from_rgb(
-        (base_color.r() as f32 * brightness) as u8,
-        (base_color.g() as f32 * brightness) as u8,
-        (base_color.b() as f32 * brightness) as u8,
-    );
-
-    if fill_r > 0.5 {
-        painter.circle_filled(center, fill_r, fill_color);
-    }
-
-    if show_value {
-        painter.text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            format!("{:.2}", slip),
-            egui::FontId::proportional(9.0),
-            Color32::WHITE,
-        );
     }
 }
 
@@ -2891,15 +2798,6 @@ fn input_bar_full(ui: &mut Ui, label: &str, val: u8, color: Color32) {
         egui::Align2::RIGHT_CENTER, format!("{:.0}%", frac * 100.0), font, Color32::WHITE);
 }
 
-fn tire_temp_label(ui: &mut Ui, temp_f: f32, use_f: bool) {
-    let (val, unit) = if use_f {
-        (temp_f, "°F")
-    } else {
-        (ForzaPacket::tire_temp_celsius(temp_f), "°C")
-    };
-    ui.colored_label(temp_color(val, use_f), format!("{val:.0}{unit}"));
-}
-
 fn temp_color(val: f32, is_f: bool) -> Color32 {
     let (cold, warm, hot) = if is_f {
         (140.0, 200.0, 250.0)
@@ -2915,18 +2813,6 @@ fn temp_color(val: f32, is_f: bool) -> Color32 {
     } else {
         Color32::from_rgb(220, 60, 60)
     }
-}
-
-fn slip_label(ui: &mut Ui, slip: f32) {
-    let abs = slip.abs();
-    let color = if abs >= 1.0 {
-        Color32::from_rgb(220, 60, 60)
-    } else if abs >= 0.8 {
-        Color32::from_rgb(230, 160, 40)
-    } else {
-        Color32::from_rgb(60, 200, 90)
-    };
-    ui.colored_label(color, format!("{slip:.2}"));
 }
 
 fn fmt_lap(secs: f32) -> String {

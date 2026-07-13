@@ -124,7 +124,6 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Tires ──────────────────────────────────────────────────────
         "Style:" => "Stil:",
-        "Separate" => "Getrennt",
         "Combined" => "Kombiniert",
         "Bars" => "Balken",
         "Bar" => "Bar",
@@ -135,9 +134,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Switch Values" => "Werte tauschen",
         "Swaps temp and slip in the bars only; the text rows stay put."
             => "Tauscht Temperatur und Schlupf nur in den Balken; die Textzeilen bleiben unverändert.",
-        "Slip display style:" => "Schlupf-Anzeigestil:",
-        "Values" => "Werte",
-        "Graph" => "Diagramm",
         "Both" => "Beides",
 
         // ── RPM / shift ────────────────────────────────────────────────

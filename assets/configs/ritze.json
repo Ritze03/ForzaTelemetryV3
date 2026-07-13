@@ -176,6 +176,5 @@
   "tire_bar_swap": false,
   "tire_bar_value": "Stacked",
   "tire_display_style": "Bars",
-  "tire_slip_style": "Both",
   "gforce_show_text": true
 }

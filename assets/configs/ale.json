@@ -179,6 +179,5 @@
   "sprint_type": "Absolute",
   "tire_bar_swap": false,
   "tire_bar_value": "Temperature",
-  "tire_display_style": "Bars",
-  "tire_slip_style": "Both"
+  "tire_display_style": "Bars"
 }

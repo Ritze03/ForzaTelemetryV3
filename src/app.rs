@@ -1352,7 +1352,7 @@ impl eframe::App for ForzaApp {
                 .frame(egui::Frame::window(&ctx.style()).multiply_with_opacity(opacity))
                 .show(ctx, |ui| {
                     ui.set_opacity(opacity);
-                    use crate::config::{SpeedDeltaMode, SprintType, TextAlign, TireSlipStyle};
+                    use crate::config::{SpeedDeltaMode, SprintType, TextAlign};
                     use crate::icons;
                     use crate::i18n::tr;
 
@@ -1561,14 +1561,12 @@ impl eframe::App for ForzaApp {
                                         ui.label(tr("Style:"));
                                         egui::ComboBox::from_id_salt("tire_display_style")
                                             .selected_text(match self.config.tire_display_style {
-                                                TireDisplayStyle::Separate => tr("Separate"),
-                                                TireDisplayStyle::Combined => tr("Combined"),
-                                                TireDisplayStyle::Bars     => tr("Bars"),
+                                                TireDisplayStyle::Tires => tr("Tires"),
+                                                TireDisplayStyle::Bars  => tr("Bars"),
                                             })
                                             .show_ui(ui, |ui| {
-                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Separate, tr("Separate"));
-                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Combined, tr("Combined"));
-                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Bars,     tr("Bars"));
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Tires, tr("Tires"));
+                                                ui.selectable_value(&mut self.config.tire_display_style, TireDisplayStyle::Bars,  tr("Bars"));
                                             });
                                     });
                                     if self.config.tire_display_style == TireDisplayStyle::Bars {
@@ -1598,23 +1596,6 @@ impl eframe::App for ForzaApp {
                                                     .color(egui::Color32::GRAY),
                                             );
                                         }
-                                    }
-                                    if self.config.tire_display_style == TireDisplayStyle::Separate {
-                                        ui.add_space(8.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("Slip display style:"));
-                                            egui::ComboBox::from_id_salt("tire_slip_style")
-                                                .selected_text(match self.config.tire_slip_style {
-                                                    TireSlipStyle::Values => tr("Values"),
-                                                    TireSlipStyle::Graph  => tr("Graph"),
-                                                    TireSlipStyle::Both   => tr("Both"),
-                                                })
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Values, tr("Values"));
-                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Graph,  tr("Graph"));
-                                                    ui.selectable_value(&mut self.config.tire_slip_style, TireSlipStyle::Both,   tr("Both"));
-                                                });
-                                        });
                                     }
                                 }
                                 DashboardSubTab::Rpm => {

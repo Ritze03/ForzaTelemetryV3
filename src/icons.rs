@@ -18,7 +18,6 @@ pub const FLOPPY:     &str = "\u{F0C7}"; // fa-floppy-o  (save)
 pub const CHECK:      &str = "\u{F00C}"; // fa-check
 pub const TIMES:      &str = "\u{F00D}"; // fa-times     (clear/close)
 pub const CLOCK:      &str = "\u{F017}"; // fa-clock-o   (timer)
-pub const TINT:       &str = "\u{F043}"; // fa-tint      (water droplet / puddle)
 pub const GAMEPAD:    &str = "\u{F11B}"; // fa-gamepad   (fun / game features)
 pub const USERS:      &str = "\u{F0C0}"; // fa-users     (co-op / multiplayer)
 pub const COPY:       &str = "\u{F0C5}"; // fa-files-o   (copy to clipboard)
