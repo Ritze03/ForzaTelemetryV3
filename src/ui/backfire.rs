@@ -76,12 +76,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 &mut app.config.backfire_dynamic_duration,
                 tr("Dynamic key press duration"),
             );
-            ui.label(
-                egui::RichText::new(tr("Holds the throttle key for one game frame, derived from the packet rate (packets/sec). Off = use the fixed value below."))
-                    .size(11.0)
-                    .color(egui::Color32::GRAY),
-            );
-            ui.add_enabled_ui(!app.config.backfire_dynamic_duration, |ui| {
+            if !app.config.backfire_dynamic_duration {
                 ui.horizontal(|ui| {
                     ui.label(tr("Key press duration:"));
                     ui.add(
@@ -91,7 +86,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                             .suffix(" ms"),
                     );
                 });
-            });
+            }
             ui.add_space(4.0);
             crate::theme::styled_checkbox(ui, 
                 &mut app.config.backfire_disable_standstill,
