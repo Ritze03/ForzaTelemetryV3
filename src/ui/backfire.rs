@@ -88,13 +88,13 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut app.config.backfire_dynamic_mode,
-                                BackfireDynamicMode::TimeBased,
-                                tr("Time-based"),
+                                BackfireDynamicMode::PacketBased,
+                                tr("Packet-based"),
                             );
                             ui.selectable_value(
                                 &mut app.config.backfire_dynamic_mode,
-                                BackfireDynamicMode::PacketBased,
-                                tr("Packet-based"),
+                                BackfireDynamicMode::TimeBased,
+                                tr("Time-based"),
                             );
                         });
                 });

@@ -1282,7 +1282,9 @@ impl eframe::App for ForzaApp {
                         (crate::theme::DANGER, format!("{}  {}", icons::NO_SIGNAL, tr("Disconnected")))
                     };
                     ui.colored_label(color, label);
-                    ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
+                    if self.telemetry.is_connected {
+                        ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
+                    }
 
                     // Co-Op indicator (visible from any tab)
                     let coop_role = self.coop.role();
