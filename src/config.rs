@@ -27,6 +27,14 @@ impl MaxRpmSource {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum TopBarStyle {
+    #[default]
+    Modern, // wordmark + current-page pill on the left, icon tabs centered
+    Simple, // icon-only tabs
+    Legacy, // full labelled buttons
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum BackfireDynamicMode {
     TimeBased,   // hold length estimated from packets/sec
     #[default]
@@ -283,7 +291,7 @@ pub struct AppConfig {
     pub gforce_show_labels: bool, // show the "Current:"/"Peak:" header rows above the value rows
     // Global
     pub hide_widget_titles: bool, // hide every dashboard widget's title row
-    pub compact_tabs: bool, // show only the icon on each top tab, without its label
+    pub top_bar_style: TopBarStyle, // Modern (title+pill), Simple (icon-only), or Legacy (labelled buttons)
     // Engine widget
     pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     pub engine_show_type: bool,   // show an "Electric"/"N cyl" caption under the values
@@ -408,7 +416,7 @@ impl Default for AppConfig {
             gforce_show_text: true,
             gforce_show_labels: true,
             hide_widget_titles: false,
-            compact_tabs: false,
+            top_bar_style: TopBarStyle::Modern,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
             input_bars_full_width: false,
@@ -680,6 +688,14 @@ impl AppConfig {
         if let serde_json::Value::Object(ref mut map) = val {
             if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
                 map.insert("theme".to_string(), serde_json::json!("Dark"));
+            }
+            // Migrate the old `compact_tabs` bool to the `top_bar_style` enum so an
+            // existing config keeps its look (checked → Simple, unchecked → Legacy).
+            if let Some(compact) = map.get("compact_tabs").and_then(|v| v.as_bool()) {
+                map.insert(
+                    "top_bar_style".to_string(),
+                    serde_json::json!(if compact { "Simple" } else { "Legacy" }),
+                );
             }
             migrate_tire_display_style(map);
         }

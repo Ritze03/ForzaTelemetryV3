@@ -415,6 +415,41 @@ fn tab_button(
     resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
+/// English title for a tab, used by the Modern top bar's current-page pill.
+fn tab_title(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Dashboard => "Dashboard",
+        Tab::PowerCurve => "Power Curve",
+        Tab::Coop => "Co-Op",
+        Tab::Backfire => "Backfire",
+        Tab::Gearbox => "Automatic Gearbox",
+        Tab::EngineSwaps => "Engine Swaps",
+        Tab::Settings => "Setup",
+        Tab::Changelog => "What's New",
+    }
+}
+
+/// A rounded "pill" chip showing the current page (Modern top bar), styled like
+/// the Graphite selection chip: full-radius, selection fill + border.
+fn page_pill(ui: &mut egui::Ui, text: &str) {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::proportional(12.5),
+        crate::theme::TEXT,
+    );
+    let size = galley.size() + egui::vec2(24.0, 8.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same((rect.height() * 0.5) as u8),
+        crate::theme::SEL,
+        egui::Stroke::new(1.0, crate::theme::SELBD),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, crate::theme::TEXT);
+}
+
 #[derive(PartialEq, Clone, Copy, Default)]
 pub enum DashboardSubTab {
     #[default]
@@ -1303,9 +1338,7 @@ impl eframe::App for ForzaApp {
             self.config.dashboard_edit_mode = !self.config.dashboard_edit_mode;
         }
 
-        // Tab bar. 4px top + 30px button row + 4px bottom = 38px, then the panel's
-        // divider line. Both modes render through the same fill-only tab_button, so
-        // the bar is pixel-identical whether labelled or icon-only.
+        // Tab bar. 4px top + 30px button row + 5px bottom, then the panel's divider.
         let mut tab_frame = egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD);
         tab_frame.inner_margin.left = 4;
         tab_frame.inner_margin.right = 4;
@@ -1314,33 +1347,79 @@ impl eframe::App for ForzaApp {
         egui::TopBottomPanel::top("tab_bar")
             .frame(tab_frame)
             .show(ctx, |ui| {
+                use crate::config::TopBarStyle;
+                use crate::i18n::tr;
+                use crate::icons;
+                let style = self.config.top_bar_style;
+                let left = [
+                    (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
+                    (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
+                    (Tab::Coop,        icons::USERS,      "Co-Op"),
+                    (Tab::Backfire,    icons::BOLT,       "Backfire"),
+                    (Tab::Gearbox,     icons::GAMEPAD,    "Automatic Gearbox"),
+                    (Tab::EngineSwaps, icons::WRENCH,     "Engine Swaps"),
+                ];
+                let right = [
+                    (Tab::Settings,  icons::COG,      "Setup"),
+                    (Tab::Changelog, icons::BULLHORN, "What's New"),
+                ];
+                // right_to_left adds items right→left, so Setup ends up rightmost and
+                // What's New lands to its left.
                 ui.horizontal(|ui| {
                     ui.set_min_height(30.0);
-                    use crate::i18n::tr;
-                    use crate::icons;
-                    let compact = self.config.compact_tabs;
-                    let label = |text: &'static str| if compact { None } else { Some(tr(text)) };
-                    for (tab, icon, text) in [
-                        (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
-                        (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
-                        (Tab::Coop,        icons::USERS,      "Co-Op"),
-                        (Tab::Backfire,    icons::BOLT,       "Backfire"),
-                        (Tab::Gearbox,     icons::GAMEPAD,    "Automatic Gearbox"),
-                        (Tab::EngineSwaps, icons::WRENCH,     "Engine Swaps"),
-                    ] {
-                        tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, label(text));
-                    }
-                    // RIGHT-bound tabs. A right_to_left layout places items
-                    // right→left, so Setup is added first (rightmost) and
-                    // What's New lands to its left.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for (tab, icon, text) in [
-                            (Tab::Settings,  icons::COG,      "Setup"),
-                            (Tab::Changelog, icons::BULLHORN, "What's New"),
-                        ] {
-                            tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, label(text));
+                    match style {
+                        TopBarStyle::Legacy => {
+                            for (tab, icon, text) in left {
+                                ui.selectable_value(&mut self.current_tab, tab, format!("{}  {}", icon, tr(text)));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                for (tab, icon, text) in right {
+                                    ui.selectable_value(&mut self.current_tab, tab, format!("{}  {}", icon, tr(text)));
+                                }
+                            });
                         }
-                    });
+                        TopBarStyle::Simple => {
+                            for (tab, icon, _) in left {
+                                tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                for (tab, icon, _) in right {
+                                    tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                                }
+                            });
+                        }
+                        TopBarStyle::Modern => {
+                            let bar = ui.max_rect();
+                            let spacing = ui.spacing().item_spacing.x;
+                            // LEFT: wordmark + divider + current-page pill.
+                            ui.label(
+                                egui::RichText::new("Forza Telemetry V3")
+                                    .color(crate::theme::ACCENT)
+                                    .size(16.0)
+                                    .strong(),
+                            );
+                            ui.add_space(8.0);
+                            let (div, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
+                            ui.painter().rect_filled(div, 0.0, crate::theme::BORDER);
+                            ui.add_space(8.0);
+                            page_pill(ui, tr(tab_title(self.current_tab)));
+                            // CENTER: icon tabs, centred across the full bar width.
+                            let used = ui.cursor().min.x - bar.left();
+                            let n = left.len() as f32;
+                            let center_w = n * 30.0 + (n - 1.0) * spacing;
+                            let center_start = (bar.width() - center_w) / 2.0;
+                            ui.add_space((center_start - used).max(spacing));
+                            for (tab, icon, _) in left {
+                                tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                            }
+                            // RIGHT: icon tabs, right-aligned in the remaining space.
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                for (tab, icon, _) in right {
+                                    tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, None);
+                                }
+                            });
+                        }
+                    }
                 });
             });
 
@@ -1457,8 +1536,21 @@ impl eframe::App for ForzaApp {
 
                     match self.page_settings_tab {
                         PageSettingsTab::General => {
-                            crate::theme::styled_checkbox(ui, &mut self.config.compact_tabs, tr("Compact tabs"))
-                                .on_hover_text(tr("Show only the icon on each tab, without its label."));
+                            use crate::config::TopBarStyle;
+                            ui.horizontal(|ui| {
+                                ui.label(tr("Top Bar Style:"));
+                                egui::ComboBox::from_id_salt("top_bar_style")
+                                    .selected_text(match self.config.top_bar_style {
+                                        TopBarStyle::Modern => tr("Modern"),
+                                        TopBarStyle::Simple => tr("Simple"),
+                                        TopBarStyle::Legacy => tr("Legacy"),
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut self.config.top_bar_style, TopBarStyle::Modern, tr("Modern"));
+                                        ui.selectable_value(&mut self.config.top_bar_style, TopBarStyle::Simple, tr("Simple"));
+                                        ui.selectable_value(&mut self.config.top_bar_style, TopBarStyle::Legacy, tr("Legacy"));
+                                    });
+                            });
                         }
                         PageSettingsTab::Tab(Tab::Dashboard) => {
                             // Sub-tab row (wraps onto extra lines when space runs out)
