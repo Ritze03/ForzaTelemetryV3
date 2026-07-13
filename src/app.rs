@@ -362,28 +362,53 @@ pub enum PageSettingsTab {
     Tab(Tab),
 }
 
-/// Compact tab button: an icon centered in a fixed 30×30 cell, reusing egui's
-/// own selectable visuals so the selected/hover look matches the labelled tabs.
-/// `selectable_value` sizes to the glyph advance (which varies per icon) and even
-/// `Align2::CENTER_CENTER` only centres the layout box, not the ink — so the cache
-/// supplies the true ink-centred draw position and every icon lands on the grid.
-fn compact_tab(
+/// A tab-bar button, 30px tall, fill-only (no outline). `label = None` renders an
+/// icon-only compact tab: 30px wide with the glyph ink-centred via the cache (plain
+/// `Align2::CENTER_CENTER` centres the layout box, not the ink, so icons look
+/// ragged). `label = Some` renders icon + text, width-fitted. Reuses egui's
+/// `interact_selectable` visuals so selected/hover colours track the theme.
+fn tab_button(
     ui: &mut egui::Ui,
     current: &mut Tab,
     cache: &mut crate::iconcache::IconCenterCache,
     tab: Tab,
     icon: &str,
+    label: Option<&str>,
 ) {
     let selected = *current == tab;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let full = label.map(|text| format!("{icon}  {text}"));
+    let width = match &full {
+        None => 30.0,
+        Some(s) => {
+            ui.painter()
+                .layout_no_wrap(s.clone(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+                + 14.0 // 7px padding each side
+        }
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::click());
     let vis = ui.style().interact_selectable(&resp, selected);
     if selected || resp.hovered() {
-        ui.painter().rect_filled(rect, 4.0, vis.bg_fill);
+        ui.painter().rect_filled(rect, 4.0, vis.bg_fill); // fill only — no outline
     }
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let pos = cache.centered_pos(ui, icon, font.clone(), rect.center());
-    ui.painter()
-        .text(pos, egui::Align2::LEFT_TOP, icon, font, vis.text_color());
+    let color = vis.text_color();
+    match full {
+        None => {
+            let pos = cache.centered_pos(ui, icon, font.clone(), rect.center());
+            ui.painter().text(pos, egui::Align2::LEFT_TOP, icon, font, color);
+        }
+        Some(s) => {
+            ui.painter().text(
+                egui::pos2(rect.left() + 7.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                s,
+                font,
+                color,
+            );
+        }
+    }
     if resp.clicked() {
         *current = tab;
     }
@@ -1278,43 +1303,30 @@ impl eframe::App for ForzaApp {
             self.config.dashboard_edit_mode = !self.config.dashboard_edit_mode;
         }
 
-        // Tab bar
+        // Tab bar. 4px top + 30px button row + 4px bottom = 38px, then the panel's
+        // divider line. Both modes render through the same fill-only tab_button, so
+        // the bar is pixel-identical whether labelled or icon-only.
+        let mut tab_frame = egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD);
+        tab_frame.inner_margin.top = 4;
+        tab_frame.inner_margin.bottom = 4;
         egui::TopBottomPanel::top("tab_bar")
-            .frame(egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD))
+            .frame(tab_frame)
             .show(ctx, |ui| {
-                ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    // Both modes use 30px-tall buttons filling a fixed 30px row, so the
-                    // bar is pixel-identical. Bump the selectable button padding so the
-                    // normal-mode text buttons are 30px too (compact uses a fixed 30px).
                     ui.set_min_height(30.0);
-                    let text_h = ui.text_style_height(&egui::TextStyle::Button);
-                    ui.spacing_mut().button_padding.y = ((30.0 - text_h) / 2.0).max(0.0);
-                    // No outline on the tab buttons — selected/hover show only a fill.
-                    let vis = ui.visuals_mut();
-                    vis.selection.stroke = egui::Stroke::NONE;
-                    vis.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-                    vis.widgets.active.bg_stroke = egui::Stroke::NONE;
-                    vis.widgets.inactive.bg_stroke = egui::Stroke::NONE;
                     use crate::i18n::tr;
                     use crate::icons;
                     let compact = self.config.compact_tabs;
-                    // (tab, icon, label, single-space?) — BOLT reads too wide with two spaces.
-                    let left = [
-                        (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard",         false),
-                        (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve",        false),
-                        (Tab::Coop,        icons::USERS,      "Co-Op",              false),
-                        (Tab::Backfire,    icons::BOLT,       "Backfire",           true),
-                        (Tab::Gearbox,     icons::GAMEPAD,    "Automatic Gearbox",  false),
-                        (Tab::EngineSwaps, icons::WRENCH,     "Engine Swaps",       false),
-                    ];
-                    for (tab, icon, text, tight) in left {
-                        if compact {
-                            compact_tab(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon);
-                        } else {
-                            let gap = if tight { " " } else { "  " };
-                            ui.selectable_value(&mut self.current_tab, tab, format!("{}{}{}", icon, gap, tr(text)));
-                        }
+                    let label = |text: &'static str| if compact { None } else { Some(tr(text)) };
+                    for (tab, icon, text) in [
+                        (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
+                        (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
+                        (Tab::Coop,        icons::USERS,      "Co-Op"),
+                        (Tab::Backfire,    icons::BOLT,       "Backfire"),
+                        (Tab::Gearbox,     icons::GAMEPAD,    "Automatic Gearbox"),
+                        (Tab::EngineSwaps, icons::WRENCH,     "Engine Swaps"),
+                    ] {
+                        tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, label(text));
                     }
                     // RIGHT-bound tabs. A right_to_left layout places items
                     // right→left, so Setup is added first (rightmost) and
@@ -1324,15 +1336,10 @@ impl eframe::App for ForzaApp {
                             (Tab::Settings,  icons::COG,      "Setup"),
                             (Tab::Changelog, icons::BULLHORN, "What's New"),
                         ] {
-                            if compact {
-                                compact_tab(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon);
-                            } else {
-                                ui.selectable_value(&mut self.current_tab, tab, format!("{}  {}", icon, tr(text)));
-                            }
+                            tab_button(ui, &mut self.current_tab, &mut self.icon_center_cache, tab, icon, label(text));
                         }
                     });
                 });
-                ui.add_space(2.0);
             });
 
         // ── Bottom status bar ──────────────────────────────────────
