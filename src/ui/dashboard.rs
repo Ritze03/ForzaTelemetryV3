@@ -669,11 +669,14 @@ fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 /// Rolling speed (km/h) + RPM sparkline over the last ~30 s, hand-drawn to match
 /// the lightweight dashboard widgets.
 fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    ui.label(crate::theme::section_label(tr("Speed Trace")));
-    // Tuck the legend snug under the title. The old add_space(2.0) sat on top of
-    // the default item-spacing, leaving a noticeably large gap above the legend;
-    // trimming the inter-row spacing pulls it up to match the other widgets.
+    // Tighten the inter-row spacing BEFORE the title. egui bakes the gap that
+    // follows a widget from item_spacing.y as read *when that widget is drawn*, so
+    // setting it after the title (as before) never actually moved the legend — it
+    // stayed a full default row-gap below. Setting it first pulls the legend snug
+    // under the title to match the Boost widget's tight vertical-mode title→content
+    // gap. It stays in effect for the legend→graph gap too, unchanged from before.
     ui.spacing_mut().item_spacing.y = 2.0;
+    ui.label(crate::theme::section_label(tr("Speed Trace")));
 
     let use_mph = app.config.use_mph;
     let unit = if use_mph { "mph" } else { "km/h" };
@@ -1357,15 +1360,19 @@ fn show_tires_tiles(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let gap = 8.0_f32;
     let left_pad = 5.0_f32;
     let right_pad = 5.0_f32;
+    let bottom_pad = 5.0_f32;
     // Cap the cell (circle) size by both the per-cell width and height so nothing clips.
+    // Reserve the same ~5px margin on the left, right and bottom (the top keeps the
+    // small gap the layout already leaves after the widget title) so the gauges never
+    // spill past the widget's bottom edge in the tall/square layouts.
     let cell_w = (avail_w - left_pad - right_pad - (cols as f32 - 1.0) * gap) / cols as f32;
-    let cell_h = (avail_h - (rows as f32 - 1.0) * gap) / rows as f32;
+    let cell_h = (avail_h - bottom_pad - (rows as f32 - 1.0) * gap) / rows as f32;
     let cell = cell_w.min(cell_h).max(10.0);
     let outer_r = cell / 2.0;
     let inner_r = outer_r * 0.55;
 
     let grid_w = left_pad + cols as f32 * cell + (cols as f32 - 1.0) * gap;
-    let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap;
+    let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap + bottom_pad;
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(grid_w, grid_h), egui::Sense::hover());
     let hole_bg = ui.visuals().panel_fill;
