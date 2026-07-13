@@ -391,7 +391,11 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 /// right half. For a combobox; sliders use `slider_row`.
 fn setting_row(ui: &mut Ui, label: &str, what: &str, when: &str, add: impl FnOnce(&mut Ui)) {
     ui.columns(2, |c| {
-        hover(c[0].label(label), what, when);
+        // Non-justified layout so a wrapping label doesn't spread its letters.
+        let label_resp = c[0]
+            .with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| ui.label(label))
+            .inner;
+        hover(label_resp, what, when);
         let w = c[1].available_width();
         c[1].spacing_mut().slider_width = (w - 52.0).max(40.0);
         add(&mut c[1]);
@@ -416,7 +420,12 @@ fn slider_row(
     // which would otherwise push the row layout as digits are added.
     const VALUE_W: f32 = 72.0;
     ui.columns(2, |c| {
-        hover(c[0].label(label), what, when);
+        // ui.columns uses a justified layout, which spreads a wrapping label's
+        // letters across the line; render it in a plain top-down layout instead.
+        let label_resp = c[0]
+            .with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| ui.label(label))
+            .inner;
+        hover(label_resp, what, when);
         c[1].horizontal(|ui| {
             // Pin the fixed-width spinner to the right and let the slider fill the
             // rest, so the spinner is never the thing that clips when space is tight.

@@ -8,9 +8,9 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
         .auto_shrink([false, false])
         .id_salt("backfire_scroll")
         .show(ui, |ui| {
-            // Keep the controls a comfortable settings width instead of stretching
-            // across the whole tab; on a narrow window it shrinks to fit.
-            ui.set_max_width(520.0);
+            // Keep the controls to a comfortable settings width: at most half the
+            // tab (so they never dominate a slim window) and no wider than 520px.
+            ui.set_max_width((ui.available_width() * 0.5).min(520.0));
             {
                 ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
                 ui.add_space(8.0);

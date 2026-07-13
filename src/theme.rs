@@ -256,7 +256,9 @@ pub fn slider_row<N: egui::emath::Numeric>(
     suffix: &str,
 ) -> egui::Response {
     ui.columns(2, |c| {
-        c[0].label(label);
+        // ui.columns uses a justified layout, which spreads a wrapping label's
+        // letters across the line; render it in a plain top-down layout instead.
+        c[0].with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| ui.label(label));
         c[1].horizontal(|ui| {
             // Pin the fixed-width spinner to the right and let the slider fill the
             // rest, so the spinner is never the thing that clips when space is tight.

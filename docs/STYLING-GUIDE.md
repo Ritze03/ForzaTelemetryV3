@@ -53,7 +53,8 @@ still shrinks on a narrow window:
 
 ```rust
 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-    ui.set_max_width(520.0); // comfortable settings width; fills when narrower
+    // At most half the tab (never dominates a slim window), capped at 520px.
+    ui.set_max_width((ui.available_width() * 0.5).min(520.0));
     // cards…
 });
 ```
@@ -115,6 +116,10 @@ theme::checkbox_row_with(ui, &mut flag, tr("Dynamic…"), |ui| {     // + contro
 Both return the checkbox response (wrap in a tooltip `hover(...)` if needed).
 `theme::styled_checkbox` (content-sized) is still used for the cog **Mini-Settings**
 popup, which is not a category.
+
+> **Gotcha:** `ui.columns` lays each column out with a *justified* layout, which
+> spreads a wrapping label's letters across the line. Render row labels in a plain
+> `Layout::top_down(Align::LEFT)` sub-layout so a long label wraps normally.
 
 ### Comboboxes / other controls
 
