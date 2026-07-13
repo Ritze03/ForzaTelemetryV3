@@ -1,7 +1,6 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
-use crate::config::GameMode;
 use crate::i18n::{tr, Language};
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
@@ -9,42 +8,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.columns(2, |cols| {
             // ── LEFT COLUMN ──────────────────────────────────────────
             let left = &mut cols[0];
-
-            // ── Game ─────────────────────────────────────────────────
-            left.group(|ui| {
-                ui.label(crate::theme::section_label(tr("Game")));
-                ui.add_space(4.0);
-
-                egui::ComboBox::from_label(tr("Target game"))
-                    .selected_text(match app.config.game_mode {
-                        GameMode::ForzaHorizon6    => "Forza Horizon 6",
-                        GameMode::ForzaMotorsport7 => tr("Forza Motorsport 7 (Untested)"),
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut app.config.game_mode,
-                            GameMode::ForzaHorizon6,
-                            "Forza Horizon 6",
-                        );
-                        ui.selectable_value(
-                            &mut app.config.game_mode,
-                            GameMode::ForzaMotorsport7,
-                            tr("Forza Motorsport 7 (Untested)"),
-                        );
-                    });
-
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new(tr(
-                        "FH6: hides fuel, shows sprint times when not in race.\n\
-                         FM7: shows all fields.",
-                    ))
-                    .size(11.0)
-                    .color(Color32::GRAY),
-                );
-            });
-
-            left.add_space(8.0);
 
             // ── Network ──────────────────────────────────────────────
             left.group(|ui| {

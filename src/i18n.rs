@@ -504,15 +504,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Power Graph" => "Leistungsdiagramm",
         "Boost Graph" => "Ladedruckdiagramm",
 
-        // ── Settings: Game ─────────────────────────────────────────────
-        "Game" => "Spiel",
-        "Target game" => "Zielspiel",
-        "Forza Motorsport 7 (Untested)" => "Forza Motorsport 7 (ungetestet)",
-        "FH6: hides fuel, shows sprint times when not in race.\n\
-                         FM7: shows all fields." =>
-            "FH6: blendet Kraftstoff aus, zeigt Sprintzeiten außerhalb von Rennen.\n\
-                         FM7: zeigt alle Felder.",
-
         // ── Settings: Load Preset ──────────────────────────────────────
         "Load Preset" => "Voreinstellung laden",
         "— select —" => "— auswählen —",

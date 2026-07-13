@@ -10,12 +10,6 @@ pub enum Theme {
     Dark,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
-pub enum GameMode {
-    ForzaHorizon6,
-    ForzaMotorsport7,
-}
-
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum MaxRpmSource {
     GameProvided,
@@ -225,7 +219,6 @@ pub struct AppConfig {
     pub always_on_top: bool,
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
-    pub game_mode: GameMode,
     // Alignment
     pub speed_align: TextAlign,
     pub gear_align: TextAlign,
@@ -364,7 +357,6 @@ impl Default for AppConfig {
             always_on_top: false,
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
-            game_mode: GameMode::ForzaHorizon6,
             speed_align: TextAlign::RightPlaceholder,
             gear_align: TextAlign::Center,
             show_speed_delta: true,

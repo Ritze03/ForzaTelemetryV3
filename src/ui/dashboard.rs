@@ -10,7 +10,7 @@ use crate::app::{
     DashboardDragState, DashboardResizeState, ForzaApp, GForceStats, ResizeEdge,
 };
 use crate::config::{
-    GameMode, SprintType, TextAlign, TireDisplayStyle, WidgetKind, WidgetLayout,
+    SprintType, TextAlign, TireDisplayStyle, WidgetKind, WidgetLayout,
 };
 use crate::i18n::tr;
 use crate::packet::ForzaPacket;
@@ -1184,15 +1184,6 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         });
     }
 
-    if app.config.game_mode == GameMode::ForzaMotorsport7 {
-        ui.add_space(4.0);
-        ui.label(format!("{}   {:.0}%", tr("Fuel:"), pkt.fuel * 100.0));
-        ui.add(
-            egui::ProgressBar::new(pkt.fuel)
-                .fill(Color32::from_rgb(60, 160, 240))
-                .desired_width(160.0),
-        );
-    }
 }
 
 fn show_position_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
@@ -1211,9 +1202,7 @@ fn show_position_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 }
 
 fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
-    let is_fh6 = app.config.game_mode == GameMode::ForzaHorizon6;
-
-    if is_fh6 && pkt.race_position == 0 {
+    if pkt.race_position == 0 {
         // Captured before the heading so the height budget covers the whole cell.
         let full_rect = ui.available_rect_before_wrap();
         // Title flush like every other widget; the edge margin applies to the rows only.

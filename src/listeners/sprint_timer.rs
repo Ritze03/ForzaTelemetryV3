@@ -1,7 +1,7 @@
 use crate::packet::ForzaPacket;
 
 /// Tracks automatic sprint times: 0→100, 100→200, 200→300, 300→400, 400→500 km/h.
-/// All splits are always captured; which ones are displayed depends on the active GameMode.
+/// All splits are always captured and displayed (FH6).
 #[derive(Default)]
 pub struct SprintTimer {
     pub zero_to_hundred:  Option<f32>,
