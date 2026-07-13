@@ -1515,6 +1515,47 @@ fn show_tires_bars(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let px   = 1.0 / ppp;
     let bar_snap_w = snap(bar_w - 8.0).max(px);
 
+    // ── Left-column legend for two-metric bar modes ───────────────
+    // Combined/Stacked pack two metrics into each bar; label which half is
+    // which with small rotated text in the empty column left of the bars.
+    // Same mapping for all four bars, so one pair of labels is enough.
+    if matches!(mode, TireBarValue::Combined | TireBarValue::Stacked) {
+        let a_name = if swap { tr("Slip") } else { tr("Temp") };
+        let b_name = if swap { tr("Temp") } else { tr("Slip") };
+        let lfid = egui::FontId::proportional(10.0);
+        // -FRAC_PI_2 = 90° CCW, so text reads bottom-to-top.
+        let angle = -std::f32::consts::FRAC_PI_2;
+        // Draw `text` rotated 90° CCW, centered inside `cell`.
+        let draw_rot = |text: &str, cell: Rect| {
+            let galley = p.layout_no_wrap(text.to_owned(), lfid.clone(), dim);
+            let sz = galley.size();
+            // After CCW rotation the galley's width maps to vertical extent and
+            // its height to horizontal extent; place the un-rotated top-left so
+            // the rotated box lands centered in `cell`.
+            let pos = pos2(cell.center().x - sz.y * 0.5, cell.center().y + sz.x * 0.5);
+            p.add(egui::epaint::TextShape::new(pos, galley, dim).with_angle(angle));
+        };
+        let col = Rect::from_min_max(
+            pos2(origin.x, bar_top),
+            pos2(origin.x + label_w, bar_top + bar_h),
+        );
+        match mode {
+            TireBarValue::Combined => {
+                // Side by side: left label = a (left half), right label = b.
+                let (l, r) = col.split_left_right_at_fraction(0.5);
+                draw_rot(a_name, l);
+                draw_rot(b_name, r);
+            }
+            TireBarValue::Stacked => {
+                // Stacked: top label = a (top half), bottom label = b.
+                let (t, btm) = col.split_top_bottom_at_fraction(0.5);
+                draw_rot(a_name, t);
+                draw_rot(b_name, btm);
+            }
+            _ => {}
+        }
+    }
+
     for i in 0..4 {
         let x    = origin.x + label_w + i as f32 * bar_w;
         let rect = Rect::from_min_size(
