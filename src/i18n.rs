@@ -162,6 +162,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Smooth rotation" => "Sanfte Drehung",
         "Use movement direction as rotation" => "Bewegungsrichtung als Drehung verwenden",
         "Mirror map at edges" => "Karte an den Rändern spiegeln",
+        "North up when stopped" => "Norden oben im Stand",
         "Zoom when driving (radius, metres):" => "Zoom beim Fahren (Radius, Meter):",
         "Zoom when stopped (radius, metres):" => "Zoom im Stand (Radius, Meter):",
         "Image quality:" => "Bildqualität:",

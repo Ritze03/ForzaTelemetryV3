@@ -276,6 +276,7 @@ pub struct AppConfig {
     pub minimap_use_movement_dir: bool,
     pub minimap_mirror_edges: bool,
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
+    pub minimap_north_up_when_stopped: bool, // in heading-up mode, ease to north when stopped
     pub minimap_show_compass: bool, // show the north compass on the map
     // G-Force widget
     pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
@@ -401,6 +402,7 @@ impl Default for AppConfig {
             minimap_use_movement_dir: true,
             minimap_mirror_edges: true,
             minimap_north_up: false,
+            minimap_north_up_when_stopped: false,
             minimap_show_compass: true,
             gforce_show_text: true,
             gforce_show_labels: true,
@@ -563,7 +565,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
     "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges",
-    "minimap_north_up", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
+    "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",

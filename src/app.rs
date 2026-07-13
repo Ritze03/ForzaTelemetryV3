@@ -1153,9 +1153,22 @@ impl eframe::App for ForzaApp {
 
         // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame
         {
+            // In heading-up mode, optionally ease the map to north once the car stops.
+            let stopped_north = self.config.minimap_north_up_when_stopped
+                && self
+                    .telemetry
+                    .latest
+                    .as_ref()
+                    .map(|p| p.speed * 3.6 < 5.0)
+                    .unwrap_or(true);
+
             let target = if let Some(ref pkt) = self.telemetry.latest {
                 if pkt.is_race_on != 0 {
-                    minimap_target_yaw(pkt, self.config.minimap_use_movement_dir)
+                    if stopped_north {
+                        0.0
+                    } else {
+                        minimap_target_yaw(pkt, self.config.minimap_use_movement_dir)
+                    }
                 } else {
                     self.minimap_smoothed_yaw
                 }
@@ -1163,7 +1176,8 @@ impl eframe::App for ForzaApp {
                 self.minimap_smoothed_yaw
             };
 
-            if self.config.minimap_smooth_rotation {
+            // Ease-to-north always animates (that's the whole point); otherwise honour the setting.
+            if self.config.minimap_smooth_rotation || stopped_north {
                 let dt = ctx.input(|i| i.unstable_dt).min(0.1);
                 let lerp_t = (6.0 * dt).min(1.0);
                 self.minimap_smoothed_yaw = lerp_angle(self.minimap_smoothed_yaw, target, lerp_t);
@@ -1851,6 +1865,7 @@ impl eframe::App for ForzaApp {
                                     if !self.config.minimap_north_up {
                                         crate::theme::styled_checkbox(ui, &mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
                                         crate::theme::styled_checkbox(ui, &mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
+                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up_when_stopped, tr("North up when stopped"));
                                     }
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
