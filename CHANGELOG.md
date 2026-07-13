@@ -19,12 +19,13 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Dashboard config export/import**: copy your dashboard layout and mini-settings to/from JSON, with a checkbox to include or skip the mini-settings on each side; plus a preset loader in the mini-settings.
 - **Hide widget titles**: a master mini-setting (General) that hides the title on every widget that has one, for a cleaner, denser dashboard.
 - **G-Force label toggle**: show or hide the "Current" / "Peak" row labels; the peak readout now matches the orange of the peak marker on the plot.
+- **Gearbox reset button**: reset the Automatic Gearbox sliders and numeric values to the default tune in one click — the mode dropdown, toggles, and per-car calibrations are left untouched.
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
 
 ### Fixed
 - **Consistent widget spacing**: uniform margins across the Boost, Speed Trace, Sprint, and RPM widgets so they line up when placed side by side.
 - **Engine layout**: value columns line up across lines, and the text is centred vertically in the widget instead of clinging to the top.
-- **Titles**: widget titles render consistently; the Power Graph compact title sits over the graph without stealing space.
+- **Titles**: widget titles render consistently; the Power Graph compact title sits over the graph without stealing space, and "Hide widget titles" now covers it too.
 
 ### Removed
 - **Separate tyre style**: folded into the single adaptive "Tires" view (was three styles, now Tires + Bars).
