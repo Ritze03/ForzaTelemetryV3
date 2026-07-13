@@ -691,10 +691,10 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let unit = if use_mph { "mph" } else { "km/h" };
     let speed_disp = if use_mph { pkt.speed_mph() } else { pkt.speed_kmh() };
 
-    // Legend / current values
+    // Legend / current values — size 12 to match the Boost widget's readout font.
     ui.horizontal(|ui| {
-        ui.colored_label(Color32::from_rgb(80, 200, 110), format!("{speed_disp:.0} {unit}"));
-        ui.colored_label(Color32::from_rgb(230, 160, 40), format!("{:.0} rpm", pkt.current_engine_rpm));
+        ui.label(RichText::new(format!("{speed_disp:.0} {unit}")).size(12.0).color(Color32::from_rgb(80, 200, 110)));
+        ui.label(RichText::new(format!("{:.0} rpm", pkt.current_engine_rpm)).size(12.0).color(Color32::from_rgb(230, 160, 40)));
     });
 
     let full = ui.available_rect_before_wrap();
