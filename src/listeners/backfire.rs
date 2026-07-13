@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, BackfireDynamicMode};
 use crate::input::{char_to_key, InputSender};
 use crate::packet::ForzaPacket;
 use std::time::Duration;
@@ -6,6 +6,10 @@ use std::time::Duration;
 /// How long after key-up the game may still report the synthetic accel back in
 /// telemetry (empirical round-trip margin).
 pub const ECHO_MS: u64 = 150;
+
+/// Packet-based hold safety: if telemetry stops before the next packet arrives,
+/// the input worker auto-releases the held key after this long so it can't stick.
+pub const MAX_HOLD_MS: u64 = 120;
 
 /// Grace to add on top of the echo window when CHECKING it: with a render-FPS
 /// limit active, packets sit in the drain queue for up to one frame interval,
@@ -22,6 +26,7 @@ pub fn echo_grace(cfg: &AppConfig) -> Duration {
 pub struct BackfireListener {
     last_backfire_rpm: f32,
     last_kmh: f32,
+    holding: bool,
     pub last_min_rpm: f32,
     pub last_max_rpm: f32,
 }
@@ -31,12 +36,21 @@ impl BackfireListener {
         Self {
             last_backfire_rpm: 0.0,
             last_kmh: 9999.0,
+            holding: false,
             last_min_rpm: 0.0,
             last_max_rpm: 0.0,
         }
     }
 
     pub fn update(&mut self, pkt: &ForzaPacket, cfg: &AppConfig, input: &InputSender, pps: f32) {
+        // Packet-based hold: this packet is the "next frame", so release the key
+        // held on the previous trigger now — BEFORE any early return, so ending a
+        // race / disabling / standstill never leaves W stuck down.
+        if self.holding {
+            input.release();
+            self.holding = false;
+        }
+
         if !cfg.backfire_enabled || pkt.is_race_on == 0 {
             return;
         }
@@ -80,10 +94,20 @@ impl BackfireListener {
         if off_throttle && no_brake && in_rpm_range && rpm_delta_ok && not_accelerating {
             self.last_backfire_rpm = rpm;
             if let Some(key) = char_to_key('w') {
-                // Tracked: the input worker anchors the echo window at the ACTUAL
-                // key emission (see input::EchoWindow), so queued presses ahead of
-                // this one can't erode it.
-                input.press_tracked(key, press_ms, 0, ECHO_MS);
+                if cfg.backfire_dynamic_duration
+                    && cfg.backfire_dynamic_mode == BackfireDynamicMode::PacketBased
+                {
+                    // Hold W until the NEXT packet arrives (released at the top of the
+                    // next update) — an exact one-frame tap. MAX_HOLD_MS bounds a stuck
+                    // key if telemetry stops before the next packet.
+                    input.hold_tracked(key, MAX_HOLD_MS, ECHO_MS);
+                    self.holding = true;
+                } else {
+                    // Tracked: the input worker anchors the echo window at the ACTUAL
+                    // key emission (see input::EchoWindow), so queued presses ahead of
+                    // this one can't erode it.
+                    input.press_tracked(key, press_ms, 0, ECHO_MS);
+                }
             }
         } else if !(off_throttle && no_brake && in_rpm_range)
             && !input.synthetic_active(echo_grace(cfg))

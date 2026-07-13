@@ -605,6 +605,10 @@ fn de(s: &str) -> Option<&'static str> {
         "Max values" => "Maximalwerte",
         "Cylinders" => "Zylinder",
         "Dynamic key press duration" => "Dynamische Tastendruckdauer",
+        "Time-based" => "Zeitbasiert",
+        "Packet-based" => "Paketbasiert",
+        "Packet-based holds W until the next packet — an exact one-frame tap."
+            => "Paketbasiert hält W bis zum nächsten Paket — ein exakter Tastendruck über genau ein Frame.",
         "Reset settings" => "Einstellungen zurücksetzen",
         "Resets the sliders below to the default tune. Modes and toggles are left unchanged."
             => "Setzt die Regler unten auf die Standardabstimmung zurück. Modi und Schalter bleiben unverändert.",

@@ -27,6 +27,13 @@ impl MaxRpmSource {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum BackfireDynamicMode {
+    #[default]
+    TimeBased,   // hold length estimated from packets/sec
+    PacketBased, // hold until the next packet arrives (exact one frame)
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum GearboxMode {
     Street,
     #[default]
@@ -297,6 +304,7 @@ pub struct AppConfig {
     pub backfire_interval_rpm: f32,
     pub backfire_accel_time_ms: u64,
     pub backfire_dynamic_duration: bool, // key-press length = one frame (from packets/sec) instead of the fixed ms
+    pub backfire_dynamic_mode: BackfireDynamicMode, // when dynamic: estimate hold from packets/sec, or hold until next packet
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
     pub inputs_filter_backfire_accel: bool, // Inputs widget shows Accel as 0 while Backfire is actively firing
@@ -413,6 +421,7 @@ impl Default for AppConfig {
             backfire_interval_rpm: 100.0,
             backfire_accel_time_ms: 8,
             backfire_dynamic_duration: true,
+            backfire_dynamic_mode: BackfireDynamicMode::TimeBased,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             inputs_filter_backfire_accel: true,

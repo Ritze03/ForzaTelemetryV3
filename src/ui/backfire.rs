@@ -75,7 +75,32 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 &mut app.config.backfire_dynamic_duration,
                 tr("Dynamic key press duration"),
             );
-            if !app.config.backfire_dynamic_duration {
+            if app.config.backfire_dynamic_duration {
+                use crate::config::BackfireDynamicMode;
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.selectable_value(
+                        &mut app.config.backfire_dynamic_mode,
+                        BackfireDynamicMode::TimeBased,
+                        tr("Time-based"),
+                    );
+                    ui.selectable_value(
+                        &mut app.config.backfire_dynamic_mode,
+                        BackfireDynamicMode::PacketBased,
+                        tr("Packet-based"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        RichText::new(tr(
+                            "Packet-based holds W until the next packet — an exact one-frame tap.",
+                        ))
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                    );
+                });
+            } else {
                 ui.horizontal(|ui| {
                     ui.label(tr("Key press duration:"));
                     ui.add(
