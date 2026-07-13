@@ -1,0 +1,32 @@
+# Changelog
+
+All notable user-facing changes, newest first. Categories: **Added** (new
+features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
+**Info** (notes worth knowing).
+
+## [0.1.0] – 2026-07-13
+
+### Added
+- **Engine widget display modes**: choose Current, Max, or Both values per line in the mini-settings, and optionally show the engine type (Electric / cylinder count) underneath.
+- **Engine text auto-fit**: the readout scales to fit the widget in both width and height, so it stays readable when the widget is small.
+- **G-Force text toggle**: hide the text column so the plot fills the whole widget; when shown, the text scales to fit and the plot keeps priority.
+- **Inputs full-width bar style**: an alternative layout where each bar spans the full width with its label and value drawn inside; plus a compact-steering toggle.
+- **Boost compact mode**: draw the value inside a vertical bar with the peak above it, using the full width — a tidy, space-saving readout.
+- **Power Graph compact style**: a version with no title/legend/axes that annotates peak power, torque, and boost right on the graph — and a show/hide grid-lines toggle for both styles.
+- **Adaptive Tires tiles**: the tile view now arranges the four tyres to match the widget shape — a wide row, a 2×2 grid, or a tall column.
+- **Tyre bar labels**: rotated Temp/Slip labels in the Bars style so it's clear which half of each bar is which.
+- **RPM bar**: a more compact bar with the current/peak values drawn on it and the warning/shift lines colour-coded.
+- **Dashboard config export/import**: copy your dashboard layout and mini-settings to/from JSON, with a checkbox to include or skip the mini-settings on each side; plus a preset loader in the mini-settings.
+- **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
+
+### Fixed
+- **Consistent widget spacing**: uniform margins across the Boost, Speed Trace, Sprint, and RPM widgets so they line up when placed side by side.
+- **Engine layout**: value columns line up across lines, and the text is centred vertically in the widget instead of clinging to the top.
+- **Titles**: widget titles render consistently; the Power Graph compact title sits over the graph without stealing space.
+
+### Removed
+- **Separate tyre style**: folded into the single adaptive "Tires" view (was three styles, now Tires + Bars).
+- **Duplicate engine-type caption** in the Car widget — it now lives in the Engine widget instead.
+
+### Info
+- **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
