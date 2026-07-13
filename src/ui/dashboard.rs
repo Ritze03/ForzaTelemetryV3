@@ -1651,7 +1651,9 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
     let avail_w = ui.available_width();
     let avail_h = ui.available_rect_before_wrap().height();
-    let left_pad = 4.0_f32;
+    // No extra left pad: the widget's own 2px content inset already matches the plot's
+    // bottom spacing, so an added left_pad made the left gap visibly bigger.
+    let left_pad = 0.0_f32;
     let right_pad = 4.0_f32;
     let gap = 8.0_f32;
 
