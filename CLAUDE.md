@@ -75,6 +75,29 @@ out to one background agent each and merge their worktree branches as they finis
 Agents that edit files run with `isolation: worktree`; if several touch the same
 file but in far-apart regions, their branches still merge cleanly.
 
+### Batching a large request (many edits at once)
+When one request contains many independent edits, fan them out — but partition by
+*which files they touch*, not just by feature, so integration stays conflict-free:
+- **Worktree agents branch from HEAD.** This repo sets `worktree.baseRef: head` in
+  `.claude/settings.json` (local; `.claude/` is gitignored). Never let agents branch
+  from `master` when the working branch is ahead, or every result needs hand-merging.
+- **Only ONE agent per batch may edit the shared scaffolding files** — `config.rs`
+  (enums, `AppConfig` fields, `MINISETTINGS_KEYS`), `app.rs` (mini-settings sub-tabs),
+  `i18n.rs`. Two agents each adding a config field + mini-setting + translation in
+  parallel WILL collide on those regions. Hand all scaffolding-touching tasks to one
+  agent, or sequence them; let the others be pure-rendering edits.
+- **Pure-rendering edits to the same file are parallel-safe if they touch different
+  functions.** `dashboard.rs` is huge, so several agents each editing a different
+  widget function cherry-pick cleanly.
+- **Integrate sequentially, per agent as it lands** (not one big merge at the end):
+  `git cherry-pick <agent-commit>` onto HEAD → `cargo build` (+ `cargo test` if config
+  changed) → remove the worktree and delete its branch. Incremental verification pins a
+  bad agent immediately; a dedicated end-of-run "merge agent" is not worth it —
+  conflicts are cheaper to prevent by partitioning than to resolve after.
+- **Removing/renaming a config enum value or field** needs a serde migration in
+  `AppConfig::load` (see the "Light"→"Dark" theme fix-up) plus updates to bundled
+  presets, or old `config.json` files fail to parse and reset.
+
 ### Core Rule
 If a new user request arrives while a task is already running
 (or if a request contains multiple independent subtasks):
