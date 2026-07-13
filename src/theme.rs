@@ -128,33 +128,42 @@ pub fn styled_checkbox(
     checked: &mut bool,
     label: impl Into<String>,
 ) -> egui::Response {
-    checkbox_ui(ui, checked, label.into(), false)
+    checkbox_ui(ui, checked, label.into(), 0.0, f32::INFINITY)
 }
 
 fn checkbox_ui(
     ui: &mut egui::Ui,
     checked: &mut bool,
     label: String,
-    stretch: bool,
+    min_w: f32,
+    max_w: f32,
 ) -> egui::Response {
     const BOX: f32 = 18.0;
     const GAP: f32 = 7.0;
     let on = *checked;
 
     let font = TextStyle::Body.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(label, font, TEXT);
+    // Width is the label content clamped to [min_w, max_w]: category checkboxes
+    // pass a min of half the card (so short ones read a uniform width) and a max
+    // of the card (so a long label never forces the card wider — it wraps first).
+    // `styled_checkbox` passes [0, ∞] to stay content-sized.
+    let no_wrap = ui.painter().layout_no_wrap(label.clone(), font.clone(), TEXT);
+    let content_w = BOX + GAP + no_wrap.size().x;
+    let w = content_w.clamp(min_w, max_w);
+    let galley = if content_w <= w + 0.5 {
+        no_wrap
+    } else {
+        ui.painter().layout(label, font, TEXT, (w - BOX - GAP).max(0.0))
+    };
+    let stretched = max_w.is_finite();
     let gsize = galley.size();
-    let content_w = BOX + GAP + gsize.x;
-    // In a category card the checkbox stretches to fill its (half-width) column so
-    // every checkbox reads the same width; standalone use stays content-sized.
-    let w = if stretch { ui.available_width().max(content_w) } else { content_w };
     let size = egui::vec2(w, BOX.max(gsize.y));
     let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if resp.hovered() {
-            let hov = if stretch { rect } else { rect.expand2(egui::vec2(4.0, 2.0)) };
+            let hov = if stretched { rect } else { rect.expand2(egui::vec2(4.0, 2.0)) };
             painter.rect_filled(hov, CornerRadius::same(6), HOV);
         }
         let box_rect = egui::Rect::from_min_size(
@@ -204,8 +213,10 @@ fn checkbox_ui(
 /// the left column so all checkboxes read the same width and a slider/control
 /// would begin at the midpoint. Returns the checkbox response.
 pub fn checkbox_row(ui: &mut egui::Ui, checked: &mut bool, label: impl Into<String>) -> egui::Response {
-    let label = label.into();
-    ui.columns(2, |c| checkbox_ui(&mut c[0], checked, label, true))
+    // At least half the card wide (uniform), at most the full card (a long label
+    // stays on one line but never widens the card).
+    let avail = ui.available_width();
+    checkbox_ui(ui, checked, label.into(), avail * 0.5, avail)
 }
 
 /// Like [`checkbox_row`] but with a control (e.g. a combobox) in the right half,
@@ -218,7 +229,8 @@ pub fn checkbox_row_with(
 ) -> egui::Response {
     let label = label.into();
     ui.columns(2, |c| {
-        let resp = checkbox_ui(&mut c[0], checked, label, true);
+        let half = c[0].available_width();
+        let resp = checkbox_ui(&mut c[0], checked, label, half, half);
         right(&mut c[1]);
         resp
     })

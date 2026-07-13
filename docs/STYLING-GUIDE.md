@@ -99,8 +99,11 @@ never jumps between `50%` and `50.0%`.
 
 ### Checkbox rows
 
-Checkboxes in a category span the **left half** (not sized to their label), so a
-control to their right begins where a slider's rail would:
+Checkboxes in a category span **at least the left half** (so short ones read a
+uniform width, with a control beginning where a slider's rail would) but never wider
+than the card — a long label extends to fit on one line and only wraps if it would
+otherwise overflow. This clamp is what keeps a long checkbox (e.g. a "Test mode…"
+label) from dragging its card wider than the rest:
 
 ```rust
 theme::checkbox_row(ui, &mut flag, tr("Enabled"));                 // half-width checkbox
