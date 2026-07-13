@@ -1392,6 +1392,7 @@ impl eframe::App for ForzaApp {
                             let bar = ui.max_rect();
                             let spacing = ui.spacing().item_spacing.x;
                             // LEFT: wordmark + divider + current-page pill.
+                            ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new("Forza Telemetry V3")
                                     .color(crate::theme::ACCENT)
