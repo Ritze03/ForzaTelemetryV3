@@ -1736,6 +1736,13 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         pkt.normalized_suspension_travel_rr,
     ];
 
+    // "Invert values" (default on) shows suspension height — extension grows the
+    // bar upward — instead of the raw normalized travel (1.0 = fully compressed).
+    // Applied uniformly to the bar fill, the min/max reference lines and the
+    // Cur/Min/Max numeric rows so bars and numbers always agree.
+    let invert = app.config.suspension_invert;
+    let disp = |v: f32| if invert { 1.0 - v } else { v };
+
     widget_title(ui, app, tr("Suspension"));
     ui.add_space(4.0);
 
@@ -1782,7 +1789,7 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
         p.rect_filled(rect, 2.0, crate::theme::TRACK);
 
-        let c = cur.clamp(0.0, 1.0);
+        let c = disp(cur).clamp(0.0, 1.0);
         let fill = Rect::from_min_max(pos2(rect.left(), px(rect.bottom() - c * rect.height())), rect.max);
         let bar_color = if c < 0.33 { Color32::from_rgb(80, 120, 220) }
                         else if c < 0.66 { Color32::from_rgb(50, 200, 80) }
@@ -1790,20 +1797,48 @@ fn show_suspension_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         p.rect_filled(fill, 0.0, bar_color);
 
         let alpha = if susp.initialized { 255u8 } else { 80u8 };
-        let min_y = rect.bottom() - susp.min[i].clamp(0.0, 1.0) * rect.height();
-        let max_y = rect.bottom() - susp.max[i].clamp(0.0, 1.0) * rect.height();
+        let min_y = rect.bottom() - disp(susp.min[i]).clamp(0.0, 1.0) * rect.height();
+        let max_y = rect.bottom() - disp(susp.max[i]).clamp(0.0, 1.0) * rect.height();
         p.line_segment([pos2(rect.left(), min_y), pos2(rect.right(), min_y)],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(180, 80, 80, alpha)));
         p.line_segment([pos2(rect.left(), max_y), pos2(rect.right(), max_y)],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 180, 80, alpha)));
     }
 
+    // ── Left-column legend: which end of the bar is which ──────────
+    // A full bar reaches the top; label its meaning there. With invert on
+    // (default) a full bar = extension, so top = Extended / bottom = Compressed.
+    {
+        let lfid = egui::FontId::proportional(10.0);
+        // -FRAC_PI_2 = 90° CCW, so text reads bottom-to-top.
+        let angle = -std::f32::consts::FRAC_PI_2;
+        // Draw `text` rotated 90° CCW, centered inside `cell`.
+        let draw_rot = |text: &str, cell: Rect| {
+            let galley = p.layout_no_wrap(text.to_owned(), lfid.clone(), dim);
+            let sz = galley.size();
+            let pos = pos2(cell.center().x - sz.y * 0.5, cell.center().y + sz.x * 0.5);
+            p.add(egui::epaint::TextShape::new(pos, galley, dim).with_angle(angle));
+        };
+        let col = Rect::from_min_max(
+            pos2(origin.x, bar_top),
+            pos2(origin.x + label_w, bar_top + bar_h),
+        );
+        let (top, btm) = col.split_top_bottom_at_fraction(0.5);
+        let (top_lbl, btm_lbl) = if invert {
+            (tr("Extended"), tr("Compressed"))
+        } else {
+            (tr("Compressed"), tr("Extended"))
+        };
+        draw_rot(top_lbl, top);
+        draw_rot(btm_lbl, btm);
+    }
+
     // ── Text rows: Cur / Min / Max ─────────────────────────────────
     let text_top = bar_top + bar_h + gap_h;
     let rows: [(&str, Color32, [String; 4]); 3] = [
-        (tr("Cur"), dim,   travels.map(|v| format!("{:.2}", v))),
-        (tr("Min"), red,   std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.min[i]) } else { "0.00".into() })),
-        (tr("Max"), green, std::array::from_fn(|i| if susp.initialized { format!("{:.2}", susp.max[i]) } else { "0.00".into() })),
+        (tr("Cur"), dim,   travels.map(|v| format!("{:.2}", disp(v)))),
+        (tr("Min"), red,   std::array::from_fn(|i| if susp.initialized { format!("{:.2}", disp(susp.min[i])) } else { "0.00".into() })),
+        (tr("Max"), green, std::array::from_fn(|i| if susp.initialized { format!("{:.2}", disp(susp.max[i])) } else { "0.00".into() })),
     ];
     for (row_i, (lbl, color, vals)) in rows.iter().enumerate() {
         let cy = text_top + (row_i as f32 + 0.5) * text_h;

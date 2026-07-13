@@ -141,6 +141,13 @@ fn de(s: &str) -> Option<&'static str> {
             => "Tauscht Temperatur und Schlupf nur in den Balken; die Textzeilen bleiben unverändert.",
         "Both" => "Beides",
 
+        // ── Suspension ─────────────────────────────────────────────────
+        "Invert values" => "Werte invertieren",
+        "Show suspension height (extension up) instead of raw compression."
+            => "Zeigt die Federungshöhe (Ausfederung nach oben) statt der rohen Kompression.",
+        "Compressed" => "Komprimiert",
+        "Extended" => "Ausgefedert",
+
         // ── RPM / shift ────────────────────────────────────────────────
         "Max RPM:" => "Max. Drehzahl:",
         "Max RPM used for the RPM widget and shift indicator." =>

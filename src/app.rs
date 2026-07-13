@@ -364,6 +364,7 @@ pub enum DashboardSubTab {
     Rpm,
     SprintTimes,
     Tires,
+    Suspension,
     Shift,
     Engine,
     GForce,
@@ -1385,6 +1386,7 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Rpm,         "RPM"),
                                     (DashboardSubTab::SprintTimes, "Sprint"),
                                     (DashboardSubTab::Tires,       "Tires"),
+                                    (DashboardSubTab::Suspension,  "Suspension"),
                                     (DashboardSubTab::Shift,       "Shift"),
                                     (DashboardSubTab::Engine,      "Engine"),
                                     (DashboardSubTab::GForce,      "G-Force"),
@@ -1604,6 +1606,14 @@ impl eframe::App for ForzaApp {
                                             );
                                         }
                                     }
+                                }
+                                DashboardSubTab::Suspension => {
+                                    crate::theme::styled_checkbox(ui, &mut self.config.suspension_invert, tr("Invert values"));
+                                    ui.label(
+                                        egui::RichText::new(tr("Show suspension height (extension up) instead of raw compression."))
+                                            .size(11.0)
+                                            .color(egui::Color32::GRAY),
+                                    );
                                 }
                                 DashboardSubTab::Rpm => {
                                     ui.horizontal(|ui| {

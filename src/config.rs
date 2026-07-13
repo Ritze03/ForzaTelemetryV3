@@ -232,6 +232,7 @@ pub struct AppConfig {
     pub tire_display_style: TireDisplayStyle,
     pub tire_bar_value: TireBarValue, // what the Bars style shows in the bars
     pub tire_bar_swap: bool,          // Combined/Stacked: swap temp and slip in the bars
+    pub suspension_invert: bool,      // show suspension height (extension up) instead of raw compression
     // Shift indicator (global, % of engine_max_rpm)
     pub shift_low_pct: f32,
     pub shift_high_pct: f32,
@@ -366,6 +367,7 @@ impl Default for AppConfig {
             tire_display_style: TireDisplayStyle::Tires,
             tire_bar_value: TireBarValue::default(),
             tire_bar_swap: false,
+            suspension_invert: true,
             shift_low_pct: 85.0,
             shift_high_pct: 95.0,
             power_curve_forced_induction: true,
@@ -557,8 +559,8 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
     "power_graph_compact", "power_graph_show_boost", "power_graph_show_grid", "shift_high_pct", "shift_low_pct", "show_speed_delta",
-    "speed_align", "speed_delta_mode", "sprint_show_other", "sprint_type", "tire_bar_swap",
-    "tire_bar_value", "tire_display_style",
+    "speed_align", "speed_delta_mode", "sprint_show_other", "sprint_type", "suspension_invert",
+    "tire_bar_swap", "tire_bar_value", "tire_display_style",
 ];
 
 /// Serialize the dashboard layout as pretty JSON, optionally including mini-settings.
