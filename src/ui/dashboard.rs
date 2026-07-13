@@ -4,7 +4,7 @@ use std::time::Duration;
 use egui::{
     Align, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
-use egui_plot::{AxisHints, Bar, BarChart, HPlacement, Legend, Line, Plot, PlotPoint, PlotPoints, Text};
+use egui_plot::{AxisHints, Bar, BarChart, HPlacement, Legend, Line, Plot, PlotPoints};
 
 use crate::app::{
     DashboardDragState, DashboardResizeState, ForzaApp, GForceStats, ResizeEdge,
@@ -2542,7 +2542,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         // No captured data yet — keep the empty plot's axes at a sensible extent.
         plot = plot.include_y(100.0);
     }
-    plot.show(&mut plot_ui, |plot_ui| {
+    let resp = plot.show(&mut plot_ui, |plot_ui| {
         if !power_series.is_empty() {
             plot_ui.line(
                 Line::new(tr("Power (PS)"), PlotPoints::new(power_series))
@@ -2568,39 +2568,52 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
             );
         }
         if compact {
-            // Replace the legend with, per series: a thin vertical guide line at
-            // the peak's RPM, and the peak value drawn along the BOTTOM of the plot
-            // (anchored just above the bottom axis) so the three values sit in a row
-            // instead of stacking near the peaks and clipping at the top edge.
-            let mut annotate = |peak: Option<[f64; 2]>, color: Color32, label: String| {
+            // A thin vertical guide line at each series' peak RPM. The value labels are
+            // drawn afterwards in screen space (below) for pixel-precise placement and
+            // overlap avoidance.
+            let mut vline = |peak: Option<[f64; 2]>, color: Color32| {
                 if let Some([rpm, _]) = peak {
                     plot_ui.vline(egui_plot::VLine::new("", rpm).color(color).width(1.0));
-                    plot_ui.text(
-                        Text::new("", PlotPoint::new(rpm, 0.0), egui::RichText::new(label).size(10.0))
-                            .color(color)
-                            .anchor(egui::Align2::CENTER_BOTTOM),
-                    );
                 }
             };
-            annotate(
-                peak_power,
-                Color32::from_rgb(80, 160, 240),
-                peak_power.map(|[_, v]| format!("{:.0} PS", v)).unwrap_or_default(),
-            );
-            annotate(
-                peak_torque,
-                Color32::from_rgb(240, 140, 40),
-                peak_torque.map(|[_, v]| format!("{:.0} Nm", v)).unwrap_or_default(),
-            );
-            // Boost peak's y is the real value (bar/PSI) from series construction;
-            // the guide line and label use the real RPM and real boost value.
-            annotate(
-                peak_boost,
-                Color32::from_rgb(180, 80, 220),
-                peak_boost.map(|[_, v]| format!("{:.2}", v)).unwrap_or_default(),
-            );
+            vline(peak_power,  Color32::from_rgb(80, 160, 240));
+            vline(peak_torque, Color32::from_rgb(240, 140, 40));
+            vline(peak_boost,  Color32::from_rgb(180, 80, 220));
         }
     });
+
+    if compact {
+        // Peak value labels in screen space: to the RIGHT of each guide line, near the
+        // bottom, with the same gap to the line as to the bottom, colored like the line,
+        // and nudged up so overlapping labels don't collide.
+        let tf = &resp.transform;
+        let frame = *tf.frame();
+        let gap = 3.0_f32;
+        let font = egui::FontId::proportional(10.0);
+        let painter = plot_ui.painter().with_clip_rect(frame);
+        let mut labels: Vec<(f64, Color32, String)> = Vec::new();
+        if let Some([rpm, v]) = peak_power  { labels.push((rpm, Color32::from_rgb(80, 160, 240), format!("{:.0} PS", v))); }
+        if let Some([rpm, v]) = peak_torque { labels.push((rpm, Color32::from_rgb(240, 140, 40), format!("{:.0} Nm", v))); }
+        if let Some([rpm, v]) = peak_boost  { labels.push((rpm, Color32::from_rgb(180, 80, 220), format!("{:.2}", v))); }
+        labels.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut placed: Vec<egui::Rect> = Vec::new();
+        for (rpm, color, text) in labels {
+            let line_x = tf.position_from_point_x(rpm);
+            let galley = painter.layout_no_wrap(text, font.clone(), color);
+            let sz = galley.size();
+            // Right of the line by `gap`; flip to the left if it would overflow the edge.
+            let mut x = line_x + gap;
+            if x + sz.x > frame.right() { x = line_x - gap - sz.x; }
+            let mut y = frame.bottom() - gap - sz.y;
+            let mut rect = egui::Rect::from_min_size(pos2(x, y), sz);
+            while placed.iter().any(|r| r.intersects(rect.expand(1.0))) {
+                y -= sz.y + 2.0;
+                rect = egui::Rect::from_min_size(pos2(x, y), sz);
+            }
+            placed.push(rect);
+            painter.galley(pos2(x, y), galley, color);
+        }
+    }
 
     if compact {
         // Title painted over the plot's top-left corner (no vertical space cost).
