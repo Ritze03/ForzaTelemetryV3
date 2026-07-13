@@ -1284,6 +1284,10 @@ impl eframe::App for ForzaApp {
             .show(ctx, |ui| {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
+                    // Fixed row height so the bar is identical in normal and compact
+                    // mode (compact's 30px squares are taller than the text buttons);
+                    // the horizontal's Align::Center then vertically centers both.
+                    ui.set_min_height(30.0);
                     use crate::i18n::tr;
                     use crate::icons;
                     let compact = self.config.compact_tabs;
