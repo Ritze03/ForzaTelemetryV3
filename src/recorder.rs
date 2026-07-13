@@ -1,17 +1,13 @@
-//! Telemetry recording & replay. Record captures each received packet (re-serialized
-//! to the 324-byte wire form) with a millisecond timestamp; replay streams a saved file
-//! back over UDP to the app's own listen port, so the normal receive path handles it and
-//! the whole dashboard replays exactly as if the game were running.
+//! Telemetry recording. Record captures each received packet (re-serialized to the
+//! 324-byte wire form) with a millisecond timestamp; saved files can be exported to CSV
+//! for analysis.
 //!
 //! File format (`.ftr`): repeated `[u32 LE elapsed_ms][u16 LE len][len bytes]`.
 
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
-use std::net::UdpSocket;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn recordings_dir() -> PathBuf {
     crate::config::app_data_dir().join("recordings")
@@ -122,72 +118,6 @@ pub fn export_csv(ftr: &std::path::Path) -> Result<PathBuf, String> {
 pub fn delete_recording(ftr: &std::path::Path) {
     let _ = std::fs::remove_file(ftr);
     let _ = std::fs::remove_file(ftr.with_extension("csv"));
-}
-
-/// Handle to a running replay; dropping or calling `stop` ends it.
-pub struct ReplayHandle {
-    stop: Arc<AtomicBool>,
-}
-
-impl ReplayHandle {
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
-}
-
-impl Drop for ReplayHandle {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-/// Replay a recording by streaming its packets over UDP to `127.0.0.1:port`,
-/// honouring the recorded timing. Runs on a background thread.
-pub fn start_replay(path: PathBuf, port: u16, loop_replay: bool) -> std::io::Result<ReplayHandle> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_thread = stop.clone();
-    let data = {
-        let mut buf = Vec::new();
-        File::open(&path)?.read_to_end(&mut buf)?;
-        buf
-    };
-    let sock = UdpSocket::bind("0.0.0.0:0")?;
-    let dst = format!("127.0.0.1:{port}");
-
-    std::thread::spawn(move || {
-        loop {
-            let started = Instant::now();
-            let mut off = 0usize;
-            while off + 6 <= data.len() {
-                if stop_thread.load(Ordering::Relaxed) {
-                    return;
-                }
-                let ms = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
-                let len = u16::from_le_bytes(data[off + 4..off + 6].try_into().unwrap()) as usize;
-                off += 6;
-                if off + len > data.len() {
-                    break;
-                }
-                let packet = &data[off..off + len];
-                off += len;
-
-                // Wait until the recorded moment (cap sleeps so stop stays responsive).
-                let target = Duration::from_millis(ms as u64);
-                while started.elapsed() < target {
-                    if stop_thread.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(2).min(target - started.elapsed()));
-                }
-                let _ = sock.send_to(packet, &dst);
-            }
-            if !loop_replay || stop_thread.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-    });
-
-    Ok(ReplayHandle { stop })
 }
 
 #[cfg(test)]

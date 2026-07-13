@@ -81,6 +81,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Power Curve" => "Leistungskurve",
         "Engine Swaps" => "Motortausch",
         "Settings" => "Einstellungen",
+        "Setup" => "Setup",
         "What's New" => "Neuigkeiten",
         "New" => "Neu",
         "Fixes" => "Korrekturen",
@@ -655,21 +656,15 @@ fn de(s: &str) -> Option<&'static str> {
         "Distance" => "Distanz",
         "Car class" => "Fahrzeugklasse",
 
-        // ── Recording / replay ─────────────────────────────────────────
+        // ── Recording ──────────────────────────────────────────────────
         "Recording" => "Aufnahme",
         "Record" => "Aufnehmen",
         "Stop Recording" => "Aufnahme beenden",
         "Recording live telemetry to a file…" => "Nehme Live-Telemetrie in eine Datei auf…",
         "No recordings yet." => "Noch keine Aufnahmen.",
-        "Replay" => "Abspielen",
-        "Replaying" => "Wiedergabe",
-        "Replays into the app as if the game were live." =>
-            "Spielt in der App ab, als wäre das Spiel live.",
-        "Loop" => "Schleife",
         "Export CSV" => "CSV exportieren",
         "Saved" => "Gespeichert",
         "CSV export failed:" => "CSV-Export fehlgeschlagen:",
-        "Stop" => "Stopp",
 
         _ => return None,
     })

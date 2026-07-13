@@ -518,11 +518,9 @@ pub struct ForzaApp {
     pub coop_join_input: String,
     pub coop_copied_at: Option<Instant>,
 
-    // Recording / replay
+    // Recording
     pub recorder: Option<crate::recorder::RecordState>,
-    pub replay: Option<crate::recorder::ReplayHandle>,
     pub replay_selected: Option<usize>,
-    pub replay_loop: bool,
     pub csv_export_msg: Option<String>,
 
     receiver: Receiver<ForzaPacket>,
@@ -678,9 +676,7 @@ impl ForzaApp {
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
             recorder: None,
-            replay: None,
             replay_selected: None,
-            replay_loop: false,
             csv_export_msg: None,
             receiver,
             _network: network,
@@ -704,15 +700,6 @@ impl ForzaApp {
                 Ok(r) => self.recorder = Some(r),
                 Err(e) => eprintln!("recording failed to start: {e}"),
             }
-        }
-    }
-
-    /// Replay a recording file over UDP to our own listen port.
-    pub fn start_replay(&mut self, path: std::path::PathBuf) {
-        self.replay = None; // stop any in-progress replay first
-        match crate::recorder::start_replay(path, self.config.listen_port, self.replay_loop) {
-            Ok(h) => self.replay = Some(h),
-            Err(e) => eprintln!("replay failed to start: {e}"),
         }
     }
 
@@ -1259,13 +1246,15 @@ impl eframe::App for ForzaApp {
                         Tab::EngineSwaps,
                         format!("{}  {}", icons::WRENCH, tr("Engine Swaps")),
                     );
-                    ui.selectable_value(
-                        &mut self.current_tab,
-                        Tab::Settings,
-                        format!("{}  {}", icons::COG, tr("Settings")),
-                    );
-                    // RIGHT-bound "What's New" changelog button.
+                    // RIGHT-bound tabs. A right_to_left layout places items
+                    // right→left, so Setup is added first (rightmost) and
+                    // What's New lands to its left.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.selectable_value(
+                            &mut self.current_tab,
+                            Tab::Settings,
+                            format!("{}  {}", icons::COG, tr("Setup")),
+                        );
                         ui.selectable_value(
                             &mut self.current_tab,
                             Tab::Changelog,
@@ -1309,7 +1298,7 @@ impl eframe::App for ForzaApp {
                         );
                     }
 
-                    // Recording / replay indicators (visible from any tab)
+                    // Recording indicator (visible from any tab)
                     if let Some(rec) = self.recorder.as_ref() {
                         ui.separator();
                         let s = rec.elapsed().as_secs();
@@ -1322,13 +1311,6 @@ impl eframe::App for ForzaApp {
                                 s % 60,
                                 rec.packets
                             ),
-                        );
-                    }
-                    if self.replay.is_some() {
-                        ui.separator();
-                        ui.colored_label(
-                            crate::theme::ACCENT,
-                            format!("{}  {}", icons::LINE_CHART, tr("Replaying")),
                         );
                     }
 

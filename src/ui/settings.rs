@@ -4,8 +4,6 @@ use crate::app::ForzaApp;
 use crate::config::GameMode;
 use crate::i18n::{tr, Language};
 
-use crate::config::{PRESET_DATA, PRESET_NAMES};
-
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.columns(2, |cols| {
@@ -43,42 +41,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     ))
                     .size(11.0)
                     .color(Color32::GRAY),
-                );
-            });
-
-            left.add_space(8.0);
-
-            // ── Load Preset ───────────────────────────────────────────
-            left.group(|ui| {
-                ui.label(crate::theme::section_label(tr("Load Preset")));
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    let selected_label = app.pending_preset
-                        .map(|i| PRESET_NAMES[i])
-                        .unwrap_or(tr("— select —"));
-
-                    egui::ComboBox::from_id_salt("preset_combo")
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in PRESET_NAMES.iter().enumerate() {
-                                ui.selectable_value(&mut app.pending_preset, Some(i), *name);
-                            }
-                        });
-
-                    if ui.button(tr("Load Preset")).clicked() {
-                        if let Some(idx) = app.pending_preset {
-                            crate::config::apply_preset(&mut app.config, PRESET_DATA[idx]);
-                            app.pending_preset = None;
-                        }
-                    }
-                });
-
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new(tr("Applies dashboard layout only. Other settings unchanged."))
-                        .size(11.0)
-                        .color(Color32::GRAY),
                 );
             });
 
@@ -183,7 +145,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // ── RIGHT COLUMN ─────────────────────────────────────────
             let right = &mut cols[1];
 
-            // ── Recording / Replay ───────────────────────────────────
+            // ── Recording ────────────────────────────────────────────
             right.group(|ui| {
                 ui.label(crate::theme::section_label(tr("Recording")));
                 ui.add_space(4.0);
@@ -213,7 +175,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 if files.is_empty() {
                     ui.label(RichText::new(tr("No recordings yet.")).size(11.0).color(Color32::GRAY));
                 } else {
-                    let replaying = app.replay.is_some();
                     ui.horizontal(|ui| {
                         let sel = app.replay_selected.filter(|&i| i < files.len()).unwrap_or(0);
                         egui::ComboBox::from_id_salt("replay_file")
@@ -223,30 +184,31 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                                     ui.selectable_value(&mut app.replay_selected, Some(i), name.clone());
                                 }
                             });
-                        if replaying {
-                            if ui.add(crate::theme::danger_button(format!("{}  {}", crate::icons::STOP, tr("Stop")))).clicked() {
-                                app.replay = None;
-                            }
-                        } else if ui.add(crate::theme::primary_button(tr("Replay"))).clicked() {
-                            app.start_replay(files[sel].0.clone());
-                        }
-                        crate::theme::styled_checkbox(ui, &mut app.replay_loop, tr("Loop"));
                         if ui.add(crate::theme::secondary_button(tr("Export CSV"))).clicked() {
                             app.csv_export_msg = Some(match crate::recorder::export_csv(&files[sel].0) {
                                 Ok(p) => format!("{} {}", tr("Saved"), p.display()),
                                 Err(e) => format!("{} {e}", tr("CSV export failed:")),
                             });
                         }
-                        if !replaying
-                            && ui.add(crate::theme::danger_button(format!("{} ", crate::icons::TIMES))).clicked()
+                        if ui
+                            .add_sized(
+                                egui::vec2(24.0, 24.0),
+                                egui::Button::new(
+                                    RichText::new(crate::icons::TIMES).color(crate::theme::DANGER),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    Color32::from_rgba_unmultiplied(0xE1, 0x55, 0x54, 82),
+                                )),
+                            )
+                            .clicked()
                         {
                             crate::recorder::delete_recording(&files[sel].0);
                             app.replay_selected = None;
                             app.csv_export_msg = None;
                         }
                     });
-                    ui.label(RichText::new(tr("Replays into the app as if the game were live."))
-                        .size(11.0).color(Color32::GRAY));
                     if let Some(msg) = &app.csv_export_msg {
                         ui.label(RichText::new(msg).size(11.0).color(Color32::from_rgb(110, 190, 110)));
                     }
