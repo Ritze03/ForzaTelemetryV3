@@ -7,7 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.1.0] – 2026-07-13
 
 ### Added
-- **Card layout for Backfire & Automatic Gearbox**: both tabs now group their settings into bordered cards with blue section titles, matching the Co-Op tab.
+- **Consistent card layout**: Backfire, Automatic Gearbox, Co-Op, and the Power Curve titles now share the same bordered cards with blue section titles and a uniform 8px gap between them.
 - **Engine widget display modes**: choose Current, Max, or Both values per line in the mini-settings, and optionally show the engine type (Electric / cylinder count) underneath.
 - **Engine text auto-fit**: the readout scales to fit the widget in both width and height, so it stays readable when the widget is small.
 - **G-Force text toggle**: hide the text column so the plot fills the whole widget; when shown, the text scales to fit and the plot keeps priority.

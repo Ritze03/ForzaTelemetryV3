@@ -6,7 +6,7 @@ use crate::i18n::tr;
 
 pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     // Two columns (controls | live viz) with a fixed spacer between them.
-    const GAP: f32 = 12.0;
+    const GAP: f32 = 8.0;
     ui.spacing_mut().item_spacing.x = GAP; // ui.columns uses item_spacing.x as the inter-column gap
     ui.columns(2, |cols| {
     // ── Left column: controls ───────────────────────────────────────
@@ -15,15 +15,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
         .id_salt("gearbox_scroll")
         .show(&mut cols[0], |ui| {
             ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the column
-            ui.add_space(6.0);
+            ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
+            ui.add_space(8.0);
 
             let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;
 
             // ── General ──────────────────────────────────────────────────
-            ui.group(|ui| {
-                ui.label(crate::theme::section_label(tr("General")));
-                ui.add_space(4.0);
-
+            crate::theme::card(ui, tr("General"), |ui| {
                 hover(
                     crate::theme::styled_checkbox(ui, &mut app.config.dsg_enabled, tr("Enabled")),
                     tr("Lets the box send shift inputs. Stays hands-off until you do one full \
@@ -158,13 +156,8 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 }
             });
 
-            ui.add_space(6.0);
-
             // ── Advanced Settings ────────────────────────────────────────
-            ui.group(|ui| {
-                ui.label(crate::theme::section_label(tr("Advanced Settings")));
-                ui.add_space(4.0);
-
+            crate::theme::card(ui, tr("Advanced Settings"), |ui| {
                 if ui.button(tr("Reset settings")).clicked() {
                     app.config.reset_gearbox_numeric();
                     app.config.save();
@@ -299,8 +292,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Debug (only when enabled from the status-bar cog) ────────
             if app.config.dsg_show_debug_panel {
-                ui.add_space(6.0);
-                ui.group(|ui| {
+                crate::theme::card(ui, tr("Debug"), |ui| {
                     hover(
                         crate::theme::styled_checkbox(ui, &mut app.config.dsg_debug, tr("Debug")),
                         tr("Shows the live decision state (current/target gear, redline, active rule, \
@@ -615,8 +607,9 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
         .auto_shrink([false, false])
         .id_salt("gearbox_viz_scroll")
         .show(ui, |ui| {
-    ui.spacing_mut().item_spacing.y = 7.0;
+    ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     ui.spacing_mut().item_spacing.x = 8.0; // undo the inter-column gap inside the viz
+    ui.add_space(8.0);
 
     // ── State ──
     crate::theme::card(ui, tr("State"), |ui| {

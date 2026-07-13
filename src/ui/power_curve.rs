@@ -85,7 +85,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
     // ── Power & Torque chart ─────────────────────────────────────
     ui.group(|ui| {
-        ui.label(RichText::new(tr("Power & Torque vs RPM")).strong());
+        ui.label(crate::theme::section_label(tr("Power & Torque vs RPM")));
         let saved_power_series = saved_curve.map(|curve| curve.power_series.clone());
         let saved_torque_series = saved_curve.map(|curve| curve.torque_series.clone());
         let power_pts: PlotPoints = PlotPoints::new(app.power_capture.power_series.clone());
@@ -137,7 +137,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         ui.add_space(gap);
 
         ui.group(|ui| {
-            ui.label(RichText::new(tr("Boost vs RPM")).strong());
+            ui.label(crate::theme::section_label(tr("Boost vs RPM")));
             let use_bar = app.config.use_bar;
             let live_max_boost = app
                 .power_capture

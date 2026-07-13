@@ -96,11 +96,17 @@ pub fn section_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase()).color(ACCENT).size(12.0).strong()
 }
 
-/// A bordered card with a blue [`section_label`] title, followed by 8px of
-/// spacing — the Co-Op tab's category styling, reused across tabs.
+/// A bordered card with a blue [`section_label`] title, followed by a uniform
+/// 8px gap — the Co-Op tab's category styling, reused across tabs.
+///
+/// The 8px trailing space is the *only* inter-card gap, so callers must zero
+/// the container's vertical item spacing (`ui.spacing_mut().item_spacing.y = 0.0`)
+/// before stacking cards; otherwise egui adds its own spacing on top. The card
+/// sets its own inner spacing, independent of that outer zero.
 pub fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.group(|ui| {
         ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 4.0; // comfortable spacing inside the card
         ui.label(section_label(title));
         ui.add_space(4.0);
         body(ui);

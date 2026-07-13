@@ -34,10 +34,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
-    ui.group(|ui| {
-        ui.label(crate::theme::section_label(tr("Your Identity")));
-        ui.add_space(4.0);
-
+    ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
+    crate::theme::card(ui, tr("Your Identity"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr("Name:"));
             let resp = ui.add(
@@ -80,11 +78,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
         );
     });
 
-    ui.add_space(8.0);
-
-    ui.group(|ui| {
-        ui.label(crate::theme::section_label(tr("Pacing")));
-        ui.add_space(4.0);
+    crate::theme::card(ui, tr("Pacing"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr("Buffer:"));
             let resp = ui.add(
@@ -109,10 +103,8 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     use crate::icons;
-    ui.group(|ui| {
-        ui.label(crate::theme::section_label(tr("Session")));
-        ui.add_space(4.0);
-
+    ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
+    crate::theme::card(ui, tr("Session"), |ui| {
         // Status line
         let status = app.coop.status();
         if !status.is_empty() {
@@ -228,7 +220,6 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
         }
     });
 
-    ui.add_space(8.0);
     roster_panel(ui, app);
 }
 
@@ -265,14 +256,12 @@ fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {
 }
 
 fn roster_panel(ui: &mut Ui, app: &ForzaApp) {
-    ui.group(|ui| {
-        let roster = app.coop.roster();
-        ui.label(crate::theme::section_label(&format!("{} ({})", tr("Players"), roster.len())));
-        ui.add_space(4.0);
+    let roster = app.coop.roster();
+    let my_id = app.coop.my_id();
+    crate::theme::card(ui, &format!("{} ({})", tr("Players"), roster.len()), |ui| {
         if roster.is_empty() {
             ui.label(RichText::new(tr("No one here yet.")).color(Color32::GRAY));
         }
-        let my_id = app.coop.my_id();
         for p in roster {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
