@@ -76,7 +76,7 @@
       "kind": "GForce",
       "col": 8,
       "row": 2,
-      "col_span": 5,
+      "col_span": 4,
       "row_span": 3
     },
     {
@@ -109,9 +109,9 @@
     },
     {
       "kind": "PowerGraph",
-      "col": 13,
+      "col": 12,
       "row": 2,
-      "col_span": 14,
+      "col_span": 15,
       "row_span": 3
     },
     {
