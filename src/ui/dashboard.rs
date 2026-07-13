@@ -2641,7 +2641,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         }
     }
 
-    if compact {
+    if compact && !app.config.hide_widget_titles {
         // Title painted over the plot's top-left corner (no vertical space cost).
         let pos = plot_rect.min + vec2(4.0, 2.0);
         let galley = ui.painter().layout_no_wrap(
