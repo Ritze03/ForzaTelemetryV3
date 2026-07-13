@@ -681,10 +681,10 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     // Tighten the inter-row spacing BEFORE the title. egui bakes the gap that
     // follows a widget from item_spacing.y as read *when that widget is drawn*, so
     // setting it after the title (as before) never actually moved the legend — it
-    // stayed a full default row-gap below. Setting it first pulls the legend snug
-    // under the title to match the Boost widget's tight vertical-mode title→content
-    // gap. It stays in effect for the legend→graph gap too, unchanged from before.
-    ui.spacing_mut().item_spacing.y = 2.0;
+    // stayed a full default row-gap below. Zeroing it here pulls the legend right up
+    // under the title (matching the Boost widget); the legend→graph gap is then added
+    // back explicitly with an add_space after the legend.
+    ui.spacing_mut().item_spacing.y = 0.0;
     widget_title(ui, app, tr("Speed Trace"));
 
     let use_mph = app.config.use_mph;
@@ -696,6 +696,7 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         ui.label(RichText::new(format!("{speed_disp:.0} {unit}")).size(12.0).color(Color32::from_rgb(80, 200, 110)));
         ui.label(RichText::new(format!("{:.0} rpm", pkt.current_engine_rpm)).size(12.0).color(Color32::from_rgb(230, 160, 40)));
     });
+    ui.add_space(2.0); // small legend→graph gap (title→legend stays tight above)
 
     let full = ui.available_rect_before_wrap();
     ui.allocate_rect(full, egui::Sense::hover());
