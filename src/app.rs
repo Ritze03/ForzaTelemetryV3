@@ -1308,7 +1308,7 @@ impl eframe::App for ForzaApp {
         // the bar is pixel-identical whether labelled or icon-only.
         let mut tab_frame = egui::Frame::side_top_panel(&ctx.style()).fill(crate::theme::HEAD);
         tab_frame.inner_margin.top = 4;
-        tab_frame.inner_margin.bottom = 4;
+        tab_frame.inner_margin.bottom = 5; // +1 over the top to visually centre against the divider
         egui::TopBottomPanel::top("tab_bar")
             .frame(tab_frame)
             .show(ctx, |ui| {
