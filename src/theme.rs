@@ -128,20 +128,34 @@ pub fn styled_checkbox(
     checked: &mut bool,
     label: impl Into<String>,
 ) -> egui::Response {
+    checkbox_ui(ui, checked, label.into(), false)
+}
+
+fn checkbox_ui(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    label: String,
+    stretch: bool,
+) -> egui::Response {
     const BOX: f32 = 18.0;
     const GAP: f32 = 7.0;
     let on = *checked;
 
     let font = TextStyle::Body.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(label.into(), font, TEXT);
+    let galley = ui.painter().layout_no_wrap(label, font, TEXT);
     let gsize = galley.size();
-    let size = egui::vec2(BOX + GAP + gsize.x, BOX.max(gsize.y));
+    let content_w = BOX + GAP + gsize.x;
+    // In a category card the checkbox stretches to fill its (half-width) column so
+    // every checkbox reads the same width; standalone use stays content-sized.
+    let w = if stretch { ui.available_width().max(content_w) } else { content_w };
+    let size = egui::vec2(w, BOX.max(gsize.y));
     let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if resp.hovered() {
-            painter.rect_filled(rect.expand2(egui::vec2(4.0, 2.0)), CornerRadius::same(6), HOV);
+            let hov = if stretch { rect } else { rect.expand2(egui::vec2(4.0, 2.0)) };
+            painter.rect_filled(hov, CornerRadius::same(6), HOV);
         }
         let box_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left(), rect.center().y - BOX / 2.0),
@@ -184,6 +198,69 @@ pub fn styled_checkbox(
         resp.mark_changed();
     }
     resp
+}
+
+/// A half-width checkbox row for use inside a category card: the checkbox fills
+/// the left column so all checkboxes read the same width and a slider/control
+/// would begin at the midpoint. Returns the checkbox response.
+pub fn checkbox_row(ui: &mut egui::Ui, checked: &mut bool, label: impl Into<String>) -> egui::Response {
+    let label = label.into();
+    ui.columns(2, |c| checkbox_ui(&mut c[0], checked, label, true))
+}
+
+/// Like [`checkbox_row`] but with a control (e.g. a combobox) in the right half,
+/// aligned where a slider's rail would start. Returns the checkbox response.
+pub fn checkbox_row_with(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    label: impl Into<String>,
+    right: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    let label = label.into();
+    ui.columns(2, |c| {
+        let resp = checkbox_ui(&mut c[0], checked, label, true);
+        right(&mut c[1]);
+        resp
+    })
+}
+
+// ---- Settings rows -------------------------------------------------------
+
+/// Width reserved for a row's right-hand value spinner — fits the widest value
+/// ("100.0%"), so the spinner never grows and pushes the row as digits change.
+pub const VALUE_W: f32 = 72.0;
+
+/// A settings row in the "advanced" style shared across category cards: the
+/// label in the left half, a slider filling the right half with a fixed-width
+/// [`VALUE_W`] value spinner pinned to the far right. Returns the combined
+/// slider/spinner response (use `.changed()`).
+pub fn slider_row<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    step: f64,
+    decimals: usize,
+    suffix: &str,
+) -> egui::Response {
+    ui.columns(2, |c| {
+        c[0].label(label);
+        c[1].horizontal(|ui| {
+            let rail = (ui.available_width() - VALUE_W - ui.spacing().item_spacing.x).max(40.0);
+            ui.spacing_mut().slider_width = rail;
+            let s = ui.add(egui::Slider::new(&mut *value, range.clone()).step_by(step).show_value(false));
+            let d = ui.add_sized(
+                [VALUE_W, ui.spacing().interact_size.y],
+                egui::DragValue::new(&mut *value)
+                    .range(range)
+                    .speed(step.max(0.01))
+                    .fixed_decimals(decimals)
+                    .suffix(suffix),
+            );
+            s | d
+        })
+        .inner
+    })
 }
 
 // ---- Apply ---------------------------------------------------------------
