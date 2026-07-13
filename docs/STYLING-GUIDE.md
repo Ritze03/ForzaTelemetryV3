@@ -46,8 +46,17 @@ ui.columns(2, |cols| {
 });
 ```
 
-The Automatic Gearbox uses controls | live-view. Backfire keeps everything in the
-left column (right empty) so the controls don't stretch too wide.
+The Automatic Gearbox uses controls | live-view. A tab with only one column of
+controls (e.g. Backfire) should NOT reserve an empty second column — that leaves an
+ugly dead half. Instead cap the content width so it reads as a settings panel and
+still shrinks on a narrow window:
+
+```rust
+egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    ui.set_max_width(520.0); // comfortable settings width; fills when narrower
+    // cards…
+});
+```
 
 ## Control rows
 
@@ -71,6 +80,10 @@ The value spinner is always **`theme::VALUE_W` (72px)** wide — enough for the 
 value (`"100.0%"`). This is deliberate: a `DragValue` sizes to its text, so without a
 reserved width it grows and shoves the row sideways as the value gains a digit
 (e.g. `9.0%` → `100.0%`). Always reserve room for the **highest possible value**.
+
+The spinner is **pinned to the right** of the row and the slider fills whatever
+space is left (via a `right_to_left` layout), so as the window narrows the slider
+shrinks but the value spinner never clips.
 
 When you place a bare spinner yourself (not via `slider_row`), do the same:
 

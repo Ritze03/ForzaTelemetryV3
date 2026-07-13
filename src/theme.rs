@@ -246,18 +246,23 @@ pub fn slider_row<N: egui::emath::Numeric>(
     ui.columns(2, |c| {
         c[0].label(label);
         c[1].horizontal(|ui| {
-            let rail = (ui.available_width() - VALUE_W - ui.spacing().item_spacing.x).max(40.0);
-            ui.spacing_mut().slider_width = rail;
-            let s = ui.add(egui::Slider::new(&mut *value, range.clone()).step_by(step).show_value(false));
-            let d = ui.add_sized(
-                [VALUE_W, ui.spacing().interact_size.y],
-                egui::DragValue::new(&mut *value)
-                    .range(range)
-                    .speed(step.max(0.01))
-                    .fixed_decimals(decimals)
-                    .suffix(suffix),
-            );
-            s | d
+            // Pin the fixed-width spinner to the right and let the slider fill the
+            // rest, so the spinner is never the thing that clips when space is tight.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let d = ui.add_sized(
+                    [VALUE_W, ui.spacing().interact_size.y],
+                    egui::DragValue::new(&mut *value)
+                        .range(range.clone())
+                        .speed(step.max(0.01))
+                        .fixed_decimals(decimals)
+                        .suffix(suffix),
+                );
+                let rail = (ui.available_width() - 2.0).max(40.0);
+                ui.spacing_mut().slider_width = rail;
+                let s = ui.add(egui::Slider::new(&mut *value, range).step_by(step).show_value(false));
+                s | d
+            })
+            .inner
         })
         .inner
     })

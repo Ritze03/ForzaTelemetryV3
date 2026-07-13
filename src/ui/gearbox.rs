@@ -418,17 +418,21 @@ fn slider_row(
     ui.columns(2, |c| {
         hover(c[0].label(label), what, when);
         c[1].horizontal(|ui| {
-            let rail = (ui.available_width() - VALUE_W - ui.spacing().item_spacing.x).max(40.0);
-            ui.spacing_mut().slider_width = rail;
-            ui.add(egui::Slider::new(&mut *value, range.clone()).step_by(step).show_value(false));
-            ui.add_sized(
-                [VALUE_W, ui.spacing().interact_size.y],
-                egui::DragValue::new(&mut *value)
-                    .range(range)
-                    .speed(step.max(0.01))
-                    .fixed_decimals(decimals)
-                    .suffix(suffix),
-            );
+            // Pin the fixed-width spinner to the right and let the slider fill the
+            // rest, so the spinner is never the thing that clips when space is tight.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_sized(
+                    [VALUE_W, ui.spacing().interact_size.y],
+                    egui::DragValue::new(&mut *value)
+                        .range(range.clone())
+                        .speed(step.max(0.01))
+                        .fixed_decimals(decimals)
+                        .suffix(suffix),
+                );
+                let rail = (ui.available_width() - 2.0).max(40.0);
+                ui.spacing_mut().slider_width = rail;
+                ui.add(egui::Slider::new(&mut *value, range).step_by(step).show_value(false));
+            });
         });
     });
 }

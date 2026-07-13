@@ -4,14 +4,14 @@ use crate::app::ForzaApp;
 use crate::i18n::tr;
 
 pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
-    // Split into two halves like the Automatic Gearbox tab; for now everything
-    // lives in the left column, which keeps the controls from stretching wide.
-    ui.spacing_mut().item_spacing.x = 8.0; // ui.columns uses item_spacing.x as the inter-column gap
-    ui.columns(2, |cols| {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .id_salt("backfire_scroll")
-            .show(&mut cols[0], |ui| {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .id_salt("backfire_scroll")
+        .show(ui, |ui| {
+            // Keep the controls a comfortable settings width instead of stretching
+            // across the whole tab; on a narrow window it shrinks to fit.
+            ui.set_max_width(520.0);
+            {
                 ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
                 ui.add_space(8.0);
 
@@ -83,8 +83,6 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                     crate::theme::checkbox_row(ui, &mut app.config.backfire_disable_standstill, tr("Disable if standing still"));
                     crate::theme::checkbox_row(ui, &mut app.config.backfire_test_mode, tr("Test mode (ignores throttle/RPM conditions)"));
                 });
-            });
-        // Right column intentionally left empty for now.
-        let _ = &mut cols[1];
-    });
+            }
+        });
 }
