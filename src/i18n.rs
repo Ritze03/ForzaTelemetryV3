@@ -205,6 +205,10 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Backfire tab ───────────────────────────────────────────────
         "Triggers Backfire by spamming 'W'" => "Löst Fehlzündungen durch wiederholtes Drücken von „W“ aus",
+        "Activation" => "Aktivierung",
+        "RPM Range" => "Drehzahlbereich",
+        "Key Press" => "Tastendruck",
+        "Conditions" => "Bedingungen",
         "Enabled" => "Aktiviert",
         "Dynamic RPM" => "Dynamische Drehzahl",
         "Min:" => "Min:",
@@ -468,6 +472,13 @@ fn de(s: &str) -> Option<&'static str> {
         "When to adjust" => "Wann anpassen",
 
         // ── Gearbox tab: live viz ──────────────────────────────────────
+        "State" => "Zustand",
+        "Gear Map" => "Gangkarte",
+        "Accelerator" => "Gaspedal",
+        "each gear's speed range (downshift \u{2192} max)" =>
+            "Tempobereich jedes Gangs (Herunterschalten \u{2192} max)",
+        "gamma curve + selected gear at this speed" =>
+            "Gamma-Kurve + gewählter Gang bei diesem Tempo",
         "target" => "Ziel",
         "\u{25CF} ENGAGED" => "\u{25CF} EINGERÜCKT",
         "\u{25CB} idle \u{2014} rev 1st & shift" => "\u{25CB} bereit \u{2014} 1. ausdrehen & schalten",

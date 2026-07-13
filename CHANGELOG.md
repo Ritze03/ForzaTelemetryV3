@@ -7,6 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.1.0] – 2026-07-13
 
 ### Added
+- **Card layout for Backfire & Automatic Gearbox**: both tabs now group their settings into bordered cards with blue section titles, matching the Co-Op tab.
 - **Engine widget display modes**: choose Current, Max, or Both values per line in the mini-settings, and optionally show the engine type (Electric / cylinder count) underneath.
 - **Engine text auto-fit**: the readout scales to fit the widget in both width and height, so it stays readable when the widget is small.
 - **G-Force text toggle**: hide the text column so the plot fills the whole widget; when shown, the text scales to fit and the plot keeps priority.
@@ -29,6 +30,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
 
 ### Fixed
+- **Steady packet-rate readout**: the packets-per-second display in the status bar reserves a fixed width, so it no longer shifts sideways as the number gains or loses a digit.
 - **Consistent widget spacing**: uniform margins across the Boost, Speed Trace, Sprint, and RPM widgets so they line up when placed side by side.
 - **Engine layout**: value columns line up across lines, and the text is centred vertically in the widget instead of clinging to the top.
 - **Titles**: widget titles render consistently; the Power Graph compact title sits over the graph without stealing space, and "Hide widget titles" now covers it too.

@@ -96,6 +96,18 @@ pub fn section_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase()).color(ACCENT).size(12.0).strong()
 }
 
+/// A bordered card with a blue [`section_label`] title, followed by 8px of
+/// spacing — the Co-Op tab's category styling, reused across tabs.
+pub fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        ui.label(section_label(title));
+        ui.add_space(4.0);
+        body(ui);
+    });
+    ui.add_space(8.0);
+}
+
 // ---- Checkbox ------------------------------------------------------------
 
 /// Outline of an unchecked box — light enough to read on the panel.

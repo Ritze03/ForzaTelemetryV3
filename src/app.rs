@@ -1441,7 +1441,9 @@ impl eframe::App for ForzaApp {
                     };
                     ui.colored_label(color, label);
                     if self.telemetry.is_connected {
-                        ui.label(format!("  {:.0} pps", self.telemetry.packets_per_sec));
+                        // Right-align in a 3-wide field so the label doesn't shift
+                        // as the packet rate gains or loses a digit.
+                        ui.label(format!("  {:>3.0} pps", self.telemetry.packets_per_sec));
                     }
 
                     // Co-Op indicator (visible from any tab)

@@ -21,8 +21,8 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── General ──────────────────────────────────────────────────
             ui.group(|ui| {
-                ui.label(RichText::new(tr("General")).strong());
-                ui.add_space(2.0);
+                ui.label(crate::theme::section_label(tr("General")));
+                ui.add_space(4.0);
 
                 hover(
                     crate::theme::styled_checkbox(ui, &mut app.config.dsg_enabled, tr("Enabled")),
@@ -162,8 +162,8 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Advanced Settings ────────────────────────────────────────
             ui.group(|ui| {
-                ui.label(RichText::new(tr("Advanced Settings")).strong());
-                ui.add_space(2.0);
+                ui.label(crate::theme::section_label(tr("Advanced Settings")));
+                ui.add_space(4.0);
 
                 if ui.button(tr("Reset settings")).clicked() {
                     app.config.reset_gearbox_numeric();
@@ -611,98 +611,105 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
     // Cruise downshift point as a fraction of the shift point (mirrors dsg::CRUISE_HYSTERESIS = 0.10).
     let down0_frac = (cruise_frac - 0.10).max(0.0);
 
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .id_salt("gearbox_viz_scroll")
+        .show(ui, |ui| {
     ui.spacing_mut().item_spacing.y = 7.0;
     ui.spacing_mut().item_spacing.x = 8.0; // undo the inter-column gap inside the viz
 
-    // ── State header ──
-    ui.horizontal(|ui| {
-        let gs = match gear {
-            0 => "R".to_string(),
-            1..=9 => gear.to_string(),
-            _ => "N".to_string(),
-        };
-        ui.label(RichText::new(gs).monospace().size(44.0).strong().color(VIZ_GREEN));
-        ui.add_space(6.0);
-        ui.vertical(|ui| {
-            let tg = match desired {
-                1..=9 => desired.to_string(),
-                _ => "\u{2014}".to_string(),
+    // ── State ──
+    crate::theme::card(ui, tr("State"), |ui| {
+        ui.horizontal(|ui| {
+            let gs = match gear {
+                0 => "R".to_string(),
+                1..=9 => gear.to_string(),
+                _ => "N".to_string(),
             };
-            ui.label(RichText::new(format!("{} {tg}", tr("target"))).monospace().size(13.0).color(VIZ_DIM));
-            ui.label(
-                RichText::new(format!("{}  \u{00B7}  {}", mode.label(), tr(rule)))
-                    .monospace()
-                    .size(12.0)
-                    .color(VIZ_CYAN),
-            );
-            if app.dsg.engaged {
-                ui.label(RichText::new(tr("\u{25CF} ENGAGED")).monospace().size(11.0).color(VIZ_GREEN));
-            } else {
+            ui.label(RichText::new(gs).monospace().size(44.0).strong().color(VIZ_GREEN));
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                let tg = match desired {
+                    1..=9 => desired.to_string(),
+                    _ => "\u{2014}".to_string(),
+                };
+                ui.label(RichText::new(format!("{} {tg}", tr("target"))).monospace().size(13.0).color(VIZ_DIM));
                 ui.label(
-                    RichText::new(tr("\u{25CB} idle \u{2014} rev 1st & shift"))
+                    RichText::new(format!("{}  \u{00B7}  {}", mode.label(), tr(rule)))
                         .monospace()
-                        .size(11.0)
-                        .color(VIZ_DIM),
+                        .size(12.0)
+                        .color(VIZ_CYAN),
                 );
-            }
+                if app.dsg.engaged {
+                    ui.label(RichText::new(tr("\u{25CF} ENGAGED")).monospace().size(11.0).color(VIZ_GREEN));
+                } else {
+                    ui.label(
+                        RichText::new(tr("\u{25CB} idle \u{2014} rev 1st & shift"))
+                            .monospace()
+                            .size(11.0)
+                            .color(VIZ_DIM),
+                    );
+                }
+            });
         });
+        // RPM bar (current vs down / target / shift point)
+        viz_rpm_bar(ui, rpm, redline, down, target, shift);
     });
-
-    // ── RPM bar (current vs down / target / shift point) ──
-    viz_rpm_bar(ui, rpm, redline, down, target, shift);
 
     // ── Gear-range speed map (the key one) ──
-    ui.label(
-        RichText::new(tr("GEAR MAP \u{2014} each gear's speed range (downshift \u{2192} max)"))
-            .monospace()
-            .size(11.0)
-            .color(VIZ_DIM),
-    );
-    viz_gear_map(
-        ui,
-        &redlines,
-        shift_pct,
-        down0_frac,
-        is_race_mode,
-        app.config.dsg_race_gear_overlap_pct,
-        kmh,
-        gear,
-        desired,
-    );
+    crate::theme::card(ui, tr("Gear Map"), |ui| {
+        ui.label(
+            RichText::new(tr("each gear's speed range (downshift \u{2192} max)"))
+                .size(11.0)
+                .color(VIZ_DIM),
+        );
+        viz_gear_map(
+            ui,
+            &redlines,
+            shift_pct,
+            down0_frac,
+            is_race_mode,
+            app.config.dsg_race_gear_overlap_pct,
+            kmh,
+            gear,
+            desired,
+        );
+    });
 
     // ── Accelerator gamma curve + gear-selection overlay ──
-    ui.label(
-        RichText::new(tr("ACCEL \u{2192} GEAR \u{2014} gamma curve + selected gear at this speed"))
-            .monospace()
-            .size(11.0)
-            .color(VIZ_DIM),
-    );
-    // Square, filling the space: limited by the column width or the height remaining after the
-    // input bars + lamp row drawn below it (~74 px reserve).
-    let avail = ui.available_size();
-    let gsize = (avail.x.min(avail.y - 74.0)).max(120.0);
-    viz_gamma_gears(ui, app, gsize);
-
-    // ── Inputs (gamma'd throttle over raw ghost, brake) ──
-    viz_input_bar(ui, tr("THR"), eff_thr, accel, VIZ_GREEN);
-    viz_input_bar(ui, tr("BRK"), brake, brake, VIZ_RED);
-
-    // ── Indicator lamps ──
-    ui.horizontal(|ui| {
-        let lamp = |ui: &mut Ui, on: bool, label: &str, col: Color32| {
-            let c = if on { col } else { Color32::from_gray(60) };
-            ui.label(RichText::new(format!("\u{25CF} {label}")).monospace().size(11.0).color(c));
-        };
-        lamp(ui, app.dsg.dbg_wheelspin, tr("SPIN"), VIZ_RED);
-        lamp(ui, cooldown != 0.0, tr("KICK"), VIZ_AMBER);
-        if cooldown > 0.0 {
-            ui.label(RichText::new(format!("{cooldown:.1}s")).monospace().size(11.0).color(VIZ_AMBER));
-        } else if cooldown < 0.0 {
-            ui.label(RichText::new(tr("armed")).monospace().size(11.0).color(VIZ_AMBER));
-        }
-        let dsync = app.dsg.last_desync.map(|t| t.elapsed().as_secs_f32() < 1.5).unwrap_or(false);
-        lamp(ui, dsync, tr("DESYNC"), VIZ_RED);
+    crate::theme::card(ui, tr("Accelerator"), |ui| {
+        ui.label(
+            RichText::new(tr("gamma curve + selected gear at this speed"))
+                .size(11.0)
+                .color(VIZ_DIM),
+        );
+        // Square, capped so it stays a sensible size in a wide column.
+        let gsize = ui.available_width().min(360.0).max(120.0);
+        viz_gamma_gears(ui, app, gsize);
     });
+
+    // ── Inputs (gamma'd throttle over raw ghost, brake) + lamps ──
+    crate::theme::card(ui, tr("Inputs"), |ui| {
+        viz_input_bar(ui, tr("THR"), eff_thr, accel, VIZ_GREEN);
+        viz_input_bar(ui, tr("BRK"), brake, brake, VIZ_RED);
+
+        ui.horizontal(|ui| {
+            let lamp = |ui: &mut Ui, on: bool, label: &str, col: Color32| {
+                let c = if on { col } else { Color32::from_gray(60) };
+                ui.label(RichText::new(format!("\u{25CF} {label}")).monospace().size(11.0).color(c));
+            };
+            lamp(ui, app.dsg.dbg_wheelspin, tr("SPIN"), VIZ_RED);
+            lamp(ui, cooldown != 0.0, tr("KICK"), VIZ_AMBER);
+            if cooldown > 0.0 {
+                ui.label(RichText::new(format!("{cooldown:.1}s")).monospace().size(11.0).color(VIZ_AMBER));
+            } else if cooldown < 0.0 {
+                ui.label(RichText::new(tr("armed")).monospace().size(11.0).color(VIZ_AMBER));
+            }
+            let dsync = app.dsg.last_desync.map(|t| t.elapsed().as_secs_f32() < 1.5).unwrap_or(false);
+            lamp(ui, dsync, tr("DESYNC"), VIZ_RED);
+        });
+    });
+        });
 }
 
 fn viz_rpm_bar(ui: &mut Ui, rpm: f32, redline: f32, down: f32, target: f32, shift: f32) {
