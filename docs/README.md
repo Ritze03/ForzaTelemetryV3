@@ -25,7 +25,7 @@ The navigation reference — read these to move around the source efficiently.
 - [Automatic Gearbox](features/gearbox.md) — DSG-style auto-shifter with per-car calibration.
 - [Power Curve](features/power-curve.md) — live RPM vs power/torque, captured on full-throttle runs.
 - [Engine Swaps](features/engine-swaps.md) — display-only reference table from `engines.csv`.
-- [Recording & Replay](features/recording.md) — capture telemetry to a file, export CSV.
+- [Recording](features/recording.md) — capture telemetry to a file, export CSV (no in-app replay).
 - [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism and bundled presets.
 - [Settings](features/settings.md) — network, units, display, recording (the Settings tab).
 

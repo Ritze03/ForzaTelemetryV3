@@ -1,4 +1,4 @@
-# Recording & Replay
+# Recording
 
 Records every incoming telemetry packet to a file for later analysis, and exports a
 recording to CSV for a spreadsheet or pandas. There is **no in-app playback** — a
