@@ -37,6 +37,10 @@ The navigation reference — read these to move around the source efficiently.
 
 - [Styling Guide](ui/STYLING-GUIDE.md) — cards/categories, control rows, reserved spinner widths, the `theme::` helpers.
 
+## claude-instructions/ — mandatory rules for agents
+
+- [Sub-Agent Orchestration](claude-instructions/sub-agent-orchestration.md) — when to fan out sub-agents, how to partition edits, worktree isolation, model/effort selection, the 4-agent cap. Linked from the repo-root `CLAUDE.md`.
+
 ## meta/
 
 - [Terminology](meta/TERMINOLOGY.md) — project vocabulary. Keep it current as terms appear.
