@@ -40,8 +40,10 @@ The navigation reference — read these to move around the source efficiently.
 ## claude-instructions/ — mandatory rules for agents
 
 - [Sub-Agent Orchestration](claude-instructions/sub-agent-orchestration.md) — when to fan out sub-agents, how to partition edits, worktree isolation, model/effort selection, the 4-agent cap. Linked from the repo-root `CLAUDE.md`.
+- [Changelog Maintenance](claude-instructions/changelog.md) — how to keep the user-facing `CHANGELOG.md` current and when to bump the version.
 
 ## meta/
 
 - [Terminology](meta/TERMINOLOGY.md) — project vocabulary. Keep it current as terms appear.
+- [Project Notes](meta/project-notes.md) — cross-cutting domain facts (shift indicator, presets rule, FPS limiter) and what's deliberately not in V3.
 - [What's New](meta/whats-new.md) — the `unattended-testing` branch feature summary. (User-facing release notes are in the repo-root `CHANGELOG.md`.)

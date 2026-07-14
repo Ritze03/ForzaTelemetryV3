@@ -1,95 +1,38 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository.
+Guidance for Claude Code in this repository. Kept lean on purpose — the detail lives in
+`docs/`, and this file is the entry map. Follow the links below rather than grepping blind.
 
 ## Project overview
 
-**ForzaTelemetryV3** — a Rust desktop app that receives Forza Horizon 6 UDP telemetry and shows it in a live dashboard.
+**ForzaTelemetryV3** — a Rust desktop app that receives Forza Horizon 6 UDP telemetry and
+shows it in a live dashboard.
 
 - **Rust** / **Cargo**; GUI is **egui** (immediate-mode) via **eframe**.
-- Single dark "Graphite" theme in `src/theme.rs` — reference chrome colours by role token (`ACCENT`, `PANEL`, `TEXT_DIM`…), never hard-code hex at call sites. Semantic data colours (tyre temps, input bars) live at their call sites.
-- Settings-style UI (cards/"categories", control rows, reserved spinner widths) follows @docs/ui/STYLING-GUIDE.md — use the `theme::card` / `slider_row` / `checkbox_row` helpers so tabs stay consistent.
-- All user-facing strings go through `tr("...")` in `src/i18n.rs` (English source → German). Add the English key + German value there; duplicate keys warn at compile time.
-- Predecessors (FH4/FH5) are compiled JARs only under `old_versions/` — no source.
+- Single dark "Graphite" theme in `src/theme.rs` — reference chrome colours by role token
+  (`ACCENT`, `PANEL`, `TEXT_DIM`…), never hard-code hex at call sites. Semantic data colours
+  (tyre temps, input bars) live at their call sites. Styling rules: @docs/ui/STYLING-GUIDE.md.
+- All user-facing strings go through `tr("...")` in `src/i18n.rs` (English source → German).
+  Add the English key + German value there; duplicate keys warn at compile time.
 
-## Documentation
+## Where to look (read before grepping)
 
-Project docs live in `docs/`. **Read @docs/README.md first** — it's the table of
-contents describing what each subfolder holds (`architecture/`, `features/`,
-`protocol/`, `ui/`, `meta/`) and links to every page. When you need context beyond
-this file, start there rather than grepping blind — `architecture/overview.md` is
-the codebase navigation map.
+- **@docs/README.md** — the docs table of contents: what each subfolder (`architecture/`,
+  `features/`, `protocol/`, `ui/`, `meta/`, `claude-instructions/`) holds, with links to every page.
+- **@docs/architecture/overview.md** — the codebase navigation map: threading model, data
+  flow (UDP → parse → state → UI), full module map, and a "where to look for X" cheat-sheet.
+  **Start here to navigate the code.**
+- Packet / protocol wire format — @docs/protocol/forza-fh6-packet-format.md
+- Terminology (use these meanings, ask before acting on an undefined term, keep it current) —
+  @docs/meta/TERMINOLOGY.md
+- Per-tab feature behaviour — `docs/features/` (listed in the TOC)
+- Domain notes & project scope (shift indicator, presets rule, what's deliberately not in
+  V3) — @docs/meta/project-notes.md
 
-## Protocol
+## Mandatory working rules
 
-FH6 broadcasts a fixed **324-byte little-endian UDP packet** at the game's frame rate to a configured IP/port. One-way (the game only sends). Data flows **only while actively driving** — not in menus, pauses, or replays.
-
-- Configure in-game: **SETTINGS > HUD AND GAMEPLAY > Data Out** (toggle, IP, port).
-- **Avoid ports 5200–5300** — the game binds its own outgoing socket there. Localhost (127.0.0.1) works natively.
-- FH6-only fields vs Forza Motorsport: `CarGroup`, `SmashableVelDiff`, `SmashableMass` (after `NumCylinders`, before `PositionX`).
-- Full struct: @docs/protocol/forza-fh6-packet-format.md
-
-## Terminology
-
-Project vocabulary is defined in @docs/meta/TERMINOLOGY.md. Use those meanings, ask before acting on an undefined non-standard term, and keep that file updated as terms are introduced.
-
-## Code map
-
-- `src/packet.rs` — 324-byte packet parse/encode.
-- `src/network.rs`, `src/listeners/` — UDP receive + event-driven features: `backfire`, `dsg` (auto gearbox), `perf_test` (accel/decel timers), `power_capture`, `sprint_timer`.
-- `src/telemetry.rs` — connection state + packet rate. Session maxima and derived values are held on `ForzaApp`.
-- `src/input.rs` — synthetic keypress output (backfire / gearbox drive the game via keys).
-- `src/config.rs` — `AppConfig` (serialised to `config.json`), enums, and presets: `apply_preset` / `export_preset` / `import_preset` overlay a subset of keys (`LAYOUT_KEYS` + `MINISETTINGS_KEYS`) onto the live config.
-- `src/app.rs` — `ForzaApp`, the top tab bar, and the status-bar **cog "mini-settings" popup** (`page_settings_*`, `DashboardSubTab`) that tunes each dashboard widget.
-- `src/ui/` — one module per tab: `dashboard`, `backfire`, `gearbox`, `power_curve`, `engine_swaps`, `coop`, `settings`.
-- `src/coop.rs` — Co-Op WebSocket relay over a cloudflared quick tunnel.
-- `src/recorder.rs` — packet recording to CSV. `src/engines.rs` — `engines.csv` loader. `src/labels.rs`, `src/icons.rs` — chrome.
-- `assets/configs/*.json` — bundled dashboard presets (Ale, Ritze).
-
-Note: `src/ui/acceleration.rs` and `deceleration.rs` are orphaned (not in `ui/mod.rs`, not compiled).
-
-## Tabs (`Tab` in `app.rs`)
-
-- **Dashboard** — a resizable grid of draggable widgets (RPM, speed, gear, inputs, tyres, suspension, G-force, engine, car, race/sprint, boost, power/boost graphs, minimap, co-op players, speed trace, position). Edit mode toggles drag/resize; each widget has options under the cog popup's dashboard sub-tabs.
-- **Backfire** — synthetic anti-lag / throttle-blip effect.
-- **Automatic Gearbox** — DSG-style auto-shifter with Street/Sport/Race tuning and per-car calibration.
-- **Power Curve** — live RPM vs Power/Torque, boost bar chart; captured during full-throttle runs.
-- **Engine Swaps** — display-only reference table from `engines.csv` (no automation).
-- **Co-Op** — host/join a session via cloudflared tunnel; remote players drawn on the minimap.
-- **Settings** — listen port, units, language, FPS limit, presets, connection status, packet rate.
-
-## Domain notes
-
-- **Shift indicator** uses *measured* max RPM (not `EngineMaxRpm`, which is a display limit); calibrated per car. Defaults: 91% low warning / 99% shift.
-- **Presets / mini-settings**: a preset is a subset of `AppConfig`. A new mini-setting that should travel with export/presets must be added to `MINISETTINGS_KEYS` in `config.rs`.
-- **FPS limiter** renders independently of packet rate.
-- MiniMap and Co-Op have deeper design notes in the auto-memory index.
-
-## Not in V3
-
-- Data relay to another IP/port; loopback companion app / .bat scripts (localhost works natively); Android APK web server; Imgur screenshot upload.
-
-## Changelog
-
-`CHANGELOG.md` in the **project root** is the user-facing "What's New" — shown in-app
-via the top-right button on the tab bar (`src/ui/changelog.rs`). It is for users to see
-what changed, so write entries in plain user-facing language, not implementation detail.
-
-- **Maintain it as you work.** Whenever you make a user-facing change, add a bullet under
-  the right heading in the top `## [version]` section. Format is strict because the viewer
-  parses it: `## [x.y.z] – YYYY-MM-DD` version headers, `### Added` / `### Fixed` /
-  `### Removed` / `### Info` category subheads, and `- **Short title**: one-line detail`
-  bullets. Keep to that shape.
-- **You decide when to bump the version.** Roll the accumulated entries into a fresh
-  `## [x.y.z] – YYYY-MM-DD` section at a natural stopping point (a batch of features, a fix
-  milestone) and bump `version` in `Cargo.toml` to match. Purely internal refactors don't
-  need a changelog entry or a version bump.
-
-## Sub-Agent Orchestration
-
-**This repo uses parallel sub-agents by default. The full rules — when to fan out,
-how to partition edits, worktree isolation, model/effort selection, the 4-agent
-cap — are mandatory and live in @docs/claude-instructions/sub-agent-orchestration.md.
-Read that file before dispatching any sub-agent work.**
-
-
+- **Sub-agent orchestration** — when/how to fan out, partition edits, worktree isolation,
+  model/effort selection, the 4-agent cap: @docs/claude-instructions/sub-agent-orchestration.md.
+  Read it before dispatching any sub-agent work.
+- **Changelog** — keep the user-facing `CHANGELOG.md` current as you make user-facing changes:
+  @docs/claude-instructions/changelog.md.
