@@ -8,7 +8,7 @@ Guidance for Claude Code when working in this repository.
 
 - **Rust** / **Cargo**; GUI is **egui** (immediate-mode) via **eframe**.
 - Single dark "Graphite" theme in `src/theme.rs` — reference chrome colours by role token (`ACCENT`, `PANEL`, `TEXT_DIM`…), never hard-code hex at call sites. Semantic data colours (tyre temps, input bars) live at their call sites.
-- Settings-style UI (cards/"categories", control rows, reserved spinner widths) follows @docs/STYLING-GUIDE.md — use the `theme::card` / `slider_row` / `checkbox_row` helpers so tabs stay consistent.
+- Settings-style UI (cards/"categories", control rows, reserved spinner widths) follows @docs/ui/STYLING-GUIDE.md — use the `theme::card` / `slider_row` / `checkbox_row` helpers so tabs stay consistent.
 - All user-facing strings go through `tr("...")` in `src/i18n.rs` (English source → German). Add the English key + German value there; duplicate keys warn at compile time.
 - Predecessors (FH4/FH5) are compiled JARs only under `old_versions/` — no source.
 
@@ -19,11 +19,11 @@ FH6 broadcasts a fixed **324-byte little-endian UDP packet** at the game's frame
 - Configure in-game: **SETTINGS > HUD AND GAMEPLAY > Data Out** (toggle, IP, port).
 - **Avoid ports 5200–5300** — the game binds its own outgoing socket there. Localhost (127.0.0.1) works natively.
 - FH6-only fields vs Forza Motorsport: `CarGroup`, `SmashableVelDiff`, `SmashableMass` (after `NumCylinders`, before `PositionX`).
-- Full struct: @docs/forza-fh6-packet-format.md
+- Full struct: @docs/protocol/forza-fh6-packet-format.md
 
 ## Terminology
 
-Project vocabulary is defined in @docs/TERMINOLOGY.md. Use those meanings, ask before acting on an undefined non-standard term, and keep that file updated as terms are introduced.
+Project vocabulary is defined in @docs/meta/TERMINOLOGY.md. Use those meanings, ask before acting on an undefined non-standard term, and keep that file updated as terms are introduced.
 
 ## Code map
 
@@ -212,3 +212,5 @@ seemingly simple but sensitive task).
 - **"Ultracode" is a mode, not a model.** It refers to multi-agent workflow
   orchestration. The actual selectable sub-agent models are Sonnet / Opus /
   Haiku; read "Ultracode, XHigh" as "use a workflow and/or the highest effort."
+
+

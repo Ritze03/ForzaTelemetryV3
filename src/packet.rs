@@ -1,7 +1,7 @@
 use std::io::{Cursor, Read};
 
 /// FH6 telemetry packet — 323 meaningful bytes (game sends ~324, trailing byte ignored).
-/// See docs/forza-fh6-packet-format.md for the full field reference.
+/// See docs/protocol/forza-fh6-packet-format.md for the full field reference.
 #[derive(Debug, Clone, Default)]
 pub struct ForzaPacket {
     pub is_race_on: i32,

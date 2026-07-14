@@ -8,12 +8,12 @@ Graphite theme.*
 
 A summary of everything added on this branch. Built and screenshot-verified end
 to end (co-op tested over both LAN and a real trycloudflare tunnel, with 2 and 3
-players; recording verified by capturing a run and replaying it with the live
-feed off). No game required — a synthetic packet sender (`tools/sim.py`) drives it.
+players; recording verified by capturing a run and exporting it to CSV). No game
+required — a synthetic packet sender (`tools/sim.py`) drives it.
 
 ## 1. Co-Op — shared telemetry (highest priority)
 
-See **docs/coop.md** for full usage. In short:
+See **[[coop]]** (docs/features/coop.md) for full usage. In short:
 
 - **Host** starts a local WebSocket relay and a cloudflared quick tunnel; shares
   a short **word-code** (e.g. `blue-fox-rapid-owl`) — copy button + selectable,
@@ -50,14 +50,17 @@ Modules sub-tab):
 
 Plus the G-force meter gained a fading **traction-circle trail**.
 
-## 4. Telemetry recording & replay
+## 4. Telemetry recording
 
 In **Settings → Recording**:
 
-- **Record** live telemetry to `recordings/*.ftr` (status-bar REC indicator).
-- **Replay** a file — it streams back over UDP so the whole dashboard plays as if
-  live (with a **Loop** option).
-- **Export CSV** — 24 fields per packet, for analysis in a spreadsheet / pandas.
+- **Record** live telemetry to a file (status-bar REC indicator).
+- **Export CSV** — a saved recording exported to CSV for analysis in a spreadsheet
+  / pandas.
+- **Delete** a recording you no longer need.
+
+(There is no in-app playback — recordings are for export/analysis. See
+[[recording]] for details.)
 
 ## Hotkeys
 

@@ -10,7 +10,7 @@ never hard-code hex at call sites.
 ## Categories (cards)
 
 A **category** is a bordered card with a blue uppercase title that groups related
-controls (see @docs/TERMINOLOGY.md). Render one with:
+controls (see @docs/meta/TERMINOLOGY.md). Render one with:
 
 ```rust
 crate::theme::card(ui, tr("RPM Range"), |ui| {
