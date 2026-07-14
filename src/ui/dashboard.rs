@@ -17,17 +17,74 @@ use crate::packet::ForzaPacket;
 
 const RESIZE_STRIP: f32 = 8.0;
 
-pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    let Some(pkt) = app.telemetry.latest.clone() else {
-        ui.centered_and_justified(|ui| {
+/// Placeholder shown until the first packet arrives: how to switch Data Out on,
+/// and the exact values to enter. `listen_port` is the app's configured port.
+fn show_waiting_screen(ui: &mut Ui, listen_port: u16) {
+    use crate::theme;
+    ui.vertical_centered(|ui| {
+        ui.add_space((ui.available_height() * 0.24).max(24.0));
+
+        ui.label(
+            RichText::new(tr("Waiting for telemetry…"))
+                .size(26.0)
+                .strong()
+                .color(theme::TEXT),
+        );
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new(tr("Enable Data Out in Forza — scroll all the way down:"))
+                .size(15.0)
+                .color(theme::DIM),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(tr("SETTINGS → HUD AND GAMEPLAY → DATA OUT"))
+                .size(14.0)
+                .strong()
+                .color(theme::ACCENT),
+        );
+        ui.add_space(18.0);
+
+        // Compact card listing the exact values to enter.
+        let card_w = 340.0_f32.min((ui.available_width() - 32.0).max(200.0));
+        ui.allocate_ui_with_layout(vec2(card_w, 0.0), Layout::top_down(Align::Min), |ui| {
+            egui::Frame::new()
+                .fill(theme::PANEL)
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .inner_margin(egui::Margin::symmetric(18, 14))
+                .corner_radius(8.0)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    waiting_row(ui, "Data Out", "On");
+                    ui.add_space(9.0);
+                    waiting_row(ui, "Data Out IP Address", "127.0.0.1");
+                    ui.add_space(9.0);
+                    waiting_row(ui, "Data Out IP Port", &listen_port.to_string());
+                });
+        });
+    });
+}
+
+/// One "in-game setting = value" row inside the waiting-screen card.
+fn waiting_row(ui: &mut Ui, key: &str, value: &str) {
+    use crate::theme;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(key).size(14.0).color(theme::DIM));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
-                RichText::new(tr(
-                    "Waiting for telemetry…\n\nEnable Data Out in Forza:\nSETTINGS → HUD AND GAMEPLAY → Data Out",
-                ))
-                .size(18.0)
-                .color(crate::theme::TEXT_DIM),
+                RichText::new(value)
+                    .size(14.0)
+                    .strong()
+                    .monospace()
+                    .color(theme::GOOD),
             );
         });
+    });
+}
+
+pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
+    let Some(pkt) = app.telemetry.latest.clone() else {
+        show_waiting_screen(ui, app.config.listen_port);
         return;
     };
 

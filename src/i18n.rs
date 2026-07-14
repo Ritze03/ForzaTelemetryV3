@@ -254,8 +254,11 @@ fn de(s: &str) -> Option<&'static str> {
         "Saved Boost" => "Gespeicherter Ladedruck",
 
         // ── Dashboard widgets ──────────────────────────────────────────
-        "Waiting for telemetry…\n\nEnable Data Out in Forza:\nSETTINGS → HUD AND GAMEPLAY → Data Out" =>
-            "Warte auf Telemetrie…\n\nData Out in Forza aktivieren:\nEINSTELLUNGEN → HUD UND GAMEPLAY → Data Out",
+        "Waiting for telemetry…" => "Warte auf Telemetrie…",
+        "Enable Data Out in Forza — scroll all the way down:" =>
+            "Data Out in Forza aktivieren — ganz nach unten scrollen:",
+        "SETTINGS → HUD AND GAMEPLAY → DATA OUT" =>
+            "EINSTELLUNGEN → HUD UND GAMEPLAY → DATA OUT",
         "Accel" => "Gas",
         "Brake" => "Bremse",
         "Clutch" => "Kupplung",
