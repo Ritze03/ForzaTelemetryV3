@@ -157,7 +157,9 @@ fn checkbox_ui(
     };
     let stretched = max_w.is_finite();
     let gsize = galley.size();
-    let size = egui::vec2(w, BOX.max(gsize.y));
+    // Occupy the standard control row height so a checkbox lines up with sliders /
+    // comboboxes sharing its row (the box + label stay centered within it).
+    let size = egui::vec2(w, ui.spacing().interact_size.y.max(BOX).max(gsize.y));
     let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
@@ -242,6 +244,31 @@ pub fn checkbox_row_with(
 /// ("100.0%"), so the spinner never grows and pushes the row as digits change.
 pub const VALUE_W: f32 = 72.0;
 
+/// A left-column row label, laid out to line up with the control in the right
+/// column of a two-`columns` settings row. Returns the label response (for
+/// hover tooltips).
+///
+/// Why not a plain `ui.label`: `ui.columns` top-aligns each column, so a bare
+/// label sits at the row's top edge while the control beside it (a slider /
+/// combobox / spinner, ~`interact_size.y` tall) is vertically centered — the
+/// label then reads as floating above the control. This allocates the label a
+/// row of the standard control height and vertically centers it, so the two
+/// line up. `left_to_right` (not the columns' justified layout) also stops a
+/// wrapping label from spreading its letters across the line.
+///
+/// ponytail: fixed height = one control row; a label long enough to wrap to two
+/// lines overflows downward. Fine for the short settings labels in use; give it
+/// its own min-height growth if multi-line labels ever appear.
+pub fn row_label(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let h = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), h),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| ui.add(egui::Label::new(label).wrap()),
+    )
+    .inner
+}
+
 /// A settings row in the "advanced" style shared across category cards: the
 /// label in the left half, a slider filling the right half with a fixed-width
 /// [`VALUE_W`] value spinner pinned to the far right. Returns the combined
@@ -256,9 +283,7 @@ pub fn slider_row<N: egui::emath::Numeric>(
     suffix: &str,
 ) -> egui::Response {
     ui.columns(2, |c| {
-        // ui.columns uses a justified layout, which spreads a wrapping label's
-        // letters across the line; render it in a plain top-down layout instead.
-        c[0].with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| ui.label(label));
+        row_label(&mut c[0], label);
         c[1].horizontal(|ui| {
             // Pin the fixed-width spinner to the right and let the slider fill the
             // rest, so the spinner is never the thing that clips when space is tight.

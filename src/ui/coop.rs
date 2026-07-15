@@ -40,7 +40,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
         // Colour: label | slider + a swatch preview pinned to the right (where a
         // value spinner sits on other rows).
         let changed = ui.columns(2, |c| {
-            c[0].label(tr("Color"));
+            crate::theme::row_label(&mut c[0], tr("Color"));
             c[1].horizontal(|ui| {
                 const SW: f32 = 22.0;
                 let rail = (ui.available_width() - SW - ui.spacing().item_spacing.x).max(40.0);

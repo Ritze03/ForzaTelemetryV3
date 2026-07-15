@@ -117,15 +117,37 @@ Both return the checkbox response (wrap in a tooltip `hover(...)` if needed).
 `theme::styled_checkbox` (content-sized) is still used for the cog **Mini-Settings**
 popup, which is not a category.
 
-> **Gotcha:** `ui.columns` lays each column out with a *justified* layout, which
-> spreads a wrapping label's letters across the line. Render row labels in a plain
-> `Layout::top_down(Align::LEFT)` sub-layout so a long label wraps normally.
+### Row labels — use `theme::row_label`
+
+Draw the left-column label of a two-column row with **`theme::row_label(ui, label)`**,
+not a bare `ui.label`:
+
+```rust
+ui.columns(2, |c| {
+    theme::row_label(&mut c[0], tr("Color"));   // vertically centred, no letter-spread
+    c[1].horizontal(|ui| { /* slider / combobox / spinner */ });
+});
+```
+
+It solves two `ui.columns` gotchas at once:
+
+- **Vertical alignment.** `ui.columns` top-aligns each column, so a bare label sits at
+  the row's top edge while the taller control beside it (~`interact_size.y`) is
+  centred — the label then floats above the control. `row_label` allocates the label a
+  row of the standard control height and centres it, so the two line up. This is why
+  every label + control row (and `styled_checkbox`, which now also occupies the standard
+  control height) reads as one horizontal band.
+- **Letter-spreading.** `ui.columns`' *justified* layout spreads a wrapping label's
+  letters across the line; `row_label`'s `left_to_right` sub-layout wraps normally.
+
+`slider_row` / `setting_row` and the gearbox tuning rows all build their label through
+`row_label`, so fixing alignment is a one-place change, not a per-row edit.
 
 ### Comboboxes / other controls
 
 For a plain label + control row, mirror `slider_row`'s split: `ui.columns(2, …)` with
-the label in the left half (vertically centred against the control) and the control
-filling the right half via `.width(ui.available_width())`.
+`theme::row_label` in the left half and the control filling the right half via
+`.width(ui.available_width())`.
 
 ## Right-bound value preview
 
