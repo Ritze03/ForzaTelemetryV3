@@ -64,6 +64,9 @@ Available widget kinds (`WidgetKind` in `src/config.rs`), rendered by
   and max RPM recorded so far this session.
 - **Power Graph** — live RPM vs Power/Torque plot (falls back to the last saved
   Power Curve capture when no run is in progress), with an optional boost line.
+  Its Dashboard → **Graphs** mini-settings carry the widget's own toggles (Show
+  Boost / Compact / Show grid) plus the full [[power-curve]] tab's capture options
+  (RPM step size, forced-induction detection, save-FI-state) — they share config.
 - **Boost Graph** — RPM vs boost bar chart from the same capture data.
 
 ## Enabling / disabling widgets

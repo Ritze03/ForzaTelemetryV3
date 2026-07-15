@@ -2,7 +2,46 @@ use egui::{Color32, RichText, Ui};
 use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints};
 
 use crate::app::ForzaApp;
+use crate::config::AppConfig;
 use crate::i18n::tr;
+
+/// The Power Graph's capture options (RPM step, forced-induction detection, save-FI-state).
+/// Shared verbatim by the full Power Graph tab's mini-settings and the dashboard Power Graph
+/// widget's — both read the same `power_curve_*` config fields, so one control set drives both.
+pub fn options_ui(ui: &mut Ui, config: &mut AppConfig) {
+    ui.horizontal(|ui| {
+        ui.label(tr("RPM step size:"));
+        ui.add(
+            egui::Slider::new(&mut config.power_curve_step, 25.0..=500.0)
+                .step_by(25.0)
+                .suffix(" rpm"),
+        );
+    });
+    ui.add_space(8.0);
+    crate::theme::styled_checkbox(ui, &mut config.power_curve_forced_induction, tr("Forced induction detection"));
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(tr(
+            "ON: hide boost graph if no positive pressure was captured.\n\
+             OFF: always show the boost graph.",
+        ))
+        .size(11.0)
+        .color(Color32::GRAY),
+    );
+    if config.power_curve_forced_induction {
+        ui.add_space(8.0);
+        crate::theme::styled_checkbox(ui, &mut config.power_curve_save_fi_state, tr("Save Forced Induction State"));
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(tr(
+                "Keep the boost graph visible after clearing data,\n\
+                 if FI was detected at least once for this car.",
+            ))
+            .size(11.0)
+            .color(Color32::GRAY),
+        );
+    }
+}
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     // Controls row

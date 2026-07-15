@@ -92,7 +92,6 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Page-settings tabs / sub-tabs ──────────────────────────────
         "Gearbox" => "Getriebe",
-        "Power" => "Leistung",
         "Engines" => "Motoren",
         "General" => "Allgemein",
         "Modules" => "Module",

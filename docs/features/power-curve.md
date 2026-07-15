@@ -38,7 +38,10 @@ turbo's spool point.
 
 ## Options
 
-Set from the tab's cog / mini-settings popup (`Tab::PowerCurve`):
+Set from the tab's cog / mini-settings popup (`Tab::PowerCurve`, labelled **Power Graph**).
+The same three options also appear under Dashboard → **Graphs** in the dashboard's
+mini-settings, since they drive the same `power_curve_*` config fields the dashboard
+Power Graph widget reads — one control set, rendered by `power_curve::options_ui`:
 
 - **RPM step size** — bucket width for the boost bar chart, 25–500 RPM (default 100).
 - **Forced induction detection** — when ON, the boost graph is hidden until positive

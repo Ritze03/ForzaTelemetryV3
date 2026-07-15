@@ -7,6 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.1.0] – 2026-07-13
 
 ### Added
+- **Power Graph widget options**: the dashboard Power Graph widget's mini-settings (Dashboard → Graphs) now expose the full Power Graph tab's capture options too — RPM step size, forced-induction detection, and save-FI-state — so you can tune the widget without opening the Power Graph tab. The mini-settings tab is also renamed from "Power" to "Power Graph".
 - **Clearer "waiting for telemetry" screen**: while no data is coming in, the dashboard now spells out the exact Data Out settings to enter in Forza — reminds you to scroll all the way down, and shows Data Out = On, IP Address = 127.0.0.1, and the Port to match your app's listen port — in a tidy card.
 - **Consistent card layout**: Backfire, Automatic Gearbox, Co-Op, and the Power Curve titles now share the same bordered cards with blue section titles and a uniform 8px gap between them. Backfire now uses the Gearbox's two-column control rows (label + slider + value) in a left-aligned column, and checkboxes in these cards share one fixed width.
 - **Co-Op tidy-up**: the connection status now sits inside the Session card, the name and join-code fields fill the available width, and the colour swatch moved to the right of the hue slider.

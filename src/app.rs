@@ -1537,7 +1537,7 @@ impl eframe::App for ForzaApp {
                             (Tab::Dashboard,    "Dashboard"),
                             (Tab::Backfire,     "Backfire"),
                             (Tab::Gearbox,      "Gearbox"),
-                            (Tab::PowerCurve,   "Power"),
+                            (Tab::PowerCurve,   "Power Graph"),
                             (Tab::EngineSwaps,  "Engines"),
                         ] {
                             ui.selectable_value(&mut self.page_settings_tab, PageSettingsTab::Tab(tab), tr(lbl));
@@ -1931,6 +1931,9 @@ impl eframe::App for ForzaApp {
                                     ui.label(egui::RichText::new(tr("Compact style for small cells: hides title, legend and axes; peaks labelled inside the plot.")).size(11.0).color(egui::Color32::GRAY));
                                     ui.add_space(6.0);
                                     crate::theme::styled_checkbox(ui, &mut self.config.power_graph_show_grid, tr("Show grid"));
+                                    // Same capture options as the full Power Graph tab (shared config).
+                                    ui.add_space(8.0);
+                                    crate::ui::power_curve::options_ui(ui, &mut self.config);
                                 }
                                 DashboardSubTab::Config => {
                                     ui.label(crate::theme::section_label(tr("Load Preset")));
@@ -2168,44 +2171,7 @@ impl eframe::App for ForzaApp {
                             }
                         }
                         PageSettingsTab::Tab(Tab::PowerCurve) => {
-                            ui.horizontal(|ui| {
-                                ui.label(tr("RPM step size:"));
-                                ui.add(
-                                    egui::Slider::new(&mut self.config.power_curve_step, 25.0..=500.0)
-                                        .step_by(25.0)
-                                        .suffix(" rpm"),
-                                );
-                            });
-                            ui.add_space(8.0);
-                            crate::theme::styled_checkbox(ui, 
-                                &mut self.config.power_curve_forced_induction,
-                                tr("Forced induction detection"),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(tr(
-                                    "ON: hide boost graph if no positive pressure was captured.\n\
-                                     OFF: always show the boost graph."
-                                ))
-                                .size(11.0)
-                                .color(egui::Color32::GRAY),
-                            );
-                            if self.config.power_curve_forced_induction {
-                                ui.add_space(8.0);
-                                crate::theme::styled_checkbox(ui, 
-                                    &mut self.config.power_curve_save_fi_state,
-                                    tr("Save Forced Induction State"),
-                                );
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(tr(
-                                        "Keep the boost graph visible after clearing data,\n\
-                                         if FI was detected at least once for this car."
-                                    ))
-                                    .size(11.0)
-                                    .color(egui::Color32::GRAY),
-                                );
-                            }
+                            crate::ui::power_curve::options_ui(ui, &mut self.config);
                         }
                         PageSettingsTab::Tab(Tab::Gearbox) => {
                             crate::theme::styled_checkbox(ui,
