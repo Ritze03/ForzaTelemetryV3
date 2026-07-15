@@ -34,5 +34,7 @@ shows it in a live dashboard.
 - **Sub-agent orchestration** — when/how to fan out, partition edits, worktree isolation,
   model/effort selection, the 4-agent cap: @docs/claude-instructions/sub-agent-orchestration.md.
   Read it before dispatching any sub-agent work.
-- **Changelog** — keep the user-facing `CHANGELOG.md` current as you make user-facing changes:
+- **Changelog — required.** Every user-facing change **must** get a bullet in the top
+  `## [version]` section of the repo-root `CHANGELOG.md`, added in the same commit as the
+  change. Don't skip it. Format and when-to-bump-the-version rules:
   @docs/claude-instructions/changelog.md.
