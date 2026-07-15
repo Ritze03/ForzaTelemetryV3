@@ -39,6 +39,7 @@ The navigation reference — read these to move around the source efficiently.
 
 ## claude-instructions/ — mandatory rules for agents
 
+- [Working with the Docs](claude-instructions/documentation.md) — read before you touch, update after you change, record the *why*, and the `@` force-load convention. Linked from the repo-root `CLAUDE.md`.
 - [Sub-Agent Orchestration](claude-instructions/sub-agent-orchestration.md) — when to fan out sub-agents, how to partition edits, worktree isolation, model/effort selection, the 4-agent cap. Linked from the repo-root `CLAUDE.md`.
 - [Changelog Maintenance](claude-instructions/changelog.md) — how to keep the user-facing `CHANGELOG.md` current and when to bump the version.
 

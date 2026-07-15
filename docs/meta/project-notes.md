@@ -12,12 +12,3 @@ Cross-cutting domain facts and scope decisions that don't belong to a single fea
 - **FPS limiter** renders independently of packet rate. See [[settings]].
 - MiniMap and Co-Op have deeper design notes in the auto-memory index. See [[minimap]]
   and [[coop]].
-
-## Not in V3
-
-Deliberately excluded (localhost works natively, so the old workarounds are gone):
-
-- Data relay to another IP/port.
-- Loopback companion app / `.bat` scripts.
-- Android APK web server.
-- Imgur screenshot upload.
