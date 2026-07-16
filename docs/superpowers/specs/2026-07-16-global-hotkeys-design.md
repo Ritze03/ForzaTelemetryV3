@@ -51,9 +51,10 @@ We sidestep both:
   **read** `/dev/input/event*`, which sits *below* the display server — so it works
   identically on X11, Wayland, and console. This reads, it doesn't grab, so Wayland's
   restriction doesn't apply. No new dependency, no new permission, no D-Bus/portal.
-- **"Only while in game":** rather than an OS foreground query (also Wayland-blocked), the
-  primary gate is *"our window is NOT focused"* (egui already knows this) combined with
-  either telemetry-is-live or an explicit window-focus check via a user-chosen method.
+- **Where they fire:** global hotkeys fire when the game *or* our own window is focused, and
+  are ignored for any third app. "Our window focused" is known instantly from egui; "game
+  focused" comes from either telemetry-is-live or a user-chosen window-focus method. No
+  Wayland-blocked OS foreground query is required in the common path.
 
 ## 4. Architecture overview
 
@@ -182,13 +183,25 @@ reports "focused/allowed" so input and hotkeys keep working, and the settings li
 **red** so the failure is visible rather than silently blocking the feature.
 
 ### Consumer 1 — global hotkey gate (main thread)
-On each `hotkeys.try_recv()` global action, before acting:
-- `TelemetryLive`: fire if `!our_window_focused && telemetry.is_connected`. No window query.
-- `WindowFocus`: fire if `!our_window_focused && cached_focus`. Reads the cached bool (no
-  render-thread subprocess).
+Global hotkeys fire when **either** the game **or** our own telemetry window is focused, and
+are ignored when a third app is focused. On each `hotkeys.try_recv()` global action:
 
-`!our_window_focused` is a universal guard in both modes — it stops `G` toggling gearbox
-while you type "G" into a field in our own UI.
+```rust
+let allow = if our_window_focused {
+    !ctx.wants_keyboard_input()   // our app focused: fire unless a text field has keyboard focus
+} else {
+    game_focus_signal             // not our app: fire only if the game is focused
+};
+```
+
+`game_focus_signal` is mode-dependent:
+- `TelemetryLive`: `telemetry.is_connected` — no window query (can't exclude a third app while
+  data still flows with auto-pause off; the accepted weakness of this mode).
+- `WindowFocus`: `cached_focus` — the detector's active-window match; excludes third apps.
+
+Our-window-focused is now a *sufficient* condition, so binds work while you're in the app;
+the `wants_keyboard_input()` guard keeps `G` typing normally into a text field instead of
+toggling gearbox.
 
 ### Consumer 2 — synthetic input gate (`input.rs`)
 `InputSender` gains an optional focus gate (`Arc<AtomicBool>` clone + `input_focus_gate`
