@@ -8,6 +8,7 @@ mod i18n;
 mod iconcache;
 mod icons;
 mod input;
+mod keymap;
 mod labels;
 mod listeners;
 mod network;
