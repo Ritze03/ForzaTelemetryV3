@@ -1,0 +1,253 @@
+{
+  "listen_port": 1337,
+  "fps_limit": 60.0,
+  "use_mph": false,
+  "use_fahrenheit": false,
+  "use_bar": true,
+  "theme": "Dark",
+  "always_on_top": false,
+  "surface_rumble_max": 3.8,
+  "power_curve_step": 100.0,
+  "speed_align": "RightPlaceholder",
+  "gear_align": "Center",
+  "show_speed_delta": true,
+  "speed_delta_mode": "Calculate",
+  "sprint_type": "Absolute",
+  "sprint_show_other": true,
+  "tire_display_style": "Bars",
+  "tire_bar_value": "Stacked",
+  "tire_bar_swap": false,
+  "suspension_invert": true,
+  "shift_low_pct": 85.0,
+  "shift_high_pct": 95.0,
+  "power_curve_forced_induction": true,
+  "power_curve_save_fi_state": true,
+  "power_graph_show_boost": true,
+  "power_graph_compact": true,
+  "power_graph_show_grid": false,
+  "grid_cols": 32,
+  "grid_rows": 19,
+  "dashboard_widgets": [
+    {
+      "kind": "Speed",
+      "col": 0,
+      "row": 0,
+      "col_span": 2,
+      "row_span": 2
+    },
+    {
+      "kind": "Gear",
+      "col": 2,
+      "row": 0,
+      "col_span": 2,
+      "row_span": 2
+    },
+    {
+      "kind": "Rpm",
+      "col": 4,
+      "row": 0,
+      "col_span": 24,
+      "row_span": 2
+    },
+    {
+      "kind": "Suspension",
+      "col": 0,
+      "row": 5,
+      "col_span": 4,
+      "row_span": 7
+    },
+    {
+      "kind": "Tires",
+      "col": 0,
+      "row": 12,
+      "col_span": 4,
+      "row_span": 7
+    },
+    {
+      "kind": "Car",
+      "col": 30,
+      "row": 0,
+      "col_span": 2,
+      "row_span": 2
+    },
+    {
+      "kind": "Engine",
+      "col": 28,
+      "row": 0,
+      "col_span": 2,
+      "row_span": 2
+    },
+    {
+      "kind": "Inputs",
+      "col": 0,
+      "row": 2,
+      "col_span": 4,
+      "row_span": 3
+    },
+    {
+      "kind": "MiniMap",
+      "col": 4,
+      "row": 5,
+      "col_span": 28,
+      "row_span": 14
+    },
+    {
+      "kind": "Race",
+      "col": 4,
+      "row": 2,
+      "col_span": 4,
+      "row_span": 3
+    },
+    {
+      "kind": "GForce",
+      "col": 8,
+      "row": 2,
+      "col_span": 4,
+      "row_span": 3
+    },
+    {
+      "kind": "Position",
+      "col": 0,
+      "row": 10,
+      "col_span": 3,
+      "row_span": 2
+    },
+    {
+      "kind": "Trace",
+      "col": 28,
+      "row": 2,
+      "col_span": 4,
+      "row_span": 3
+    },
+    {
+      "kind": "Boost",
+      "col": 27,
+      "row": 2,
+      "col_span": 1,
+      "row_span": 3
+    },
+    {
+      "kind": "SessionStats",
+      "col": 6,
+      "row": 10,
+      "col_span": 2,
+      "row_span": 2
+    },
+    {
+      "kind": "PowerGraph",
+      "col": 12,
+      "row": 2,
+      "col_span": 15,
+      "row_span": 3
+    },
+    {
+      "kind": "BoostGraph",
+      "col": 10,
+      "row": 1,
+      "col_span": 3,
+      "row_span": 3
+    },
+    {
+      "kind": "CoopPlayers",
+      "col": 0,
+      "row": 12,
+      "col_span": 2,
+      "row_span": 2
+    }
+  ],
+  "dashboard_edit_mode": false,
+  "dashboard_show_grid": true,
+  "dashboard_show_outlines": true,
+  "minimap_px_per_m": 0.3722,
+  "minimap_world_origin_x": -12540.0,
+  "minimap_world_origin_z": 10738.0,
+  "minimap_zoom_driving_m": 1500.0,
+  "minimap_zoom_stopped_m": 4500.0,
+  "minimap_quality": 100.0,
+  "minimap_fps_limit": 60.0,
+  "minimap_fps_limit_enabled": true,
+  "minimap_smooth_rotation": true,
+  "minimap_use_movement_dir": true,
+  "minimap_mirror_edges": true,
+  "minimap_north_up": false,
+  "minimap_north_up_when_stopped": true,
+  "minimap_show_compass": false,
+  "gforce_show_text": true,
+  "gforce_show_labels": true,
+  "hide_widget_titles": false,
+  "top_bar_style": "Modern",
+  "modern_show_pill": false,
+  "high_contrast_icons": true,
+  "engine_display_mode": "Both",
+  "engine_show_type": true,
+  "input_bars_full_width": true,
+  "input_steer_compact": true,
+  "boost_in_bar": true,
+  "fps_limit_enabled": false,
+  "disabled_modules": [
+    "SessionStats",
+    "BoostGraph",
+    "CoopPlayers",
+    "Position"
+  ],
+  "backfire_enabled": true,
+  "backfire_dynamic_rpm": true,
+  "backfire_dynamic_min_pct": 50.0,
+  "backfire_dynamic_max_pct": 95.0,
+  "backfire_max_rpm": 8000.0,
+  "backfire_min_rpm": 4000.0,
+  "backfire_interval_rpm": 100.0,
+  "backfire_accel_time_ms": 24,
+  "backfire_dynamic_duration": true,
+  "backfire_dynamic_mode": "PacketBased",
+  "backfire_test_mode": false,
+  "backfire_disable_standstill": true,
+  "inputs_filter_backfire_accel": true,
+  "dsg_enabled": true,
+  "dsg_shift_rpm_pct": 98.0,
+  "dsg_upshift_speed_pct": 80.0,
+  "dsg_gearbox_mode": "Sport",
+  "dsg_auto_race_mode": true,
+  "dsg_tuning_street": {
+    "cruise_rpm_pct": 30.0,
+    "accel_gamma": 3.0
+  },
+  "dsg_tuning_sport": {
+    "cruise_rpm_pct": 50.0,
+    "accel_gamma": 3.0
+  },
+  "dsg_tuning_race": {
+    "cruise_rpm_pct": 85.0,
+    "accel_gamma": 1.0
+  },
+  "dsg_kickdown_cooldown_secs": 5.0,
+  "dsg_downshift_deadzone_pct": 90.0,
+  "dsg_full_throttle_pct": 95.0,
+  "dsg_race_gear_overlap_pct": 10.0,
+  "dsg_downshift_powerband_buffer_pct": 20.0,
+  "dsg_kickdown_powerband_buffer_pct": 30.0,
+  "dsg_debug": true,
+  "dsg_show_debug_panel": true,
+  "dsg_log_shifts": false,
+  "dsg_save_calibration": false,
+  "dsg_ignore_backfire_accel": true,
+  "max_rpm_mode": "GameProvided",
+  "accel_start_kmh": 0.0,
+  "accel_end_kmh": 100.0,
+  "decel_start_kmh": 100.0,
+  "decel_end_kmh": 0.0,
+  "decel_dynamic_mode": false,
+  "language": "English",
+  "coop_name": "Player",
+  "coop_hue": 205.0,
+  "coop_buffer_ms": 0,
+  "coop_port": 7071,
+  "coop_last_code": "",
+  "coop_trail_fade_secs": 10.0,
+  "coop_trail_fade_m": 500.0,
+  "coop_map_playerlist": true,
+  "coop_list_distance": true,
+  "coop_list_speed": true,
+  "coop_list_gear": false,
+  "coop_list_class": true
+}

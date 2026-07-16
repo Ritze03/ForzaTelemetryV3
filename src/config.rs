@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::Language;
 
+/// The "getting started" config used on a fresh install (no `config.json` yet):
+/// a snapshot of a well-rounded real-world setup. Personal/session Co-Op fields
+/// (`coop_name`, `coop_hue`, `coop_last_code`) were reset to neutral defaults in
+/// the snapshot. Loaded via the same merge path as an on-disk config, so any
+/// field added after the snapshot simply fills from the code `Default`.
+const DEFAULT_CONFIG_JSON: &str = include_str!("../assets/default-config.json");
+
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub enum Theme {
     Dark,
@@ -783,7 +790,13 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let default = Self::default();
-        let Ok(data) = std::fs::read_to_string(Self::path()) else { return default; };
+        // No on-disk config yet (fresh install) → start from the embedded
+        // "getting started" defaults (a real-world well-rounded config), then run
+        // it through the same merge path so any newer field still fills from the
+        // code default. Personal Co-Op fields (name/colour/last code) were reset
+        // in the snapshot, so they use their neutral defaults. See DEFAULT_CONFIG_JSON.
+        let data = std::fs::read_to_string(Self::path())
+            .unwrap_or_else(|_| DEFAULT_CONFIG_JSON.to_string());
         let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&data) else { return default; };
         // Merge: fill any missing keys (e.g. newly added fields) with their default values
         // so that adding a new config field never silently resets the entire config.
@@ -873,6 +886,21 @@ mod tests {
         let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("merge parse");
         assert_eq!(cfg.listen_port, 4321);       // kept from the old config
         assert_eq!(cfg.coop_port, DEFAULT_COOP_PORT_TEST); // filled from default
+    }
+
+    #[test]
+    fn embedded_default_config_parses_and_resets_personal_coop() {
+        // The fresh-install default must always parse through the load() merge path.
+        let mut val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).expect("embedded default is valid JSON");
+        let def = serde_json::to_value(AppConfig::default()).unwrap();
+        if let (serde_json::Value::Object(m), serde_json::Value::Object(d)) = (&mut val, def) {
+            for (k, v) in d { m.entry(k).or_insert(v); }
+        }
+        let cfg: AppConfig = serde_json::from_value(val).expect("embedded default merges into AppConfig");
+        // Personal Co-Op fields were reset in the snapshot.
+        assert_eq!(cfg.coop_name, "Player");
+        assert_eq!(cfg.coop_hue, 205.0);
+        assert!(cfg.coop_last_code.is_empty());
     }
 
     #[test]
