@@ -23,18 +23,21 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     crate::theme::card(ui, tr("Your Identity"), |ui| {
-        ui.horizontal(|ui| {
-            ui.label(tr("Player name"));
-            let resp = ui.add(
+        // Name: label | text field, in the same two-column layout as the colour
+        // row below, so the field lines up with (and matches the width of) the slider.
+        let name_changed = ui.columns(2, |c| {
+            crate::theme::row_label(&mut c[0], tr("Player name"));
+            c[1].add(
                 egui::TextEdit::singleline(&mut app.config.coop_name)
                     .hint_text(tr("Player"))
-                    .desired_width(ui.available_width()),
-            );
-            if resp.changed() {
-                let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
-                app.coop.update_identity(&n, h);
-            }
+                    .desired_width(c[1].available_width()),
+            )
+            .changed()
         });
+        if name_changed {
+            let (n, h) = (app.config.coop_name.clone(), app.config.coop_hue);
+            app.coop.update_identity(&n, h);
+        }
 
         // Colour: label | slider + a swatch preview pinned to the right (where a
         // value spinner sits on other rows).
