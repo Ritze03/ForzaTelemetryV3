@@ -1627,6 +1627,9 @@ impl eframe::App for ForzaApp {
                 ui.horizontal(|ui| {
                     use crate::i18n::tr;
                     use crate::icons;
+                    // Backfire/Gearbox indicator tooltips should appear instantly
+                    // (no hover delay), scoped to the status bar only.
+                    ui.style_mut().interaction.tooltip_delay = 0.0;
                     // LEFT: connection status + pps
                     // NO_SIGNAL renders wider than its glyph advance, so it needs an
                     // extra space to match PLUG's visual gap.
@@ -1635,11 +1638,22 @@ impl eframe::App for ForzaApp {
                     } else {
                         (crate::theme::DANGER, format!("{}  {}", icons::NO_SIGNAL, tr("Disconnected")))
                     };
-                    ui.colored_label(color, label);
+                    // Connection status + pps are informational, not content to
+                    // select/copy — disable text selection on just these two labels.
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(label).color(color))
+                            .selectable(false),
+                    );
                     if self.telemetry.is_connected {
                         // Right-align in a 3-wide field so the label doesn't shift
                         // as the packet rate gains or loses a digit.
-                        ui.label(format!("  {:>3.0} pps", self.telemetry.packets_per_sec));
+                        ui.add(
+                            egui::Label::new(format!(
+                                "  {:>3.0} pps",
+                                self.telemetry.packets_per_sec
+                            ))
+                            .selectable(false),
+                        );
                     }
 
                     // Co-Op indicator (visible from any tab)
