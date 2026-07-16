@@ -180,11 +180,11 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let area = egui::ScrollArea::vertical()
-                .max_height(110.0)
-                .min_scrolled_height(110.0)
+                .max_height(210.0)
+                .min_scrolled_height(210.0)
                 .auto_shrink([false, false]);
             captured_scroll(ui, area, |ui| {
-                ui.set_min_height(110.0);
+                ui.set_min_height(210.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for name in &profiles {
                     if profile_row(ui, name, *name == active) {
