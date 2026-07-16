@@ -102,24 +102,38 @@ ui.add_sized(
 Percentages show one decimal (`.fixed_decimals(1)` / the `decimals` arg) so a value
 never jumps between `50%` and `50.0%`.
 
-### Checkbox rows
+### Checkboxes — always the styled one
 
-Checkboxes in a category span **at least the left half** (so short ones read a
-uniform width, with a control beginning where a slider's rail would) but never wider
-than the card — a long label extends to fit on one line and only wraps if it would
-otherwise overflow. This clamp is what keeps a long checkbox (e.g. a "Test mode…"
-label) from dragging its card wider than the rest:
+**Every checkbox in the app uses the custom styled checkbox, never a raw
+`egui::Checkbox`.** The style: an 18px rounded box that is **accent-filled with a white
+check** when on and a hairline steel **outline** when off, followed by the label, with
+the *whole row* a single click target and a subtle hover wash. It's defined once in
+`theme.rs` (`checkbox_ui`) and reached through these entry points — pick by context:
 
 ```rust
-theme::checkbox_row(ui, &mut flag, tr("Enabled"));                 // half-width checkbox
+theme::checkbox_row(ui, &mut flag, tr("Enabled"));                 // category: half-width min
 theme::checkbox_row_with(ui, &mut flag, tr("Dynamic…"), |ui| {     // + control on the right
     // e.g. a ComboBox in place of a slider
 });
+theme::styled_checkbox(ui, &mut flag, tr("Show grid"));            // content-sized (cog Mini-Settings)
+theme::styled_checkbox_enabled(ui, &mut flag, label, enabled);     // + greyed/disabled when !enabled
 ```
 
-Both return the checkbox response (wrap in a tooltip `hover(...)` if needed).
-`theme::styled_checkbox` (content-sized) is still used for the cog **Mini-Settings**
-popup, which is not a category.
+- **`checkbox_row` / `checkbox_row_with`** — category cards. Span **at least the left
+  half** (so short ones read a uniform width, with a control beginning where a slider's
+  rail would) but never wider than the card — a long label extends to one line and only
+  wraps if it would overflow. This clamp keeps a long checkbox (e.g. a "Test mode…" label)
+  from dragging its card wider than the rest.
+- **`styled_checkbox`** — content-sized; used where there's no two-column row, e.g. the
+  cog **Mini-Settings** popup.
+- **`styled_checkbox_enabled`** — same, plus an `enabled` flag: when false the row is
+  dimmed (dim outline/check/label) and ignores clicks. Used for the Settings → Profiles
+  **export/import tree**, where groups absent from a pasted JSON are shown greyed. The
+  tree indents children with a leading `ui.add_space(16.0)` before the styled box.
+
+All return the checkbox response (wrap in a tooltip `hover(...)` if needed). If you need a
+checkbox anywhere, reach for one of these — do **not** hand-roll `egui::Checkbox::new`,
+so the accent-box look stays uniform across the app.
 
 ### No trailing colons on labels
 

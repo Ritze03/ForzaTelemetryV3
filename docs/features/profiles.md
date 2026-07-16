@@ -46,22 +46,38 @@ existing `config.json` upgrading to this version), one is written from the curre
 config. So `profiles/` is never empty and the active profile always has a backing file.
 The default active profile name is `"Default"`.
 
+## UI layout (`settings.rs`)
+
+Two cards, both in the left Settings column:
+
+- **PROFILES** (`profiles_card`) — an `Active profile` dropdown (compact mirror), a
+  fixed-height **scrollable list** (`profile_row`: full-width click target, active row
+  washed + right-aligned check), and a four-button row New / Duplicate / Rename / Delete.
+  New & Rename reveal an inline name field; Delete an inline confirm.
+- **EXPORT / IMPORT** (`export_import_card`) — a bordered card whose header is a
+  two-segment tab bar (`io_segment`, accent-filled when active) swapping between the
+  export tree and the import form. The shared green status line sits at the bottom.
+
+Both cards deliberately sit next to `HOTKEY` / `INPUT` in the left column; the right
+column holds `REPOSITORY / CREDITS`, `DISPLAY`, `NETWORK`, `CO-OP`.
+
 ## Selective export / import
 
 Both use the `KEY_GROUPS` registry and a checkbox group-tree (`group_tree` in
-`settings.rs`) — see [[presets]] for the registry, the completeness test, and the
-`export_selected` / `import_selected` / `groups_present` functions.
+`settings.rs`, drawn with `theme::styled_checkbox_enabled`) — see [[presets]] for the
+registry, the completeness test, and the `export_selected` / `import_selected` /
+`groups_present` functions.
 
-- **Export** — tick groups → *Copy to clipboard* (JSON of just those keys).
-- **Import** — paste JSON (or pick a bundled preset as a built-in source), choose a
+- **Export** tab — tick groups → *Copy to clipboard* (JSON of just those keys).
+- **Import** tab — paste JSON (or pick a bundled preset as a built-in source), choose a
   **target** (a new profile, or overwrite an existing one), tick which groups to apply.
   Only the selected groups' keys overwrite the target; everything else is preserved.
-  Groups absent from the pasted JSON are disabled in the tree.
+  Groups absent from the pasted JSON are disabled (greyed) in the tree.
 
 ## UI state (`app.rs`)
 
 Transient (not persisted): `profile_dialog` (inline New/Rename/Delete-confirm),
-`profile_name_buf`, `profile_io_status`, `profile_export_sel` / `profile_import_sel`
-(bool masks aligned to `KEY_GROUPS`), `profile_import_present`, `profile_import_buf`, and
-the import-target fields (`profile_import_new`, `profile_import_new_name`,
-`profile_import_overwrite`).
+`profile_io_tab` (Export/Import), `profile_name_buf`, `profile_io_status`,
+`profile_export_sel` / `profile_import_sel` (bool masks aligned to `KEY_GROUPS`),
+`profile_import_present`, `profile_import_buf`, and the import-target fields
+(`profile_import_new`, `profile_import_new_name`, `profile_import_overwrite`).

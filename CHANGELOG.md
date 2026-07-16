@@ -68,6 +68,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Forza Motorsport 7 mode**: dropped entirely — the app is now Forza Horizon 6 only, and the game-selection dropdown in Setup is gone.
 
 ### Info
+- **Settings tab reorganised**: cards are regrouped — left column now holds **Profiles**, its Export/Import companion, **Hotkey**, and **Input**; right column holds **Repository / Credits** (renamed from *Repository*), **Display**, **Network**, and **Co-Op**. The Profiles panel is also reworked: a scrollable profile list with the active one checked, and Export/Import split into a two-tab card.
 - **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
 - **Setup tab**: "Settings" is renamed "Setup" and moved to the far right, next to What's New.
 - **Tab order**: reordered to Dashboard, Power Curve, Co-Op, Backfire, Automatic Gearbox, Engine Swaps.
