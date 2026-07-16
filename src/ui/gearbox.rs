@@ -464,7 +464,7 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
             r.bottom() - py.clamp(0.0, 1.0) * r.height(),
         )
     };
-    p.line_segment([r.left_bottom(), r.right_top()], egui::Stroke::new(1.0, Color32::from_gray(55)));
+    p.line_segment([r.left_bottom(), r.right_top()], egui::Stroke::new(1.0, crate::theme::STROKE_DIM));
 
     let pkt = app.telemetry.latest.as_ref();
     // Same suppression as the shift logic (dsg::curved_throttle) — the live pedal
@@ -562,20 +562,21 @@ fn viz_gamma_gears(ui: &mut Ui, app: &ForzaApp, size: f32) {
 
     // ── Live pedal dots ──
     let x = accel.clamp(0.0, 1.0);
-    p.circle_filled(at(x, x), 3.5, Color32::from_gray(170));
+    p.circle_filled(at(x, x), 3.5, crate::theme::TEXT_DIM);
     p.circle_filled(at(x, x.powf(gamma)), 4.0, Color32::from_rgb(255, 210, 60));
 
-    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, Color32::from_gray(70)), egui::StrokeKind::Inside);
+    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, crate::theme::BORDER), egui::StrokeKind::Inside);
 }
 
 // ── Live gearbox visualization (right half of the tab) ───────────────────────
-const VIZ_TRACK: Color32 = Color32::from_gray(38); // neutral bar-track background (no blue tint)
+const VIZ_TRACK: Color32 = crate::theme::TRACK; // bar-track background (theme token)
+// Semantic data colours (guide permits these at call sites — the "input bars" case).
 const VIZ_GREEN: Color32 = Color32::from_rgb(70, 220, 120);
 const VIZ_AMBER: Color32 = Color32::from_rgb(255, 200, 70);
 const VIZ_RED: Color32 = Color32::from_rgb(240, 90, 80);
 const VIZ_CYAN: Color32 = Color32::from_rgb(80, 200, 235);
-// Neutral gray matching egui dark's default text colour — used for the viz labels/secondary text.
-const VIZ_DIM: Color32 = Color32::from_gray(140);
+// Neutral secondary text for the viz labels — the theme's dim-text token.
+const VIZ_DIM: Color32 = crate::theme::TEXT_DIM;
 
 /// Right-half live telemetry/decision visualization for the gearbox.
 fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
@@ -614,7 +615,6 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
         .show(ui, |ui| {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     ui.spacing_mut().item_spacing.x = 8.0; // undo the inter-column gap inside the viz
-    ui.add_space(8.0);
 
     // ── State ──
     crate::theme::card(ui, tr("State"), |ui| {
@@ -693,7 +693,7 @@ fn gearbox_viz(ui: &mut Ui, app: &ForzaApp) {
 
         ui.horizontal(|ui| {
             let lamp = |ui: &mut Ui, on: bool, label: &str, col: Color32| {
-                let c = if on { col } else { Color32::from_gray(60) };
+                let c = if on { col } else { crate::theme::TEXT_FAINT };
                 ui.label(RichText::new(format!("\u{25CF} {label}")).monospace().size(11.0).color(c));
             };
             lamp(ui, app.dsg.dbg_wheelspin, tr("SPIN"), VIZ_RED);
@@ -739,9 +739,9 @@ fn viz_rpm_bar(ui: &mut Ui, rpm: f32, redline: f32, down: f32, target: f32, shif
         egui::Align2::CENTER_CENTER,
         format!("{rpm:.0} rpm"),
         egui::FontId::monospace(11.0),
-        Color32::WHITE,
+        crate::theme::TEXT,
     );
-    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Inside);
+    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, crate::theme::BORDER), egui::StrokeKind::Inside);
 }
 
 /// Stacked gear-range chart: one row per calibrated gear, each row's bar spanning that gear's REAL
@@ -759,7 +759,7 @@ fn viz_gear_map(
     cur_gear: i32,
     desired: i32,
 ) {
-    let border = egui::Stroke::new(1.0, Color32::from_gray(60));
+    let border = egui::Stroke::new(1.0, crate::theme::BORDER);
     let bg = ui.visuals().extreme_bg_color;
     let maxg = (1..=10).rev().find(|&g| redlines[g as usize] > 0.0).unwrap_or(0);
     let row_h = 16.0;
@@ -817,7 +817,7 @@ fn viz_gear_map(
             p.rect_stroke(bar, 2.0, egui::Stroke::new(1.5, VIZ_AMBER), egui::StrokeKind::Inside);
         }
         // Gear number in the left gutter.
-        let numcol = if g == cur_gear { VIZ_GREEN } else { Color32::from_gray(205) };
+        let numcol = if g == cur_gear { VIZ_GREEN } else { crate::theme::TEXT_DIM };
         p.text(
             egui::pos2(r.left() + gutter * 0.5, cy),
             egui::Align2::CENTER_CENTER,
@@ -832,7 +832,7 @@ fn viz_gear_map(
                 egui::Align2::RIGHT_CENTER,
                 format!("{g_lo:.0}"),
                 egui::FontId::monospace(9.0),
-                Color32::from_gray(150),
+                crate::theme::TEXT_DIM,
             );
         }
         // Max (shift-point) speed just past the bar's right edge.
@@ -849,14 +849,14 @@ fn viz_gear_map(
     let xs = sx(kmh);
     p.line_segment(
         [egui::pos2(xs, area_top), egui::pos2(xs, area_bot)],
-        egui::Stroke::new(2.0, Color32::WHITE),
+        egui::Stroke::new(2.0, crate::theme::TEXT),
     );
     p.text(
         egui::pos2(xs, r.bottom() - 1.0),
         egui::Align2::CENTER_BOTTOM,
         format!("{kmh:.0} km/h"),
         egui::FontId::monospace(9.0),
-        Color32::WHITE,
+        crate::theme::TEXT,
     );
     p.rect_stroke(r, 3.0, border, egui::StrokeKind::Inside);
 }
