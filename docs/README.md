@@ -27,6 +27,7 @@ The navigation reference — read these to move around the source efficiently.
 - [Engine Swaps](features/engine-swaps.md) — display-only reference table from `engines.csv`.
 - [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism and bundled presets.
 - [Settings](features/settings.md) — network, units, display (the Settings tab).
+- [Hotkeys](features/hotkeys.md) — rebindable global + in-app shortcuts, evdev/GetAsyncKeyState capture, window-focus detection.
 
 ## protocol/ — the wire format
 

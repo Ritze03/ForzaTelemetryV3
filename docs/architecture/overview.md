@@ -95,8 +95,10 @@ which several stats and the Co-Op relay respect.
 3. `coop.tick()` — advance Co-Op jitter buffers; `update_minimap_trails()`.
 4. Poll the minimap image channel; handle season change; throttle/smooth the minimap
    camera (position cache, eased yaw, zoom).
-5. Global hotkeys — F10 (map orientation), F11 (fullscreen, Windows), Ctrl+S
-   (mini-settings popup), Ctrl+E (dashboard edit mode).
+5. Hotkeys — app-focused actions (Ctrl+S mini-settings, Ctrl+E dashboard edit) matched
+   from config against egui input; global actions (G gearbox, B backfire) drained from the
+   `hotkeys.rs` capture backend and gated on focus (`focus.rs`); F11 fullscreen (Windows)
+   stays hardcoded. Rebindable in Settings → Hotkeys. See [[hotkeys]].
 6. Chrome panels — top **tab bar** (`TopBottomPanel::top`, three styles via
    `tab_button`/`page_pill`), bottom **status bar** (connection, pps, Co-Op,
    cog), and the floating **mini-settings window** (`page_settings_*`, driven by
@@ -127,7 +129,10 @@ which several stats and the Co-Op relay respect.
 | `icons.rs` | Nerd-Font icon codepoint constants. |
 | `iconcache.rs` | `IconCenterCache` — ink-centres icon glyphs in a fixed box. |
 | `labels.rs` | Car class / drivetrain label images + PI-stamping renderer. |
-| `input.rs` | `InputSender` — synthetic keypresses (drives backfire/gearbox into the game) on a worker thread; the shared "synthetic echo" window. |
+| `input.rs` | `InputSender` — synthetic keypresses (drives backfire/gearbox into the game) on a worker thread; the shared "synthetic echo" window; optional focus gate (suppress emission when the game isn't focused). |
+| `keymap.rs` | `HotKey`/`Mods`/`HotkeyBinding` — serde-stable key identity with egui/evdev/VK mapping tables. See [[hotkeys]]. |
+| `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel. See [[hotkeys]]. |
+| `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/Custom/Windows); reused by the hotkey gate and the input gate. See [[hotkeys]]. |
 | `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
 
@@ -172,6 +177,9 @@ which several stats and the Co-Op relay respect.
   `show(...)` (declared in `ui/mod.rs`), a tab-bar entry, and a `CentralPanel` match arm.
 - **Tune / add a listener** → the relevant `listeners/<name>.rs`; it's called from
   `app.rs:drain_packets`. Listeners that drive the game go through `input.rs:InputSender`.
+- **Hotkeys / a new bindable action** → `config.rs:HotkeyAction` (+ `scope`), the dispatch in
+  `app.rs:run_app_hotkey`/`run_global_hotkey`, and the `hotkeys.rs` backend / `focus.rs`
+  gate. Keys map via `keymap.rs`. See [[hotkeys]].
 - **Change packet parsing / a new field** → `packet.rs` (struct + `from_bytes`/`to_bytes`)
   against [[forza-fh6-packet-format]].
 - **Networking / port / connection** → `network.rs` (receive thread) and
