@@ -37,6 +37,8 @@ pub const PRIMARY_TEXT: Color32 = Color32::from_rgb(0x0B, 0x12, 0x22);
 pub const DANGER: Color32 = Color32::from_rgb(0xE1, 0x55, 0x54);
 /// Positive / connected (green).
 pub const GOOD: Color32 = Color32::from_rgb(0x6C, 0xC5, 0x51);
+/// Caution / in-between state (muted pastel amber — e.g. gearbox not yet calibrated).
+pub const WARN: Color32 = Color32::from_rgb(0xD8, 0xB4, 0x55);
 
 // ---- Steel scale (dashboard neutrals) -------------------------------------
 // Widget chrome uses these blue-tinted neutrals instead of pure grays so the

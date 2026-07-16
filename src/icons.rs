@@ -5,7 +5,9 @@ pub const DASHBOARD:  &str = "\u{F0E4}"; // fa-dashboard (speedometer)
 pub const BOLT:       &str = "\u{F06D}"; // fa-fire      (Backfire)
 pub const STOP:       &str = "\u{F04D}"; // fa-stop      (deceleration)
 pub const LINE_CHART: &str = "\u{F201}"; // fa-line-chart (power curve)
-pub const WRENCH:     &str = "\u{F0AD}"; // fa-wrench    (engine swaps)
+pub const GEARBOX:    &str = "\u{F085}"; // fa-cogs      (automatic gearbox)
+// Nerd Font Material-Design range (outside the FA block); verified present in the embedded OTF.
+pub const ENGINE:     &str = "\u{F01FA}"; // md-engine   (engine swaps)
 pub const COG:        &str = "\u{F013}"; // fa-cog       (settings)
 
 pub const CIRCLE:     &str = "\u{F111}"; // fa-circle    (status dot, puddle/rumble active)
@@ -18,7 +20,6 @@ pub const FLOPPY:     &str = "\u{F0C7}"; // fa-floppy-o  (save)
 pub const CHECK:      &str = "\u{F00C}"; // fa-check
 pub const TIMES:      &str = "\u{F00D}"; // fa-times     (clear/close)
 pub const CLOCK:      &str = "\u{F017}"; // fa-clock-o   (timer)
-pub const GAMEPAD:    &str = "\u{F11B}"; // fa-gamepad   (fun / game features)
 pub const USERS:      &str = "\u{F0C0}"; // fa-users     (co-op / multiplayer)
 pub const COPY:       &str = "\u{F0C5}"; // fa-files-o   (copy to clipboard)
 pub const GLOBE:      &str = "\u{F0AC}"; // fa-globe     (tunnel / public link)

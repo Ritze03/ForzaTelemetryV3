@@ -1469,8 +1469,8 @@ impl eframe::App for ForzaApp {
                     (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
                     (Tab::Coop,        icons::USERS,      "Co-Op"),
                     (Tab::Backfire,    icons::BOLT,       "Backfire"),
-                    (Tab::Gearbox,     icons::GAMEPAD,    "Automatic Gearbox"),
-                    (Tab::EngineSwaps, icons::WRENCH,     "Engine Swaps"),
+                    (Tab::Gearbox,     icons::GEARBOX,    "Automatic Gearbox"),
+                    (Tab::EngineSwaps, icons::ENGINE,     "Engine Swaps"),
                 ];
                 let right = [
                     (Tab::Settings,  icons::COG,      "Setup"),
@@ -1575,6 +1575,27 @@ impl eframe::App for ForzaApp {
                             format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
                         );
                     }
+
+                    // Backfire: green when active, red when off.
+                    ui.separator();
+                    let (bf_color, bf_label) = if self.config.backfire_enabled {
+                        (crate::theme::GOOD, tr("Backfire"))
+                    } else {
+                        (crate::theme::DANGER, tr("Backfire"))
+                    };
+                    ui.colored_label(bf_color, format!("{}  {}", icons::BOLT, bf_label));
+
+                    // Automatic Gearbox: green active, pastel-amber "Uncalibrated"
+                    // (enabled but the box hasn't engaged yet), red when off.
+                    ui.separator();
+                    let (gb_color, gb_label) = if !self.config.dsg_enabled {
+                        (crate::theme::DANGER, tr("Automatic Gearbox"))
+                    } else if self.dsg.engaged {
+                        (crate::theme::GOOD, tr("Automatic Gearbox"))
+                    } else {
+                        (crate::theme::WARN, tr("Uncalibrated"))
+                    };
+                    ui.colored_label(gb_color, format!("{}  {}", icons::GEARBOX, gb_label));
 
                     // RIGHT: cog toggle
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

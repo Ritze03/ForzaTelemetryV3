@@ -64,6 +64,11 @@ gear-ratio table.
 
 ## Using it
 
+The bottom **status bar** carries a live indicator (visible from any tab):
+green when the box is active, red when disabled, and pastel-amber
+**Uncalibrated** while it's enabled but hasn't engaged yet (before your first
+manual upshift). Backfire has a matching green/red indicator beside it.
+
 Open the **Automatic Gearbox** tab — controls on the left, a live
 visualization on the right.
 
