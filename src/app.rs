@@ -1455,13 +1455,14 @@ impl eframe::App for ForzaApp {
                         };
                         let (rect, resp) =
                             ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            icons::COG,
-                            egui::FontId::proportional(16.0),
-                            cog_color,
-                        );
+                        // Ink-centre the glyph (fa-cog's layout box isn't symmetric),
+                        // matching how the tab-bar icons are centred.
+                        let font = egui::FontId::proportional(16.0);
+                        let pos = self
+                            .icon_center_cache
+                            .centered_pos(ui, icons::COG, font.clone(), rect.center());
+                        ui.painter()
+                            .text(pos, egui::Align2::LEFT_TOP, icons::COG, font, cog_color);
                         if resp.clicked() {
                             self.page_settings_open = !self.page_settings_open;
                             self.page_settings_tab = PageSettingsTab::Tab(self.current_tab);
