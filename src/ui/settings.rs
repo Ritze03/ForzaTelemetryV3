@@ -38,23 +38,23 @@ fn hint(ui: &mut Ui, text: &str) {
 }
 
 /// Show `area` and, while the pointer is over its viewport, swallow the leftover
-/// wheel delta so hitting the inner edge doesn't chain-scroll the outer Settings
-/// pane. egui 0.33 has no built-in chaining toggle; zeroing the scroll delta after
-/// the inner area consumed its share (but before the parent reads it) is the fix.
+/// wheel delta so the outer Settings pane never chain-scrolls. This applies whenever
+/// the pointer is over the pane — even when it holds too little to scroll yet — so a
+/// fixed-height scroll box (profile list, export/import trees) always feels like its
+/// own scroll container, not a pass-through. egui 0.33 has no built-in chaining
+/// toggle; zeroing the scroll delta after the inner area consumed its share (but
+/// before the parent reads it) is the fix.
 fn captured_scroll<R>(
     ui: &mut Ui,
     area: egui::ScrollArea,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     let out = area.show(ui, add);
-    // Only capture when the pane actually overflows — a short list/tree that can't
-    // scroll shouldn't become a dead zone for the outer pane.
-    let scrollable = out.content_size.y > out.inner_rect.height() + 1.0;
     let over = ui
         .ctx()
         .input(|i| i.pointer.hover_pos())
         .is_some_and(|p| out.inner_rect.contains(p));
-    if over && scrollable {
+    if over {
         ui.ctx().input_mut(|i| {
             i.smooth_scroll_delta = egui::Vec2::ZERO;
             i.raw_scroll_delta = egui::Vec2::ZERO;
