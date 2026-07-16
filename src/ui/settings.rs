@@ -37,6 +37,32 @@ fn hint(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(11.0).color(Color32::GRAY));
 }
 
+/// Show `area` and, while the pointer is over its viewport, swallow the leftover
+/// wheel delta so hitting the inner edge doesn't chain-scroll the outer Settings
+/// pane. egui 0.33 has no built-in chaining toggle; zeroing the scroll delta after
+/// the inner area consumed its share (but before the parent reads it) is the fix.
+fn captured_scroll<R>(
+    ui: &mut Ui,
+    area: egui::ScrollArea,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let out = area.show(ui, add);
+    // Only capture when the pane actually overflows — a short list/tree that can't
+    // scroll shouldn't become a dead zone for the outer pane.
+    let scrollable = out.content_size.y > out.inner_rect.height() + 1.0;
+    let over = ui
+        .ctx()
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|p| out.inner_rect.contains(p));
+    if over && scrollable {
+        ui.ctx().input_mut(|i| {
+            i.smooth_scroll_delta = egui::Vec2::ZERO;
+            i.raw_scroll_delta = egui::Vec2::ZERO;
+        });
+    }
+    out.inner
+}
+
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
@@ -169,19 +195,19 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
         .inner_margin(egui::Margin::same(2))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical()
+            let area = egui::ScrollArea::vertical()
                 .max_height(110.0)
                 .min_scrolled_height(110.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_min_height(110.0);
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    for name in &profiles {
-                        if profile_row(ui, name, *name == active) {
-                            switch_to = Some(name.clone());
-                        }
+                .auto_shrink([false, false]);
+            captured_scroll(ui, area, |ui| {
+                ui.set_min_height(110.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for name in &profiles {
+                    if profile_row(ui, name, *name == active) {
+                        switch_to = Some(name.clone());
                     }
-                });
+                }
+            });
         });
     if let Some(name) = switch_to {
         app.config.switch_profile(&name);
@@ -321,7 +347,8 @@ fn export_import_card(ui: &mut Ui, app: &mut ForzaApp) {
             ProfileIoTab::Export => {
                 hint(ui, tr("Pick what to include, then copy the JSON to the clipboard."));
                 ui.add_space(4.0);
-                egui::ScrollArea::vertical().max_height(130.0).id_salt("exp_tree").show(ui, |ui| {
+                let area = egui::ScrollArea::vertical().max_height(130.0).id_salt("exp_tree");
+                captured_scroll(ui, area, |ui| {
                     group_tree(ui, &mut app.profile_export_sel, None);
                 });
                 ui.add_space(6.0);
@@ -423,7 +450,8 @@ fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
     });
     ui.add_space(6.0);
 
-    egui::ScrollArea::vertical().max_height(130.0).id_salt("imp_tree").show(ui, |ui| {
+    let area = egui::ScrollArea::vertical().max_height(130.0).id_salt("imp_tree");
+    captured_scroll(ui, area, |ui| {
         group_tree(ui, &mut app.profile_import_sel, Some(&app.profile_import_present));
     });
     ui.add_space(6.0);
