@@ -60,6 +60,111 @@ impl GearboxMode {
     }
 }
 
+// ── Hotkeys ──────────────────────────────────────────────────────────────────
+
+/// A bindable hotkey action. Scope is fixed per action (see `scope`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HotkeyAction {
+    ToggleGearbox,
+    ToggleBackfire,
+    MiniSettings,
+    DashboardEdit,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HotkeyScope {
+    Global,
+    AppFocused,
+}
+
+impl HotkeyAction {
+    /// Every action, in display order (globals first).
+    pub const ALL: &'static [HotkeyAction] = &[
+        HotkeyAction::ToggleGearbox,
+        HotkeyAction::ToggleBackfire,
+        HotkeyAction::MiniSettings,
+        HotkeyAction::DashboardEdit,
+    ];
+    pub fn scope(self) -> HotkeyScope {
+        match self {
+            HotkeyAction::ToggleGearbox | HotkeyAction::ToggleBackfire => HotkeyScope::Global,
+            HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => HotkeyScope::AppFocused,
+        }
+    }
+    /// English label for the settings row.
+    pub fn label(self) -> &'static str {
+        match self {
+            HotkeyAction::ToggleGearbox => "Toggle Automatic Gearbox",
+            HotkeyAction::ToggleBackfire => "Toggle Backfire",
+            HotkeyAction::MiniSettings => "Open mini-settings",
+            HotkeyAction::DashboardEdit => "Toggle dashboard edit",
+        }
+    }
+}
+
+/// How global hotkeys decide the game is focused.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum GateMode {
+    #[default]
+    TelemetryLive,
+    WindowFocus,
+}
+
+/// Which active-window query the WindowFocus gate uses (Linux). Windows always
+/// uses GetForegroundWindow and ignores this.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum FocusMethod {
+    #[default]
+    Hyprland,
+    X11,
+    Custom,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct HotkeyConfig {
+    #[serde(default = "default_bindings")]
+    pub bindings: HashMap<HotkeyAction, crate::keymap::HotkeyBinding>,
+    #[serde(default)]
+    pub gate_mode: GateMode,
+    #[serde(default)]
+    pub focus_method: FocusMethod,
+    #[serde(default)]
+    pub custom_cmd: String,
+    #[serde(default = "default_game_match")]
+    pub game_match: String,
+    #[serde(default)]
+    pub input_focus_gate: bool,
+    #[serde(default = "default_poll_hz")]
+    pub focus_poll_hz: f32,
+}
+
+fn default_game_match() -> String { "Forza".to_string() }
+fn default_poll_hz() -> f32 { 4.0 }
+
+fn default_bindings() -> HashMap<HotkeyAction, crate::keymap::HotkeyBinding> {
+    use crate::keymap::{HotKey, HotkeyBinding, Mods};
+    let mut m = HashMap::new();
+    m.insert(HotkeyAction::ToggleGearbox, HotkeyBinding { mods: Mods::default(), key: HotKey::G });
+    m.insert(HotkeyAction::ToggleBackfire, HotkeyBinding { mods: Mods::default(), key: HotKey::B });
+    m.insert(HotkeyAction::MiniSettings, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::S });
+    m.insert(HotkeyAction::DashboardEdit, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::E });
+    m
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            bindings: default_bindings(),
+            gate_mode: GateMode::default(),
+            focus_method: FocusMethod::default(),
+            custom_cmd: String::new(),
+            game_match: default_game_match(),
+            input_focus_gate: false,
+            focus_poll_hz: default_poll_hz(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct GearboxTuning {
     pub cruise_rpm_pct: f32,      // low-throttle target, % of Shift RPM
@@ -321,6 +426,9 @@ pub struct AppConfig {
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
     pub inputs_filter_backfire_accel: bool, // Inputs widget shows Accel as 0 while Backfire is actively firing
+    // Hotkeys (global + app-focused rebindable shortcuts + focus detection)
+    #[serde(default)]
+    pub hotkeys: HotkeyConfig,
     // DSG automatic gearbox
     pub dsg_enabled: bool,
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
@@ -442,6 +550,7 @@ impl Default for AppConfig {
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             inputs_filter_backfire_accel: true,
+            hotkeys: HotkeyConfig::default(),
             dsg_enabled: false,
             dsg_shift_rpm_pct: 98.0,
             dsg_upshift_speed_pct: 80.0,
@@ -764,6 +873,30 @@ mod tests {
         let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("merge parse");
         assert_eq!(cfg.listen_port, 4321);       // kept from the old config
         assert_eq!(cfg.coop_port, DEFAULT_COOP_PORT_TEST); // filled from default
+    }
+
+    #[test]
+    fn hotkey_config_deserializes_from_empty_via_defaults() {
+        let hk: HotkeyConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(hk, HotkeyConfig::default());
+    }
+
+    #[test]
+    fn default_hotkey_bindings_are_g_b_ctrl_s_ctrl_e() {
+        use crate::keymap::{HotKey, Mods};
+        let hk = HotkeyConfig::default();
+        assert_eq!(hk.bindings[&HotkeyAction::ToggleGearbox].key, HotKey::G);
+        assert_eq!(hk.bindings[&HotkeyAction::ToggleBackfire].key, HotKey::B);
+        let mini = &hk.bindings[&HotkeyAction::MiniSettings];
+        assert_eq!(mini.key, HotKey::S);
+        assert_eq!(mini.mods, Mods { ctrl: true, ..Default::default() });
+        assert_eq!(hk.bindings[&HotkeyAction::DashboardEdit].key, HotKey::E);
+    }
+
+    #[test]
+    fn action_scopes_split_global_and_app() {
+        assert_eq!(HotkeyAction::ToggleGearbox.scope(), HotkeyScope::Global);
+        assert_eq!(HotkeyAction::MiniSettings.scope(), HotkeyScope::AppFocused);
     }
 
     // Keep the expected default in sync without importing the coop module into the test.
