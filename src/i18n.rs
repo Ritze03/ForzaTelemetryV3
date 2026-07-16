@@ -147,6 +147,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Built-in" => "Vorlage",
         "— none —" => "— keine —",
         "Source" => "Quelle",
+        "Destination" => "Ziel",
+        "Create new profile" => "Neues Profil erstellen",
         "Paste JSON" => "JSON einfügen",
         "Using a bundled preset as the source." => "Verwende eine mitgelieferte Vorlage als Quelle.",
         "New profile" => "Neues Profil",
