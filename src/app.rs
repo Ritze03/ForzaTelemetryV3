@@ -1627,9 +1627,26 @@ impl eframe::App for ForzaApp {
                 ui.horizontal(|ui| {
                     use crate::i18n::tr;
                     use crate::icons;
-                    // Backfire/Gearbox indicator tooltips should appear instantly
-                    // (no hover delay), scoped to the status bar only.
-                    ui.style_mut().interaction.tooltip_delay = 0.0;
+                    // Instant, centred tooltips for the Backfire / Gearbox indicators.
+                    // egui's built-in `on_hover_text` uses a hover grace-period +
+                    // pointer-anchored placement that a ui-local `tooltip_delay = 0.0`
+                    // override does NOT reliably cancel (the delay is read from the
+                    // context style, not this ui). Drawing the tooltip ourselves in a
+                    // Tooltip-order Area renders it the same frame the pointer is over
+                    // the indicator (no delay) and lets us centre it just above the
+                    // indicator's rect instead of the default bottom-right offset.
+                    let show_center_tooltip = |ui: &egui::Ui, rect: egui::Rect, text: String| {
+                        egui::Area::new(egui::Id::new(("status_bar_tt", &text)))
+                            .order(egui::Order::Tooltip)
+                            .interactable(false)
+                            .fixed_pos(rect.center_top() - egui::vec2(0.0, 6.0))
+                            .pivot(egui::Align2::CENTER_BOTTOM)
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.label(text);
+                                });
+                            });
+                    };
                     // LEFT: connection status + pps
                     // NO_SIGNAL renders wider than its glyph advance, so it needs an
                     // extra space to match PLUG's visual gap.
@@ -1707,11 +1724,23 @@ impl eframe::App for ForzaApp {
                         if pad > gap {
                             ui.add_space(pad);
                         }
-                        ui.colored_label(bf_color, bf_text)
-                            .on_hover_text(format!("{} — {}", tr("Backfire"), bf_word));
+                        let bf_resp = ui.colored_label(bf_color, bf_text);
+                        if bf_resp.hovered() {
+                            show_center_tooltip(
+                                ui,
+                                bf_resp.rect,
+                                format!("{} — {}", tr("Backfire"), bf_word),
+                            );
+                        }
                         ui.separator();
-                        ui.colored_label(gb_color, gb_text)
-                            .on_hover_text(format!("{} — {}", tr("Automatic Gearbox"), gb_word));
+                        let gb_resp = ui.colored_label(gb_color, gb_text);
+                        if gb_resp.hovered() {
+                            show_center_tooltip(
+                                ui,
+                                gb_resp.rect,
+                                format!("{} — {}", tr("Automatic Gearbox"), gb_word),
+                            );
+                        }
                     } else {
                         // Icon-only: two fixed 22px boxes, no divider, ink-centred glyphs.
                         let box_w = 22.0;
@@ -1732,7 +1761,9 @@ impl eframe::App for ForzaApp {
                                 .centered_pos(ui, icon, font.clone(), rect.center());
                             ui.painter()
                                 .text(pos, egui::Align2::LEFT_TOP, icon, font.clone(), color);
-                            resp.on_hover_text(hover);
+                            if resp.hovered() {
+                                show_center_tooltip(ui, rect, hover);
+                            }
                         }
                     }
 
