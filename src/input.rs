@@ -53,6 +53,7 @@ mod linux {
     pub struct InputSender {
         tx: SyncSender<Cmd>,
         echo: EchoWindow,
+        gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl InputSender {
@@ -142,10 +143,20 @@ mod linux {
                     }
                 }
             });
-            Self { tx, echo }
+            Self { tx, echo, gate: None }
+        }
+
+        /// Install a shared focus gate: when set and false, key emission is
+        /// suppressed (so synthetic input never leaks into other apps).
+        pub fn set_focus_gate(&mut self, gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            self.gate = Some(gate);
+        }
+        pub fn input_allowed(&self) -> bool {
+            self.gate.as_ref().map_or(true, |g| g.load(std::sync::atomic::Ordering::Relaxed))
         }
 
         pub fn press(&self, key: Key, hold_ms: u64, gap_ms: u64) {
+            if !self.input_allowed() { return; }
             self.tx.send(Cmd::Key { key, hold_ms, gap_ms, echo_ms: None }).ok();
         }
 
@@ -153,6 +164,7 @@ mod linux {
         /// Non-blocking: a full queue drops the press (a skipped backfire pop is
         /// harmless; stalling the UI thread is not).
         pub fn press_tracked(&self, key: Key, hold_ms: u64, gap_ms: u64, echo_ms: u64) {
+            if !self.input_allowed() { return; }
             self.tx
                 .try_send(Cmd::Key { key, hold_ms, gap_ms, echo_ms: Some(echo_ms) })
                 .ok();
@@ -162,6 +174,7 @@ mod linux {
         /// after `max_hold_ms` as a stuck-key safety). Non-blocking, like
         /// `press_tracked`. Used for packet-based backfire (hold until next packet).
         pub fn hold_tracked(&self, key: Key, max_hold_ms: u64, echo_ms: u64) {
+            if !self.input_allowed() { return; }
             self.tx
                 .try_send(Cmd::Hold { key, max_hold_ms, echo_ms })
                 .ok();
@@ -213,6 +226,7 @@ mod windows {
     pub struct InputSender {
         tx: SyncSender<Cmd>,
         echo: EchoWindow,
+        gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl InputSender {
@@ -288,10 +302,20 @@ mod windows {
                     }
                 }
             });
-            Self { tx, echo }
+            Self { tx, echo, gate: None }
+        }
+
+        /// Install a shared focus gate: when set and false, key emission is
+        /// suppressed (so synthetic input never leaks into other apps).
+        pub fn set_focus_gate(&mut self, gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            self.gate = Some(gate);
+        }
+        pub fn input_allowed(&self) -> bool {
+            self.gate.as_ref().map_or(true, |g| g.load(std::sync::atomic::Ordering::Relaxed))
         }
 
         pub fn press(&self, key: KeyCode, hold_ms: u64, gap_ms: u64) {
+            if !self.input_allowed() { return; }
             self.tx.send(Cmd::Press { key: key.0, hold_ms, gap_ms, echo_ms: None }).ok();
         }
 
@@ -299,6 +323,7 @@ mod windows {
         /// Non-blocking: a full queue drops the press (a skipped backfire pop is
         /// harmless; stalling the UI thread is not).
         pub fn press_tracked(&self, key: KeyCode, hold_ms: u64, gap_ms: u64, echo_ms: u64) {
+            if !self.input_allowed() { return; }
             self.tx
                 .try_send(Cmd::Press { key: key.0, hold_ms, gap_ms, echo_ms: Some(echo_ms) })
                 .ok();
@@ -308,6 +333,7 @@ mod windows {
         /// after `max_hold_ms` as a stuck-key safety). Non-blocking, like
         /// `press_tracked`. Used for packet-based backfire (hold until next packet).
         pub fn hold_tracked(&self, key: KeyCode, max_hold_ms: u64, echo_ms: u64) {
+            if !self.input_allowed() { return; }
             self.tx
                 .try_send(Cmd::Hold { key: key.0, max_hold_ms, echo_ms })
                 .ok();
@@ -344,6 +370,8 @@ mod stub {
 
     impl InputSender {
         pub fn new() -> Self { Self }
+        pub fn set_focus_gate(&mut self, _gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+        pub fn input_allowed(&self) -> bool { true }
         pub fn press(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64) {}
         pub fn press_tracked(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64, _echo_ms: u64) {}
         pub fn hold_tracked(&self, _key: KeyCode, _max_hold_ms: u64, _echo_ms: u64) {}
@@ -366,6 +394,21 @@ pub use stub::{InputSender, KeyCode, char_to_key};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_gate_blocks_when_not_allowed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let gate = Arc::new(AtomicBool::new(true));
+        let mut sender = InputSender::new();
+        sender.set_focus_gate(gate.clone());
+        assert!(sender.input_allowed());
+        gate.store(false, Ordering::Relaxed);
+        assert!(!sender.input_allowed());
+        // No gate set → always allowed.
+        let plain = InputSender::new();
+        assert!(plain.input_allowed());
+    }
 
     #[test]
     fn echo_window_opens_and_expires() {
