@@ -75,13 +75,14 @@ registry, the completeness test, and the `export_selected` / `import_selected` /
 `groups_present` functions.
 
 - **Export** tab — tick groups → *Copy to clipboard* (JSON of just those keys).
-- **Import** tab — pick a **source** (Paste JSON, or a bundled preset used *by reference* —
-  its JSON is never dumped into the paste box), choose a **target** (a new profile, or
-  overwrite an existing one), tick which groups to apply. Only the selected groups' keys
-  overwrite the target; everything else is preserved. Groups absent from the source are
-  disabled (greyed) in the tree. `profile_import_builtin` holds the chosen preset index
-  (`None` = paste mode); `recompute_import_present` refreshes the tree when the source
-  changes.
+- **Import** tab — pick a **Source** (Paste JSON, or a bundled preset used *by reference* —
+  its JSON is never dumped into the paste box; the paste box itself is fixed-height with its
+  own scrollbar so a big config doesn't grow it), a **Destination** dropdown (an existing
+  profile to overwrite, or *Create new profile* which reveals a name field beside it), then
+  tick which groups to apply. Only the selected groups' keys overwrite the destination;
+  everything else is preserved. Groups absent from the source are disabled (greyed) in the
+  tree. `profile_import_builtin` holds the chosen preset index (`None` = paste mode);
+  `recompute_import_present` refreshes the tree when the source changes.
 
 ## UI state (`app.rs`)
 
