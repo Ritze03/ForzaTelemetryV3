@@ -410,11 +410,13 @@ fn profile_row(ui: &mut Ui, name: &str, active: bool, icon: Option<&str>) -> boo
 /// to the outer Settings pane.
 fn tree_box(ui: &mut Ui, id: &str, height: f32, sel: &mut [bool], present: Option<&[bool]>) {
     egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::symmetric(4, 7)) // extra top/bottom so scrolled rows clear the rounded border
-        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(4))
+        // Corner radius == margin so the (rectangular) scroll viewport's corners sit just
+        // inside the rounded border — content clears the corners without a bigger gap.
+        .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let inner = (height - 22.0).max(40.0); // minus the frame's border + margins
+            let inner = (height - 12.0).max(40.0); // minus the frame's border + margins
             let area = egui::ScrollArea::vertical()
                 .max_height(inner)
                 .min_scrolled_height(inner)
@@ -449,11 +451,11 @@ fn import_source_json(app: &ForzaApp) -> String {
 /// Read-only JSON preview in a bordered, scrollable box of the given height.
 fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
     egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::symmetric(4, 7))
-        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(4))
+        .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let inner = (height - 22.0).max(40.0);
+            let inner = (height - 12.0).max(40.0);
             egui::ScrollArea::both()
                 .max_height(inner)
                 .min_scrolled_height(inner)
@@ -470,6 +472,37 @@ fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
                     );
                 });
         });
+}
+
+/// Fixed-height paste box: a rounded frame (that stays put) around an internally
+/// scrolling, frameless multiline editor — so scrolling doesn't clip the border away
+/// the way a bare growing TextEdit-in-a-ScrollArea does. Returns true if edited.
+fn paste_box(ui: &mut Ui, id: &str, height: f32, buf: &mut String) -> bool {
+    let mut changed = false;
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::same(4))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let inner = (height - 12.0).max(30.0);
+            let area = egui::ScrollArea::vertical()
+                .max_height(inner)
+                .min_scrolled_height(inner)
+                .auto_shrink([false, false])
+                .id_salt(id);
+            changed = captured_scroll(ui, area, |ui| {
+                ui.set_min_height(inner);
+                ui.add(
+                    egui::TextEdit::multiline(buf)
+                        .frame(false)
+                        .desired_width(f32::INFINITY)
+                        .code_editor()
+                        .hint_text(tr("Paste JSON here")),
+                )
+                .changed()
+            });
+        });
+    changed
 }
 
 /// The large two-pane Export / Import modal (opened from the Profiles card buttons):
@@ -542,7 +575,7 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
             } else {
                 // Top: Source (left) | Destination (right), fixed height so the split
                 // below lines up. Bottom: What to import (left) | Preview (right).
-                const TOP_H: f32 = 150.0;
+                const TOP_H: f32 = 156.0;
                 const BOT_H: f32 = 270.0;
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), TOP_H),
@@ -644,8 +677,9 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
     }
 }
 
-/// Import modal top-left column: the Source picker (Paste JSON / bundled preset) with
-/// a fixed-height paste box (or a caption for a preset).
+/// Import modal top-left column: the Source picker (Paste JSON / bundled preset). The
+/// paste box fills the column's remaining height so it ends level with the Destination
+/// column's name field.
 fn import_source_col(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::config;
     ui.label(crate::theme::section_label(tr("Source")));
@@ -676,18 +710,9 @@ fn import_source_col(ui: &mut Ui, app: &mut ForzaApp) {
     }
     ui.add_space(4.0);
 
+    let box_h = ui.available_height().max(60.0); // fill to the bottom of the top row
     if app.profile_import_builtin.is_none() {
-        let area = egui::ScrollArea::vertical().max_height(88.0).id_salt("io_paste");
-        let resp = captured_scroll(ui, area, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut app.profile_import_buf)
-                    .desired_rows(4)
-                    .desired_width(f32::INFINITY)
-                    .code_editor()
-                    .hint_text(tr("Paste JSON here")),
-            )
-        });
-        if resp.changed() {
+        if paste_box(ui, "io_paste", box_h, &mut app.profile_import_buf) {
             recompute_import_present(app);
         }
     } else {
@@ -695,9 +720,10 @@ fn import_source_col(ui: &mut Ui, app: &mut ForzaApp) {
     }
 }
 
-/// Import modal top-right column: the Destination — a fixed-height profile list whose
-/// first row is a blue "+ New profile", plus an always-present name field (disabled
-/// unless "New profile" is selected), so the layout never jumps.
+/// Import modal top-right column: the Destination — a profile list (its first row a blue
+/// "+ New profile") that fills the column down to an always-present name field (disabled
+/// unless "New profile" is selected), so it ends level with the Source paste box and
+/// never jumps.
 fn import_dest_col(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::config;
     let profiles = config::list_profiles();
@@ -706,19 +732,23 @@ fn import_dest_col(ui: &mut Ui, app: &mut ForzaApp) {
     ui.label(crate::theme::section_label(tr("Destination")));
     ui.add_space(4.0);
 
-    let dest_h = 84.0;
+    // The list fills the column, leaving room for the name field pinned at the bottom.
+    let name_reserve = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+    let dest_h = (ui.available_height() - name_reserve).max(56.0);
     let mut pick_new = false;
     let mut pick_overwrite: Option<String> = None;
     egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(2))
+        .inner_margin(egui::Margin::same(4))
+        .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let inner = (dest_h - 12.0).max(40.0);
             let area = egui::ScrollArea::vertical()
-                .max_height(dest_h)
-                .min_scrolled_height(dest_h)
+                .max_height(inner)
+                .min_scrolled_height(inner)
                 .auto_shrink([false, false]);
             captured_scroll(ui, area, |ui| {
-                ui.set_min_height(dest_h);
+                ui.set_min_height(inner);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if profile_row(ui, tr("New profile"), app.profile_import_new, Some(crate::icons::PLUS)) {
                     pick_new = true;
