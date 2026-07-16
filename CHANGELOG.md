@@ -68,6 +68,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Forza Motorsport 7 mode**: dropped entirely — the app is now Forza Horizon 6 only, and the game-selection dropdown in Setup is gone.
 
 ### Info
+- **Styled radio buttons**: one-of-N choices (unit pickers, import target, engine display mode) now use a custom radio that matches the app's accent checkbox — a circle with a white centre dot — instead of the default egui look.
+- **Profile actions use dialogs**: New / Duplicate / Rename / Delete now open a centered modal (with a name field where relevant, Enter to confirm, Esc to cancel) instead of inline rows, and the redundant active-profile dropdown is gone — the profile list is the single picker.
 - **Settings tab reorganised**: cards are regrouped — left column now holds **Profiles**, its Export/Import companion, **Hotkey**, and **Input**; right column holds **Repository / Credits** (renamed from *Repository*), **Display**, **Network**, and **Co-Op**. The Profiles panel is also reworked: a scrollable profile list with the active one checked, and Export/Import split into a two-tab card.
 - **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
 - **Setup tab**: "Settings" is renamed "Setup" and moved to the far right, next to What's New.

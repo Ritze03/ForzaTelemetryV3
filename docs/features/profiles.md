@@ -30,7 +30,8 @@ for free. See `docs/superpowers/specs/2026-07-16-profile-manager-design.md`.
   `gate_mode = WindowFocus` ("Game window focused") and `input_focus_gate = true` ("Only
   send inputs when game focused"). This override is New-only — duplicate and import don't
   apply it.
-- **Duplicate** (`duplicate_profile`) — copies the active snapshot to "<name> copy".
+- **Duplicate** (`duplicate_profile_as`) — copies the active snapshot under a chosen name
+  (the dialog seeds "<name> copy") and switches to it.
 - **Rename** (`rename_active_profile`) — renames the active profile's file.
 - **Delete** (`delete_profile`) — removes the file; if it was active, loads the first
   remaining profile **without** flushing first (the deleted profile is gone — flushing
@@ -50,10 +51,14 @@ The default active profile name is `"Default"`.
 
 Two cards, both in the left Settings column:
 
-- **PROFILES** (`profiles_card`) — an `Active profile` dropdown (compact mirror), a
-  fixed-height **scrollable list** (`profile_row`: full-width click target, active row
-  washed + right-aligned check), and a four-button row New / Duplicate / Rename / Delete.
-  New & Rename reveal an inline name field; Delete an inline confirm.
+- **PROFILES** (`profiles_card`) — a fixed-height **scrollable list** (`profile_row`:
+  full-width click target, active row washed + right-aligned check; clicking a row
+  switches to it — this replaces the old active-profile dropdown), and a four-button row
+  New / Duplicate / Rename / Delete. Each button opens a **modal** (`profile_dialog_modal`):
+  New / Duplicate / Rename carry a text field (seeded empty / `<name> copy` / current name),
+  Delete is a plain confirm with a red primary button. Enter confirms, Esc or a
+  backdrop-click cancels. The modal renders at the end of `settings::show` so it floats
+  over the whole tab.
 - **EXPORT / IMPORT** (`export_import_card`) — a bordered card whose header is a
   two-segment tab bar (`io_segment`, accent-filled when active) swapping between the
   export tree and the import form. The shared green status line sits at the bottom.
@@ -76,8 +81,9 @@ registry, the completeness test, and the `export_selected` / `import_selected` /
 
 ## UI state (`app.rs`)
 
-Transient (not persisted): `profile_dialog` (inline New/Rename/Delete-confirm),
-`profile_io_tab` (Export/Import), `profile_name_buf`, `profile_io_status`,
+Transient (not persisted): `profile_dialog` (modal New/Duplicate/Rename/Delete-confirm),
+`profile_dialog_focus` (focus the dialog text field next frame), `profile_io_tab`
+(Export/Import), `profile_name_buf`, `profile_io_status`,
 `profile_export_sel` / `profile_import_sel` (bool masks aligned to `KEY_GROUPS`),
 `profile_import_present`, `profile_import_buf`, and the import-target fields
 (`profile_import_new`, `profile_import_new_name`, `profile_import_overwrite`).

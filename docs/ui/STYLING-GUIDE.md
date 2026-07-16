@@ -135,6 +135,34 @@ All return the checkbox response (wrap in a tooltip `hover(...)` if needed). If 
 checkbox anywhere, reach for one of these — do **not** hand-roll `egui::Checkbox::new`,
 so the accent-box look stays uniform across the app.
 
+### Radio buttons — the matching styled radio
+
+For a one-of-N choice, use **`theme::styled_radio`**, never `ui.radio_value`. It shares the
+checkbox's renderer (`mark_ui`), so it reads as the same family: the same 18px mark, accent
+fill, hover wash and whole-row click target — but drawn as a **circle with a white centre
+dot** when selected (hairline circle when not). Sets `*current = value` on click.
+
+```rust
+ui.horizontal(|ui| {                                              // group like radio_value
+    theme::styled_radio(ui, &mut app.config.use_mph, false, "km/h");
+    theme::styled_radio(ui, &mut app.config.use_mph, true,  "mph");
+});
+```
+
+`current: &mut T` for any `T: PartialEq` (an enum, a `bool`, …); `value` is the option this
+button represents. Content-sized — stack them or lay them out in a `ui.horizontal`. As with
+checkboxes: do **not** fall back to `egui::RadioButton` / `ui.radio_value`, so the circle
+matches the accent-box checkbox everywhere.
+
+### Confirm / input modals
+
+Destructive or name-entry profile actions (New / Duplicate / Rename / Delete) use a **modal**:
+a dim full-screen backdrop `egui::Area` (`Order::Middle`) that swallows clicks, plus a
+centered `egui::Window` (`Order::Foreground`) holding the message or text field and a
+primary + `secondary_button("Cancel")` pair — `danger_button` for the primary when the action
+is destructive. Enter confirms, Esc or a backdrop click cancels. See
+`profile_dialog_modal` in `settings.rs` (pattern borrowed from the Ritz launcher).
+
 ### No trailing colons on labels
 
 Field and section labels do **not** end in a colon — write `tr("Listen port")`, not
