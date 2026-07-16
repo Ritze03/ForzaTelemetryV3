@@ -71,11 +71,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             let left = &mut cols[0];
             left.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
 
-            // Left column: Profiles, its Export/Import companion, then Hotkey & Input.
+            // Left column: Profiles (with Export/Import inside it) and Hotkey.
             crate::theme::card(left, tr("Profiles"), |ui| profiles_card(ui, app));
-            export_import_card(left, app);
             crate::theme::card(left, tr("Hotkey"), |ui| hotkey_card(ui, app));
-            crate::theme::card(left, tr("Input"), |ui| input_card(ui, app));
 
             // ── RIGHT COLUMN ─────────────────────────────────────────
             let right = &mut cols[1];
@@ -152,6 +150,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 });
                 hint(ui, tr("Local port the tunnel points at. Change only if it clashes with another app."));
             });
+
+            crate::theme::card(right, tr("Input"), |ui| input_card(ui, app));
         });
     });
 
@@ -159,10 +159,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     profile_dialog_modal(ui, app);
 }
 
-/// The PROFILES category: a scrollable profile list and the New / Duplicate /
-/// Rename / Delete row. First card in the left column; the Export/Import card
-/// ([`export_import_card`]) sits directly below it. The buttons open a modal
-/// ([`profile_dialog_modal`], rendered at the end of [`show`]).
+/// The PROFILES category: a scrollable profile list, the New / Duplicate / Rename /
+/// Delete row, and — below a divider in the same card — the Export/Import section
+/// ([`export_import_body`]). The buttons open a modal ([`profile_dialog_modal`],
+/// rendered at the end of [`show`]).
 ///
 /// Save is continuous (the live config mirrors the active profile on every
 /// change — see `AppConfig::save`), so there is no explicit Save button and
@@ -218,6 +218,13 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
             open_profile_dialog(app, ProfileDialog::ConfirmDelete, String::new());
         }
     });
+
+    // Export / Import lives inside this same card (below a divider), so it reads as
+    // one Profiles box rather than a separate floating card.
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(6.0);
+    export_import_body(ui, app);
 }
 
 /// Open a profile dialog: set the kind, seed the name field, and request focus on it.
@@ -376,10 +383,15 @@ fn profile_row(ui: &mut Ui, name: &str, active: bool) -> bool {
     resp.clicked() && !active
 }
 
-/// The EXPORT / IMPORT companion card below PROFILES: a 2-segment tab bar swaps
-/// between the export tree and the import form. Uses the app's styled checkboxes
-/// (see [`group_tree`]) and shows the shared profile status line at the bottom.
-fn export_import_card(ui: &mut Ui, app: &mut ForzaApp) {
+/// Height reserved for the Export/Import tab body, so switching tabs never resizes
+/// the card. The tree in each tab fills whatever the fixed chrome leaves, so both
+/// tabs occupy exactly this height (Export just gets a taller tree).
+const IO_BODY_H: f32 = 300.0;
+
+/// Export / Import section rendered *inside* the Profiles card: a 2-segment tab bar
+/// over a fixed-height body ([`IO_BODY_H`]) so toggling tabs doesn't shift the layout,
+/// plus the shared status line.
+fn export_import_body(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::app::ProfileIoTab;
     use crate::config;
     if app.profile_export_sel.len() != config::KEY_GROUPS.len() {
@@ -390,42 +402,28 @@ fn export_import_card(ui: &mut Ui, app: &mut ForzaApp) {
         app.profile_import_present = vec![false; config::KEY_GROUPS.len()];
     }
 
-    ui.group(|ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 4.0;
-
-        // Tab bar: two equal segments.
-        ui.columns(2, |c| {
-            io_segment(&mut c[0], &mut app.profile_io_tab, ProfileIoTab::Export, tr("Export"));
-            io_segment(&mut c[1], &mut app.profile_io_tab, ProfileIoTab::Import, tr("Import"));
-        });
-        ui.add_space(4.0);
-
-        match app.profile_io_tab {
-            ProfileIoTab::Export => {
-                hint(ui, tr("Pick what to include, then copy the JSON to the clipboard."));
-                ui.add_space(4.0);
-                let area = egui::ScrollArea::vertical().max_height(130.0).id_salt("exp_tree");
-                captured_scroll(ui, area, |ui| {
-                    group_tree(ui, &mut app.profile_export_sel, None);
-                });
-                ui.add_space(6.0);
-                if ui.add_sized([ui.available_width(), 26.0],
-                    egui::Button::new(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard")))).clicked()
-                {
-                    ui.ctx().copy_text(config::export_selected(&app.config, &app.profile_export_sel));
-                    app.profile_io_status = tr("Copied to clipboard.").to_string();
-                }
-            }
-            ProfileIoTab::Import => import_body(ui, app),
-        }
-
-        if !app.profile_io_status.is_empty() {
-            ui.add_space(6.0);
-            ui.label(RichText::new(&app.profile_io_status).size(11.0).color(Color32::from_rgb(120, 200, 120)));
-        }
+    ui.columns(2, |c| {
+        io_segment(&mut c[0], &mut app.profile_io_tab, ProfileIoTab::Export, tr("Export"));
+        io_segment(&mut c[1], &mut app.profile_io_tab, ProfileIoTab::Import, tr("Import"));
     });
-    ui.add_space(8.0);
+    ui.add_space(6.0);
+
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), IO_BODY_H),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(ui.available_width());
+            match app.profile_io_tab {
+                ProfileIoTab::Export => export_body(ui, app),
+                ProfileIoTab::Import => import_body(ui, app),
+            }
+        },
+    );
+
+    if !app.profile_io_status.is_empty() {
+        ui.add_space(6.0);
+        ui.label(RichText::new(&app.profile_io_status).size(11.0).color(Color32::from_rgb(120, 200, 120)));
+    }
 }
 
 /// One segment of the Export/Import tab bar: accent-filled when active.
@@ -441,41 +439,105 @@ fn io_segment(ui: &mut Ui, cur: &mut crate::app::ProfileIoTab, this: crate::app:
     }
 }
 
-/// Import tab body: paste/built-in source → target → group tree → Import.
+/// The group selection tree wrapped in a bordered box (so it reads as its own pane),
+/// scrolling within `height`. The tree captures the wheel so its edges don't chain
+/// to the outer Settings pane.
+fn tree_box(ui: &mut Ui, id: &str, height: f32, sel: &mut [bool], present: Option<&[bool]>) {
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let inner = (height - 16.0).max(40.0); // minus the frame's border + margins
+            let area = egui::ScrollArea::vertical()
+                .max_height(inner)
+                .min_scrolled_height(inner)
+                .auto_shrink([false, false])
+                .id_salt(id);
+            captured_scroll(ui, area, |ui| {
+                ui.set_min_height(inner);
+                group_tree(ui, sel, present);
+            });
+        });
+}
+
+/// Export tab body: helper text → outlined group tree (fills the body) → Copy button.
+fn export_body(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::config;
+    hint(ui, tr("Pick what to include, then copy the JSON to the clipboard."));
+    ui.add_space(4.0);
+    let reserve = 26.0 + ui.spacing().item_spacing.y + 6.0; // Copy button + gap
+    let th = (ui.available_height() - reserve).max(90.0);
+    tree_box(ui, "exp_tree", th, &mut app.profile_export_sel, None);
+    ui.add_space(6.0);
+    if ui.add_sized([ui.available_width(), 26.0],
+        egui::Button::new(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard")))).clicked()
+    {
+        ui.ctx().copy_text(config::export_selected(&app.config, &app.profile_export_sel));
+        app.profile_io_status = tr("Copied to clipboard.").to_string();
+    }
+}
+
+/// Recompute which groups the current import source (built-in preset or paste buffer)
+/// contains, and pre-check exactly those.
+fn recompute_import_present(app: &mut ForzaApp) {
+    let src = match app.profile_import_builtin {
+        Some(i) => crate::config::PRESET_DATA[i].to_string(),
+        None => app.profile_import_buf.clone(),
+    };
+    app.profile_import_present = crate::config::groups_present(&src);
+    app.profile_import_sel = app.profile_import_present.clone();
+}
+
+/// Import tab body: source (paste JSON or a bundled preset) → target → outlined group
+/// tree (fills the body) → Import. Built-in presets are used by reference — their JSON
+/// is never dumped into the paste box.
 fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::config;
     let profiles = config::list_profiles();
     let active = app.config.active_profile.clone();
 
-    hint(ui, tr("Paste JSON (or pick a built-in), choose a target, tick what to apply."));
-    ui.add_space(4.0);
-
+    // Source picker: Paste JSON, or one of the bundled presets (by reference).
+    let mut source_changed = false;
     ui.horizontal(|ui| {
-        ui.label(tr("Built-in"));
-        egui::ComboBox::from_id_salt("profile_builtin_combo")
-            .selected_text(tr("— none —"))
+        ui.label(tr("Source"));
+        let sel_text = match app.profile_import_builtin {
+            Some(i) => config::PRESET_NAMES[i],
+            None => tr("Paste JSON"),
+        };
+        egui::ComboBox::from_id_salt("profile_source_combo")
+            .selected_text(sel_text)
             .show_ui(ui, |ui| {
+                if ui.selectable_label(app.profile_import_builtin.is_none(), tr("Paste JSON")).clicked() {
+                    app.profile_import_builtin = None;
+                    source_changed = true;
+                }
                 for (i, name) in config::PRESET_NAMES.iter().enumerate() {
-                    if ui.selectable_label(false, *name).clicked() {
-                        app.profile_import_buf = config::PRESET_DATA[i].to_string();
-                        app.profile_import_present = config::groups_present(&app.profile_import_buf);
-                        app.profile_import_sel = app.profile_import_present.clone();
+                    if ui.selectable_label(app.profile_import_builtin == Some(i), *name).clicked() {
+                        app.profile_import_builtin = Some(i);
+                        source_changed = true;
                     }
                 }
             });
     });
+    if source_changed {
+        recompute_import_present(app);
+    }
     ui.add_space(4.0);
 
-    let resp = ui.add(
-        egui::TextEdit::multiline(&mut app.profile_import_buf)
-            .desired_rows(4)
-            .desired_width(f32::INFINITY)
-            .code_editor()
-            .hint_text(tr("Paste JSON here")),
-    );
-    if resp.changed() {
-        app.profile_import_present = config::groups_present(&app.profile_import_buf);
-        app.profile_import_sel = app.profile_import_present.clone();
+    // Paste box only in paste mode; a bundled preset shows a short caption instead.
+    if app.profile_import_builtin.is_none() {
+        let resp = ui.add(
+            egui::TextEdit::multiline(&mut app.profile_import_buf)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
+                .code_editor()
+                .hint_text(tr("Paste JSON here")),
+        );
+        if resp.changed() {
+            recompute_import_present(app);
+        }
+    } else {
+        hint(ui, tr("Using a bundled preset as the source."));
     }
     ui.add_space(6.0);
 
@@ -508,13 +570,16 @@ fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
     });
     ui.add_space(6.0);
 
-    let area = egui::ScrollArea::vertical().max_height(130.0).id_salt("imp_tree");
-    captured_scroll(ui, area, |ui| {
-        group_tree(ui, &mut app.profile_import_sel, Some(&app.profile_import_present));
-    });
+    let reserve = 26.0 + ui.spacing().item_spacing.y + 6.0; // Import button + gap
+    let th = (ui.available_height() - reserve).max(80.0);
+    tree_box(ui, "imp_tree", th, &mut app.profile_import_sel, Some(&app.profile_import_present));
     ui.add_space(6.0);
 
-    let ok = !app.profile_import_buf.trim().is_empty();
+    let src = match app.profile_import_builtin {
+        Some(i) => config::PRESET_DATA[i].to_string(),
+        None => app.profile_import_buf.clone(),
+    };
+    let ok = !src.trim().is_empty();
     if ui.add_enabled_ui(ok, |ui| {
         ui.add_sized([ui.available_width(), 26.0],
             egui::Button::new(format!("{}  {}", crate::icons::FLOPPY, tr("Import")))).clicked()
@@ -533,10 +598,11 @@ fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
                 app.config.switch_profile(&target);
             }
         }
-        let buf = app.profile_import_buf.clone();
-        if config::import_selected(&mut app.config, &buf, &app.profile_import_sel) {
+        if config::import_selected(&mut app.config, &src, &app.profile_import_sel) {
             app.config.save();
-            app.profile_import_buf.clear();
+            if app.profile_import_builtin.is_none() {
+                app.profile_import_buf.clear();
+            }
             app.profile_io_status = format!("{} {}", tr("Imported into"), app.config.active_profile);
         } else {
             app.profile_io_status = tr("Invalid JSON — nothing imported.").to_string();

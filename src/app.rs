@@ -661,8 +661,9 @@ pub struct ForzaApp {
     pub profile_io_status: String,
     pub profile_export_sel: Vec<bool>,
     pub profile_import_buf: String,
+    pub profile_import_builtin: Option<usize>, // import source: Some(i) = bundled preset i, None = paste buffer
     pub profile_import_sel: Vec<bool>,
-    pub profile_import_present: Vec<bool>,   // which groups the pasted JSON actually contains
+    pub profile_import_present: Vec<bool>,   // which groups the source JSON actually contains
     pub profile_import_new: bool,            // import target: true = new profile, false = overwrite existing
     pub profile_import_new_name: String,
     pub profile_import_overwrite: String,    // selected existing profile to overwrite
@@ -858,6 +859,7 @@ impl ForzaApp {
             profile_io_status: String::new(),
             profile_export_sel: vec![true; crate::config::KEY_GROUPS.len()],
             profile_import_buf: String::new(),
+            profile_import_builtin: None,
             profile_import_sel: vec![true; crate::config::KEY_GROUPS.len()],
             profile_import_present: vec![false; crate::config::KEY_GROUPS.len()],
             profile_import_new: true,
