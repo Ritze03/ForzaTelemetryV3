@@ -1576,18 +1576,16 @@ impl eframe::App for ForzaApp {
                         );
                     }
 
-                    // Backfire: green when active, red when off.
-                    ui.separator();
-                    let (bf_color, bf_label) = if self.config.backfire_enabled {
-                        (crate::theme::GOOD, tr("Backfire"))
+                    // CENTER: Backfire + Automatic Gearbox indicators, centered on
+                    // the whole bar. Backfire is green (active) / red (off); the
+                    // Gearbox is green (active), pastel-amber "Uncalibrated" (enabled
+                    // but not yet engaged), or red (off).
+                    let bf_color = if self.config.backfire_enabled {
+                        crate::theme::GOOD
                     } else {
-                        (crate::theme::DANGER, tr("Backfire"))
+                        crate::theme::DANGER
                     };
-                    ui.colored_label(bf_color, format!("{}  {}", icons::BOLT, bf_label));
-
-                    // Automatic Gearbox: green active, pastel-amber "Uncalibrated"
-                    // (enabled but the box hasn't engaged yet), red when off.
-                    ui.separator();
+                    let bf_text = format!("{}  {}", icons::BOLT, tr("Backfire"));
                     let (gb_color, gb_label) = if !self.config.dsg_enabled {
                         (crate::theme::DANGER, tr("Automatic Gearbox"))
                     } else if self.dsg.engaged {
@@ -1595,7 +1593,23 @@ impl eframe::App for ForzaApp {
                     } else {
                         (crate::theme::WARN, tr("Uncalibrated"))
                     };
-                    ui.colored_label(gb_color, format!("{}  {}", icons::GEARBOX, gb_label));
+                    let gb_text = format!("{}  {}", icons::GEARBOX, gb_label);
+                    // Measure the pair so we can pad up to the bar's centre.
+                    let body = egui::TextStyle::Body.resolve(ui.style());
+                    let text_w = |s: &str| {
+                        ui.painter()
+                            .layout_no_wrap(s.to_owned(), body.clone(), egui::Color32::WHITE)
+                            .rect
+                            .width()
+                    };
+                    let gap = ui.spacing().item_spacing.x;
+                    let group_w = text_w(&bf_text) + gap + text_w(&gb_text);
+                    let pad = (ui.max_rect().center().x - group_w / 2.0) - ui.cursor().min.x;
+                    if pad > gap {
+                        ui.add_space(pad);
+                    }
+                    ui.colored_label(bf_color, bf_text);
+                    ui.colored_label(gb_color, gb_text);
 
                     // RIGHT: cog toggle
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
