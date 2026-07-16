@@ -306,7 +306,7 @@ fn profile_dialog_modal(ui: &mut Ui, app: &mut ForzaApp) {
                 let te = ui.add(
                     egui::TextEdit::singleline(&mut app.profile_name_buf)
                         .desired_width(f32::INFINITY)
-                        .hint_text(tr("Profile name")),
+                        .hint_text(crate::theme::placeholder(tr("Profile name"))),
                 );
                 if app.profile_dialog_focus {
                     te.request_focus();
@@ -455,11 +455,15 @@ fn import_source_json(app: &ForzaApp) -> String {
 fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
     scroll_box(ui, id, height, false, |ui| {
         let text = if json.is_empty() { "{}" } else { json };
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).monospace())
-                .selectable(true)
-                .wrap_mode(egui::TextWrapMode::Wrap),
-        );
+        // A plain left layout so wrapped lines aren't justified (Label picks up the
+        // container's `horizontal_justify`, which would space the glyphs out to fill).
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(text).monospace())
+                    .selectable(true)
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+        });
     });
 }
 
@@ -472,7 +476,7 @@ fn paste_box(ui: &mut Ui, id: &str, height: f32, buf: &mut String) -> bool {
                 .frame(false)
                 .desired_width(f32::INFINITY)
                 .code_editor()
-                .hint_text(tr("Paste JSON here")),
+                .hint_text(crate::theme::placeholder(tr("Paste JSON here"))),
         )
         .changed()
     })
@@ -748,7 +752,7 @@ fn import_dest_col(ui: &mut Ui, app: &mut ForzaApp) {
     ui.add_enabled_ui(app.profile_import_new, |ui| {
         ui.add(
             egui::TextEdit::singleline(&mut app.profile_import_new_name)
-                .hint_text(tr("New profile name"))
+                .hint_text(crate::theme::placeholder(tr("New profile name")))
                 .desired_width(f32::INFINITY),
         );
     });

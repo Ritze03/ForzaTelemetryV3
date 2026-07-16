@@ -29,7 +29,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
             crate::theme::row_label(&mut c[0], tr("Player name"));
             c[1].add(
                 egui::TextEdit::singleline(&mut app.config.coop_name)
-                    .hint_text(tr("Player"))
+                    .hint_text(crate::theme::placeholder(tr("Player")))
                     .desired_width(c[1].available_width()),
             )
             .changed()
@@ -135,7 +135,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                             .clicked();
                         ui.add(
                             egui::TextEdit::singleline(&mut app.coop_join_input)
-                                .hint_text("blue-fox-rapid-owl")
+                                .hint_text(crate::theme::placeholder("blue-fox-rapid-owl"))
                                 .desired_width(ui.available_width()),
                         );
                         clicked

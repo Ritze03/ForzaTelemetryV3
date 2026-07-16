@@ -98,6 +98,13 @@ pub fn section_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase()).color(ACCENT).size(12.0).strong()
 }
 
+/// Gray placeholder text for a text box's `hint_text`. Needed because the theme's
+/// `override_text_color` otherwise paints the hint the same near-white as real text —
+/// an explicit colour wins over the override.
+pub fn placeholder(text: impl Into<String>) -> RichText {
+    RichText::new(text.into()).color(DIM)
+}
+
 /// A bordered card with a blue [`section_label`] title, followed by a uniform
 /// 8px gap — the Co-Op tab's category styling, reused across tabs.
 ///
@@ -388,9 +395,6 @@ pub fn apply(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
 
     v.override_text_color = Some(TEXT);
-    // Placeholder / hint text (and any `.weak()` text) renders gray, not a faded white —
-    // TextEdit hints use `weak_text_color()`, which otherwise dims the override colour.
-    v.weak_text_color = Some(DIM);
     v.panel_fill = PANEL;
     v.window_fill = PANEL;
     v.window_stroke = Stroke::new(1.0, BORDER);
