@@ -10,7 +10,7 @@ use crate::i18n::tr;
 /// widget's — both read the same `power_curve_*` config fields, so one control set drives both.
 pub fn options_ui(ui: &mut Ui, config: &mut AppConfig) {
     ui.horizontal(|ui| {
-        ui.label(tr("RPM step size:"));
+        ui.label(tr("RPM step size"));
         ui.add(
             egui::Slider::new(&mut config.power_curve_step, 25.0..=500.0)
                 .step_by(25.0)

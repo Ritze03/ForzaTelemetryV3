@@ -46,7 +46,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             left.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
 
             crate::theme::card(left, tr("Network"), |ui| {
-                control_row(ui, tr("Listen port:"), |ui| {
+                control_row(ui, tr("Listen port"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let changed = app.pending_port != app.config.listen_port;
                         let btn = egui::Button::new(tr("Apply")).fill(if changed {
@@ -65,7 +65,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             });
 
             crate::theme::card(left, tr("Co-Op"), |ui| {
-                control_row(ui, tr("Host port:"), |ui| {
+                control_row(ui, tr("Host port"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
                     });
@@ -74,7 +74,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             });
 
             crate::theme::card(left, tr("Display"), |ui| {
-                control_row(ui, tr("Language:"), |ui| {
+                control_row(ui, tr("Language"), |ui| {
                     egui::ComboBox::from_id_salt("language_combo")
                         .selected_text(app.config.language.label())
                         .width(ui.available_width())
@@ -84,19 +84,19 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                             }
                         });
                 });
-                control_row(ui, tr("Speed unit:"), |ui| {
+                control_row(ui, tr("Speed unit"), |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut app.config.use_mph, false, "km/h");
                         ui.radio_value(&mut app.config.use_mph, true, "mph");
                     });
                 });
-                control_row(ui, tr("Tire temp unit:"), |ui| {
+                control_row(ui, tr("Tire temp unit"), |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut app.config.use_fahrenheit, false, "°C");
                         ui.radio_value(&mut app.config.use_fahrenheit, true, "°F");
                     });
                 });
-                control_row(ui, tr("Boost / pressure:"), |ui| {
+                control_row(ui, tr("Boost / pressure"), |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut app.config.use_bar, true, "bar");
                         ui.radio_value(&mut app.config.use_bar, false, "PSI");
@@ -184,7 +184,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
 
     // ── Window Detection ──
     sub_heading(ui, tr("Window Detection"));
-    control_row(ui, tr("Active if:"), |ui| {
+    control_row(ui, tr("Active if"), |ui| {
         egui::ComboBox::from_id_salt("hk_gate_mode")
             .selected_text(match app.config.hotkeys.gate_mode {
                 GateMode::TelemetryLive => tr("Telemetry live"),
@@ -216,7 +216,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
                     });
             });
             if app.config.hotkeys.focus_method == FocusMethod::Custom {
-                control_row(ui, tr("Command:"), |ui| {
+                control_row(ui, tr("Command"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(tr("Test")).clicked() {
                             app.focus_preview = app.focus.query_now().unwrap_or_else(|e| format!("error: {e}"));
@@ -230,7 +230,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
             }
         }
 
-        control_row(ui, tr("Game Window Title:"), |ui| {
+        control_row(ui, tr("Game Window Title"), |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = match app.detect_until {
                     Some(t) => {
@@ -249,7 +249,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
     }
 
     // Poll rate for window detection (drives both hotkey gating and the input gate).
-    changed |= crate::theme::slider_row(ui, tr("Focus check rate:"), &mut app.config.hotkeys.focus_poll_hz, 1.0..=20.0, 1.0, 0, " Hz").changed();
+    changed |= crate::theme::slider_row(ui, tr("Focus check rate"), &mut app.config.hotkeys.focus_poll_hz, 1.0..=20.0, 1.0, 0, " Hz").changed();
 
     // Live game-window status light (last entry). The detector polls whenever
     // window-focus gating or the input gate is on.
@@ -279,7 +279,7 @@ fn repo_card(ui: &mut Ui) {
         "https://github.com/Ritze03/ForzaTelemetryV3",
     );
     ui.add_space(4.0);
-    ui.label(tr("Credits:"));
+    ui.label(tr("Credits"));
     ui.hyperlink_to(
         tr("Le0_X8 — seasonal map images"),
         "https://www.reddit.com/r/ForzaHorizon/comments/1td6qzb/8096x_hires_seasonal_maps_of_fh6_from_the_early/",
