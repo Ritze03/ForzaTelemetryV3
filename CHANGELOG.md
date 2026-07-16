@@ -40,7 +40,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Backfire icon**: the Backfire tab now uses a flame glyph instead of the bolt icon.
 
 ### Fixed
-- **Backfire label colons**: the RPM Range sliders (Min, Max, Min/Max RPM, RPM interval) dropped their trailing colons to match the colon-less row labels used everywhere else.
+- **Consistent label style (no trailing colons)**: swept every tab and mini-settings page to drop the trailing `:` from field/section labels, which were mixed inconsistently across the UI — Settings, Dashboard, Co-Op, Automatic Gearbox, Backfire, Power Graph, Engines, and the accel/decel trackers now all read colon-free.
+- **Backfire RPM labels spelled out**: the RPM Range sliders' `Min` / `Max` (and `Min RPM` / `Max RPM`) now read **Minimum RPM** / **Maximum RPM**.
 - **Steady tab bar with the current-page pill**: the Modern top bar's current-tab pill now reserves the width of the longest tab name, so switching to a longer- or shorter-named tab no longer nudges the icon tabs sideways. They stay centered and only shift — once, uniformly — when the window gets genuinely narrow.
 - **Gearbox viz theming**: the Automatic Gearbox live-view (right half) now draws its chrome — borders, bar tracks, dim labels, neutral text — from the shared theme tokens instead of hard-coded greys/whites, so it matches the rest of the app. The semantic gear-state colours (green/amber/red/cyan) are unchanged.
 - **Category page top spacing**: the first category card no longer sits with a doubled gap below the tab bar — the top inset now matches the left/right inset on every card-based tab (Backfire, Automatic Gearbox, Co-Op, Settings).
