@@ -811,6 +811,18 @@ pub fn export_selected(cfg: &AppConfig, selected: &[bool]) -> String {
     serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_default()
 }
 
+/// Filter `json` down to the selected groups' keys, pretty-printed — the exact
+/// subset an import would apply. Used for the import dialog's live preview. Empty
+/// string if the JSON doesn't parse to an object.
+pub fn filter_selected(json: &str, selected: &[bool]) -> String {
+    let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str::<serde_json::Value>(json) else {
+        return String::new();
+    };
+    let allow: std::collections::HashSet<&str> = selected_keys(selected).into_iter().collect();
+    m.retain(|k, _| allow.contains(k.as_str()));
+    serde_json::to_string_pretty(&serde_json::Value::Object(m)).unwrap_or_default()
+}
+
 /// Overlay only the selected groups' keys from `json` onto `target`.
 /// Returns false (nothing applied) if the JSON doesn't parse to an object.
 pub fn import_selected(target: &mut AppConfig, json: &str, selected: &[bool]) -> bool {

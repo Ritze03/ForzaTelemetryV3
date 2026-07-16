@@ -539,14 +539,8 @@ pub enum ProfileDialog {
     Duplicate,
     Rename,
     ConfirmDelete,
-}
-
-/// Which tab the Export/Import card shows.
-#[derive(PartialEq, Clone, Copy, Default)]
-pub enum ProfileIoTab {
-    #[default]
-    Export,
-    Import,
+    Export, // large two-pane export dialog
+    Import, // large two-pane import dialog
 }
 
 /// Nested sub-tabs inside the mini-settings "Map" tab.
@@ -654,9 +648,8 @@ pub struct ForzaApp {
     pub page_map_sub_tab: MiniMapTab,
     // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
     // crate::config::KEY_GROUPS by index.
-    pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete-confirm
+    pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete / Export / Import
     pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
-    pub profile_io_tab: ProfileIoTab,        // Export / Import card active tab
     pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
     pub profile_export_sel: Vec<bool>,
@@ -854,7 +847,6 @@ impl ForzaApp {
             page_map_sub_tab: MiniMapTab::default(),
             profile_dialog: ProfileDialog::None,
             profile_dialog_focus: false,
-            profile_io_tab: ProfileIoTab::Export,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
             profile_export_sel: vec![true; crate::config::KEY_GROUPS.len()],
