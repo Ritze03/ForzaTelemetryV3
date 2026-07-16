@@ -18,6 +18,7 @@ pub const PENCIL:     &str = "\u{F040}"; // fa-pencil    (edit)
 pub const SEARCH:     &str = "\u{F422}"; // engine/vehicle lookup (Engine Swaps web search)
 pub const FLOPPY:     &str = "\u{F0C7}"; // fa-floppy-o  (save)
 pub const CHECK:      &str = "\u{F00C}"; // fa-check
+pub const PLUS:       &str = "\u{F067}"; // fa-plus      (new / add)
 pub const TIMES:      &str = "\u{F00D}"; // fa-times     (clear/close)
 pub const CLOCK:      &str = "\u{F017}"; // fa-clock-o   (timer)
 pub const USERS:      &str = "\u{F0C0}"; // fa-users     (co-op / multiplayer)

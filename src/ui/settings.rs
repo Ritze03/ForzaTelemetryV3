@@ -188,7 +188,7 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
                 ui.set_min_height(210.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for name in &profiles {
-                    if profile_row(ui, name, *name == active) {
+                    if profile_row(ui, name, *name == active, None) {
                         switch_to = Some(name.clone());
                     }
                 }
@@ -367,9 +367,10 @@ fn profile_dialog_modal(ui: &mut Ui, app: &mut ForzaApp) {
     }
 }
 
-/// One row in the profile list: full-width click target, subtle wash + right-aligned
-/// check when active, hover wash otherwise. Returns true when clicked (and inactive).
-fn profile_row(ui: &mut Ui, name: &str, active: bool) -> bool {
+/// One row in a profile list: full-width click target, subtle wash + right-aligned
+/// check when active, hover wash otherwise. An optional accent-coloured leading icon
+/// (e.g. a `+` for the "New profile" row). Returns true when clicked (and inactive).
+fn profile_row(ui: &mut Ui, name: &str, active: bool, icon: Option<&str>) -> bool {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
@@ -379,8 +380,13 @@ fn profile_row(ui: &mut Ui, name: &str, active: bool) -> bool {
             p.rect_filled(rect, egui::CornerRadius::same(4), Color32::from_rgba_unmultiplied(255, 255, 255, 10));
         }
         let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut x = rect.left() + 8.0;
+        if let Some(ic) = icon {
+            p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, ic, font.clone(), crate::theme::ACCENT);
+            x += 20.0;
+        }
         p.text(
-            egui::pos2(rect.left() + 8.0, rect.center().y),
+            egui::pos2(x, rect.center().y),
             egui::Align2::LEFT_CENTER,
             name,
             font.clone(),
@@ -404,10 +410,11 @@ fn profile_row(ui: &mut Ui, name: &str, active: bool) -> bool {
 /// to the outer Settings pane.
 fn tree_box(ui: &mut Ui, id: &str, height: f32, sel: &mut [bool], present: Option<&[bool]>) {
     egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(4))
+        .inner_margin(egui::Margin::symmetric(4, 7)) // extra top/bottom so scrolled rows clear the rounded border
+        .corner_radius(egui::CornerRadius::same(6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let inner = (height - 16.0).max(40.0); // minus the frame's border + margins
+            let inner = (height - 22.0).max(40.0); // minus the frame's border + margins
             let area = egui::ScrollArea::vertical()
                 .max_height(inner)
                 .min_scrolled_height(inner)
@@ -442,10 +449,11 @@ fn import_source_json(app: &ForzaApp) -> String {
 /// Read-only JSON preview in a bordered, scrollable box of the given height.
 fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
     egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(4))
+        .inner_margin(egui::Margin::symmetric(4, 7))
+        .corner_radius(egui::CornerRadius::same(6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let inner = (height - 16.0).max(40.0);
+            let inner = (height - 22.0).max(40.0);
             egui::ScrollArea::both()
                 .max_height(inner)
                 .min_scrolled_height(inner)
@@ -512,33 +520,67 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
         .default_width(760.0)
         .show(&ctx, |ui| {
             ui.set_width(760.0);
-            ui.columns(2, |c| {
-                // ── LEFT: what to include (+ source / destination on import) ──
-                {
-                    let ui = &mut c[0];
-                    ui.set_min_height(PANE_H);
-                    if is_export {
-                        ui.label(RichText::new(tr("What to export")).strong());
+            if is_export {
+                // Single split: What to export (left) | Preview (right).
+                ui.columns(2, |c| {
+                    {
+                        let ui = &mut c[0];
+                        ui.set_min_height(PANE_H);
+                        ui.label(crate::theme::section_label(tr("What to export")));
                         ui.add_space(4.0);
                         tree_box(ui, "exp_tree_modal", PANE_H - 26.0, &mut app.profile_export_sel, None);
-                    } else {
-                        import_left_pane(ui, app, PANE_H);
                     }
-                }
-                // ── RIGHT: live JSON preview filtered by the ticks ──
-                {
-                    let ui = &mut c[1];
-                    ui.set_min_height(PANE_H);
-                    ui.label(RichText::new(tr("Preview")).strong());
-                    ui.add_space(4.0);
-                    let preview = if is_export {
-                        config::export_selected(&app.config, &app.profile_export_sel)
-                    } else {
-                        config::filter_selected(&import_source_json(app), &app.profile_import_sel)
-                    };
-                    json_preview(ui, "io_preview", PANE_H - 26.0, &preview);
-                }
-            });
+                    {
+                        let ui = &mut c[1];
+                        ui.set_min_height(PANE_H);
+                        ui.label(crate::theme::section_label(tr("Preview")));
+                        ui.add_space(4.0);
+                        let preview = config::export_selected(&app.config, &app.profile_export_sel);
+                        json_preview(ui, "io_preview", PANE_H - 26.0, &preview);
+                    }
+                });
+            } else {
+                // Top: Source (left) | Destination (right), fixed height so the split
+                // below lines up. Bottom: What to import (left) | Preview (right).
+                const TOP_H: f32 = 150.0;
+                const BOT_H: f32 = 270.0;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), TOP_H),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.columns(2, |c| {
+                            {
+                                let ui = &mut c[0];
+                                ui.set_min_height(TOP_H);
+                                import_source_col(ui, app);
+                            }
+                            {
+                                let ui = &mut c[1];
+                                ui.set_min_height(TOP_H);
+                                import_dest_col(ui, app);
+                            }
+                        });
+                    },
+                );
+                ui.add_space(8.0);
+                ui.columns(2, |c| {
+                    {
+                        let ui = &mut c[0];
+                        ui.set_min_height(BOT_H);
+                        ui.label(crate::theme::section_label(tr("What to import")));
+                        ui.add_space(4.0);
+                        tree_box(ui, "imp_tree_modal", BOT_H - 26.0, &mut app.profile_import_sel, Some(&app.profile_import_present));
+                    }
+                    {
+                        let ui = &mut c[1];
+                        ui.set_min_height(BOT_H);
+                        ui.label(crate::theme::section_label(tr("Preview")));
+                        ui.add_space(4.0);
+                        let preview = config::filter_selected(&import_source_json(app), &app.profile_import_sel);
+                        json_preview(ui, "io_preview", BOT_H - 26.0, &preview);
+                    }
+                });
+            }
 
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -602,47 +644,44 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
     }
 }
 
-/// Import modal's left pane: Source (paste JSON / bundled preset) → what to import
-/// (tree) → Destination. The destination reserves a fixed-height profile list plus an
-/// always-present name field (disabled unless "New profile"), so it never jumps.
-fn import_left_pane(ui: &mut Ui, app: &mut ForzaApp, pane_h: f32) {
+/// Import modal top-left column: the Source picker (Paste JSON / bundled preset) with
+/// a fixed-height paste box (or a caption for a preset).
+fn import_source_col(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::config;
-    let profiles = config::list_profiles();
-    let active = app.config.active_profile.clone();
+    ui.label(crate::theme::section_label(tr("Source")));
+    ui.add_space(4.0);
 
-    // Source.
     let mut source_changed = false;
-    ui.horizontal(|ui| {
-        ui.label(tr("Source"));
-        let sel_text = match app.profile_import_builtin {
-            Some(i) => config::PRESET_NAMES[i],
-            None => tr("Paste JSON"),
-        };
-        egui::ComboBox::from_id_salt("io_source_combo")
-            .selected_text(sel_text)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(app.profile_import_builtin.is_none(), tr("Paste JSON")).clicked() {
-                    app.profile_import_builtin = None;
+    let sel_text = match app.profile_import_builtin {
+        Some(i) => config::PRESET_NAMES[i],
+        None => tr("Paste JSON"),
+    };
+    egui::ComboBox::from_id_salt("io_source_combo")
+        .selected_text(sel_text)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(app.profile_import_builtin.is_none(), tr("Paste JSON")).clicked() {
+                app.profile_import_builtin = None;
+                source_changed = true;
+            }
+            for (i, name) in config::PRESET_NAMES.iter().enumerate() {
+                if ui.selectable_label(app.profile_import_builtin == Some(i), *name).clicked() {
+                    app.profile_import_builtin = Some(i);
                     source_changed = true;
                 }
-                for (i, name) in config::PRESET_NAMES.iter().enumerate() {
-                    if ui.selectable_label(app.profile_import_builtin == Some(i), *name).clicked() {
-                        app.profile_import_builtin = Some(i);
-                        source_changed = true;
-                    }
-                }
-            });
-    });
+            }
+        });
     if source_changed {
         recompute_import_present(app);
     }
     ui.add_space(4.0);
+
     if app.profile_import_builtin.is_none() {
-        let area = egui::ScrollArea::vertical().max_height(60.0).id_salt("io_paste");
+        let area = egui::ScrollArea::vertical().max_height(88.0).id_salt("io_paste");
         let resp = captured_scroll(ui, area, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut app.profile_import_buf)
-                    .desired_rows(3)
+                    .desired_rows(4)
                     .desired_width(f32::INFINITY)
                     .code_editor()
                     .hint_text(tr("Paste JSON here")),
@@ -654,12 +693,20 @@ fn import_left_pane(ui: &mut Ui, app: &mut ForzaApp, pane_h: f32) {
     } else {
         hint(ui, tr("Using a bundled preset as the source."));
     }
-    ui.add_space(8.0);
+}
 
-    // Destination: fixed-height list (New profile + existing profiles) + name field.
-    ui.label(RichText::new(tr("Destination")).strong());
-    ui.add_space(2.0);
-    let dest_h = 96.0;
+/// Import modal top-right column: the Destination — a fixed-height profile list whose
+/// first row is a blue "+ New profile", plus an always-present name field (disabled
+/// unless "New profile" is selected), so the layout never jumps.
+fn import_dest_col(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::config;
+    let profiles = config::list_profiles();
+    let active = app.config.active_profile.clone();
+
+    ui.label(crate::theme::section_label(tr("Destination")));
+    ui.add_space(4.0);
+
+    let dest_h = 84.0;
     let mut pick_new = false;
     let mut pick_overwrite: Option<String> = None;
     egui::Frame::group(ui.style())
@@ -673,12 +720,12 @@ fn import_left_pane(ui: &mut Ui, app: &mut ForzaApp, pane_h: f32) {
             captured_scroll(ui, area, |ui| {
                 ui.set_min_height(dest_h);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                if profile_row(ui, tr("New profile"), app.profile_import_new) {
+                if profile_row(ui, tr("New profile"), app.profile_import_new, Some(crate::icons::PLUS)) {
                     pick_new = true;
                 }
                 for name in &profiles {
                     let sel = !app.profile_import_new && app.profile_import_overwrite == *name;
-                    if profile_row(ui, name, sel) {
+                    if profile_row(ui, name, sel, None) {
                         pick_overwrite = Some(name.clone());
                     }
                 }
@@ -695,7 +742,6 @@ fn import_left_pane(ui: &mut Ui, app: &mut ForzaApp, pane_h: f32) {
         app.profile_import_overwrite = active;
     }
     ui.add_space(4.0);
-    // Name field always present (reserves the space), enabled only for "New profile".
     ui.add_enabled_ui(app.profile_import_new, |ui| {
         ui.add(
             egui::TextEdit::singleline(&mut app.profile_import_new_name)
@@ -703,13 +749,6 @@ fn import_left_pane(ui: &mut Ui, app: &mut ForzaApp, pane_h: f32) {
                 .desired_width(f32::INFINITY),
         );
     });
-    ui.add_space(8.0);
-
-    // What to import — fills whatever height is left in the pane.
-    ui.label(RichText::new(tr("What to import")).strong());
-    ui.add_space(2.0);
-    let th = ui.available_height().min(pane_h).max(90.0);
-    tree_box(ui, "imp_tree_modal", th, &mut app.profile_import_sel, Some(&app.profile_import_present));
 }
 
 /// Two-level checkbox tree over `config::KEY_GROUPS`, aligned to `sel` by index,
