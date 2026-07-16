@@ -53,43 +53,44 @@ One **PROFILES** card (`profiles_card`) in the left column, holding everything:
 
 - A fixed-height **scrollable list** (`profile_row`: full-width click target, active row
   washed + right-aligned check; clicking a row switches to it — this replaces the old
-  active-profile dropdown), and a four-button row New / Duplicate / Rename / Delete. Each
-  button opens a **modal** (`profile_dialog_modal`): New / Duplicate / Rename carry a text
-  field (seeded empty / `<name> copy` / current name), Delete is a plain confirm with a red
-  primary button. Enter confirms, Esc or a backdrop-click cancels. The modal renders at the
-  end of `settings::show` so it floats over the whole tab.
-- Below a divider, the **Export / Import** section (`export_import_body`): a two-segment
-  tab bar (`io_segment`, accent-filled when active) over a **fixed-height body**
-  (`IO_BODY_H`) so toggling tabs never resizes the card — the outlined group tree
-  (`tree_box`) in each tab fills whatever the fixed chrome leaves (Export just gets a
-  taller tree). The shared green status line sits at the bottom.
+  active-profile dropdown), a four-button row New / Duplicate / Rename / Delete, and an
+  **Export / Import** button row. New / Duplicate / Rename / Delete open the small
+  `profile_dialog_modal` (text field / confirm; Enter confirms, Esc/backdrop cancels).
+  Export / Import open the large `profile_io_modal` (below). The green status line sits at
+  the bottom of the card. Both modals render at the end of `settings::show`, floating over
+  the whole tab.
 
 Left column: `PROFILES`, `HOTKEY`. Right column: `REPOSITORY / CREDITS`, `DISPLAY`,
 `NETWORK`, `CO-OP`, `INPUT`.
 
-## Selective export / import
+## Export / Import modal (`profile_io_modal`)
 
-Both use the `KEY_GROUPS` registry and a checkbox group-tree (`group_tree` in
-`settings.rs`, drawn with `theme::styled_checkbox_enabled`) — see [[presets]] for the
-registry, the completeness test, and the `export_selected` / `import_selected` /
-`groups_present` functions.
+A large, two-pane centered window over a dim backdrop, so the card stays compact:
 
-- **Export** tab — tick groups → *Copy to clipboard* (JSON of just those keys).
-- **Import** tab — pick a **Source** (Paste JSON, or a bundled preset used *by reference* —
-  its JSON is never dumped into the paste box; the paste box itself is fixed-height with its
-  own scrollbar so a big config doesn't grow it), a **Destination** dropdown (an existing
-  profile to overwrite, or *Create new profile* which reveals a name field beside it), then
-  tick which groups to apply. Only the selected groups' keys overwrite the destination;
-  everything else is preserved. Groups absent from the source are disabled (greyed) in the
-  tree. `profile_import_builtin` holds the chosen preset index (`None` = paste mode);
-  `recompute_import_present` refreshes the tree when the source changes.
+- **Left pane** — *what to include*. Export: just the outlined group tree. Import
+  (`import_left_pane`): a **Source** dropdown (Paste JSON, or a bundled preset used *by
+  reference* — never dumped into the paste box; the paste box is fixed-height with its own
+  scrollbar), a **Destination** (a fixed-height profile **list** — `profile_row` reused —
+  whose first row is *New profile*, plus an always-present name field that's disabled unless
+  *New profile* is selected, so nothing jumps), and the *what to import* group tree.
+- **Right pane** — a **live JSON preview** (`json_preview`, read-only) of exactly what will
+  be written, filtered by the ticked groups (`config::export_selected` for export,
+  `config::filter_selected` over the source for import).
+- **Bottom** — a big accent **Export** / **Import** button (`theme::primary_button`) plus
+  **Cancel**. Esc or a backdrop-click also cancels.
+
+The tree uses the `KEY_GROUPS` registry and `theme::styled_checkbox_enabled` (see
+[[presets]] for the registry, the completeness test, and `export_selected` /
+`import_selected` / `filter_selected` / `groups_present`). Only the selected groups' keys
+overwrite the destination; everything else is preserved. Groups absent from the source are
+greyed out; `recompute_import_present` refreshes that when the source changes.
 
 ## UI state (`app.rs`)
 
-Transient (not persisted): `profile_dialog` (modal New/Duplicate/Rename/Delete-confirm),
-`profile_dialog_focus` (focus the dialog text field next frame), `profile_io_tab`
-(Export/Import), `profile_name_buf`, `profile_io_status`,
-`profile_export_sel` / `profile_import_sel` (bool masks aligned to `KEY_GROUPS`),
-`profile_import_present`, `profile_import_buf`, `profile_import_builtin` (source:
-`Some(preset)` / `None` = paste), and the import-target fields (`profile_import_new`,
+Transient (not persisted): `profile_dialog`
+(`ProfileDialog`: None/New/Duplicate/Rename/ConfirmDelete/Export/Import),
+`profile_dialog_focus` (focus the dialog text field next frame), `profile_name_buf`,
+`profile_io_status`, `profile_export_sel` / `profile_import_sel` (bool masks aligned to
+`KEY_GROUPS`), `profile_import_present`, `profile_import_buf`, `profile_import_builtin`
+(source: `Some(preset)` / `None` = paste), and the import-target fields (`profile_import_new`,
 `profile_import_new_name`, `profile_import_overwrite`).
