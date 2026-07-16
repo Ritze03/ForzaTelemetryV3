@@ -5,10 +5,15 @@ use crate::i18n::{tr, Language};
 
 /// Two-column control row: label in the left half, control in the right half —
 /// the styling-guide layout (see docs/ui/STYLING-GUIDE.md).
+///
+/// The right cell is wrapped in `horizontal` so it's bounded to a single row's
+/// height (mirrors `theme::slider_row`). Without it, a right closure that uses
+/// `right_to_left(Center)` centers its content across the column's full height
+/// and the control drifts to the vertical middle of the panel.
 fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
     ui.columns(2, |c| {
         crate::theme::row_label(&mut c[0], label);
-        right(&mut c[1]);
+        c[1].horizontal(|ui| right(ui));
     });
 }
 
