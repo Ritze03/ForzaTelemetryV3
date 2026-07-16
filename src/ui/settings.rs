@@ -17,6 +17,16 @@ fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// Natural width of a [`crate::theme::styled_radio`] mark + `label`, for use as a
+/// shared `col_w` (see [`crate::theme::styled_radio_w`]) so a set of radio rows lines
+/// up into columns.
+fn radio_col_width(ui: &Ui, label: &str) -> f32 {
+    const BOX: f32 = 18.0;
+    const GAP: f32 = 7.0;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    BOX + GAP + ui.painter().layout_no_wrap(label.to_owned(), font, Color32::WHITE).size().x
+}
+
 /// A dim sub-heading inside a category card (e.g. "Global (while in-game)").
 fn sub_heading(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
@@ -92,21 +102,26 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                             }
                         });
                 });
+                // The three unit rows below share one column width for their first radio
+                // (measured from the widest first-position label, "km/h"), so the second
+                // radio in every row starts at the same x — they read as two columns
+                // instead of each row hugging its own label width.
+                let unit_col_w = radio_col_width(ui, "km/h");
                 control_row(ui, tr("Speed unit"), |ui| {
                     ui.horizontal(|ui| {
-                        crate::theme::styled_radio(ui, &mut app.config.use_mph, false, "km/h");
+                        crate::theme::styled_radio_w(ui, &mut app.config.use_mph, false, "km/h", unit_col_w);
                         crate::theme::styled_radio(ui, &mut app.config.use_mph, true, "mph");
                     });
                 });
                 control_row(ui, tr("Tire temp unit"), |ui| {
                     ui.horizontal(|ui| {
-                        crate::theme::styled_radio(ui, &mut app.config.use_fahrenheit, false, "°C");
+                        crate::theme::styled_radio_w(ui, &mut app.config.use_fahrenheit, false, "°C", unit_col_w);
                         crate::theme::styled_radio(ui, &mut app.config.use_fahrenheit, true, "°F");
                     });
                 });
                 control_row(ui, tr("Boost / pressure"), |ui| {
                     ui.horizontal(|ui| {
-                        crate::theme::styled_radio(ui, &mut app.config.use_bar, true, "bar");
+                        crate::theme::styled_radio_w(ui, &mut app.config.use_bar, true, "bar", unit_col_w);
                         crate::theme::styled_radio(ui, &mut app.config.use_bar, false, "PSI");
                     });
                 });

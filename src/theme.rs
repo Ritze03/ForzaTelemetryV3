@@ -169,8 +169,23 @@ pub fn styled_radio<T: PartialEq>(
     value: T,
     label: impl Into<String>,
 ) -> egui::Response {
+    styled_radio_w(ui, current, value, label, 0.0)
+}
+
+/// Same as [`styled_radio`] but with an explicit minimum width for the mark + label.
+/// Use on the *first* button of a row of radio pairs (e.g. the unit toggles in
+/// Settings → Display) so every row's second button starts at the same x — a shared
+/// `col_w` across rows makes them read as columns instead of each row hugging its own
+/// label width.
+pub fn styled_radio_w<T: PartialEq>(
+    ui: &mut egui::Ui,
+    current: &mut T,
+    value: T,
+    label: impl Into<String>,
+    col_w: f32,
+) -> egui::Response {
     let selected = *current == value;
-    let mut resp = mark_ui(ui, selected, label.into(), 0.0, f32::INFINITY, true, MarkShape::Radio);
+    let mut resp = mark_ui(ui, selected, label.into(), col_w, f32::INFINITY, true, MarkShape::Radio);
     if resp.clicked() && !selected {
         *current = value;
         resp.mark_changed();
