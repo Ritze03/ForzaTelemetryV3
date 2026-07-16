@@ -458,16 +458,47 @@ fn tab_title(tab: Tab) -> &'static str {
     }
 }
 
+/// The pill font — used by both the chip and the reserved-width measurement.
+const PILL_FONT: f32 = 12.5;
+
+/// Width the current-page pill reserves: the widest tab title's chip width. Reserving
+/// the max (rather than the current tab's) keeps the icon tabs after the pill from
+/// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
+/// so the tabs only shift once, uniformly, when the bar itself gets narrow.
+fn max_pill_width(ui: &egui::Ui) -> f32 {
+    const TABS: [Tab; 8] = [
+        Tab::Dashboard, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
+        Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog,
+    ];
+    TABS.iter()
+        .map(|&t| {
+            ui.painter()
+                .layout_no_wrap(
+                    crate::i18n::tr(tab_title(t)).to_owned(),
+                    egui::FontId::proportional(PILL_FONT),
+                    crate::theme::TEXT,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max)
+        + 24.0
+}
+
 /// A rounded "pill" chip showing the current page (Modern top bar), styled like
-/// the Graphite selection chip: full-radius, selection fill + border.
-fn page_pill(ui: &mut egui::Ui, text: &str) {
+/// the Graphite selection chip: full-radius, selection fill + border. The chip is
+/// drawn at its natural width but reserves `reserve_w` (see `max_pill_width`), left-
+/// aligned, so following widgets keep a stable position as the current tab changes.
+fn page_pill(ui: &mut egui::Ui, text: &str, reserve_w: f32) {
     let galley = ui.painter().layout_no_wrap(
         text.to_owned(),
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(PILL_FONT),
         crate::theme::TEXT,
     );
-    let size = galley.size() + egui::vec2(24.0, 8.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let chip = galley.size() + egui::vec2(24.0, 8.0);
+    let (slot, _) =
+        ui.allocate_exact_size(egui::vec2(reserve_w.max(chip.x), chip.y), egui::Sense::hover());
+    let rect = egui::Rect::from_min_size(slot.min, chip);
     ui.painter().rect(
         rect,
         egui::CornerRadius::same((rect.height() * 0.5) as u8),
@@ -1539,7 +1570,8 @@ impl eframe::App for ForzaApp {
                                 let (div, _) = ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
                                 ui.painter().rect_filled(div, 0.0, crate::theme::BORDER);
                                 ui.add_space(8.0);
-                                page_pill(ui, tr(tab_title(self.current_tab)));
+                                let reserve = max_pill_width(ui);
+                                page_pill(ui, tr(tab_title(self.current_tab)), reserve);
                             }
                             // CENTER: icon tabs, centred across the full bar width.
                             let used = ui.cursor().min.x - bar.left();

@@ -30,7 +30,9 @@ enumerate the variants by hand, so adding a tab means touching both by name.
   the shared `tab_button` helper (`src/app.rs:370-423`) once per entry, under whichever
   `TopBarStyle` (`Legacy | Simple | Modern`) is active. `tab_title(tab: Tab)`
   (`src/app.rs:426-437`) supplies the English label used by the Modern-style "current
-  tab pill" (`page_pill`, `src/app.rs:441-458`).
+  tab pill" (`page_pill`). The pill reserves the widest tab title's width
+  (`max_pill_width`) so the icon tabs after it don't jump as the current tab's name
+  changes length — they shift only, and uniformly, once the bar itself gets narrow.
 
 **To add a new tab**: add the `Tab` variant (`src/app.rs:345-355`), a new `src/ui/<name>.rs`
 module with a `show` function + its `pub mod` line in `src/ui/mod.rs`, a tuple in
