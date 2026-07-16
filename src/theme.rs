@@ -130,7 +130,19 @@ pub fn styled_checkbox(
     checked: &mut bool,
     label: impl Into<String>,
 ) -> egui::Response {
-    checkbox_ui(ui, checked, label.into(), 0.0, f32::INFINITY)
+    checkbox_ui(ui, checked, label.into(), 0.0, f32::INFINITY, true)
+}
+
+/// Content-sized styled checkbox with an explicit enabled flag: when `enabled` is
+/// false the row renders dimmed and ignores clicks (`*checked` is left untouched).
+/// Used by the export/import tree to grey out groups absent from a pasted JSON.
+pub fn styled_checkbox_enabled(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    label: impl Into<String>,
+    enabled: bool,
+) -> egui::Response {
+    checkbox_ui(ui, checked, label.into(), 0.0, f32::INFINITY, enabled)
 }
 
 fn checkbox_ui(
@@ -139,6 +151,7 @@ fn checkbox_ui(
     label: String,
     min_w: f32,
     max_w: f32,
+    enabled: bool,
 ) -> egui::Response {
     const BOX: f32 = 18.0;
     const GAP: f32 = 7.0;
@@ -162,11 +175,19 @@ fn checkbox_ui(
     // Occupy the standard control row height so a checkbox lines up with sliders /
     // comboboxes sharing its row (the box + label stay centered within it).
     let size = egui::vec2(w, ui.spacing().interact_size.y.max(BOX).max(gsize.y));
-    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    // Disabled rows don't sense clicks, so they can't toggle or show a hover wash.
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, mut resp) = ui.allocate_exact_size(size, sense);
+
+    // Dim everything one step when disabled: the fill, the check, the outline, the text.
+    let fill_col = if enabled { ACCENT } else { steel(70) };
+    let mark_col = if enabled { Color32::WHITE } else { steel(150) };
+    let outline_col = if enabled { CHECK_OUTLINE } else { steel(90) };
+    let text_col = if enabled { TEXT } else { TEXT_DIM };
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        if resp.hovered() {
+        if enabled && resp.hovered() {
             let hov = if stretched { rect } else { rect.expand2(egui::vec2(4.0, 2.0)) };
             painter.rect_filled(hov, CornerRadius::same(6), HOV);
         }
@@ -177,11 +198,11 @@ fn checkbox_ui(
         .shrink(1.0);
         let round = CornerRadius::same(5);
         if on {
-            painter.rect_filled(box_rect, round, ACCENT);
+            painter.rect_filled(box_rect, round, fill_col);
             let g = painter.layout_no_wrap(
                 crate::icons::CHECK.to_owned(),
                 FontId::proportional(11.0),
-                Color32::WHITE,
+                mark_col,
             );
             // Centre on the glyph's ink, not its advance box (Nerd glyphs are offset).
             let ink = g
@@ -190,23 +211,23 @@ fn checkbox_ui(
                 .and_then(|r| r.glyphs.first())
                 .map(|gl| gl.pos.to_vec2() + gl.uv_rect.offset + gl.uv_rect.size * 0.5)
                 .unwrap_or_else(|| g.size() * 0.5);
-            painter.galley(box_rect.center() - ink, g, Color32::WHITE);
+            painter.galley(box_rect.center() - ink, g, mark_col);
         } else {
             painter.rect_stroke(
                 box_rect,
                 round,
-                Stroke::new(1.5, CHECK_OUTLINE),
+                Stroke::new(1.5, outline_col),
                 egui::StrokeKind::Inside,
             );
         }
         painter.galley(
             egui::pos2(box_rect.right() + GAP, rect.center().y - gsize.y / 2.0),
             galley,
-            TEXT,
+            text_col,
         );
     }
 
-    if resp.clicked() {
+    if enabled && resp.clicked() {
         *checked = !*checked;
         resp.mark_changed();
     }
@@ -220,7 +241,7 @@ pub fn checkbox_row(ui: &mut egui::Ui, checked: &mut bool, label: impl Into<Stri
     // At least half the card wide (uniform), at most the full card (a long label
     // stays on one line but never widens the card).
     let avail = ui.available_width();
-    checkbox_ui(ui, checked, label.into(), avail * 0.5, avail)
+    checkbox_ui(ui, checked, label.into(), avail * 0.5, avail, true)
 }
 
 /// Like [`checkbox_row`] but with a control (e.g. a combobox) in the right half,
@@ -234,7 +255,7 @@ pub fn checkbox_row_with(
     let label = label.into();
     ui.columns(2, |c| {
         let half = c[0].available_width();
-        let resp = checkbox_ui(&mut c[0], checked, label, half, half);
+        let resp = checkbox_ui(&mut c[0], checked, label, half, half, true);
         right(&mut c[1]);
         resp
     })

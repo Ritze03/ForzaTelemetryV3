@@ -45,37 +45,19 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             let left = &mut cols[0];
             left.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
 
+            // Left column: Profiles, its Export/Import companion, then Hotkey & Input.
             crate::theme::card(left, tr("Profiles"), |ui| profiles_card(ui, app));
+            export_import_card(left, app);
+            crate::theme::card(left, tr("Hotkey"), |ui| hotkey_card(ui, app));
+            crate::theme::card(left, tr("Input"), |ui| input_card(ui, app));
 
-            crate::theme::card(left, tr("Network"), |ui| {
-                control_row(ui, tr("Listen port"), |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let changed = app.pending_port != app.config.listen_port;
-                        let btn = egui::Button::new(tr("Apply")).fill(if changed {
-                            Color32::from_rgb(60, 120, 200)
-                        } else {
-                            Color32::TRANSPARENT
-                        });
-                        if ui.add(btn).clicked() && changed {
-                            let port = app.pending_port;
-                            app.restart_receiver(port);
-                        }
-                        ui.add(egui::DragValue::new(&mut app.pending_port).range(1024..=65535));
-                    });
-                });
-                hint(ui, tr("Avoid ports 5200–5300 (used by the game)."));
-            });
+            // ── RIGHT COLUMN ─────────────────────────────────────────
+            let right = &mut cols[1];
+            right.spacing_mut().item_spacing.y = 0.0;
 
-            crate::theme::card(left, tr("Co-Op"), |ui| {
-                control_row(ui, tr("Host port"), |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
-                    });
-                });
-                hint(ui, tr("Local port the tunnel points at. Change only if it clashes with another app."));
-            });
+            crate::theme::card(right, tr("Repository / Credits"), |ui| repo_card(ui));
 
-            crate::theme::card(left, tr("Display"), |ui| {
+            crate::theme::card(right, tr("Display"), |ui| {
                 control_row(ui, tr("Language"), |ui| {
                     egui::ComboBox::from_id_salt("language_combo")
                         .selected_text(app.config.language.label())
@@ -117,19 +99,40 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 crate::theme::checkbox_row(ui, &mut app.config.always_on_top, tr("Always on top"));
             });
 
-            // ── RIGHT COLUMN ─────────────────────────────────────────
-            let right = &mut cols[1];
-            right.spacing_mut().item_spacing.y = 0.0;
+            crate::theme::card(right, tr("Network"), |ui| {
+                control_row(ui, tr("Listen port"), |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let changed = app.pending_port != app.config.listen_port;
+                        let btn = egui::Button::new(tr("Apply")).fill(if changed {
+                            Color32::from_rgb(60, 120, 200)
+                        } else {
+                            Color32::TRANSPARENT
+                        });
+                        if ui.add(btn).clicked() && changed {
+                            let port = app.pending_port;
+                            app.restart_receiver(port);
+                        }
+                        ui.add(egui::DragValue::new(&mut app.pending_port).range(1024..=65535));
+                    });
+                });
+                hint(ui, tr("Avoid ports 5200–5300 (used by the game)."));
+            });
 
-            crate::theme::card(right, tr("Repository"), |ui| repo_card(ui));
-            crate::theme::card(right, tr("Hotkey"), |ui| hotkey_card(ui, app));
-            crate::theme::card(right, tr("Input"), |ui| input_card(ui, app));
+            crate::theme::card(right, tr("Co-Op"), |ui| {
+                control_row(ui, tr("Host port"), |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
+                    });
+                });
+                hint(ui, tr("Local port the tunnel points at. Change only if it clashes with another app."));
+            });
         });
     });
 }
 
-/// The PROFILES category: switch / create / duplicate / rename / delete named
-/// profiles, plus selective export & import. First card in the left column.
+/// The PROFILES category: active-profile dropdown, a scrollable profile list, and
+/// the New / Duplicate / Rename / Delete row. First card in the left column; the
+/// Export/Import card ([`export_import_card`]) sits directly below it.
 ///
 /// Save is continuous (the live config mirrors the active profile on every
 /// change — see `AppConfig::save`), so there is no explicit Save button and
@@ -139,7 +142,7 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
     let profiles = config::list_profiles();
     let active = app.config.active_profile.clone();
 
-    // Active profile + switch.
+    // Compact mirror of the active profile.
     control_row(ui, tr("Active profile"), |ui| {
         let mut switch_to: Option<String> = None;
         egui::ComboBox::from_id_salt("profile_active_combo")
@@ -158,22 +161,53 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
         }
     });
 
+    ui.add_space(4.0);
+
+    // Scrollable list: fixed height, one row per profile, active row washed + checked.
+    let mut switch_to: Option<String> = None;
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::same(2))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical()
+                .max_height(110.0)
+                .min_scrolled_height(110.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_height(110.0);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for name in &profiles {
+                        if profile_row(ui, name, *name == active) {
+                            switch_to = Some(name.clone());
+                        }
+                    }
+                });
+        });
+    if let Some(name) = switch_to {
+        app.config.switch_profile(&name);
+        app.profile_io_status = format!("{} {}", tr("Loaded profile"), name);
+    }
+
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.button(tr("New")).clicked() {
+
+    // Four equal-width action buttons.
+    ui.columns(4, |c| {
+        if c[0].add_sized([c[0].available_width(), 24.0], egui::Button::new(tr("New"))).clicked() {
             app.profile_dialog = ProfileDialog::New;
             app.profile_name_buf.clear();
         }
-        if ui.button(tr("Duplicate")).clicked() {
+        if c[1].add_sized([c[1].available_width(), 24.0], egui::Button::new(tr("Duplicate"))).clicked() {
             let name = app.config.duplicate_profile(&active);
             app.profile_io_status = format!("{} {}", tr("Created profile"), name);
         }
-        if ui.button(tr("Rename")).clicked() {
+        if c[2].add_sized([c[2].available_width(), 24.0], egui::Button::new(tr("Rename"))).clicked() {
             app.profile_dialog = ProfileDialog::Rename;
             app.profile_name_buf = active.clone();
         }
         let can_delete = profiles.len() > 1;
-        if ui.add_enabled(can_delete, egui::Button::new(tr("Delete"))).clicked() {
+        if c[3].add_enabled_ui(can_delete, |ui| {
+            ui.add_sized([ui.available_width(), 24.0], egui::Button::new(tr("Delete"))).clicked()
+        }).inner {
             app.profile_dialog = ProfileDialog::ConfirmDelete;
         }
     });
@@ -224,137 +258,210 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
         }
         ProfileDialog::None => {}
     }
+}
 
-    ui.add_space(10.0);
-    ui.separator();
-    ui.add_space(6.0);
+/// One row in the profile list: full-width click target, subtle wash + right-aligned
+/// check when active, hover wash otherwise. Returns true when clicked (and inactive).
+fn profile_row(ui: &mut Ui, name: &str, active: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        if active {
+            p.rect_filled(rect, egui::CornerRadius::same(4), Color32::from_rgba_unmultiplied(91, 140, 255, 36));
+        } else if resp.hovered() {
+            p.rect_filled(rect, egui::CornerRadius::same(4), Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        p.text(
+            egui::pos2(rect.left() + 8.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            name,
+            font.clone(),
+            if active { crate::theme::TEXT } else { crate::theme::TEXT_DIM },
+        );
+        if active {
+            p.text(
+                egui::pos2(rect.right() - 8.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                crate::icons::CHECK,
+                font,
+                crate::theme::ACCENT,
+            );
+        }
+    }
+    resp.clicked() && !active
+}
 
-    // Export: pick groups → clipboard.
+/// The EXPORT / IMPORT companion card below PROFILES: a 2-segment tab bar swaps
+/// between the export tree and the import form. Uses the app's styled checkboxes
+/// (see [`group_tree`]) and shows the shared profile status line at the bottom.
+fn export_import_card(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::app::ProfileIoTab;
+    use crate::config;
     if app.profile_export_sel.len() != config::KEY_GROUPS.len() {
         app.profile_export_sel = vec![true; config::KEY_GROUPS.len()];
     }
-    ui.collapsing(tr("Export"), |ui| {
-        hint(ui, tr("Pick what to include, then copy the JSON to the clipboard."));
-        ui.add_space(4.0);
-        group_tree(ui, &mut app.profile_export_sel, None);
-        ui.add_space(6.0);
-        if ui.button(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard"))).clicked() {
-            ui.ctx().copy_text(config::export_selected(&app.config, &app.profile_export_sel));
-            app.profile_io_status = tr("Copied to clipboard.").to_string();
-        }
-    });
-
-    // Import: paste/built-in → target → groups.
     if app.profile_import_sel.len() != config::KEY_GROUPS.len() {
         app.profile_import_sel = vec![true; config::KEY_GROUPS.len()];
         app.profile_import_present = vec![false; config::KEY_GROUPS.len()];
     }
-    ui.collapsing(tr("Import"), |ui| {
-        hint(ui, tr("Paste JSON (or pick a built-in), choose a target, tick what to apply."));
+
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 4.0;
+
+        // Tab bar: two equal segments.
+        ui.columns(2, |c| {
+            io_segment(&mut c[0], &mut app.profile_io_tab, ProfileIoTab::Export, tr("Export"));
+            io_segment(&mut c[1], &mut app.profile_io_tab, ProfileIoTab::Import, tr("Import"));
+        });
         ui.add_space(4.0);
 
-        ui.horizontal(|ui| {
-            ui.label(tr("Built-in"));
-            egui::ComboBox::from_id_salt("profile_builtin_combo")
-                .selected_text(tr("— none —"))
-                .show_ui(ui, |ui| {
-                    for (i, name) in config::PRESET_NAMES.iter().enumerate() {
-                        if ui.selectable_label(false, *name).clicked() {
-                            app.profile_import_buf = config::PRESET_DATA[i].to_string();
-                            app.profile_import_present = config::groups_present(&app.profile_import_buf);
-                            app.profile_import_sel = app.profile_import_present.clone();
-                        }
-                    }
+        match app.profile_io_tab {
+            ProfileIoTab::Export => {
+                hint(ui, tr("Pick what to include, then copy the JSON to the clipboard."));
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(130.0).id_salt("exp_tree").show(ui, |ui| {
+                    group_tree(ui, &mut app.profile_export_sel, None);
                 });
-        });
-        ui.add_space(4.0);
-
-        let resp = ui.add(
-            egui::TextEdit::multiline(&mut app.profile_import_buf)
-                .desired_rows(5)
-                .desired_width(f32::INFINITY)
-                .code_editor()
-                .hint_text(tr("Paste JSON here")),
-        );
-        if resp.changed() {
-            app.profile_import_present = config::groups_present(&app.profile_import_buf);
-            app.profile_import_sel = app.profile_import_present.clone();
+                ui.add_space(6.0);
+                if ui.add_sized([ui.available_width(), 26.0],
+                    egui::Button::new(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard")))).clicked()
+                {
+                    ui.ctx().copy_text(config::export_selected(&app.config, &app.profile_export_sel));
+                    app.profile_io_status = tr("Copied to clipboard.").to_string();
+                }
+            }
+            ProfileIoTab::Import => import_body(ui, app),
         }
-        ui.add_space(6.0);
 
-        // Target: new profile, or overwrite an existing one.
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut app.profile_import_new, true, tr("New profile"));
-            if app.profile_import_new {
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.profile_import_new_name)
-                        .hint_text(tr("name"))
-                        .desired_width(120.0),
-                );
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut app.profile_import_new, false, tr("Overwrite"));
-            if !app.profile_import_new {
-                if app.profile_import_overwrite.is_empty() {
-                    app.profile_import_overwrite = active.clone();
-                }
-                let ovr = app.profile_import_overwrite.clone();
-                egui::ComboBox::from_id_salt("profile_overwrite_combo")
-                    .selected_text(ovr)
-                    .show_ui(ui, |ui| {
-                        for name in &profiles {
-                            ui.selectable_value(&mut app.profile_import_overwrite, name.clone(), name);
-                        }
-                    });
-            }
-        });
-        ui.add_space(6.0);
-
-        group_tree(ui, &mut app.profile_import_sel, Some(&app.profile_import_present));
-        ui.add_space(6.0);
-
-        ui.horizontal(|ui| {
-            let ok = !app.profile_import_buf.trim().is_empty();
-            if ui.add_enabled(ok, egui::Button::new(format!("{}  {}", crate::icons::FLOPPY, tr("Import")))).clicked() {
-                // Land on the target profile, then overlay only the ticked groups.
-                if app.profile_import_new {
-                    let base = if app.profile_import_new_name.trim().is_empty() {
-                        "Imported".to_string()
-                    } else {
-                        app.profile_import_new_name.clone()
-                    };
-                    app.config.new_profile(&base);
-                } else {
-                    let target = app.profile_import_overwrite.clone();
-                    if !target.is_empty() {
-                        app.config.switch_profile(&target);
-                    }
-                }
-                let buf = app.profile_import_buf.clone();
-                if config::import_selected(&mut app.config, &buf, &app.profile_import_sel) {
-                    app.config.save();
-                    app.profile_import_buf.clear();
-                    app.profile_io_status = format!("{} {}", tr("Imported into"), app.config.active_profile);
-                } else {
-                    app.profile_io_status = tr("Invalid JSON — nothing imported.").to_string();
-                }
-            }
-            if !app.profile_import_buf.is_empty() && ui.button(tr("Clear")).clicked() {
-                app.profile_import_buf.clear();
-            }
-        });
+        if !app.profile_io_status.is_empty() {
+            ui.add_space(6.0);
+            ui.label(RichText::new(&app.profile_io_status).size(11.0).color(Color32::from_rgb(120, 200, 120)));
+        }
     });
+    ui.add_space(8.0);
+}
 
-    if !app.profile_io_status.is_empty() {
-        ui.add_space(6.0);
-        ui.label(RichText::new(&app.profile_io_status).size(11.0).color(Color32::from_rgb(120, 200, 120)));
+/// One segment of the Export/Import tab bar: accent-filled when active.
+fn io_segment(ui: &mut Ui, cur: &mut crate::app::ProfileIoTab, this: crate::app::ProfileIoTab, label: &str) {
+    let active = *cur == this;
+    let text = RichText::new(label)
+        .strong()
+        .color(if active { Color32::WHITE } else { crate::theme::TEXT_DIM });
+    let btn = egui::Button::new(text)
+        .fill(if active { crate::theme::ACCENT } else { Color32::TRANSPARENT });
+    if ui.add_sized([ui.available_width(), 26.0], btn).clicked() {
+        *cur = this;
     }
 }
 
-/// Two-level checkbox tree over `config::KEY_GROUPS`, aligned to `sel` by index.
-/// A section's parent checkbox toggles all its children. When `present` is given
-/// (import), groups absent from the pasted JSON are disabled and force-unchecked.
+/// Import tab body: paste/built-in source → target → group tree → Import.
+fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::config;
+    let profiles = config::list_profiles();
+    let active = app.config.active_profile.clone();
+
+    hint(ui, tr("Paste JSON (or pick a built-in), choose a target, tick what to apply."));
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label(tr("Built-in"));
+        egui::ComboBox::from_id_salt("profile_builtin_combo")
+            .selected_text(tr("— none —"))
+            .show_ui(ui, |ui| {
+                for (i, name) in config::PRESET_NAMES.iter().enumerate() {
+                    if ui.selectable_label(false, *name).clicked() {
+                        app.profile_import_buf = config::PRESET_DATA[i].to_string();
+                        app.profile_import_present = config::groups_present(&app.profile_import_buf);
+                        app.profile_import_sel = app.profile_import_present.clone();
+                    }
+                }
+            });
+    });
+    ui.add_space(4.0);
+
+    let resp = ui.add(
+        egui::TextEdit::multiline(&mut app.profile_import_buf)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY)
+            .code_editor()
+            .hint_text(tr("Paste JSON here")),
+    );
+    if resp.changed() {
+        app.profile_import_present = config::groups_present(&app.profile_import_buf);
+        app.profile_import_sel = app.profile_import_present.clone();
+    }
+    ui.add_space(6.0);
+
+    // Target: new profile, or overwrite an existing one.
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut app.profile_import_new, true, tr("New profile"));
+        if app.profile_import_new {
+            ui.add(
+                egui::TextEdit::singleline(&mut app.profile_import_new_name)
+                    .hint_text(tr("name"))
+                    .desired_width(120.0),
+            );
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut app.profile_import_new, false, tr("Overwrite"));
+        if !app.profile_import_new {
+            if app.profile_import_overwrite.is_empty() {
+                app.profile_import_overwrite = active.clone();
+            }
+            let ovr = app.profile_import_overwrite.clone();
+            egui::ComboBox::from_id_salt("profile_overwrite_combo")
+                .selected_text(ovr)
+                .show_ui(ui, |ui| {
+                    for name in &profiles {
+                        ui.selectable_value(&mut app.profile_import_overwrite, name.clone(), name);
+                    }
+                });
+        }
+    });
+    ui.add_space(6.0);
+
+    egui::ScrollArea::vertical().max_height(130.0).id_salt("imp_tree").show(ui, |ui| {
+        group_tree(ui, &mut app.profile_import_sel, Some(&app.profile_import_present));
+    });
+    ui.add_space(6.0);
+
+    let ok = !app.profile_import_buf.trim().is_empty();
+    if ui.add_enabled_ui(ok, |ui| {
+        ui.add_sized([ui.available_width(), 26.0],
+            egui::Button::new(format!("{}  {}", crate::icons::FLOPPY, tr("Import")))).clicked()
+    }).inner {
+        // Land on the target profile, then overlay only the ticked groups.
+        if app.profile_import_new {
+            let base = if app.profile_import_new_name.trim().is_empty() {
+                "Imported".to_string()
+            } else {
+                app.profile_import_new_name.clone()
+            };
+            app.config.new_profile(&base);
+        } else {
+            let target = app.profile_import_overwrite.clone();
+            if !target.is_empty() {
+                app.config.switch_profile(&target);
+            }
+        }
+        let buf = app.profile_import_buf.clone();
+        if config::import_selected(&mut app.config, &buf, &app.profile_import_sel) {
+            app.config.save();
+            app.profile_import_buf.clear();
+            app.profile_io_status = format!("{} {}", tr("Imported into"), app.config.active_profile);
+        } else {
+            app.profile_io_status = tr("Invalid JSON — nothing imported.").to_string();
+        }
+    }
+}
+
+/// Two-level checkbox tree over `config::KEY_GROUPS`, aligned to `sel` by index,
+/// drawn with the app's styled checkbox ([`crate::theme::styled_checkbox_enabled`]).
+/// A section's parent toggles all its children; when `present` is given (import),
+/// groups absent from the pasted JSON are disabled and force-unchecked.
 fn group_tree(ui: &mut Ui, sel: &mut [bool], present: Option<&[bool]>) {
     use crate::config::KEY_GROUPS;
     let enabled = |j: usize| present.map_or(true, |p| p.get(j).copied().unwrap_or(false));
@@ -367,10 +474,8 @@ fn group_tree(ui: &mut Ui, sel: &mut [bool], present: Option<&[bool]>) {
         }
         let end = i;
         let section_on = present.is_none() || (start..end).any(enabled);
-        let all = (start..end).all(|j| sel[j]);
-        let mut parent = all;
-        let resp = ui.add_enabled(section_on, egui::Checkbox::new(&mut parent, RichText::new(tr(section)).strong()));
-        if resp.changed() {
+        let mut parent = (start..end).all(|j| sel[j]);
+        if crate::theme::styled_checkbox_enabled(ui, &mut parent, tr(section), section_on).changed() {
             for j in start..end {
                 sel[j] = parent && enabled(j);
             }
@@ -381,9 +486,9 @@ fn group_tree(ui: &mut Ui, sel: &mut [bool], present: Option<&[bool]>) {
                 sel[j] = false;
             }
             ui.horizontal(|ui| {
-                ui.add_space(16.0);
+                ui.add_space(16.0); // indent children under their section
                 let mut c = sel[j];
-                if ui.add_enabled(en, egui::Checkbox::new(&mut c, tr(KEY_GROUPS[j].name))).changed() {
+                if crate::theme::styled_checkbox_enabled(ui, &mut c, tr(KEY_GROUPS[j].name), en).changed() {
                     sel[j] = c;
                 }
             });

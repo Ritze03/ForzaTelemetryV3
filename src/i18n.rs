@@ -606,6 +606,7 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Settings: Repository / Save ────────────────────────────────
         "Repository" => "Repository",
+        "Repository / Credits" => "Repository / Danksagung",
         "Credits" => "Mitwirkende",
         "Le0_X8 — seasonal map images" => "Le0_X8 — saisonale Kartenbilder",
         "Geist font — Vercel (OFL)" => "Geist-Schrift — Vercel (OFL)",

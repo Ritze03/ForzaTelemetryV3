@@ -540,6 +540,14 @@ pub enum ProfileDialog {
     ConfirmDelete,
 }
 
+/// Which tab the Export/Import card shows.
+#[derive(PartialEq, Clone, Copy, Default)]
+pub enum ProfileIoTab {
+    #[default]
+    Export,
+    Import,
+}
+
 /// Nested sub-tabs inside the mini-settings "Map" tab.
 #[derive(PartialEq, Clone, Copy, Default)]
 pub enum MiniMapTab {
@@ -646,6 +654,7 @@ pub struct ForzaApp {
     // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
     // crate::config::KEY_GROUPS by index.
     pub profile_dialog: ProfileDialog,       // inline New / Rename / Delete-confirm
+    pub profile_io_tab: ProfileIoTab,        // Export / Import card active tab
     pub profile_name_buf: String,            // name field for New / Rename
     pub profile_io_status: String,
     pub profile_export_sel: Vec<bool>,
@@ -841,6 +850,7 @@ impl ForzaApp {
             page_dashboard_sub_tab: DashboardSubTab::default(),
             page_map_sub_tab: MiniMapTab::default(),
             profile_dialog: ProfileDialog::None,
+            profile_io_tab: ProfileIoTab::Export,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
             profile_export_sel: vec![true; crate::config::KEY_GROUPS.len()],
