@@ -545,38 +545,31 @@ fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
     }
     ui.add_space(6.0);
 
-    // Destination: an existing profile to overwrite, or "Create new profile" (which
-    // reveals a name field beside the dropdown). Mirrors the Source row's layout.
-    if app.profile_import_overwrite.is_empty() {
-        app.profile_import_overwrite = active.clone();
-    }
+    // Target: new profile, or overwrite an existing one.
     ui.horizontal(|ui| {
-        ui.label(tr("Destination"));
-        let dest_text = if app.profile_import_new {
-            tr("Create new profile").to_string()
-        } else {
-            app.profile_import_overwrite.clone()
-        };
-        egui::ComboBox::from_id_salt("profile_dest_combo")
-            .selected_text(dest_text)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(app.profile_import_new, tr("Create new profile")).clicked() {
-                    app.profile_import_new = true;
-                }
-                for name in &profiles {
-                    let sel = !app.profile_import_new && app.profile_import_overwrite == *name;
-                    if ui.selectable_label(sel, name).clicked() {
-                        app.profile_import_new = false;
-                        app.profile_import_overwrite = name.clone();
-                    }
-                }
-            });
+        crate::theme::styled_radio(ui, &mut app.profile_import_new, true, tr("New profile"));
         if app.profile_import_new {
             ui.add(
                 egui::TextEdit::singleline(&mut app.profile_import_new_name)
                     .hint_text(tr("name"))
-                    .desired_width(f32::INFINITY),
+                    .desired_width(120.0),
             );
+        }
+    });
+    ui.horizontal(|ui| {
+        crate::theme::styled_radio(ui, &mut app.profile_import_new, false, tr("Overwrite"));
+        if !app.profile_import_new {
+            if app.profile_import_overwrite.is_empty() {
+                app.profile_import_overwrite = active.clone();
+            }
+            let ovr = app.profile_import_overwrite.clone();
+            egui::ComboBox::from_id_salt("profile_overwrite_combo")
+                .selected_text(ovr)
+                .show_ui(ui, |ui| {
+                    for name in &profiles {
+                        ui.selectable_value(&mut app.profile_import_overwrite, name.clone(), name);
+                    }
+                });
         }
     });
     ui.add_space(6.0);
