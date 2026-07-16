@@ -49,22 +49,23 @@ The default active profile name is `"Default"`.
 
 ## UI layout (`settings.rs`)
 
-Two cards, both in the left Settings column:
+One **PROFILES** card (`profiles_card`) in the left column, holding everything:
 
-- **PROFILES** (`profiles_card`) — a fixed-height **scrollable list** (`profile_row`:
-  full-width click target, active row washed + right-aligned check; clicking a row
-  switches to it — this replaces the old active-profile dropdown), and a four-button row
-  New / Duplicate / Rename / Delete. Each button opens a **modal** (`profile_dialog_modal`):
-  New / Duplicate / Rename carry a text field (seeded empty / `<name> copy` / current name),
-  Delete is a plain confirm with a red primary button. Enter confirms, Esc or a
-  backdrop-click cancels. The modal renders at the end of `settings::show` so it floats
-  over the whole tab.
-- **EXPORT / IMPORT** (`export_import_card`) — a bordered card whose header is a
-  two-segment tab bar (`io_segment`, accent-filled when active) swapping between the
-  export tree and the import form. The shared green status line sits at the bottom.
+- A fixed-height **scrollable list** (`profile_row`: full-width click target, active row
+  washed + right-aligned check; clicking a row switches to it — this replaces the old
+  active-profile dropdown), and a four-button row New / Duplicate / Rename / Delete. Each
+  button opens a **modal** (`profile_dialog_modal`): New / Duplicate / Rename carry a text
+  field (seeded empty / `<name> copy` / current name), Delete is a plain confirm with a red
+  primary button. Enter confirms, Esc or a backdrop-click cancels. The modal renders at the
+  end of `settings::show` so it floats over the whole tab.
+- Below a divider, the **Export / Import** section (`export_import_body`): a two-segment
+  tab bar (`io_segment`, accent-filled when active) over a **fixed-height body**
+  (`IO_BODY_H`) so toggling tabs never resizes the card — the outlined group tree
+  (`tree_box`) in each tab fills whatever the fixed chrome leaves (Export just gets a
+  taller tree). The shared green status line sits at the bottom.
 
-Both cards deliberately sit next to `HOTKEY` / `INPUT` in the left column; the right
-column holds `REPOSITORY / CREDITS`, `DISPLAY`, `NETWORK`, `CO-OP`.
+Left column: `PROFILES`, `HOTKEY`. Right column: `REPOSITORY / CREDITS`, `DISPLAY`,
+`NETWORK`, `CO-OP`, `INPUT`.
 
 ## Selective export / import
 
@@ -74,10 +75,13 @@ registry, the completeness test, and the `export_selected` / `import_selected` /
 `groups_present` functions.
 
 - **Export** tab — tick groups → *Copy to clipboard* (JSON of just those keys).
-- **Import** tab — paste JSON (or pick a bundled preset as a built-in source), choose a
-  **target** (a new profile, or overwrite an existing one), tick which groups to apply.
-  Only the selected groups' keys overwrite the target; everything else is preserved.
-  Groups absent from the pasted JSON are disabled (greyed) in the tree.
+- **Import** tab — pick a **source** (Paste JSON, or a bundled preset used *by reference* —
+  its JSON is never dumped into the paste box), choose a **target** (a new profile, or
+  overwrite an existing one), tick which groups to apply. Only the selected groups' keys
+  overwrite the target; everything else is preserved. Groups absent from the source are
+  disabled (greyed) in the tree. `profile_import_builtin` holds the chosen preset index
+  (`None` = paste mode); `recompute_import_present` refreshes the tree when the source
+  changes.
 
 ## UI state (`app.rs`)
 
@@ -85,5 +89,6 @@ Transient (not persisted): `profile_dialog` (modal New/Duplicate/Rename/Delete-c
 `profile_dialog_focus` (focus the dialog text field next frame), `profile_io_tab`
 (Export/Import), `profile_name_buf`, `profile_io_status`,
 `profile_export_sel` / `profile_import_sel` (bool masks aligned to `KEY_GROUPS`),
-`profile_import_present`, `profile_import_buf`, and the import-target fields
-(`profile_import_new`, `profile_import_new_name`, `profile_import_overwrite`).
+`profile_import_present`, `profile_import_buf`, `profile_import_builtin` (source:
+`Some(preset)` / `None` = paste), and the import-target fields (`profile_import_new`,
+`profile_import_new_name`, `profile_import_overwrite`).
