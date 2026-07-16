@@ -7,6 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.1.0] – 2026-07-16
 
 ### Added
+- **Profile Manager**: a new **PROFILES** card at the top of the Settings tab lets you keep multiple named settings profiles and switch between them — create, duplicate, rename, and delete. A new profile starts from your current settings (on Windows it also defaults to *Game window focused* + *Only send inputs when game focused*). Switching auto-saves the profile you're leaving first, so nothing is ever lost — there's no Save button. **Selective export/import**: tick exactly what to include by group (Dashboard layout / mini-settings, Settings categories, and tuning tabs) and copy it to the clipboard, or paste JSON to import — into a new profile *or* over an existing one, overwriting only the settings you ticked. The bundled Ale/Ritze presets are now built-in import sources. (The old mini-settings *Config* tab is removed — its export/import lives here now.)
 - **Mini-settings transparency toggle**: the cog-wheel mini-settings window fades translucent when you're not hovering it; a new *Mini-settings fade when not hovered* switch (General page, on by default) lets you turn that off and keep it fully opaque.
 - **Split gearbox reset**: the single *Clear calibration* button is now two — **Clear RPM calibration** (wipes the detected redline + engagement, keeps the per-gear speed map) and **Clear gear map** (wipes the per-gear speeds, keeps the redline). The **Reset RPM Calibration** hotkey (default `F`, renamed from *Reset Gearbox Calibration*) now clears only the RPM calibration. Each also updates the saved per-car profile so a car reload can't restore what you cleared.
 - **Status-bar Backfire & Gearbox indicators**: the bottom status bar now shows Backfire and Automatic Gearbox state, centered with a divider between them, each with its tab icon and an **Active** / **Deactivated** label (Gearbox also shows pastel-amber **Uncalibrated** while it's enabled but hasn't engaged — i.e. before your first manual upshift teaches it the redline). A new *Status bar: show text labels* toggle in the General mini-settings collapses both to icon-only.
@@ -58,6 +59,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Titles**: widget titles render consistently; the Power Graph compact title sits over the graph without stealing space, and "Hide widget titles" now covers it too.
 
 ### Removed
+- **Mini-settings *Config* tab**: the dashboard cog's Config sub-tab (Load Preset / Export / Import) is gone — its export/import is now the Settings → Profiles card, and the bundled presets are import sources there.
 - **F10 map-orientation hotkey**: removed; use the "Lock map north-up" checkbox in the minimap mini-settings.
 - **Separate tyre style**: folded into the single adaptive "Tires" view (was three styles, now Tires + Bars).
 - **Duplicate engine-type caption** in the Car widget — it now lives in the Engine widget instead.

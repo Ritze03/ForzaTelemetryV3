@@ -84,4 +84,5 @@ The cog "mini-settings" popup (`DashboardSubTab` in `src/app.rs`) has one sub-ta
 per concern: **General** (edit mode, grid size, grid/outline/title visibility),
 **Modules**, **Km/h**, **Gear**, **RPM**, **Sprint**, **Tires**, **Suspension**,
 **Shift**, **Engine**, **G-Force**, **Inputs**, **Boost**, **Power Graph**,
-**Map**, and **Config** — each tunes the corresponding widget(s) above.
+and **Map** — each tunes the corresponding widget(s) above. (Config export/import
+moved out of here into the Settings → Profiles card — see [[profiles]].)

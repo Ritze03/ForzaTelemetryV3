@@ -34,8 +34,8 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
   - **Transient UI/session state**: current tab, mini-settings popup open/tab state,
     drag/resize state for the dashboard grid, minimap texture/zoom/season cache,
     Co-Op trails and roster cache, speed-trace ring buffer, changelog filter toggles,
-    pending preset selection. None of this round-trips through
-    `AppConfig`.
+    Profile Manager UI state (`profile_dialog`, the export/import group masks, paste
+    buffer, import-target fields). None of this round-trips through `AppConfig`.
 - **`src/telemetry.rs` — `TelemetryState`.** Connection state, held at
   `ForzaApp::telemetry`: `latest: Option<ForzaPacket>` (most recent packet),
   `is_connected: bool`, `packets_per_sec: f32`. `TelemetryState::update()` is called
@@ -63,12 +63,17 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
 2. **Mutate** — the UI (Settings tab, dashboard mini-settings cog popup, per-tab
    controls) writes directly into `app.config.*` fields; there's no central "set and
    save" wrapper.
-3. **Save** — `AppConfig::save()` (`config.rs:714`) serializes the whole struct back to
-   pretty JSON and writes `config.json`. It is **not** autosaved every frame; call sites
-   trigger it explicitly after a change that should stick — e.g. `src/ui/settings.rs:222`,
-   `src/ui/dashboard.rs:81` and `:435`, `src/ui/gearbox.rs:163`, `src/ui/coop.rs:153`,
-   several spots in `app.rs`'s mini-settings popup — plus unconditionally in
-   `ForzaApp::on_exit` (`app.rs:2287`) as a final catch-all.
+3. **Save** — `AppConfig::save()` serializes the whole struct back to pretty JSON and
+   writes `config.json` **and** mirrors the same bytes into
+   `profiles/<active_profile>.json` (the Profile Manager's continuous-save — see
+   [[profiles]]). It is **not** autosaved every frame; call sites trigger it explicitly
+   after a change that should stick — e.g. `src/ui/settings.rs`, `src/ui/dashboard.rs`,
+   `src/ui/gearbox.rs`, `src/ui/coop.rs`, several spots in `app.rs`'s mini-settings popup
+   — plus unconditionally in `ForzaApp::on_exit` as a final catch-all.
+4. **Profiles** — a profile is a full `AppConfig` snapshot at `profiles/<name>.json`;
+   `active_profile` (in `config.json`) names the live one. `load()` seeds a file for the
+   active profile if none exists, so `profiles/` is never empty. CRUD +
+   switch/export/import live in `config.rs`; see [[profiles]].
 
 ## The migration pattern (renaming/removing a config field or enum value)
 

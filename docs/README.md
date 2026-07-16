@@ -25,8 +25,9 @@ The navigation reference — read these to move around the source efficiently.
 - [Automatic Gearbox](features/gearbox.md) — DSG-style auto-shifter with per-car calibration.
 - [Power Curve](features/power-curve.md) — live RPM vs power/torque, captured on full-throttle runs.
 - [Engine Swaps](features/engine-swaps.md) — display-only reference table from `engines.csv`.
-- [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism and bundled presets.
-- [Settings](features/settings.md) — network, units, display (the Settings tab).
+- [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism, `KEY_GROUPS`, and bundled presets.
+- [Profile Manager](features/profiles.md) — named full-config snapshots, continuous save, selective export/import.
+- [Settings](features/settings.md) — network, units, display, profiles (the Settings tab).
 - [Hotkeys](features/hotkeys.md) — rebindable global + in-app shortcuts, evdev/GetAsyncKeyState capture, window-focus detection.
 - [Hotkeys — Design Spec](features/hotkeys-design.md) — the design record + rationale behind the hotkeys feature (why evdev, why not a compositor API, the focus-gate rules).
 

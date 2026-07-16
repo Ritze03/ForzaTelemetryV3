@@ -5,12 +5,16 @@ Whatever keys are present in the JSON overwrite the live config; every key it om
 left exactly as it was. This means new config fields never need a preset-format bump:
 they just don't travel until someone adds them to the relevant key list.
 
+The overlay mechanism here is the foundation the **Profile Manager** builds on — see
+[[profiles]] for the user-facing feature (named full-config snapshots + selective
+export/import). This page documents the underlying overlay + key lists.
+
 ## Where it lives
 
-- `src/config.rs` — `AppConfig`, the overlay logic, and the two key lists below.
-- `src/app.rs` — the status-bar cog's **mini-settings popup**, `DashboardSubTab::Config`
-  tab ("Config" in the sub-tab row alongside General/Modules/Rpm/etc.), which hosts the
-  Load Preset / Export / Import UI.
+- `src/config.rs` — `AppConfig`, the overlay logic, the key lists below, and the
+  `KEY_GROUPS` registry used by selective export/import.
+- `src/ui/settings.rs` — the **Profiles** card hosts the export/import UI (a checkbox
+  group-tree + clipboard/paste). The old mini-settings **Config** sub-tab is gone.
 - `assets/configs/*.json` — the bundled presets, baked into the binary via `include_str!`.
 
 ## The two key lists
@@ -39,17 +43,29 @@ they just don't travel until someone adds them to the relevant key list.
    `tire_display_style` values onto the surviving `"Tires"` variant first, so old presets
    still deserialize.
 
-## Export / Import (Config sub-tab)
+## Selective export / import — `KEY_GROUPS`
 
-- **Export** (`export_preset(cfg, include_minisettings)`) — always includes
-  `LAYOUT_KEYS`; the **"Include mini-settings"** checkbox additionally pulls in
-  `MINISETTINGS_KEYS`. Result is copied to the clipboard as pretty-printed JSON.
-- **Import** (`import_preset(cfg, json, include_minisettings)`) — parses the pasted JSON;
-  if "Include mini-settings" is unchecked, `MINISETTINGS_KEYS` are stripped from the
-  overlay before it's applied, so only the layout takes effect. Returns `false` (nothing
-  applied) on invalid JSON.
-- Both directions share the same overlay logic as bundled presets, so hand-edited or
-  swapped-between-users JSON behaves identically to `apply_preset`.
+The Profile Manager exports/imports a chosen **subset** of the config, organised into
+tab-shaped groups for the selection tree. `KEY_GROUPS` (`config.rs`) is an ordered list
+of `KeyGroup { section, name, keys }`:
+
+- **Dashboard** → *Layout* (`LAYOUT_KEYS`) / *Mini-settings* (`MINISETTINGS_KEYS`)
+- **Settings** → *Network* / *Display* / *Hotkeys & Input* / *Co-Op*
+- **Tuning** → *Backfire* / *Automatic Gearbox* / *Acceleration Tests*
+
+Every serialized `AppConfig` key is in **exactly one** group or the `EXPORT_EXCLUDE`
+list (`active_profile`). The `key_groups_partition_all_keys` test enforces this — add a
+new field without categorising it and the test fails, so nothing silently drops out of
+export. This replaces the old include-mini-settings checkbox with per-group ticks.
+
+- **Export** (`export_selected(cfg, &sel)`) — `sel` is a bool mask aligned to
+  `KEY_GROUPS`; only the selected groups' keys are serialized to clipboard JSON.
+- **Import** (`import_selected(target, json, &sel)`) — overlays only the selected
+  groups' keys onto `target`, so unselected settings in the target are preserved. Returns
+  `false` (nothing applied) on non-object JSON. `groups_present(json)` reports which
+  groups the pasted JSON actually contains, used to pre-check and disable the tree rows.
+- Both reuse `apply_preset_overlay`, so hand-edited or swapped-between-users JSON behaves
+  identically to a bundled preset.
 
 ## Bundled presets
 
@@ -58,16 +74,20 @@ they just don't travel until someone adds them to the relevant key list.
 - **"Ale (halb)"** → `assets/configs/ale.json`
 - **"Ritze (ganz)"** → `assets/configs/ritze.json`
 
-Picked from the **Load Preset** dropdown in the Config sub-tab and applied immediately
-(then the config is saved to disk). Each bundled JSON is a full layout + mini-settings
-dump (e.g. Ritze's uses a 32×19 grid), not a partial hand-written file — they're just
-regular exports checked into the repo.
+Exposed as **built-in sources** in the Profiles → Import combo: picking one fills the
+paste box, then it flows through the same selective-import path. Each bundled JSON is a
+full layout + mini-settings dump (e.g. Ritze's uses a 32×19 grid), not a partial
+hand-written file — they're just regular exports checked into the repo.
 
 ## Gotchas
 
 - Adding a **new mini-setting** that should be preset-portable: add the `AppConfig`
   field *and* its key string to `MINISETTINGS_KEYS`. Forgetting the second step means the
-  setting silently doesn't travel — no compile error, no runtime warning.
+  setting silently doesn't travel — no compile error.
+- Adding **any** new `AppConfig` field: it must go into one `KEY_GROUPS` group (usually
+  the settings/tuning group it belongs to) or into `EXPORT_EXCLUDE`. The
+  `key_groups_partition_all_keys` test fails until you do — this is the guard that a new
+  field is a conscious "exports or not" decision, not an oversight.
 - **Removing/renaming** a config enum value or field needs a migration in
   `AppConfig::load` (see the `Theme::Light` → `Dark` and `compact_tabs` → `top_bar_style`
   fix-ups in `config.rs`) plus updates to the bundled presets, or old configs/presets fail

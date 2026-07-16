@@ -6,9 +6,17 @@ laid out per the [styling guide](../ui/STYLING-GUIDE.md) (label-left / control-r
 rows); values persist in `config.json` (see [[state-and-config]]). Per-widget tuning
 lives in the cog **Mini-Settings** popup instead — see [[presets]].
 
-Cards: **Network**, **Co-Op**, **Display** (left column); **Hotkey**, **Input**,
-**Repository** (right column). Hotkeys and window/input detection get their own doc
-— see [[hotkeys]].
+Cards: **Profiles**, **Network**, **Co-Op**, **Display** (left column); **Hotkey**,
+**Input**, **Repository** (right column). Hotkeys and window/input detection get their
+own doc — see [[hotkeys]]; the Profiles card gets its own doc too — see [[profiles]].
+
+## Profiles
+
+First card in the left column. Switch between named full-config snapshots, and create /
+duplicate / rename / delete them, plus selectively export/import settings by group. Save
+is continuous (the live config mirrors the active profile on every change), so there's no
+Save button and switching always persists the outgoing profile. Full detail in
+[[profiles]].
 
 ## Network
 
