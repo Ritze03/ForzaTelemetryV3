@@ -4,7 +4,7 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
-## [0.1.0] – 2026-07-16
+## [0.2.0] – 2026-07-16
 
 ### Added
 - **Profile Manager**: a new **PROFILES** card at the top of the Settings tab lets you keep multiple named settings profiles and switch between them — create, duplicate, rename, and delete. A new profile starts from your current settings (on Windows it also defaults to *Game window focused* + *Only send inputs when game focused*). Switching auto-saves the profile you're leaving first, so nothing is ever lost — there's no Save button.
@@ -40,7 +40,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Styled radio buttons**: one-of-N choices (unit pickers, import target, engine display mode) now use a custom radio that matches the app's accent checkbox — a circle with a white centre dot — and the Display unit rows (km/h · mph, °C · °F, bar · PSI) are column-aligned.
 - **Profile actions use dialogs**: New / Duplicate / Rename / Delete open a centered modal (with a name field where relevant, Enter to confirm, Esc to cancel) instead of inline rows, and the redundant active-profile dropdown is gone — the profile list is the single picker.
 
-## [0.1.0] – 2026-07-15
+## [0.1.1] – 2026-07-15
 
 ### Added
 - **Power Graph widget options**: the dashboard Power Graph widget's mini-settings (Dashboard → Graphs) now expose the full Power Graph tab's capture options too — RPM step size, forced-induction detection, and save-FI-state — so you can tune the widget without opening the Power Graph tab. The mini-settings tab is also renamed from "Power" to "Power Graph".
