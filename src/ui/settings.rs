@@ -449,16 +449,16 @@ fn import_source_json(app: &ForzaApp) -> String {
     }
 }
 
-/// Read-only JSON preview in a fixed-height bordered scroll box. A **selectable**
-/// monospace label — you can select text and copy it, but not edit — that extends
-/// (no wrap) so long lines scroll horizontally inside the box.
+/// Read-only JSON preview in a fixed-height, vertical-only bordered scroll box. A
+/// **selectable** monospace label — you can select text and copy it, but not edit —
+/// that **wraps** long lines so there's no horizontal scrollbar.
 fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
-    scroll_box(ui, id, height, true, |ui| {
+    scroll_box(ui, id, height, false, |ui| {
         let text = if json.is_empty() { "{}" } else { json };
         ui.add(
             egui::Label::new(egui::RichText::new(text).monospace())
                 .selectable(true)
-                .wrap_mode(egui::TextWrapMode::Extend),
+                .wrap_mode(egui::TextWrapMode::Wrap),
         );
     });
 }
@@ -588,7 +588,7 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
                 });
             }
 
-            ui.add_space(10.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let cancel_w = 96.0;
                 let big_w = (ui.available_width() - cancel_w - ui.spacing().item_spacing.x).max(120.0);

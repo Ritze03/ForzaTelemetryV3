@@ -388,6 +388,9 @@ pub fn apply(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
 
     v.override_text_color = Some(TEXT);
+    // Placeholder / hint text (and any `.weak()` text) renders gray, not a faded white —
+    // TextEdit hints use `weak_text_color()`, which otherwise dims the override colour.
+    v.weak_text_color = Some(DIM);
     v.panel_fill = PANEL;
     v.window_fill = PANEL;
     v.window_stroke = Stroke::new(1.0, BORDER);
