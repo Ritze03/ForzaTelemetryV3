@@ -18,7 +18,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         .unwrap_or(0.0);
 
     ui.horizontal(|ui| {
-        ui.label("From:");
+        ui.label("From");
         if app.config.decel_dynamic_mode {
             ui.label(
                 RichText::new(format!("{:.0} km/h (current speed)", current_kmh))
@@ -32,7 +32,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     .suffix(" km/h"),
             );
         }
-        ui.label("To:");
+        ui.label("To");
         ui.add(
             egui::DragValue::new(&mut app.config.decel_end_kmh)
                 .range(0.0..=400.0)

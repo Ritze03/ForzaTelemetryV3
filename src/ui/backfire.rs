@@ -23,8 +23,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 crate::theme::card(ui, tr("RPM Range"), |ui| {
                     crate::theme::checkbox_row(ui, &mut app.config.backfire_dynamic_rpm, tr("Dynamic RPM"));
                     if app.config.backfire_dynamic_rpm {
-                        crate::theme::slider_row(ui, tr("Min"), &mut app.config.backfire_dynamic_min_pct, 0.0..=100.0, 1.0, 1, "%");
-                        crate::theme::slider_row(ui, tr("Max"), &mut app.config.backfire_dynamic_max_pct, 0.0..=100.0, 1.0, 1, "%");
+                        crate::theme::slider_row(ui, tr("Minimum RPM"), &mut app.config.backfire_dynamic_min_pct, 0.0..=100.0, 1.0, 1, "%");
+                        crate::theme::slider_row(ui, tr("Maximum RPM"), &mut app.config.backfire_dynamic_max_pct, 0.0..=100.0, 1.0, 1, "%");
                         ui.label(
                             RichText::new(format!(
                                 "{}: {:.0} \u{2013} {:.0} RPM",
@@ -34,8 +34,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                             .color(Color32::GRAY),
                         );
                     } else {
-                        crate::theme::slider_row(ui, tr("Min RPM"), &mut app.config.backfire_min_rpm, 0.0..=20000.0, 50.0, 0, "");
-                        crate::theme::slider_row(ui, tr("Max RPM"), &mut app.config.backfire_max_rpm, 0.0..=20000.0, 50.0, 0, "");
+                        crate::theme::slider_row(ui, tr("Minimum RPM"), &mut app.config.backfire_min_rpm, 0.0..=20000.0, 50.0, 0, "");
+                        crate::theme::slider_row(ui, tr("Maximum RPM"), &mut app.config.backfire_max_rpm, 0.0..=20000.0, 50.0, 0, "");
                     }
                     crate::theme::slider_row(ui, tr("RPM interval"), &mut app.config.backfire_interval_rpm, 0.0..=2000.0, 10.0, 0, "");
                 });
@@ -73,7 +73,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                     app.config.backfire_dynamic_duration = dynamic;
 
                     if !app.config.backfire_dynamic_duration {
-                        crate::theme::slider_row(ui, tr("Key press duration:"), &mut app.config.backfire_accel_time_ms, 1..=50, 1.0, 0, " ms");
+                        crate::theme::slider_row(ui, tr("Key press duration"), &mut app.config.backfire_accel_time_ms, 1..=50, 1.0, 0, " ms");
                     }
                 });
 

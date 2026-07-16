@@ -121,7 +121,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     ui.label(
                         RichText::new(format!(
                             "{} {}{}",
-                            tr("Active:"),
+                            tr("Active"),
                             active.label(),
                             if in_race { tr(" (race detected)") } else { "" }
                         ))
@@ -343,28 +343,28 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                             .num_columns(2)
                             .spacing([16.0, 2.0])
                             .show(ui, |ui| {
-                                ui.label(tr("Engaged:"));
+                                ui.label(tr("Engaged"));
                                 ui.label(if app.dsg.engaged { tr("yes") } else { tr("no (rev 1st & shift)") });
                                 ui.end_row();
-                                ui.label(tr("Current gear:"));
+                                ui.label(tr("Current gear"));
                                 ui.label(format!("{cur_gear}"));
                                 ui.end_row();
-                                ui.label(tr("Target gear:"));
+                                ui.label(tr("Target gear"));
                                 ui.label(format!("{}", app.dsg.dbg_desired_gear));
                                 ui.end_row();
-                                ui.label(tr("Shifting to:"));
+                                ui.label(tr("Shifting to"));
                                 ui.label(match app.dsg.debug_expected() {
                                     Some(g) => format!("{g}"),
                                     None => "\u{2014}".to_string(),
                                 });
                                 ui.end_row();
-                                ui.label(tr("Redline:"));
+                                ui.label(tr("Redline"));
                                 ui.label(format!("{:.0} RPM", app.dsg.dbg_effective_max_rpm));
                                 ui.end_row();
-                                ui.label(tr("Upshift @:"));
+                                ui.label(tr("Upshift @"));
                                 ui.label(format!("{:.0} RPM", app.dsg.dbg_shift_threshold));
                                 ui.end_row();
-                                ui.label(tr("Kickdown cooldown:"));
+                                ui.label(tr("Kickdown cooldown"));
                                 {
                                     let secs = app.dsg.dbg_kickdown_secs_left;
                                     let txt = if secs < 0.0 {
@@ -377,7 +377,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                                     ui.label(txt);
                                 }
                                 ui.end_row();
-                                ui.label(tr("Desyncs:"));
+                                ui.label(tr("Desyncs"));
                                 ui.label(format!("{}", app.dsg.desync_count));
                                 ui.end_row();
                             });

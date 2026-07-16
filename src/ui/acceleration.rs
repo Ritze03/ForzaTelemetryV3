@@ -11,14 +11,14 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     ui.add_space(8.0);
 
     ui.horizontal(|ui| {
-        ui.label("Start:");
+        ui.label("Start");
         ui.add(
             egui::DragValue::new(&mut app.config.accel_start_kmh)
                 .range(0.0..=300.0)
                 .speed(1.0)
                 .suffix(" km/h"),
         );
-        ui.label("End:");
+        ui.label("End");
         ui.add(
             egui::DragValue::new(&mut app.config.accel_end_kmh)
                 .range(0.0..=300.0)
