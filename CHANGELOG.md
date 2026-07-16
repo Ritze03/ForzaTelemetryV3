@@ -31,6 +31,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Top bar styles**: a new General page in the mini-settings lets you pick the top bar look — Modern (app title + current-page pill with centered icon tabs), Simple (icon-only tabs), or Legacy (the full labelled buttons). Modern adds a "Show current tab pill" toggle, and a "High contrast icons" toggle draws the compact tab icons white instead of the accent tone.
 - **Suspension invert + end labels** (on by default): the bars now read as ride height (extension up), with rotated Compressed/Extended labels beside them; a mini-setting toggles back to raw compression.
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
+- **Backfire icon**: the Backfire tab now uses a flame glyph instead of the bolt icon.
 
 ### Fixed
 - **Aligned control rows**: labels now sit vertically centred against the slider, dropdown, or spinner beside them across the settings and tuning cards, instead of clinging to the top of the row; checkboxes share the same row height, so each label + control reads as one straight band.
