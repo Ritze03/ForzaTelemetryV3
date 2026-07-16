@@ -405,28 +405,29 @@ fn profile_row(ui: &mut Ui, name: &str, active: bool, icon: Option<&str>) -> boo
     resp.clicked() && !active
 }
 
-/// The group selection tree wrapped in a bordered box (so it reads as its own pane),
-/// scrolling within `height`. The tree captures the wheel so its edges don't chain
-/// to the outer Settings pane.
-fn tree_box(ui: &mut Ui, id: &str, height: f32, sel: &mut [bool], present: Option<&[bool]>) {
+/// A **fixed-height** rounded, bordered scroll box: the border stays put while the
+/// content scrolls inside it (unlike a bare growing widget in a ScrollArea, whose own
+/// frame scrolls away). Always occupies `height` regardless of content, so an empty
+/// preview doesn't collapse. `both` also enables horizontal scroll (long JSON lines).
+/// The corner radius equals the margin so the rectangular viewport clears the rounding.
+/// Modal-only — no wheel capture needed since the window itself doesn't scroll.
+fn scroll_box<R>(ui: &mut Ui, id: &str, height: f32, both: bool, content: impl FnOnce(&mut Ui) -> R) -> R {
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::same(4))
-        // Corner radius == margin so the (rectangular) scroll viewport's corners sit just
-        // inside the rounded border — content clears the corners without a bigger gap.
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
+            let inner = (height - 12.0).max(30.0);
             ui.set_width(ui.available_width());
-            let inner = (height - 12.0).max(40.0); // minus the frame's border + margins
-            let area = egui::ScrollArea::vertical()
-                .max_height(inner)
-                .min_scrolled_height(inner)
-                .auto_shrink([false, false])
-                .id_salt(id);
-            captured_scroll(ui, area, |ui| {
-                ui.set_min_height(inner);
-                group_tree(ui, sel, present);
-            });
-        });
+            ui.set_height(inner); // fix the box height so it never collapses to content
+            let area = if both { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
+            area.auto_shrink([false, false]).max_height(inner).id_salt(id).show(ui, content).inner
+        })
+        .inner
+}
+
+/// The group selection tree in a fixed-height bordered scroll box.
+fn tree_box(ui: &mut Ui, id: &str, height: f32, sel: &mut [bool], present: Option<&[bool]>) {
+    scroll_box(ui, id, height, false, |ui| group_tree(ui, sel, present));
 }
 
 /// Recompute which groups the current import source (bundled preset or paste buffer)
@@ -448,61 +449,34 @@ fn import_source_json(app: &ForzaApp) -> String {
     }
 }
 
-/// Read-only JSON preview in a bordered, scrollable box of the given height.
+/// Read-only JSON preview in a fixed-height bordered scroll box. The editor is
+/// **frameless** so its own border can't scroll out from under the box's rounded frame.
 fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(4))
-        .corner_radius(egui::CornerRadius::same(4))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let inner = (height - 12.0).max(40.0);
-            egui::ScrollArea::both()
-                .max_height(inner)
-                .min_scrolled_height(inner)
-                .auto_shrink([false, false])
-                .id_salt(id)
-                .show(ui, |ui| {
-                    ui.set_min_height(inner);
-                    let mut text = if json.is_empty() { "{}".to_string() } else { json.to_string() };
-                    ui.add(
-                        egui::TextEdit::multiline(&mut text)
-                            .code_editor()
-                            .desired_width(f32::INFINITY)
-                            .interactive(false),
-                    );
-                });
-        });
+    scroll_box(ui, id, height, true, |ui| {
+        let mut text = if json.is_empty() { "{}".to_string() } else { json.to_string() };
+        ui.add(
+            egui::TextEdit::multiline(&mut text)
+                .frame(false)
+                .code_editor()
+                .desired_width(f32::INFINITY)
+                .interactive(false),
+        );
+    });
 }
 
-/// Fixed-height paste box: a rounded frame (that stays put) around an internally
-/// scrolling, frameless multiline editor — so scrolling doesn't clip the border away
-/// the way a bare growing TextEdit-in-a-ScrollArea does. Returns true if edited.
+/// Fixed-height paste box: a rounded frame that stays put around an internally
+/// scrolling, frameless editor. Returns true if edited.
 fn paste_box(ui: &mut Ui, id: &str, height: f32, buf: &mut String) -> bool {
-    let mut changed = false;
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(4))
-        .corner_radius(egui::CornerRadius::same(4))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let inner = (height - 12.0).max(30.0);
-            let area = egui::ScrollArea::vertical()
-                .max_height(inner)
-                .min_scrolled_height(inner)
-                .auto_shrink([false, false])
-                .id_salt(id);
-            changed = captured_scroll(ui, area, |ui| {
-                ui.set_min_height(inner);
-                ui.add(
-                    egui::TextEdit::multiline(buf)
-                        .frame(false)
-                        .desired_width(f32::INFINITY)
-                        .code_editor()
-                        .hint_text(tr("Paste JSON here")),
-                )
-                .changed()
-            });
-        });
-    changed
+    scroll_box(ui, id, height, false, |ui| {
+        ui.add(
+            egui::TextEdit::multiline(buf)
+                .frame(false)
+                .desired_width(f32::INFINITY)
+                .code_editor()
+                .hint_text(tr("Paste JSON here")),
+        )
+        .changed()
+    })
 }
 
 /// The large two-pane Export / Import modal (opened from the Profiles card buttons):
