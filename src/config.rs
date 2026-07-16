@@ -351,6 +351,8 @@ pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
     }
 }
 
+fn default_true() -> bool { true }
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub listen_port: u16,
@@ -423,6 +425,8 @@ pub struct AppConfig {
     pub modern_show_pill: bool, // Modern bar: show the current-tab pill next to the title
     pub high_contrast_icons: bool, // draw compact tab icons white instead of the accent tone
     pub status_bar_show_text: bool, // status-bar Backfire/Gearbox indicators show text, not icon-only
+    #[serde(default = "default_true")]
+    pub minisettings_transparent: bool, // mini-settings window fades translucent when not hovered
     // Engine widget
     pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     pub engine_show_type: bool,   // show an "Electric"/"N cyl" caption under the values
@@ -554,6 +558,7 @@ impl Default for AppConfig {
             modern_show_pill: true,
             high_contrast_icons: false,
             status_bar_show_text: true,
+            minisettings_transparent: true,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
             input_bars_full_width: false,
@@ -712,7 +717,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "gforce_show_labels", "gforce_show_text", "hide_widget_titles", "high_contrast_icons",
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
-    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges", "modern_show_pill",
+    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
     "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",

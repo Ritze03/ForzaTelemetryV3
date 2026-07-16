@@ -83,6 +83,11 @@ The cog button in the status bar (`src/app.rs:1490-1514`) and `Ctrl+S`
 and `page_settings_tab = PageSettingsTab::Tab(self.current_tab)`, so the popup always
 opens on the page for whichever tab is currently active.
 
+The popup window fades to 0.5 opacity when the pointer isn't over it (animated via
+`page_settings_opacity`, `src/app.rs`), so it doesn't obscure the dashboard while you
+glance past it. The `minisettings_transparent` config flag (General page, default on)
+disables the fade — when off the target opacity is pinned to 1.0.
+
 - **`PageSettingsTab`** (`src/app.rs:359-363`) — `General` (global options) or
   `Tab(Tab)` (per-tab options), so the popup's own page selection piggybacks on the
   main `Tab` enum.

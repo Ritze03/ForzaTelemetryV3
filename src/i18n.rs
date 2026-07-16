@@ -116,6 +116,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Show current tab pill" => "Aktuellen Tab als Pille anzeigen",
         "High contrast icons" => "Symbole mit hohem Kontrast",
         "Status bar: show text labels" => "Statusleiste: Textbeschriftungen anzeigen",
+        "Mini-settings fade when not hovered" => "Mini-Einstellungen ausblenden, wenn nicht überfahren",
         "Active" => "Aktiv",
         "Deactivated" => "Deaktiviert",
         "Reset Layout" => "Layout zurücksetzen",

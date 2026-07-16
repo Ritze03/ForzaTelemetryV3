@@ -1774,6 +1774,7 @@ impl eframe::App for ForzaApp {
                                 crate::theme::styled_checkbox(ui, &mut self.config.high_contrast_icons, tr("High contrast icons"));
                             }
                             crate::theme::styled_checkbox(ui, &mut self.config.status_bar_show_text, tr("Status bar: show text labels"));
+                            crate::theme::styled_checkbox(ui, &mut self.config.minisettings_transparent, tr("Mini-settings fade when not hovered"));
                         }
                         PageSettingsTab::Tab(Tab::Dashboard) => {
                             // Sub-tab row (wraps onto extra lines when space runs out)
@@ -2420,7 +2421,7 @@ impl eframe::App for ForzaApp {
                 .unwrap_or(false);
 
             // Fade over 0.25 s: range is 0.5 units, rate = 0.5 / 0.25 s = 2.0 /s
-            let target = if hovered { 1.0_f32 } else { 0.5_f32 };
+            let target = if hovered || !self.config.minisettings_transparent { 1.0_f32 } else { 0.5_f32 };
             let dt = ctx.input(|i| i.unstable_dt).min(0.1);
             let diff = target - self.page_settings_opacity;
             let step = 2.0_f32 * dt;
