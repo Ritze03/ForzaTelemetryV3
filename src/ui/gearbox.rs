@@ -138,16 +138,25 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("On to calibrate each car only once; off to recalibrate every session."),
                 );
 
-                // Calibration is shown live in the gear map on the right — just the reset here.
-                // Always shown; disabled (not clickable) until there's a calibration to clear.
+                // Calibration is shown live in the gear map on the right — just the resets here.
+                // Always shown; each disabled (not clickable) until it has something to clear.
                 ui.add_space(4.0);
-                let has_calibration = app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0);
-                if ui
-                    .add_enabled(has_calibration, egui::Button::new(tr("Clear calibration")))
-                    .clicked()
-                {
-                    app.reset_gearbox_calibration();
-                }
+                let has_gear_map = app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0);
+                let has_rpm = app.dynamic_max_rpm > 0.0;
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(has_rpm, egui::Button::new(tr("Clear RPM calibration")))
+                        .clicked()
+                    {
+                        app.clear_rpm_calibration();
+                    }
+                    if ui
+                        .add_enabled(has_gear_map, egui::Button::new(tr("Clear gear map")))
+                        .clicked()
+                    {
+                        app.clear_gear_map();
+                    }
+                });
             });
 
             // ── Advanced Settings ────────────────────────────────────────

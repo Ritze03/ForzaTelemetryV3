@@ -877,21 +877,43 @@ impl ForzaApp {
         match action {
             ToggleGearbox => { self.config.dsg_enabled = !self.config.dsg_enabled; }
             ToggleBackfire => { self.config.backfire_enabled = !self.config.backfire_enabled; }
-            ResetCalibration => self.reset_gearbox_calibration(),
+            ResetCalibration => self.clear_rpm_calibration(),
             _ => {}
         }
     }
 
-    /// Wipe the gearbox calibration + engagement (shared by the tab button and the
-    /// Reset-Calibration hotkey): the box goes hands-off until the driver's next manual
-    /// upshift re-learns it, and the saved per-car profile is forgotten so it can't reload.
-    pub fn reset_gearbox_calibration(&mut self) {
-        self.dsg.reset_calibration();
+    /// Clear the RPM (redline) calibration + engagement (tab button + Reset-RPM hotkey):
+    /// forgets the detected redline and sets the box hands-off until the driver's next manual
+    /// upshift re-locks it. The per-gear speed map is left intact.
+    pub fn clear_rpm_calibration(&mut self) {
         self.dsg.reset_state();
         self.dynamic_max_rpm = 0.0;
-        if self.car_calibrations.remove(&self.last_car_ordinal).is_some() {
-            crate::config::save_car_calibrations(&self.car_calibrations);
+        self.persist_car_calibration();
+    }
+
+    /// Clear the per-gear speed map (tab button only). The detected redline is left intact.
+    pub fn clear_gear_map(&mut self) {
+        self.dsg.reset_calibration();
+        self.persist_car_calibration();
+    }
+
+    /// Rewrite (or drop) the saved per-car profile to match the live calibration, so a car
+    /// reload can't restore a part we just cleared. Entry removed once nothing's left to save.
+    fn persist_car_calibration(&mut self) {
+        let has_map = self.dsg.gear_redline_speeds[1] > 0.0;
+        let has_rpm = self.dynamic_max_rpm > 0.0;
+        if has_map || has_rpm {
+            self.car_calibrations.insert(
+                self.last_car_ordinal,
+                CarCalibration {
+                    gear_redline_speeds: self.dsg.gear_redline_speeds,
+                    max_rpm: self.dynamic_max_rpm,
+                },
+            );
+        } else {
+            self.car_calibrations.remove(&self.last_car_ordinal);
         }
+        crate::config::save_car_calibrations(&self.car_calibrations);
     }
 
     /// Push current hotkey config to the live backend + focus detector. Call
@@ -1577,25 +1599,16 @@ impl eframe::App for ForzaApp {
                     }
 
                     // CENTER: Backfire + Automatic Gearbox indicators, centered on the
-                    // whole bar with a separator between them. Each shows its tab icon
-                    // plus an Active/Deactivated word (icon-only if the status-bar text
-                    // toggle is off). Backfire: green (active) / red (off). Gearbox:
-                    // green (active), pastel-amber "Uncalibrated" (enabled but not yet
-                    // engaged), or red (off).
-                    let show_text = self.config.status_bar_show_text;
-                    let label = |icon: &str, word: &str| {
-                        if show_text {
-                            format!("{}  {}", icon, word)
-                        } else {
-                            icon.to_string()
-                        }
-                    };
+                    // whole bar. Backfire: green (active) / red (off). Gearbox: green
+                    // (active), pastel-amber "Uncalibrated" (enabled but not yet engaged),
+                    // or red (off). With text on, each shows its tab icon + an
+                    // Active/Deactivated word, split by a divider; icon-only otherwise, the
+                    // glyphs ink-centred in fixed boxes exactly like the tab bar.
                     let (bf_color, bf_word) = if self.config.backfire_enabled {
                         (crate::theme::GOOD, tr("Active"))
                     } else {
                         (crate::theme::DANGER, tr("Deactivated"))
                     };
-                    let bf_text = label(icons::BOLT, bf_word);
                     let (gb_color, gb_word) = if !self.config.dsg_enabled {
                         (crate::theme::DANGER, tr("Deactivated"))
                     } else if self.dsg.engaged {
@@ -1603,26 +1616,46 @@ impl eframe::App for ForzaApp {
                     } else {
                         (crate::theme::WARN, tr("Uncalibrated"))
                     };
-                    let gb_text = label(icons::GEARBOX, gb_word);
-                    // Measure the pair (+ separator) so we can pad up to the bar's centre.
-                    let body = egui::TextStyle::Body.resolve(ui.style());
-                    let text_w = |s: &str| {
-                        ui.painter()
-                            .layout_no_wrap(s.to_owned(), body.clone(), egui::Color32::WHITE)
-                            .rect
-                            .width()
-                    };
                     let gap = ui.spacing().item_spacing.x;
-                    // A vertical separator is `spacing` wide (default 6px) with a gap either side.
-                    let sep_w = 6.0 + 2.0 * gap;
-                    let group_w = text_w(&bf_text) + sep_w + text_w(&gb_text);
-                    let pad = (ui.max_rect().center().x - group_w / 2.0) - ui.cursor().min.x;
-                    if pad > gap {
-                        ui.add_space(pad);
+                    if self.config.status_bar_show_text {
+                        let bf_text = format!("{}  {}", icons::BOLT, bf_word);
+                        let gb_text = format!("{}  {}", icons::GEARBOX, gb_word);
+                        // Measure the pair (+ divider) so we can pad up to the bar's centre.
+                        let body = egui::TextStyle::Body.resolve(ui.style());
+                        let text_w = |s: &str| {
+                            ui.painter()
+                                .layout_no_wrap(s.to_owned(), body.clone(), egui::Color32::WHITE)
+                                .rect
+                                .width()
+                        };
+                        // A vertical separator is `spacing` wide (default 6px) + a gap each side.
+                        let group_w = text_w(&bf_text) + (6.0 + 2.0 * gap) + text_w(&gb_text);
+                        let pad = (ui.max_rect().center().x - group_w / 2.0) - ui.cursor().min.x;
+                        if pad > gap {
+                            ui.add_space(pad);
+                        }
+                        ui.colored_label(bf_color, bf_text);
+                        ui.separator();
+                        ui.colored_label(gb_color, gb_text);
+                    } else {
+                        // Icon-only: two fixed 22px boxes, no divider, ink-centred glyphs.
+                        let box_w = 22.0;
+                        let group_w = box_w * 2.0 + gap;
+                        let pad = (ui.max_rect().center().x - group_w / 2.0) - ui.cursor().min.x;
+                        if pad > gap {
+                            ui.add_space(pad);
+                        }
+                        let font = egui::FontId::proportional(14.0);
+                        for (icon, color) in [(icons::BOLT, bf_color), (icons::GEARBOX, gb_color)] {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(box_w, 18.0), egui::Sense::hover());
+                            let pos = self
+                                .icon_center_cache
+                                .centered_pos(ui, icon, font.clone(), rect.center());
+                            ui.painter()
+                                .text(pos, egui::Align2::LEFT_TOP, icon, font.clone(), color);
+                        }
                     }
-                    ui.colored_label(bf_color, bf_text);
-                    ui.separator();
-                    ui.colored_label(gb_color, gb_text);
 
                     // RIGHT: cog toggle
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

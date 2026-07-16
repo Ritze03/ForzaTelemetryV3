@@ -357,7 +357,8 @@ fn de(s: &str) -> Option<&'static str> {
             "Aus, um überall den gewählten Modus zu behalten.",
         "Active:" => "Aktiv:",
         " (race detected)" => " (Rennen erkannt)",
-        "Clear calibration" => "Kalibrierung löschen",
+        "Clear RPM calibration" => "Drehzahl-Kalibrierung löschen",
+        "Clear gear map" => "Gangkennfeld löschen",
         "Remember calibration per car" => "Kalibrierung pro Auto merken",
         "Saves each car's measured gear speeds and redline. When you get back into \
                      a saved car, the calibration loads automatically and the manual first-gear \
@@ -563,7 +564,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Press a key…" => "Taste drücken…",
         "Toggle Automatic Gearbox" => "Automatikgetriebe umschalten",
         "Toggle Backfire" => "Fehlzündung umschalten",
-        "Reset Gearbox Calibration" => "Getriebe-Kalibrierung zurücksetzen",
+        "Reset RPM Calibration" => "Drehzahl-Kalibrierung zurücksetzen",
         "Open mini-settings" => "Mini-Einstellungen öffnen",
         "Toggle dashboard edit" => "Dashboard-Bearbeitung umschalten",
         "Window Detection" => "Fenster-Erkennung",

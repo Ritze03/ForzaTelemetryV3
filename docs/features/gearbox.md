@@ -17,11 +17,19 @@ gear-ratio table.
   loaded, and moving in a straight line, it extrapolates that gear's
   speed-at-full-redline and keeps a rolling median of the last 10 samples — so a
   bad sample self-corrects instead of locking in.
-- **Reset calibration** — the **Clear calibration** button (Automatic Gearbox
-  tab, always shown but disabled until there's a calibration) or the
-  **Reset Gearbox Calibration** hotkey (default `F`, see [[hotkeys]]) wipes
-  the calibration and engagement; the box goes hands-off until your next manual
-  upshift re-learns it, and any saved per-car profile is forgotten.
+- **Reset calibration** — two separate buttons (Automatic Gearbox tab, each
+  always shown but disabled until it has something to clear):
+  - **Clear RPM calibration** wipes the detected redline and engagement; the
+    box goes hands-off until your next manual upshift re-locks the redline. The
+    per-gear speed map is kept. *Why split out:* this is the common "the redline
+    detector locked onto a wrong value" fix — you want to re-learn the redline
+    without throwing away the gear-speed map you already built. The
+    **Reset RPM Calibration** hotkey (default `F`, see [[hotkeys]]) does exactly
+    this button.
+  - **Clear gear map** wipes the per-gear calibrated speeds; the redline is
+    kept, and the box holds each uncalibrated gear to re-sample it.
+  - Each also rewrites the saved per-car profile to match (removing it once
+    nothing's left), so a car reload can't restore what you just cleared.
 - **Shift decision**, in order, each packet:
   1. **Hard redline upshift** — once RPM reaches **Shift RPM** (% of the
      detected max RPM) and road speed has reached **Upshift min. speed** (%
@@ -77,8 +85,8 @@ visualization on the right.
 - **General** — **Enabled**, **Ignore Backfire input**, **Shift RPM** and
   **Upshift min. speed** sliders, the **Gearbox mode** dropdown
   (Street/Sport/Race), **Auto Race mode in races**, **Remember calibration
-  per car**, and a **Clear calibration** button (wipes both the in-memory
-  gear data and the saved per-car profile).
+  per car**, and the **Clear RPM calibration** / **Clear gear map** buttons
+  (see *Reset calibration* above).
 - **Advanced Settings** — a **Reset settings** button (resets the sliders
   below to a tuned baseline; leaves modes/toggles alone), **Accelerator
   gamma**, **Gear overlap** (Race only), and — hidden in Race, since Race
