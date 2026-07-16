@@ -733,30 +733,6 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "tire_bar_swap", "tire_bar_value", "tire_display_style",
 ];
 
-/// Serialize the dashboard layout as pretty JSON, optionally including mini-settings.
-pub fn export_preset(cfg: &AppConfig, include_minisettings: bool) -> String {
-    let Ok(serde_json::Value::Object(map)) = serde_json::to_value(cfg) else { return String::new(); };
-    let mut out = serde_json::Map::new();
-    let keys = LAYOUT_KEYS.iter()
-        .chain(if include_minisettings { MINISETTINGS_KEYS } else { &[] });
-    for &k in keys {
-        if let Some(v) = map.get(k) { out.insert(k.to_string(), v.clone()); }
-    }
-    serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_default()
-}
-
-/// Apply an exported JSON, optionally dropping the mini-settings so only the layout
-/// is imported. Returns false if the JSON didn't parse (nothing applied).
-pub fn import_preset(cfg: &mut AppConfig, json: &str, include_minisettings: bool) -> bool {
-    let Ok(mut overlay) = serde_json::from_str::<serde_json::Value>(json) else { return false; };
-    if !include_minisettings {
-        if let serde_json::Value::Object(ref mut m) = overlay {
-            for k in MINISETTINGS_KEYS { m.remove(*k); }
-        }
-    }
-    apply_preset_overlay(cfg, overlay);
-    true
-}
 
 // ── Selective profile export / import ──────────────────────────────
 // The Profile Manager exports/imports a chosen subset of the config, organised
@@ -791,7 +767,8 @@ const ACCEL_KEYS: &[&str] = &[
     "accel_start_kmh", "accel_end_kmh", "decel_start_kmh", "decel_end_kmh", "decel_dynamic_mode",
 ];
 
-/// Keys never exported (runtime / meta).
+/// Keys never exported (runtime / meta). Referenced only by the partition test.
+#[allow(dead_code)]
 const EXPORT_EXCLUDE: &[&str] = &["active_profile"];
 
 /// One selectable group in the export/import tree.
@@ -999,15 +976,22 @@ impl AppConfig {
     // config (config.json) always mirrors the active profile (see save()), so
     // switching never loses the outgoing profile's state.
 
-    /// Switch to `target`: flush the current profile, then overlay the target's
-    /// snapshot onto the live config. No-op if `target` has no file.
-    pub fn switch_profile(&mut self, target: &str) {
-        self.save(); // flush current active profile
-        if let Ok(data) = std::fs::read_to_string(profile_path(target)) {
+    /// Load `name` into the live config and make it active. Does NOT flush the
+    /// previously-active profile — callers that must preserve it call `save()`
+    /// first (see `switch_profile`); callers deleting the active one must not.
+    fn load_profile(&mut self, name: &str) {
+        if let Ok(data) = std::fs::read_to_string(profile_path(name)) {
             apply_preset(self, &data); // full snapshot = overlay every key
         }
-        self.active_profile = target.to_string(); // re-assert (file may store a stale name)
+        self.active_profile = name.to_string(); // re-assert (file may store a stale name)
         self.save();
+    }
+
+    /// Switch to `target`: flush the current profile, then load the target's
+    /// snapshot. No-op load if `target` has no file.
+    pub fn switch_profile(&mut self, target: &str) {
+        self.save(); // flush current active profile
+        self.load_profile(target);
     }
 
     /// Create a new profile seeded from the *current* live settings, then switch
@@ -1049,7 +1033,7 @@ impl AppConfig {
         std::fs::remove_file(profile_path(name)).ok();
         if self.active_profile == name {
             if let Some(first) = list_profiles().into_iter().next() {
-                self.switch_profile(&first);
+                self.load_profile(&first); // no flush — the active profile is gone
             }
         }
     }
@@ -1169,6 +1153,48 @@ mod tests {
     }
 
     #[test]
+    fn profile_lifecycle() {
+        // Touches the real filesystem (load/save write to app_data_dir), so only
+        // run when the throwaway data dir is set — a plain `cargo test` skips it
+        // rather than clobbering the user's real config. See tools/README / memory.
+        if std::env::var_os("FORZA_DATA_DIR").is_none() {
+            return;
+        }
+
+        // Fresh load seeds a "Default" profile with a file on disk.
+        let mut cfg = AppConfig::load();
+        assert_eq!(cfg.active_profile, "Default");
+        assert!(profile_path("Default").exists(), "Default profile file must be seeded");
+
+        // New profile is seeded from current settings and becomes active.
+        cfg.grid_cols = 22;
+        let racing = cfg.new_profile("Racing");
+        assert_eq!(cfg.active_profile, racing);
+        assert_eq!(cfg.grid_cols, 22, "new profile keeps current settings");
+
+        // Editing Racing then switching to Default must not leak into Default.
+        cfg.grid_cols = 40;
+        cfg.save();
+        cfg.switch_profile("Default");
+        assert_eq!(cfg.active_profile, "Default");
+        assert_eq!(cfg.grid_cols, 22, "Default keeps its own grid_cols");
+
+        // Switch back: Racing's edit persisted (auto-saved before the earlier switch).
+        cfg.switch_profile(&racing);
+        assert_eq!(cfg.grid_cols, 40, "Racing kept its edit across the round-trip");
+
+        // Duplicate makes a distinct file and becomes active.
+        let copy = cfg.duplicate_profile(&racing);
+        assert!(profile_path(&copy).exists());
+        assert_ne!(copy, racing);
+
+        // Delete the copy → falls back to a remaining profile.
+        cfg.delete_profile(&copy);
+        assert!(!profile_path(&copy).exists());
+        assert_ne!(cfg.active_profile, copy);
+    }
+
+    #[test]
     fn embedded_default_config_parses_and_resets_personal_coop() {
         // The fresh-install default must always parse through the load() merge path.
         let mut val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).expect("embedded default is valid JSON");
@@ -1225,31 +1251,38 @@ mod tests {
     }
 
     #[test]
-    fn export_import_respects_minisettings_toggle() {
-        let mut src = AppConfig::default();
-        src.grid_cols = 33;             // layout
-        src.gforce_show_text = false;   // mini-setting
+    fn selective_export_import_applies_only_chosen_groups() {
+        // Group indices: 0 = Dashboard/Layout, 1 = Dashboard/Mini-settings.
+        assert_eq!(KEY_GROUPS[0].name, "Layout");
+        assert_eq!(KEY_GROUPS[1].name, "Mini-settings");
 
-        // Export without mini-settings: only layout keys, no local keys.
-        let layout_only = export_preset(&src, false);
+        let mut src = AppConfig::default();
+        src.grid_cols = 33;           // layout (group 0)
+        src.gforce_show_text = false; // mini-setting (group 1)
+
+        // Export only Layout: layout key present, mini-setting + machine keys absent.
+        let mut layout_sel = vec![false; KEY_GROUPS.len()];
+        layout_sel[0] = true;
+        let layout_only = export_selected(&src, &layout_sel);
         let serde_json::Value::Object(m) = serde_json::from_str(&layout_only).unwrap() else { panic!() };
         assert!(m.contains_key("grid_cols"));
-        assert!(!m.contains_key("gforce_show_text"), "mini-setting leaked into layout-only export");
-        assert!(!m.contains_key("listen_port"), "local key must never export");
+        assert!(!m.contains_key("gforce_show_text"), "unselected mini-setting leaked");
+        assert!(!m.contains_key("active_profile"), "excluded key must never export");
 
-        // Full export, but import ignoring mini-settings: layout applies, mini-setting does not.
-        let full = export_preset(&src, true);
+        // Import a full export but only apply the Mini-settings group.
+        let full = export_selected(&src, &vec![true; KEY_GROUPS.len()]);
+        let mut mini_sel = vec![false; KEY_GROUPS.len()];
+        mini_sel[1] = true;
         let mut dst = AppConfig::default();
-        assert!(import_preset(&mut dst, &full, false));
-        assert_eq!(dst.grid_cols, 33);          // layout imported
-        assert!(dst.gforce_show_text);          // mini-setting kept at default (ignored)
+        assert!(import_selected(&mut dst, &full, &mini_sel));
+        assert!(!dst.gforce_show_text, "selected mini-setting should apply");
+        assert_eq!(dst.grid_cols, AppConfig::default().grid_cols, "unselected layout must not apply");
 
-        // Import including mini-settings: both travel.
-        let mut dst2 = AppConfig::default();
-        assert!(import_preset(&mut dst2, &full, true));
-        assert!(!dst2.gforce_show_text);
+        // groups_present reflects what the JSON actually contains.
+        let present = groups_present(&layout_only);
+        assert!(present[0] && !present[1], "layout-only JSON: only the Layout group is present");
 
-        assert!(!import_preset(&mut dst2, "not json", true)); // bad JSON → false
+        assert!(!import_selected(&mut dst, "not json", &mini_sel)); // bad JSON → false
     }
 
     #[test]
@@ -1258,7 +1291,7 @@ mod tests {
         // parses and applies (a rejected key set would silently no-op).
         for (name, data) in PRESET_NAMES.iter().zip(PRESET_DATA) {
             let mut cfg = AppConfig::default();
-            assert!(import_preset(&mut cfg, data, true), "{name} failed to parse");
+            apply_preset(&mut cfg, data);
             // A layout key from the preset must have taken effect.
             let want: serde_json::Value = serde_json::from_str(data).unwrap();
             let want_cols = want["grid_cols"].as_u64().unwrap() as usize;

@@ -528,7 +528,16 @@ pub enum DashboardSubTab {
     Boost,
     Graphs,
     MiniMap,
-    Config,
+}
+
+/// Inline dialog state for the Profile Manager (Settings → PROFILES).
+#[derive(PartialEq, Clone, Copy, Default)]
+pub enum ProfileDialog {
+    #[default]
+    None,
+    New,
+    Rename,
+    ConfirmDelete,
 }
 
 /// Nested sub-tabs inside the mini-settings "Map" tab.
@@ -634,11 +643,18 @@ pub struct ForzaApp {
     pub page_settings_tab: PageSettingsTab,
     pub page_dashboard_sub_tab: DashboardSubTab,
     pub page_map_sub_tab: MiniMapTab,
-    // Dashboard config export/import ("Config" sub-tab)
-    pub config_import_buf: String,
-    pub config_io_status: String,
-    pub config_export_minisettings: bool,
-    pub config_import_minisettings: bool,
+    // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
+    // crate::config::KEY_GROUPS by index.
+    pub profile_dialog: ProfileDialog,       // inline New / Rename / Delete-confirm
+    pub profile_name_buf: String,            // name field for New / Rename
+    pub profile_io_status: String,
+    pub profile_export_sel: Vec<bool>,
+    pub profile_import_buf: String,
+    pub profile_import_sel: Vec<bool>,
+    pub profile_import_present: Vec<bool>,   // which groups the pasted JSON actually contains
+    pub profile_import_new: bool,            // import target: true = new profile, false = overwrite existing
+    pub profile_import_new_name: String,
+    pub profile_import_overwrite: String,    // selected existing profile to overwrite
 
     // "What's New" changelog viewer: per-category filter toggles (transient UI state)
     pub changelog_show_added: bool,
@@ -680,7 +696,6 @@ pub struct ForzaApp {
     trace_last_sample: Option<Instant>,
 
     // Preset loader selected index (None = nothing selected)
-    pub pending_preset: Option<usize>,
 
     // Co-Op
     pub coop: crate::coop::CoopState,
@@ -825,10 +840,16 @@ impl ForzaApp {
             page_settings_tab: PageSettingsTab::Tab(Tab::Dashboard),
             page_dashboard_sub_tab: DashboardSubTab::default(),
             page_map_sub_tab: MiniMapTab::default(),
-            config_import_buf: String::new(),
-            config_io_status: String::new(),
-            config_export_minisettings: true,
-            config_import_minisettings: true,
+            profile_dialog: ProfileDialog::None,
+            profile_name_buf: String::new(),
+            profile_io_status: String::new(),
+            profile_export_sel: vec![true; crate::config::KEY_GROUPS.len()],
+            profile_import_buf: String::new(),
+            profile_import_sel: vec![true; crate::config::KEY_GROUPS.len()],
+            profile_import_present: vec![false; crate::config::KEY_GROUPS.len()],
+            profile_import_new: true,
+            profile_import_new_name: String::new(),
+            profile_import_overwrite: String::new(),
             changelog_show_added: true,
             changelog_show_fixed: true,
             changelog_show_removed: true,
@@ -853,7 +874,6 @@ impl ForzaApp {
             trace_history: VecDeque::new(),
             trace_active_secs: 0.0,
             trace_last_sample: None,
-            pending_preset: None,
             coop: crate::coop::CoopState::new(
                 &config_coop_name,
                 config_coop_hue,
@@ -1795,7 +1815,6 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Boost,       "Boost"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
                                     (DashboardSubTab::MiniMap,     "Map"),
-                                    (DashboardSubTab::Config,      "Config"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
                                 }
@@ -2139,92 +2158,6 @@ impl eframe::App for ForzaApp {
                                     // Same capture options as the full Power Graph tab (shared config).
                                     ui.add_space(8.0);
                                     crate::ui::power_curve::options_ui(ui, &mut self.config);
-                                }
-                                DashboardSubTab::Config => {
-                                    ui.label(crate::theme::section_label(tr("Load Preset")));
-                                    ui.add_space(4.0);
-                                    ui.horizontal(|ui| {
-                                        let selected = self.pending_preset
-                                            .map(|i| crate::config::PRESET_NAMES[i])
-                                            .unwrap_or(tr("— select —"));
-                                        egui::ComboBox::from_id_salt("cfg_preset_combo")
-                                            .selected_text(selected)
-                                            .show_ui(ui, |ui| {
-                                                for (i, name) in crate::config::PRESET_NAMES.iter().enumerate() {
-                                                    ui.selectable_value(&mut self.pending_preset, Some(i), *name);
-                                                }
-                                            });
-                                        if ui.button(tr("Load Preset")).clicked() {
-                                            if let Some(idx) = self.pending_preset {
-                                                crate::config::apply_preset(&mut self.config, crate::config::PRESET_DATA[idx]);
-                                                self.config.save();
-                                                self.config_io_status = tr("Preset loaded.").to_string();
-                                            }
-                                        }
-                                    });
-
-                                    ui.add_space(12.0);
-                                    ui.separator();
-                                    ui.add_space(8.0);
-
-                                    ui.label(crate::theme::section_label(tr("Export")));
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new(tr("Copies your dashboard layout as JSON to the clipboard."))
-                                            .size(11.0).color(egui::Color32::GRAY),
-                                    );
-                                    ui.add_space(4.0);
-                                    crate::theme::styled_checkbox(ui, &mut self.config_export_minisettings, tr("Include mini-settings"));
-                                    ui.add_space(4.0);
-                                    if ui.button(format!("{}  {}", crate::icons::COPY, tr("Copy to clipboard"))).clicked() {
-                                        ui.ctx().copy_text(crate::config::export_preset(&self.config, self.config_export_minisettings));
-                                        self.config_io_status = tr("Copied to clipboard.").to_string();
-                                    }
-
-                                    ui.add_space(12.0);
-                                    ui.separator();
-                                    ui.add_space(8.0);
-
-                                    ui.label(crate::theme::section_label(tr("Import")));
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new(tr("Paste an exported JSON below and Import. Keys not in the JSON keep their current value."))
-                                            .size(11.0).color(egui::Color32::GRAY),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut self.config_import_buf)
-                                            .desired_rows(6)
-                                            .desired_width(f32::INFINITY)
-                                            .code_editor()
-                                            .hint_text(tr("Paste JSON here")),
-                                    );
-                                    ui.add_space(4.0);
-                                    crate::theme::styled_checkbox(ui, &mut self.config_import_minisettings, tr("Include mini-settings"));
-                                    ui.add_space(6.0);
-                                    ui.horizontal(|ui| {
-                                        if ui.button(format!("{}  {}", crate::icons::FLOPPY, tr("Import"))).clicked() {
-                                            if crate::config::import_preset(&mut self.config, &self.config_import_buf, self.config_import_minisettings) {
-                                                self.config.save();
-                                                self.config_import_buf.clear();
-                                                self.config_io_status = tr("Imported.").to_string();
-                                            } else {
-                                                self.config_io_status = tr("Invalid JSON — nothing imported.").to_string();
-                                            }
-                                        }
-                                        if !self.config_import_buf.is_empty()
-                                            && ui.button(tr("Clear")).clicked()
-                                        {
-                                            self.config_import_buf.clear();
-                                        }
-                                    });
-                                    if !self.config_io_status.is_empty() {
-                                        ui.add_space(6.0);
-                                        ui.label(
-                                            egui::RichText::new(&self.config_io_status)
-                                                .size(11.0).color(egui::Color32::from_rgb(120, 200, 120)),
-                                        );
-                                    }
                                 }
                                 DashboardSubTab::MiniMap => {
                                     ui.horizontal(|ui| {
