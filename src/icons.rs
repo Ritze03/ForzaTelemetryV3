@@ -1,9 +1,8 @@
-// Nerd Font (GeistMonoNerdFont-Regular) codepoints — mostly Font Awesome v4 range
-// U+F000–U+F2FF, with a few Codicons (U+EA60–U+EBFF, e.g. BOLT/cod-flame) mixed in.
-// All confirmed present in the embedded TTF via cmap format-12 scan.
+// Nerd Font (GeistMonoNerdFont-Regular) codepoints — Font Awesome v4 range
+// U+F000–U+F2FF. All confirmed present in the embedded TTF via cmap format-12 scan.
 
 pub const DASHBOARD:  &str = "\u{F0E4}"; // fa-dashboard (speedometer)
-pub const BOLT:       &str = "\u{EAF2}"; // cod-flame    (Backfire)
+pub const BOLT:       &str = "\u{F06D}"; // fa-fire      (Backfire)
 pub const STOP:       &str = "\u{F04D}"; // fa-stop      (deceleration)
 pub const LINE_CHART: &str = "\u{F201}"; // fa-line-chart (power curve)
 pub const WRENCH:     &str = "\u{F0AD}"; // fa-wrench    (engine swaps)
