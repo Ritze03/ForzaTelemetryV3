@@ -22,17 +22,21 @@ crate::theme::card(ui, tr("RPM Range"), |ui| {
   size 12, bold. `card` draws it for you; when a title is needed outside a card
   (e.g. Power Curve chart headers) call `section_label` directly.
 - **Uniform 8px spacing.** Cards are separated by exactly **8px** — vertically
-  between stacked cards, at the top of the stack, and horizontally between columns.
-  `card` emits the 8px trailing gap itself; to keep it exact the caller MUST zero
-  the container's vertical item spacing before stacking cards:
+  between stacked cards and horizontally between columns. `card` emits the 8px
+  trailing gap itself; to keep it exact the caller MUST zero the container's
+  vertical item spacing before stacking cards:
 
   ```rust
   ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-  ui.add_space(8.0);                     // 8px above the first card
   ```
 
   Without the zero, egui adds its own spacing on top and the gaps balloon. `card`
   sets its own comfortable inner spacing, independent of that outer zero.
+- **Do NOT `add_space(8.0)` above the first card.** The `CentralPanel` already
+  supplies an 8px inner margin on every side, so a leading `add_space` *doubles*
+  the top gap (~16px) while the sides stay at 8 — the first card then floats too
+  far from the tab bar. Let the panel margin be the top gap so it matches the
+  left/right inset.
 
 ## Two-column tab split
 

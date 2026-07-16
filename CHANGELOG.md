@@ -36,6 +36,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Backfire icon**: the Backfire tab now uses a flame glyph instead of the bolt icon.
 
 ### Fixed
+- **Category page top spacing**: the first category card no longer sits with a doubled gap below the tab bar — the top inset now matches the left/right inset on every card-based tab (Backfire, Automatic Gearbox, Co-Op, Settings).
 - **Centered status-bar cog**: the settings cog in the status bar is now ink-centred in its button (matching the tab-bar icons) instead of sitting slightly off-centre.
 - **Aligned control rows**: labels now sit vertically centred against the slider, dropdown, or spinner beside them across the settings and tuning cards, instead of clinging to the top of the row; checkboxes share the same row height, so each label + control reads as one straight band.
 - **Steady number spinners**: the value boxes in the Automatic Gearbox and Backfire tabs now reserve room for their widest value, so rows no longer shift as digits are added; Backfire percentages always show one decimal, and the Key Press mode dropdown is left-aligned.

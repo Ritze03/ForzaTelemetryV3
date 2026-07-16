@@ -13,7 +13,6 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
             ui.set_max_width((ui.available_width() * 0.5).min(520.0));
             {
                 ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-                ui.add_space(8.0);
 
                 // ── Activation ───────────────────────────────────────────
                 crate::theme::card(ui, tr("Activation"), |ui| {

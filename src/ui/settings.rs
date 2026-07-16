@@ -44,7 +44,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // ── LEFT COLUMN ──────────────────────────────────────────
             let left = &mut cols[0];
             left.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-            left.add_space(8.0);
 
             crate::theme::card(left, tr("Network"), |ui| {
                 control_row(ui, tr("Listen port:"), |ui| {
@@ -67,7 +66,9 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
             crate::theme::card(left, tr("Co-Op"), |ui| {
                 control_row(ui, tr("Host port:"), |ui| {
-                    ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
+                    });
                 });
                 hint(ui, tr("Local port the tunnel points at. Change only if it clashes with another app."));
             });
@@ -117,11 +118,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // ── RIGHT COLUMN ─────────────────────────────────────────
             let right = &mut cols[1];
             right.spacing_mut().item_spacing.y = 0.0;
-            right.add_space(8.0);
 
+            crate::theme::card(right, tr("Repository"), |ui| repo_card(ui));
             crate::theme::card(right, tr("Hotkey"), |ui| hotkey_card(ui, app));
             crate::theme::card(right, tr("Input"), |ui| input_card(ui, app));
-            crate::theme::card(right, tr("Repository"), |ui| repo_card(ui));
         });
     });
 }
@@ -262,9 +262,11 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
         }
     }
 
+    // Poll rate for window detection (drives both hotkey gating and the input gate).
+    changed |= crate::theme::slider_row(ui, tr("Focus check rate:"), &mut app.config.hotkeys.focus_poll_hz, 1.0..=20.0, 1.0, 0, " Hz").changed();
+
     // ── Send Input ──
     sub_heading(ui, tr("Send Input"));
-    changed |= crate::theme::slider_row(ui, tr("Focus check rate:"), &mut app.config.hotkeys.focus_poll_hz, 1.0..=20.0, 1.0, 0, " Hz").changed();
     changed |= crate::theme::checkbox_row(ui, &mut app.config.hotkeys.input_focus_gate, tr("Only send inputs when game focused")).changed();
 
     if changed { app.sync_hotkeys(); }

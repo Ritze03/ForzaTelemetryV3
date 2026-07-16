@@ -16,7 +16,6 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
         .show(&mut cols[0], |ui| {
             ui.spacing_mut().item_spacing.x = 8.0; // normal spacing inside the column
             ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-            ui.add_space(8.0);
 
             let is_race = app.config.dsg_gearbox_mode == GearboxMode::Race;
 

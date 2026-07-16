@@ -22,7 +22,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-    ui.add_space(8.0);
     crate::theme::card(ui, tr("Your Identity"), |ui| {
         ui.horizontal(|ui| {
             ui.label(tr("Name:"));
@@ -84,7 +83,6 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
 fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     use crate::icons;
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-    ui.add_space(8.0);
     crate::theme::card(ui, tr("Session"), |ui| {
         // Connection status badge (moved here from the top of the tab).
         let (col, txt) = match role {
