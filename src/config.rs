@@ -422,6 +422,7 @@ pub struct AppConfig {
     pub top_bar_style: TopBarStyle, // Modern (title+pill), Simple (icon-only), or Legacy (labelled buttons)
     pub modern_show_pill: bool, // Modern bar: show the current-tab pill next to the title
     pub high_contrast_icons: bool, // draw compact tab icons white instead of the accent tone
+    pub status_bar_show_text: bool, // status-bar Backfire/Gearbox indicators show text, not icon-only
     // Engine widget
     pub engine_display_mode: EngineDisplayMode, // Current / Max / Both values per line
     pub engine_show_type: bool,   // show an "Electric"/"N cyl" caption under the values
@@ -552,6 +553,7 @@ impl Default for AppConfig {
             top_bar_style: TopBarStyle::Modern,
             modern_show_pill: true,
             high_contrast_icons: false,
+            status_bar_show_text: true,
             engine_display_mode: EngineDisplayMode::Both,
             engine_show_type: false,
             input_bars_full_width: false,

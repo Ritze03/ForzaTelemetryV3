@@ -115,6 +115,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Legacy" => "Klassisch",
         "Show current tab pill" => "Aktuellen Tab als Pille anzeigen",
         "High contrast icons" => "Symbole mit hohem Kontrast",
+        "Status bar: show text labels" => "Statusleiste: Textbeschriftungen anzeigen",
+        "Active" => "Aktiv",
+        "Deactivated" => "Deaktiviert",
         "Reset Layout" => "Layout zurücksetzen",
         "Right-click a module to reset its position (auto-placed)."
             => "Rechtsklick auf ein Modul setzt seine Position zurück (automatisch platziert).",

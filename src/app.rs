@@ -1576,25 +1576,35 @@ impl eframe::App for ForzaApp {
                         );
                     }
 
-                    // CENTER: Backfire + Automatic Gearbox indicators, centered on
-                    // the whole bar. Backfire is green (active) / red (off); the
-                    // Gearbox is green (active), pastel-amber "Uncalibrated" (enabled
-                    // but not yet engaged), or red (off).
-                    let bf_color = if self.config.backfire_enabled {
-                        crate::theme::GOOD
-                    } else {
-                        crate::theme::DANGER
+                    // CENTER: Backfire + Automatic Gearbox indicators, centered on the
+                    // whole bar with a separator between them. Each shows its tab icon
+                    // plus an Active/Deactivated word (icon-only if the status-bar text
+                    // toggle is off). Backfire: green (active) / red (off). Gearbox:
+                    // green (active), pastel-amber "Uncalibrated" (enabled but not yet
+                    // engaged), or red (off).
+                    let show_text = self.config.status_bar_show_text;
+                    let label = |icon: &str, word: &str| {
+                        if show_text {
+                            format!("{}  {}", icon, word)
+                        } else {
+                            icon.to_string()
+                        }
                     };
-                    let bf_text = format!("{}  {}", icons::BOLT, tr("Backfire"));
-                    let (gb_color, gb_label) = if !self.config.dsg_enabled {
-                        (crate::theme::DANGER, tr("Automatic Gearbox"))
+                    let (bf_color, bf_word) = if self.config.backfire_enabled {
+                        (crate::theme::GOOD, tr("Active"))
+                    } else {
+                        (crate::theme::DANGER, tr("Deactivated"))
+                    };
+                    let bf_text = label(icons::BOLT, bf_word);
+                    let (gb_color, gb_word) = if !self.config.dsg_enabled {
+                        (crate::theme::DANGER, tr("Deactivated"))
                     } else if self.dsg.engaged {
-                        (crate::theme::GOOD, tr("Automatic Gearbox"))
+                        (crate::theme::GOOD, tr("Active"))
                     } else {
                         (crate::theme::WARN, tr("Uncalibrated"))
                     };
-                    let gb_text = format!("{}  {}", icons::GEARBOX, gb_label);
-                    // Measure the pair so we can pad up to the bar's centre.
+                    let gb_text = label(icons::GEARBOX, gb_word);
+                    // Measure the pair (+ separator) so we can pad up to the bar's centre.
                     let body = egui::TextStyle::Body.resolve(ui.style());
                     let text_w = |s: &str| {
                         ui.painter()
@@ -1603,12 +1613,15 @@ impl eframe::App for ForzaApp {
                             .width()
                     };
                     let gap = ui.spacing().item_spacing.x;
-                    let group_w = text_w(&bf_text) + gap + text_w(&gb_text);
+                    // A vertical separator is `spacing` wide (default 6px) with a gap either side.
+                    let sep_w = 6.0 + 2.0 * gap;
+                    let group_w = text_w(&bf_text) + sep_w + text_w(&gb_text);
                     let pad = (ui.max_rect().center().x - group_w / 2.0) - ui.cursor().min.x;
                     if pad > gap {
                         ui.add_space(pad);
                     }
                     ui.colored_label(bf_color, bf_text);
+                    ui.separator();
                     ui.colored_label(gb_color, gb_text);
 
                     // RIGHT: cog toggle
@@ -1695,6 +1708,7 @@ impl eframe::App for ForzaApp {
                             if matches!(self.config.top_bar_style, TopBarStyle::Modern | TopBarStyle::Simple) {
                                 crate::theme::styled_checkbox(ui, &mut self.config.high_contrast_icons, tr("High contrast icons"));
                             }
+                            crate::theme::styled_checkbox(ui, &mut self.config.status_bar_show_text, tr("Status bar: show text labels"));
                         }
                         PageSettingsTab::Tab(Tab::Dashboard) => {
                             // Sub-tab row (wraps onto extra lines when space runs out)
