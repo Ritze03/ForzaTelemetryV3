@@ -65,19 +65,26 @@ Left column: `PROFILES`, `HOTKEY`. Right column: `REPOSITORY / CREDITS`, `DISPLA
 
 ## Export / Import modal (`profile_io_modal`)
 
-A large, two-pane centered window over a dim backdrop, so the card stays compact:
+A large centered window over a dim backdrop, so the card stays compact. Section headers
+use `theme::section_label` (the category-blue uppercase style).
 
-- **Left pane** — *what to include*. Export: just the outlined group tree. Import
-  (`import_left_pane`): a **Source** dropdown (Paste JSON, or a bundled preset used *by
-  reference* — never dumped into the paste box; the paste box is fixed-height with its own
-  scrollbar), a **Destination** (a fixed-height profile **list** — `profile_row` reused —
-  whose first row is *New profile*, plus an always-present name field that's disabled unless
-  *New profile* is selected, so nothing jumps), and the *what to import* group tree.
-- **Right pane** — a **live JSON preview** (`json_preview`, read-only) of exactly what will
-  be written, filtered by the ticked groups (`config::export_selected` for export,
-  `config::filter_selected` over the source for import).
+- **Export** — one split: *What to export* (outlined group tree) on the left, a live JSON
+  **Preview** on the right.
+- **Import** — a fixed-height **top row** of two columns: **Source** (`import_source_col`:
+  a Paste JSON / bundled-preset dropdown + a fixed-height paste box, or a caption for a
+  preset) and **Destination** (`import_dest_col`: a fixed-height profile **list** —
+  `profile_row` reused — whose first row is a blue **`+` New profile**, plus an
+  always-present name field disabled unless *New profile* is selected, so nothing jumps).
+  Below that, a **split**: *What to import* (group tree) on the left, the live **Preview**
+  on the right.
+- **Preview** — `json_preview` (read-only) shows exactly what will be written, filtered by
+  the ticked groups (`config::export_selected` for export, `config::filter_selected` over
+  the source for import).
 - **Bottom** — a big accent **Export** / **Import** button (`theme::primary_button`) plus
   **Cancel**. Esc or a backdrop-click also cancels.
+
+The outlined tree/preview boxes (`tree_box` / `json_preview`) use a rounded frame with
+enough top/bottom inner margin that scrolled content clears the rounded corners.
 
 The tree uses the `KEY_GROUPS` registry and `theme::styled_checkbox_enabled` (see
 [[presets]] for the registry, the completeness test, and `export_selected` /
