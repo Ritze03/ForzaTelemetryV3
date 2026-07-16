@@ -8,6 +8,8 @@ use crate::config::{
     load_car_calibrations, save_car_calibrations, AppConfig, CarCalibration, SpeedDeltaMode,
 };
 use crate::engines::{load_engines, EngineRecord};
+use crate::focus::{FocusDetector, FocusParams};
+use crate::hotkeys::HotkeyListener;
 use crate::input::InputSender;
 use crate::listeners::backfire::BackfireListener;
 use crate::listeners::dsg::DsgListener;
@@ -17,6 +19,26 @@ use crate::listeners::sprint_timer::SprintTimer;
 use crate::network::{start_receiver, NetworkHandle};
 use crate::packet::ForzaPacket;
 use crate::telemetry::TelemetryState;
+
+/// Whether a global hotkey should fire. Fires when our app is focused (unless a
+/// text field is capturing keys), or when our app is not focused but the game is.
+/// A third app focused → ignore. See the global-hotkeys spec §7.
+pub(crate) fn global_hotkey_allowed(our_focused: bool, wants_text: bool, game_focused: bool) -> bool {
+    if our_focused { !wants_text } else { game_focused }
+}
+
+/// The global-scope bindings the capture backend should match against.
+pub(crate) fn global_bindings(
+    cfg: &crate::config::AppConfig,
+) -> Vec<(crate::keymap::HotkeyBinding, crate::config::HotkeyAction)> {
+    use crate::config::HotkeyScope;
+    cfg.hotkeys
+        .bindings
+        .iter()
+        .filter(|(a, _)| a.scope() == HotkeyScope::Global)
+        .map(|(a, b)| (*b, *a))
+        .collect()
+}
 
 // ── Season detection ──────────────────────────────────────────────
 
@@ -512,6 +534,15 @@ pub struct ForzaApp {
     pub backfire: BackfireListener,
     pub dsg: DsgListener,
     input: InputSender,
+    hotkeys: HotkeyListener,
+    focus: FocusDetector,
+    input_allowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Settings-tab rebind state: the action currently capturing a new key.
+    pub rebinding: Option<crate::config::HotkeyAction>,
+    /// Detect-button countdown deadline (active-window auto-fill).
+    pub detect_until: Option<std::time::Instant>,
+    /// Last Custom-preview / Detect result for the settings page.
+    pub focus_preview: String,
     pub power_capture: PowerCapture,
     pub saved_power_curve: Option<PowerCurveSnapshot>,
     pub perf_test: PerfTest,
@@ -697,6 +728,20 @@ impl ForzaApp {
         let config_coop_hue = config.coop_hue;
         let config_coop_buffer_ms = config.coop_buffer_ms;
         let config_coop_last_code = config.coop_last_code.clone();
+
+        // Hotkeys: shared "input allowed" flag, focus detector, capture backend.
+        let input_allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let focus = FocusDetector::new(FocusParams {
+            method: config.hotkeys.focus_method,
+            custom_cmd: config.hotkeys.custom_cmd.clone(),
+            game_match: config.hotkeys.game_match.clone(),
+            poll_hz: config.hotkeys.focus_poll_hz,
+            enabled: config.hotkeys.input_focus_gate,
+        });
+        let hotkeys = HotkeyListener::new(global_bindings(&config));
+        let mut input = InputSender::new();
+        input.set_focus_gate(input_allowed.clone());
+
         Self {
             config,
             engines,
@@ -706,7 +751,13 @@ impl ForzaApp {
             sprint_timer: SprintTimer::new(),
             backfire: BackfireListener::new(),
             dsg: DsgListener::new(),
-            input: InputSender::new(),
+            input,
+            hotkeys,
+            focus,
+            input_allowed,
+            rebinding: None,
+            detect_until: None,
+            focus_preview: String::new(),
             power_capture: PowerCapture::new(),
             saved_power_curve: None,
             perf_test: PerfTest::new(),
@@ -799,6 +850,47 @@ impl ForzaApp {
     pub fn backfire_echo_active(&self) -> bool {
         self.input
             .synthetic_active(crate::listeners::backfire::echo_grace(&self.config))
+    }
+
+    /// Perform an app-focused hotkey action (handled on egui input).
+    fn run_app_hotkey(&mut self, action: crate::config::HotkeyAction) {
+        use crate::config::HotkeyAction::*;
+        match action {
+            MiniSettings => {
+                self.page_settings_open = !self.page_settings_open;
+                self.page_settings_tab = PageSettingsTab::Tab(self.current_tab);
+                if !self.page_settings_open { self.config.save(); }
+            }
+            DashboardEdit => {
+                if self.current_tab == Tab::Dashboard {
+                    self.config.dashboard_edit_mode = !self.config.dashboard_edit_mode;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Perform a global hotkey action (from the capture backend, already gated).
+    fn run_global_hotkey(&mut self, action: crate::config::HotkeyAction) {
+        use crate::config::HotkeyAction::*;
+        match action {
+            ToggleGearbox => { self.config.dsg_enabled = !self.config.dsg_enabled; }
+            ToggleBackfire => { self.config.backfire_enabled = !self.config.backfire_enabled; }
+            _ => {}
+        }
+    }
+
+    /// Push current hotkey config to the live backend + focus detector. Call
+    /// after any hotkey/detection setting changes.
+    pub fn sync_hotkeys(&mut self) {
+        self.hotkeys.set_bindings(global_bindings(&self.config));
+        self.focus.set_params(FocusParams {
+            method: self.config.hotkeys.focus_method,
+            custom_cmd: self.config.hotkeys.custom_cmd.clone(),
+            game_match: self.config.hotkeys.game_match.clone(),
+            poll_hz: self.config.hotkeys.focus_poll_hz,
+            enabled: self.config.hotkeys.input_focus_gate,
+        });
     }
 
     pub fn drain_packets(&mut self) {
@@ -1299,26 +1391,49 @@ impl eframe::App for ForzaApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
         }
 
-        // Hotkey: F10 toggle map orientation.
-        // (F-keys never conflict with text entry, so they're safe to handle unconditionally.)
-        if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
-            self.config.minimap_north_up = !self.config.minimap_north_up;
-        }
-
-        // Ctrl+S: toggle the mini-settings popup for the current tab (mirrors the cog button).
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
-            self.page_settings_open = !self.page_settings_open;
-            self.page_settings_tab = PageSettingsTab::Tab(self.current_tab);
-            if !self.page_settings_open {
-                self.config.save();
+        // ── Hotkeys ────────────────────────────────────────────────
+        // App-focused actions: matched from config against egui input (only
+        // delivered while our window is focused → inherently UI-only).
+        {
+            use crate::config::{HotkeyAction, HotkeyScope};
+            let m = ctx.input(|i| i.modifiers);
+            for action in HotkeyAction::ALL.iter().copied() {
+                if action.scope() != HotkeyScope::AppFocused { continue; }
+                let Some(b) = self.config.hotkeys.bindings.get(&action).copied() else { continue; };
+                let pressed = ctx.input(|i| i.key_pressed(b.key.to_egui()))
+                    && m.ctrl == b.mods.ctrl && m.alt == b.mods.alt
+                    && m.shift == b.mods.shift;
+                if pressed { self.run_app_hotkey(action); }
             }
         }
-
-        // Ctrl+E: toggle dashboard edit mode (Dashboard tab only).
-        if self.current_tab == Tab::Dashboard
-            && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::E))
-        {
-            self.config.dashboard_edit_mode = !self.config.dashboard_edit_mode;
+        // Global actions: from the capture backend, gated on focus.
+        let our_focused = ctx.input(|i| i.focused);
+        let wants_text = ctx.wants_keyboard_input();
+        while let Some(action) = self.hotkeys.try_recv() {
+            let game_focused = match self.config.hotkeys.gate_mode {
+                crate::config::GateMode::TelemetryLive => self.telemetry.is_connected,
+                crate::config::GateMode::WindowFocus => self.focus.focused(),
+            };
+            if global_hotkey_allowed(our_focused, wants_text, game_focused) {
+                self.run_global_hotkey(action);
+            }
+        }
+        // Drive the synthetic-input gate from the detector (when enabled).
+        let allow_input = !self.config.hotkeys.input_focus_gate || self.focus.focused();
+        self.input_allowed.store(allow_input, std::sync::atomic::Ordering::Relaxed);
+        // Detect button: when the 3s countdown elapses, capture the active window.
+        if let Some(t) = self.detect_until {
+            if std::time::Instant::now() >= t {
+                self.detect_until = None;
+                if let Ok(name) = self.focus.query_now() {
+                    if let Some(first) = name.split_whitespace().next() {
+                        self.config.hotkeys.game_match = first.to_string();
+                        self.sync_hotkeys();
+                    }
+                }
+            } else {
+                ctx.request_repaint(); // keep the countdown ticking
+            }
         }
 
         // Tab bar. 4px top + 30px button row + 5px bottom, then the panel's divider.
@@ -2239,5 +2354,27 @@ mod tests {
         // A 2-minute pause advances the active axis by at most 0.1 s, so the
         // resumed line appends seamlessly instead of jumping.
         assert_eq!(trace_step(Some(120.0), 30.0), Some(30.1));
+    }
+}
+
+#[cfg(test)]
+mod hotkey_tests {
+    use super::global_hotkey_allowed;
+
+    #[test]
+    fn fires_when_app_focused_and_not_typing() {
+        assert!(global_hotkey_allowed(true, false, false));
+    }
+    #[test]
+    fn blocked_when_app_focused_but_typing() {
+        assert!(!global_hotkey_allowed(true, true, false));
+    }
+    #[test]
+    fn fires_when_not_ours_but_game_focused() {
+        assert!(global_hotkey_allowed(false, false, true));
+    }
+    #[test]
+    fn blocked_when_third_app_focused() {
+        assert!(!global_hotkey_allowed(false, false, false));
     }
 }
