@@ -154,6 +154,24 @@ button represents. Content-sized — stack them or lay them out in a `ui.horizon
 checkboxes: do **not** fall back to `egui::RadioButton` / `ui.radio_value`, so the circle
 matches the accent-box checkbox everywhere.
 
+**Column-aligning several radio rows** (e.g. the Display card's unit toggles — Speed unit,
+Tire temp unit, Boost/pressure): each row is content-sized on its own, so a shorter first
+label ("bar") leaves its second button sitting further left than a longer one ("km/h"), and
+the rows don't read as columns. Fix it with **`theme::styled_radio_w`**, which takes an
+explicit minimum width for the mark + label — give the *first* button of every row the same
+`col_w`, measured from the widest first-position label, and leave the second button
+content-sized:
+
+```rust
+let col_w = radio_col_width(ui, "km/h"); // BOX + GAP + widest label's text width
+theme::styled_radio_w(ui, &mut app.config.use_mph, false, "km/h", col_w);
+theme::styled_radio(ui, &mut app.config.use_mph, true, "mph"); // starts at the same x every row
+```
+
+`radio_col_width` (`settings.rs`) measures `BOX (18) + GAP (7) + text width` the same way
+`mark_ui` sizes a content-sized mark, so the column is exactly as wide as it needs to be —
+no magic-number padding.
+
 ### Confirm / input modals
 
 Destructive or name-entry profile actions (New / Duplicate / Rename / Delete) use a **modal**:
