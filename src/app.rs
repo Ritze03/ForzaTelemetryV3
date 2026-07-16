@@ -1754,7 +1754,7 @@ impl eframe::App for ForzaApp {
                         PageSettingsTab::General => {
                             use crate::config::TopBarStyle;
                             ui.horizontal(|ui| {
-                                ui.label(tr("Top Bar Style:"));
+                                ui.label(tr("Top Bar Style"));
                                 egui::ComboBox::from_id_salt("top_bar_style")
                                     .selected_text(match self.config.top_bar_style {
                                         TopBarStyle::Modern => tr("Modern"),
@@ -1826,12 +1826,12 @@ impl eframe::App for ForzaApp {
                                     }
                                     ui.add_space(8.0);
 
-                                    ui.label(tr("Grid columns:"));
+                                    ui.label(tr("Grid columns"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.grid_cols, 1..=40_usize),
                                     );
                                     ui.add_space(4.0);
-                                    ui.label(tr("Grid rows:"));
+                                    ui.label(tr("Grid rows"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.grid_rows, 1..=40_usize),
                                     );
@@ -1902,7 +1902,7 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Kmh => {
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("Alignment:"));
+                                        ui.label(tr("Alignment"));
                                         egui::ComboBox::from_id_salt("speed_align")
                                             .selected_text(match self.config.speed_align {
                                                 TextAlign::Right            => tr("Right"),
@@ -1920,7 +1920,7 @@ impl eframe::App for ForzaApp {
                                     if self.config.show_speed_delta {
                                         ui.add_space(4.0);
                                         ui.horizontal(|ui| {
-                                            ui.label(tr("Mode:"));
+                                            ui.label(tr("Mode"));
                                             egui::ComboBox::from_id_salt("speed_delta_mode")
                                                 .selected_text(match self.config.speed_delta_mode {
                                                     SpeedDeltaMode::Track     => tr("Track (1s comparison)"),
@@ -1935,7 +1935,7 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Gear => {
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("Alignment:"));
+                                        ui.label(tr("Alignment"));
                                         egui::ComboBox::from_id_salt("gear_align")
                                             .selected_text(match self.config.gear_align {
                                                 TextAlign::Right | TextAlign::RightPlaceholder => tr("Right"),
@@ -1949,7 +1949,7 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::SprintTimes => {
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("Type:"));
+                                        ui.label(tr("Type"));
                                         egui::ComboBox::from_id_salt("sprint_type")
                                             .selected_text(match self.config.sprint_type {
                                                 SprintType::Incremental => tr("Incremental (segment times)"),
@@ -1967,7 +1967,7 @@ impl eframe::App for ForzaApp {
                                 DashboardSubTab::Tires => {
                                     use crate::config::TireDisplayStyle;
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("Style:"));
+                                        ui.label(tr("Style"));
                                         egui::ComboBox::from_id_salt("tire_display_style")
                                             .selected_text(match self.config.tire_display_style {
                                                 TireDisplayStyle::Tires => tr("Tires"),
@@ -1982,7 +1982,7 @@ impl eframe::App for ForzaApp {
                                         use crate::config::TireBarValue;
                                         ui.add_space(8.0);
                                         ui.horizontal(|ui| {
-                                            ui.label(tr("Bar Display Value:"));
+                                            ui.label(tr("Bar Display Value"));
                                             egui::ComboBox::from_id_salt("tire_bar_value")
                                                 .selected_text(match self.config.tire_bar_value {
                                                     TireBarValue::Temperature => tr("Temperature"),
@@ -2017,7 +2017,7 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Rpm => {
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("Max RPM:"));
+                                        ui.label(tr("Max RPM"));
                                         egui::ComboBox::from_id_salt("page_max_rpm_mode_combo")
                                             .selected_text(self.config.max_rpm_mode.label())
                                             .show_ui(ui, |ui| {
@@ -2042,17 +2042,17 @@ impl eframe::App for ForzaApp {
                                     );
                                 }
                                 DashboardSubTab::Shift => {
-                                    ui.label(tr("Shift indicator thresholds (% of engine max RPM):"));
+                                    ui.label(tr("Shift indicator thresholds (% of engine max RPM)"));
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("Low (warn):"));
+                                        ui.label(tr("Low (warn)"));
                                         ui.add(
                                             egui::Slider::new(&mut self.config.shift_low_pct, 50.0..=99.0)
                                                 .suffix("%"),
                                         );
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.label(tr("High (shift):"));
+                                        ui.label(tr("High (shift)"));
                                         ui.add(
                                             egui::Slider::new(&mut self.config.shift_high_pct, 51.0..=100.0)
                                                 .suffix("%"),
@@ -2061,7 +2061,7 @@ impl eframe::App for ForzaApp {
                                 }
                                 DashboardSubTab::Engine => {
                                     use crate::config::EngineDisplayMode as EDM;
-                                    ui.label(tr("Show per line:"));
+                                    ui.label(tr("Show per line"));
                                     ui.add_space(4.0);
                                     for (mode, lbl) in [
                                         (EDM::Current, "Current values"),
@@ -2239,7 +2239,7 @@ impl eframe::App for ForzaApp {
                                     match self.page_map_sub_tab {
                                     MiniMapTab::General => {
                                     ui.horizontal(|ui| {
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit:"));
+                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit"));
                                         if self.config.minimap_fps_limit_enabled {
                                             ui.add(
                                                 egui::Slider::new(&mut self.config.minimap_fps_limit, 5.0..=120.0)
@@ -2257,19 +2257,19 @@ impl eframe::App for ForzaApp {
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
                                     ui.add_space(4.0);
-                                    ui.label(tr("Zoom when driving (radius, metres):"));
+                                    ui.label(tr("Zoom when driving (radius, metres)"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.minimap_zoom_driving_m, 50.0..=3000.0)
                                             .suffix(" m"),
                                     );
                                     ui.add_space(4.0);
-                                    ui.label(tr("Zoom when stopped (radius, metres):"));
+                                    ui.label(tr("Zoom when stopped (radius, metres)"));
                                     ui.add(
                                         egui::Slider::new(&mut self.config.minimap_zoom_stopped_m, 500.0..=6000.0)
                                             .suffix(" m"),
                                     );
                                     ui.add_space(8.0);
-                                    ui.label(tr("Image quality:"));
+                                    ui.label(tr("Image quality"));
                                     ui.horizontal(|ui| {
                                         ui.add(
                                             egui::Slider::new(&mut self.config.minimap_quality, 20.0..=100.0)
@@ -2316,7 +2316,7 @@ impl eframe::App for ForzaApp {
                                         );
                                         ui.add_space(6.0);
                                         ui.horizontal(|ui| {
-                                            ui.label(tr("Pixels per metre:"));
+                                            ui.label(tr("Pixels per metre"));
                                             ui.add(
                                                 egui::DragValue::new(&mut self.config.minimap_px_per_m)
                                                     .speed(0.001)
@@ -2324,14 +2324,14 @@ impl eframe::App for ForzaApp {
                                             );
                                         });
                                         ui.horizontal(|ui| {
-                                            ui.label(tr("World origin X (m at pixel 0):"));
+                                            ui.label(tr("World origin X (m at pixel 0)"));
                                             ui.add(
                                                 egui::DragValue::new(&mut self.config.minimap_world_origin_x)
                                                     .speed(10.0),
                                             );
                                         });
                                         ui.horizontal(|ui| {
-                                            ui.label(tr("World origin Z (m at pixel 0):"));
+                                            ui.label(tr("World origin Z (m at pixel 0)"));
                                             ui.add(
                                                 egui::DragValue::new(&mut self.config.minimap_world_origin_z)
                                                     .speed(10.0),
@@ -2348,10 +2348,10 @@ impl eframe::App for ForzaApp {
                                     MiniMapTab::Coop => {
                                         ui.label(crate::theme::section_label(tr("Tracer fade")));
                                         ui.add_space(4.0);
-                                        ui.label(tr("Fade after (time):"));
+                                        ui.label(tr("Fade after (time)"));
                                         ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
                                         ui.add_space(4.0);
-                                        ui.label(tr("Fade after (distance):"));
+                                        ui.label(tr("Fade after (distance)"));
                                         ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
                                         ui.label(
                                             egui::RichText::new(tr("Tracers fade out with whichever comes first — age or distance behind the player."))
@@ -2363,7 +2363,7 @@ impl eframe::App for ForzaApp {
                                         crate::theme::styled_checkbox(ui, &mut self.config.coop_map_playerlist, tr("Show player list on map"));
                                         ui.add_enabled_ui(self.config.coop_map_playerlist, |ui| {
                                             ui.add_space(2.0);
-                                            ui.label(egui::RichText::new(tr("Columns:")).size(11.0).color(egui::Color32::GRAY));
+                                            ui.label(egui::RichText::new(tr("Columns")).size(11.0).color(egui::Color32::GRAY));
                                             crate::theme::styled_checkbox(ui, &mut self.config.coop_list_distance, tr("Distance"));
                                             crate::theme::styled_checkbox(ui, &mut self.config.coop_list_speed, tr("Speed"));
                                             crate::theme::styled_checkbox(ui, &mut self.config.coop_list_gear, tr("Gear"));
