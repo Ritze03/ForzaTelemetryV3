@@ -98,7 +98,7 @@ enum HotkeyAction {
     DashboardEdit,   // AppFocused — flips config.dashboard_edit_mode (Dashboard tab only)
 }
 
-enum HotkeyScope { Global, AppFocused }
+enum HotkeyScope { Global, AppFocused }   // returned by HotkeyAction::scope(); decides the path
 
 /// Canonical, serde-stable key identity. Own enum (do NOT depend on egui's serde
 /// feature). Covers the bindable subset: letters, digits, F1–F12, and a few named
