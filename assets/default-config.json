@@ -226,7 +226,7 @@
   "dsg_race_gear_overlap_pct": 10.0,
   "dsg_downshift_powerband_buffer_pct": 20.0,
   "dsg_kickdown_powerband_buffer_pct": 30.0,
-  "dsg_debug": true,
+  "dsg_debug": false,
   "dsg_show_debug_panel": true,
   "dsg_log_shifts": false,
   "dsg_save_calibration": false,

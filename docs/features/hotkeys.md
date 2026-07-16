@@ -6,8 +6,8 @@ one rebind UI. Full design + rationale: `docs/superpowers/specs/2026-07-16-globa
 ## Two scopes
 
 - **Global (while in-game)** — fire while the *game* holds focus (or our app does).
-  Defaults: `G` = toggle Automatic Gearbox, `B` = toggle Backfire, `Ctrl+R` = reset
-  gearbox calibration. Routed through the capture backend + focus gate.
+  Defaults: `G` = toggle Automatic Gearbox, `F` = reset gearbox calibration, `B` =
+  toggle Backfire. Routed through the capture backend + focus gate.
 - **In-app** — fire only while our telemetry window is focused. Defaults: `Ctrl+S` =
   mini-settings, `Ctrl+E` = dashboard edit. Handled via egui input (`ctx.input`), so they
   are inherently UI-only. Rebindable because the combo is read from config.

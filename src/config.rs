@@ -89,8 +89,8 @@ impl HotkeyAction {
     /// Every action, in display order (globals first).
     pub const ALL: &'static [HotkeyAction] = &[
         HotkeyAction::ToggleGearbox,
-        HotkeyAction::ToggleBackfire,
         HotkeyAction::ResetCalibration,
+        HotkeyAction::ToggleBackfire,
         HotkeyAction::MiniSettings,
         HotkeyAction::DashboardEdit,
     ];
@@ -167,7 +167,7 @@ fn default_bindings() -> HashMap<HotkeyAction, crate::keymap::HotkeyBinding> {
     let mut m = HashMap::new();
     m.insert(HotkeyAction::ToggleGearbox, HotkeyBinding { mods: Mods::default(), key: HotKey::G });
     m.insert(HotkeyAction::ToggleBackfire, HotkeyBinding { mods: Mods::default(), key: HotKey::B });
-    m.insert(HotkeyAction::ResetCalibration, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::R });
+    m.insert(HotkeyAction::ResetCalibration, HotkeyBinding { mods: Mods::default(), key: HotKey::F });
     m.insert(HotkeyAction::MiniSettings, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::S });
     m.insert(HotkeyAction::DashboardEdit, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::E });
     m

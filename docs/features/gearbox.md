@@ -19,7 +19,7 @@ gear-ratio table.
   bad sample self-corrects instead of locking in.
 - **Reset calibration** — the **Clear calibration** button (Automatic Gearbox
   tab, always shown but disabled until there's a calibration) or the
-  **Reset Gearbox Calibration** hotkey (default `Ctrl+R`, see [[hotkeys]]) wipes
+  **Reset Gearbox Calibration** hotkey (default `F`, see [[hotkeys]]) wipes
   the calibration and engagement; the box goes hands-off until your next manual
   upshift re-learns it, and any saved per-car profile is forgotten.
 - **Shift decision**, in order, each packet:
