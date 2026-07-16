@@ -1359,22 +1359,56 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         sprint_row(ui, lbl3, st.three_to_four, c400, stype, show_other, scale);
         sprint_row(ui, lbl4, st.four_to_five, c500, stype, show_other, scale);
     } else {
+        // Captured before the heading so the height budget covers the whole cell.
+        let full_rect = ui.available_rect_before_wrap();
         widget_title(ui, app, tr("Race"));
         ui.add_space(4.0);
 
-        ui.label(format!("{} P{}", tr("Position"), pkt.race_position));
-        ui.label(format!("{:<9} {}", tr("Lap"), pkt.lap_number));
-        ui.add_space(6.0);
-        ui.label(RichText::new(format!("{:<9} {}", tr("Current"), fmt_lap(pkt.current_lap))).size(15.0));
-        ui.label(RichText::new(format!("{:<9} {}", tr("Last"), fmt_lap(pkt.last_lap))).size(15.0));
-        ui.label(
-            RichText::new(format!("{:<9} {}", tr("Best"), fmt_lap(pkt.best_lap)))
-                .size(15.0)
-                .color(Color32::from_rgb(255, 210, 40)),
-        );
-        ui.add_space(8.0);
-        ui.label(format!("{} {}", tr("Race time"), fmt_lap(pkt.current_race_time)));
-        ui.label(format!("{}  {:.1} km", tr("Distance"), pkt.distance_traveled / 1000.0));
+        // (text, base font size, colour, gap reserved above the row). Scaled to fit
+        // the cell in both axes just like the Sprint branch above.
+        let rows: [(String, f32, Option<Color32>, f32); 7] = [
+            (format!("{} P{}", tr("Position"), pkt.race_position), 14.0, None, 0.0),
+            (format!("{:<9} {}", tr("Lap"), pkt.lap_number), 14.0, None, 0.0),
+            (format!("{:<9} {}", tr("Current"), fmt_lap(pkt.current_lap)), 15.0, None, 6.0),
+            (format!("{:<9} {}", tr("Last"), fmt_lap(pkt.last_lap)), 15.0, None, 0.0),
+            (format!("{:<9} {}", tr("Best"), fmt_lap(pkt.best_lap)), 15.0, Some(Color32::from_rgb(255, 210, 40)), 0.0),
+            (format!("{} {}", tr("Race time"), fmt_lap(pkt.current_race_time)), 14.0, None, 8.0),
+            (format!("{}  {:.1} km", tr("Distance"), pkt.distance_traveled / 1000.0), 14.0, None, 0.0),
+        ];
+
+        let measure = |s: &str, sz: f32| {
+            ui.painter()
+                .layout_no_wrap(s.to_owned(), egui::FontId::proportional(sz), Color32::WHITE)
+        };
+        // Width scale: widest row vs the cell, leaving an edge margin on both sides.
+        let avail_w = (ui.available_width() - 2.0 * SPRINT_EDGE).max(1.0);
+        let widest = rows.iter().fold(0.0_f32, |acc, (t, sz, _, _)| {
+            acc.max(measure(t, *sz).rect.width())
+        });
+        let w_scale = if widest > avail_w { (avail_w / widest).max(0.5) } else { 1.0 };
+
+        // Height scale: sum of natural row heights + reserved gaps vs the space left.
+        let used_h = ui.next_widget_position().y - full_rect.min.y;
+        let avail_h = (full_rect.height() - used_h - SPRINT_EDGE).max(0.0);
+        let sp = ui.spacing().item_spacing.y;
+        let natural_h: f32 = rows.iter().map(|(t, sz, _, gap)| {
+            measure(t, *sz).rect.height() + sp + gap
+        }).sum();
+        let h_scale = if natural_h > 0.0 { (avail_h / natural_h).clamp(0.5, 1.0) } else { 1.0 };
+
+        let scale = w_scale.min(h_scale);
+        ui.spacing_mut().item_spacing.y = sp * scale;
+
+        for (text, size, color, gap) in rows {
+            if gap > 0.0 {
+                ui.add_space(gap * scale);
+            }
+            let mut rt = RichText::new(text).size(size * scale);
+            if let Some(c) = color {
+                rt = rt.color(c);
+            }
+            ui.label(rt);
+        }
     }
 }
 

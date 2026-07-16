@@ -44,7 +44,8 @@ Available widget kinds (`WidgetKind` in `src/config.rs`), rendered by
 - **Race / Sprint** — before a race position is reported, shows 0–100/100–200/…
   sprint segment times (incremental or absolute) from the built-in sprint timer;
   once racing, switches to race position, lap number, current/last/best lap and
-  total race time/distance.
+  total race time/distance. Both views auto-fit their rows to the cell (width +
+  height, clamped so text never shrinks below half size).
 - **Tires** — per-tire temperature and slip, as tiles or bars (`tire_display_style`),
   laid out 1×4/2×2/4×1 depending on the widget's aspect ratio.
 - **G-Forces** — a lateral/longitudinal scatter plot with a peak ring, plus optional
