@@ -575,8 +575,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Detecting…" => "Erkenne…",
         "Only send inputs when game focused" => "Eingaben nur bei fokussiertem Spiel senden",
         "Focus check rate:" => "Fokus-Prüfrate:",
-        "Keyboard capture active" => "Tastaturerfassung aktiv",
-        "No input access — add your user to the 'input' group: sudo usermod -aG input $USER, then re-login" => "Kein Eingabezugriff — Benutzer zur Gruppe 'input' hinzufügen: sudo usermod -aG input $USER, dann neu anmelden",
+        "Game window not focused" => "Spielfenster nicht im Fokus",
         "Focus detection failed — check the method/command" => "Fokus-Erkennung fehlgeschlagen — Methode/Befehl prüfen",
 
         // ── Settings: Repository / Save ────────────────────────────────

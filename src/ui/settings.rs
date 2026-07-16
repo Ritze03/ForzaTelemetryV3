@@ -246,24 +246,24 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
             });
         });
 
-        // Focus-detection status (the query can fail even when capture works).
-        if app.focus.status() == crate::focus::FocusStatus::QueryFailed {
-            status_dot(ui, false, tr("Focus detection failed — check the method/command"));
-        }
-    }
-
-    // Linux capture-permission status.
-    #[cfg(target_os = "linux")]
-    {
-        use crate::hotkeys::HotkeyStatus;
-        match app.hotkeys.status() {
-            HotkeyStatus::Ok => status_dot(ui, true, tr("Keyboard capture active")),
-            _ => status_dot(ui, false, tr("No input access — add your user to the 'input' group: sudo usermod -aG input $USER, then re-login")),
-        }
     }
 
     // Poll rate for window detection (drives both hotkey gating and the input gate).
     changed |= crate::theme::slider_row(ui, tr("Focus check rate:"), &mut app.config.hotkeys.focus_poll_hz, 1.0..=20.0, 1.0, 0, " Hz").changed();
+
+    // Live game-window status light (last entry). The detector polls whenever
+    // window-focus gating or the input gate is on.
+    let detector_active = app.config.hotkeys.input_focus_gate
+        || app.config.hotkeys.gate_mode == GateMode::WindowFocus;
+    if detector_active {
+        if app.focus.status() == crate::focus::FocusStatus::QueryFailed {
+            status_dot(ui, false, tr("Focus detection failed — check the method/command"));
+        } else {
+            let focused = app.focus.focused();
+            let msg = if focused { tr("Game window focused") } else { tr("Game window not focused") };
+            status_dot(ui, focused, msg);
+        }
+    }
 
     // ── Send Input ──
     sub_heading(ui, tr("Send Input"));

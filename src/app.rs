@@ -736,7 +736,8 @@ impl ForzaApp {
             custom_cmd: config.hotkeys.custom_cmd.clone(),
             game_match: config.hotkeys.game_match.clone(),
             poll_hz: config.hotkeys.focus_poll_hz,
-            enabled: config.hotkeys.input_focus_gate,
+            enabled: config.hotkeys.input_focus_gate
+                || config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
         });
         let hotkeys = HotkeyListener::new(global_bindings(&config));
         let mut input = InputSender::new();
@@ -889,7 +890,8 @@ impl ForzaApp {
             custom_cmd: self.config.hotkeys.custom_cmd.clone(),
             game_match: self.config.hotkeys.game_match.clone(),
             poll_hz: self.config.hotkeys.focus_poll_hz,
-            enabled: self.config.hotkeys.input_focus_gate,
+            enabled: self.config.hotkeys.input_focus_gate
+                || self.config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
         });
     }
 

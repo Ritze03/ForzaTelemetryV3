@@ -12,9 +12,6 @@ use crate::keymap::{HotKey, HotkeyBinding, Mods};
 /// Shared list of global bindings the backend matches against.
 pub type Bindings = Arc<Mutex<Vec<(HotkeyBinding, HotkeyAction)>>>;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum HotkeyStatus { Ok, NoPermission, NoDevice, Unsupported }
-
 /// Pure match: a combo matches when its key was pressed and modifiers match exactly.
 pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods) -> Option<HotkeyAction> {
     binds.iter().find(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a)
@@ -23,16 +20,14 @@ pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: M
 pub struct HotkeyListener {
     rx: Receiver<HotkeyAction>,
     binds: Bindings,
-    status: Arc<Mutex<HotkeyStatus>>,
 }
 
 impl HotkeyListener {
     pub fn new(initial: Vec<(HotkeyBinding, HotkeyAction)>) -> Self {
         let binds: Bindings = Arc::new(Mutex::new(initial));
-        let status = Arc::new(Mutex::new(HotkeyStatus::Unsupported));
         let (tx, rx) = std::sync::mpsc::channel();
-        backend::spawn(binds.clone(), status.clone(), tx);
-        HotkeyListener { rx, binds, status }
+        backend::spawn(binds.clone(), tx);
+        HotkeyListener { rx, binds }
     }
     pub fn try_recv(&self) -> Option<HotkeyAction> {
         match self.rx.try_recv() {
@@ -41,30 +36,25 @@ impl HotkeyListener {
         }
     }
     pub fn set_bindings(&self, b: Vec<(HotkeyBinding, HotkeyAction)>) { *self.binds.lock().unwrap() = b; }
-    pub fn status(&self) -> HotkeyStatus { *self.status.lock().unwrap() }
 }
 
 #[cfg(target_os = "linux")]
 mod backend {
     use std::sync::mpsc::Sender;
-    use std::sync::{Arc, Mutex};
     use std::thread;
     use evdev::{Device, EventType, Key};
-    use super::{Bindings, HotkeyStatus, match_combo};
+    use super::{Bindings, match_combo};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
-    pub fn spawn(binds: Bindings, status: Arc<Mutex<HotkeyStatus>>, tx: Sender<HotkeyAction>) {
+    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>) {
         thread::spawn(move || {
             let keyboards: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
                 .filter(|(_, d)| d.supported_keys().map_or(false, |k| k.contains(Key::KEY_A)))
                 .collect();
             if keyboards.is_empty() {
-                // Could be no keyboards, or (more likely) no read permission.
-                *status.lock().unwrap() = HotkeyStatus::NoPermission;
-                return;
+                return; // no readable keyboards (no devices, or no read permission)
             }
-            *status.lock().unwrap() = HotkeyStatus::Ok;
             // One reader thread per keyboard; each tracks its own modifier state.
             for (_, mut dev) in keyboards {
                 let binds = binds.clone();
@@ -104,11 +94,10 @@ mod backend {
 #[cfg(target_os = "windows")]
 mod backend {
     use std::sync::mpsc::Sender;
-    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use super::{Bindings, HotkeyStatus, match_combo};
+    use super::{Bindings, match_combo};
     use crate::config::HotkeyAction;
     use crate::keymap::Mods;
 
@@ -119,8 +108,7 @@ mod backend {
 
     fn down(vk: i32) -> bool { (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0 }
 
-    pub fn spawn(binds: Bindings, status: Arc<Mutex<HotkeyStatus>>, tx: Sender<HotkeyAction>) {
-        *status.lock().unwrap() = HotkeyStatus::Ok;
+    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>) {
         thread::spawn(move || {
             // Per-action previous key-down state for rising-edge detection.
             let mut prev: std::collections::HashMap<HotkeyAction, bool> = std::collections::HashMap::new();
@@ -147,12 +135,9 @@ mod backend {
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod backend {
     use std::sync::mpsc::Sender;
-    use std::sync::{Arc, Mutex};
-    use super::{Bindings, HotkeyStatus};
+    use super::Bindings;
     use crate::config::HotkeyAction;
-    pub fn spawn(_b: Bindings, status: Arc<Mutex<HotkeyStatus>>, _tx: Sender<HotkeyAction>) {
-        *status.lock().unwrap() = HotkeyStatus::Unsupported;
-    }
+    pub fn spawn(_b: Bindings, _tx: Sender<HotkeyAction>) {}
 }
 
 #[cfg(test)]
