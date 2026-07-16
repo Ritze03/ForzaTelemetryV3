@@ -352,9 +352,14 @@ pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
 }
 
 fn default_true() -> bool { true }
+fn default_profile_name() -> String { "Default".to_string() }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
+    /// Name of the active profile; the live config is mirrored into
+    /// `profiles/<active_profile>.json` on every save. See the Profile Manager.
+    #[serde(default = "default_profile_name")]
+    pub active_profile: String,
     pub listen_port: u16,
     pub fps_limit: f32,
     pub use_mph: bool,
@@ -505,6 +510,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            active_profile: default_profile_name(),
             listen_port: 1337,
             fps_limit: 60.0,
             use_mph: false,
@@ -752,6 +758,108 @@ pub fn import_preset(cfg: &mut AppConfig, json: &str, include_minisettings: bool
     true
 }
 
+// ── Selective profile export / import ──────────────────────────────
+// The Profile Manager exports/imports a chosen subset of the config, organised
+// into tab-shaped groups. Each group owns a disjoint set of AppConfig keys; the
+// `key_groups_partition_all_keys` test guarantees every serialized key is in
+// exactly one group (or EXPORT_EXCLUDE), so a new field can't be silently
+// forgotten — add it to a group or the exclude list and the test passes again.
+
+const BACKFIRE_KEYS: &[&str] = &[
+    "backfire_enabled", "backfire_dynamic_rpm", "backfire_dynamic_min_pct",
+    "backfire_dynamic_max_pct", "backfire_max_rpm", "backfire_min_rpm",
+    "backfire_interval_rpm", "backfire_accel_time_ms", "backfire_dynamic_duration",
+    "backfire_dynamic_mode", "backfire_test_mode", "backfire_disable_standstill",
+];
+
+const DSG_KEYS: &[&str] = &[
+    "dsg_enabled", "dsg_shift_rpm_pct", "dsg_upshift_speed_pct", "dsg_gearbox_mode",
+    "dsg_auto_race_mode", "dsg_tuning_street", "dsg_tuning_sport", "dsg_tuning_race",
+    "dsg_kickdown_cooldown_secs", "dsg_downshift_deadzone_pct", "dsg_full_throttle_pct",
+    "dsg_race_gear_overlap_pct", "dsg_downshift_powerband_buffer_pct",
+    "dsg_kickdown_powerband_buffer_pct", "dsg_debug", "dsg_log_shifts",
+    "dsg_save_calibration", "dsg_ignore_backfire_accel",
+];
+
+const NETWORK_KEYS: &[&str] = &["listen_port", "fps_limit", "fps_limit_enabled", "always_on_top"];
+const DISPLAY_KEYS: &[&str] = &[
+    "use_mph", "use_fahrenheit", "use_bar", "theme", "top_bar_style",
+    "status_bar_show_text", "language", "surface_rumble_max",
+];
+const COOP_KEYS: &[&str] = &["coop_name", "coop_hue", "coop_buffer_ms", "coop_port", "coop_last_code"];
+const ACCEL_KEYS: &[&str] = &[
+    "accel_start_kmh", "accel_end_kmh", "decel_start_kmh", "decel_end_kmh", "decel_dynamic_mode",
+];
+
+/// Keys never exported (runtime / meta).
+const EXPORT_EXCLUDE: &[&str] = &["active_profile"];
+
+/// One selectable group in the export/import tree.
+pub struct KeyGroup {
+    pub section: &'static str,
+    pub name: &'static str,
+    pub keys: &'static [&'static str],
+}
+
+/// Export/import groups, in display order. Sections repeat to build a 2-level tree.
+pub const KEY_GROUPS: &[KeyGroup] = &[
+    KeyGroup { section: "Dashboard", name: "Layout",           keys: LAYOUT_KEYS },
+    KeyGroup { section: "Dashboard", name: "Mini-settings",    keys: MINISETTINGS_KEYS },
+    KeyGroup { section: "Settings",  name: "Network",          keys: NETWORK_KEYS },
+    KeyGroup { section: "Settings",  name: "Display",          keys: DISPLAY_KEYS },
+    KeyGroup { section: "Settings",  name: "Hotkeys & Input",  keys: &["hotkeys"] },
+    KeyGroup { section: "Settings",  name: "Co-Op",            keys: COOP_KEYS },
+    KeyGroup { section: "Tuning",    name: "Backfire",         keys: BACKFIRE_KEYS },
+    KeyGroup { section: "Tuning",    name: "Automatic Gearbox", keys: DSG_KEYS },
+    KeyGroup { section: "Tuning",    name: "Acceleration Tests", keys: ACCEL_KEYS },
+];
+
+/// Keys belonging to the groups selected by index into KEY_GROUPS.
+fn selected_keys(selected: &[bool]) -> Vec<&'static str> {
+    KEY_GROUPS
+        .iter()
+        .zip(selected.iter().copied().chain(std::iter::repeat(false)))
+        .filter(|(_, s)| *s)
+        .flat_map(|(g, _)| g.keys.iter().copied())
+        .collect()
+}
+
+/// Serialize only the selected groups' keys to pretty JSON.
+pub fn export_selected(cfg: &AppConfig, selected: &[bool]) -> String {
+    let Ok(serde_json::Value::Object(map)) = serde_json::to_value(cfg) else { return String::new(); };
+    let mut out = serde_json::Map::new();
+    for k in selected_keys(selected) {
+        if let Some(v) = map.get(k) { out.insert(k.to_string(), v.clone()); }
+    }
+    serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_default()
+}
+
+/// Overlay only the selected groups' keys from `json` onto `target`.
+/// Returns false (nothing applied) if the JSON doesn't parse to an object.
+pub fn import_selected(target: &mut AppConfig, json: &str, selected: &[bool]) -> bool {
+    let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    let allow: std::collections::HashSet<&str> = selected_keys(selected).into_iter().collect();
+    m.retain(|k, _| allow.contains(k.as_str()));
+    apply_preset_overlay(target, serde_json::Value::Object(m));
+    true
+}
+
+/// Which groups have at least one key present in `json` — used to pre-check the
+/// import tree so you only see what the pasted JSON can actually set.
+pub fn groups_present(json: &str) -> Vec<bool> {
+    let present: std::collections::HashSet<String> =
+        match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(serde_json::Value::Object(m)) => m.keys().cloned().collect(),
+            _ => return vec![false; KEY_GROUPS.len()],
+        };
+    KEY_GROUPS
+        .iter()
+        .map(|g| g.keys.iter().any(|k| present.contains(*k)))
+        .collect()
+}
+
 // ──────────────────────────────────────────────────────────────────
 
 impl AppConfig {
@@ -853,6 +961,15 @@ impl AppConfig {
         // New kinds added to WidgetKind won't appear in old saved configs otherwise.
         inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
         inject_missing_hotkeys(&mut cfg.hotkeys);
+        // Seed the Profile Manager: an existing install (or fresh default) that has
+        // no snapshot for its active profile gets one written from the live config,
+        // so `profiles/` is never empty and the active profile always has a file.
+        if cfg.active_profile.trim().is_empty() {
+            cfg.active_profile = default_profile_name();
+        }
+        if !profile_path(&cfg.active_profile).exists() {
+            cfg.save();
+        }
         cfg
     }
 
@@ -862,13 +979,126 @@ impl AppConfig {
             std::fs::create_dir_all(dir).ok();
         }
         if let Ok(data) = serde_json::to_string_pretty(self) {
-            std::fs::write(&path, data).ok();
+            std::fs::write(&path, &data).ok();
+            // Continuous save: mirror the live config into the active profile file so
+            // the outgoing profile is always already saved before any switch.
+            let pp = profile_path(&self.active_profile);
+            if let Some(dir) = pp.parent() {
+                std::fs::create_dir_all(dir).ok();
+            }
+            std::fs::write(&pp, &data).ok();
         }
     }
 
     fn path() -> PathBuf {
         app_data_dir().join("config.json")
     }
+
+    // ── Profile Manager ────────────────────────────────────────────────
+    // A profile is a full AppConfig snapshot at `profiles/<name>.json`. The live
+    // config (config.json) always mirrors the active profile (see save()), so
+    // switching never loses the outgoing profile's state.
+
+    /// Switch to `target`: flush the current profile, then overlay the target's
+    /// snapshot onto the live config. No-op if `target` has no file.
+    pub fn switch_profile(&mut self, target: &str) {
+        self.save(); // flush current active profile
+        if let Ok(data) = std::fs::read_to_string(profile_path(target)) {
+            apply_preset(self, &data); // full snapshot = overlay every key
+        }
+        self.active_profile = target.to_string(); // re-assert (file may store a stale name)
+        self.save();
+    }
+
+    /// Create a new profile seeded from the *current* live settings, then switch
+    /// to it. On Windows a new profile also defaults to game-window-focus gating.
+    pub fn new_profile(&mut self, name: &str) -> String {
+        self.save(); // flush current active profile
+        let name = unique_profile_name(&sanitize_profile_name(name));
+        self.active_profile = name.clone();
+        #[cfg(windows)]
+        {
+            self.hotkeys.gate_mode = GateMode::WindowFocus;
+            self.hotkeys.input_focus_gate = true;
+        }
+        self.save(); // writes profiles/<name>.json from the current live settings
+        name
+    }
+
+    /// Duplicate `src` under a fresh "<src> copy" name and switch to the copy.
+    pub fn duplicate_profile(&mut self, src: &str) -> String {
+        self.save();
+        let name = unique_profile_name(&format!("{src} copy"));
+        std::fs::copy(profile_path(src), profile_path(&name)).ok();
+        self.switch_profile(&name); // re-asserts active_profile inside the copied file
+        name
+    }
+
+    /// Rename the active profile's file and update `active_profile`.
+    pub fn rename_active_profile(&mut self, new_name: &str) -> String {
+        let new_name = unique_profile_name(&sanitize_profile_name(new_name));
+        std::fs::rename(profile_path(&self.active_profile), profile_path(&new_name)).ok();
+        self.active_profile = new_name.clone();
+        self.save();
+        new_name
+    }
+
+    /// Delete `name`. If it was active, switch to the first remaining profile.
+    /// The caller must ensure at least one profile always remains.
+    pub fn delete_profile(&mut self, name: &str) {
+        std::fs::remove_file(profile_path(name)).ok();
+        if self.active_profile == name {
+            if let Some(first) = list_profiles().into_iter().next() {
+                self.switch_profile(&first);
+            }
+        }
+    }
+}
+
+/// Directory holding one JSON snapshot per profile.
+pub fn profiles_dir() -> PathBuf {
+    app_data_dir().join("profiles")
+}
+
+pub fn profile_path(name: &str) -> PathBuf {
+    profiles_dir().join(format!("{}.json", sanitize_profile_name(name)))
+}
+
+/// Profile names (file stems) currently on disk, sorted.
+pub fn list_profiles() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(profiles_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            (p.extension().and_then(|x| x.to_str()) == Some("json"))
+                .then(|| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+                .flatten()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Keep profile names filesystem-safe: allow letters/digits/spaces and a few
+/// punctuation marks, map anything else to '_'. Never returns an empty string.
+pub fn sanitize_profile_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' })
+        .collect();
+    let s = s.trim().to_string();
+    if s.is_empty() { "Profile".to_string() } else { s }
+}
+
+/// Append " (2)", " (3)", … until the name is free on disk.
+fn unique_profile_name(base: &str) -> String {
+    let base = sanitize_profile_name(base);
+    if !profile_path(&base).exists() {
+        return base;
+    }
+    (2..).map(|n| format!("{base} ({n})")).find(|n| !profile_path(n).exists()).unwrap()
 }
 
 
@@ -886,6 +1116,33 @@ pub fn app_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_groups_partition_all_keys() {
+        // Every serialized AppConfig key must be in exactly one group or the
+        // exclude-list, and every group key must be a real config key. Adding a
+        // field without categorising it fails here — that's the whole point.
+        let serde_json::Value::Object(map) = serde_json::to_value(AppConfig::default()).unwrap()
+        else { panic!("config is not a JSON object") };
+        let all_keys: std::collections::HashSet<&str> = map.keys().map(String::as_str).collect();
+
+        // No key appears in two groups, and every group key exists.
+        let mut seen = std::collections::HashSet::new();
+        for g in KEY_GROUPS {
+            for &k in g.keys {
+                assert!(all_keys.contains(k), "group {}/{} lists unknown key '{k}'", g.section, g.name);
+                assert!(seen.insert(k), "key '{k}' is in more than one group");
+            }
+        }
+        for &k in EXPORT_EXCLUDE {
+            assert!(all_keys.contains(k), "EXPORT_EXCLUDE lists unknown key '{k}'");
+            assert!(seen.insert(k), "excluded key '{k}' also appears in a group");
+        }
+        // Every config key is covered.
+        for k in &all_keys {
+            assert!(seen.contains(k), "config key '{k}' is in no group and not excluded");
+        }
+    }
 
     #[test]
     fn config_serde_roundtrips() {
