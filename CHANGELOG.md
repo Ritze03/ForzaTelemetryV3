@@ -40,6 +40,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Backfire icon**: the Backfire tab now uses a flame glyph instead of the bolt icon.
 
 ### Fixed
+- **Co-Op label clarity**: the identity fields are now **Player name** / **Player color**, and the pacing slider is **Packet Buffer Size** (was Name / Color / Buffer).
+- **Engine Swaps search icon**: the web-lookup search now uses a vehicle-lookup glyph instead of the plain magnifying glass.
 - **Consistent label style (no trailing colons)**: swept every tab and mini-settings page to drop the trailing `:` from field/section labels, which were mixed inconsistently across the UI — Settings, Dashboard, Co-Op, Automatic Gearbox, Backfire, Power Graph, Engines, and the accel/decel trackers now all read colon-free.
 - **Backfire RPM labels spelled out**: the RPM Range sliders' `Min` / `Max` (and `Min RPM` / `Max RPM`) now read **Minimum RPM** / **Maximum RPM**.
 - **Steady tab bar with the current-page pill**: the Modern top bar's current-tab pill now reserves the width of the longest tab name, so switching to a longer- or shorter-named tab no longer nudges the icon tabs sideways. They stay centered and only shift — once, uniformly — when the window gets genuinely narrow.

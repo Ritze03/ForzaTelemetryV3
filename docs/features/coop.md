@@ -35,7 +35,7 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
 
 ## Options
 
-- **Buffer (ms)** — jitter buffer that delays remote players slightly for smoother pacing.
+- **Packet Buffer Size (ms)** — jitter buffer that delays remote players slightly for smoother pacing.
   0 = lowest latency; raise it if other cars stutter.
 - **coop_port** — local port the tunnel points at (config only).
 

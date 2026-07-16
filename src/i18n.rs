@@ -594,12 +594,14 @@ fn de(s: &str) -> Option<&'static str> {
         "Joined" => "Beigetreten",
         "Your Identity" => "Deine Identität",
         "Name" => "Name",
+        "Player name" => "Spielername",
+        "Player color" => "Spielerfarbe",
         "Player" => "Spieler",
         "Colour" => "Farbe",
         "Others see this name + colour; your own map arrow uses the colour only." =>
             "Andere sehen diesen Namen + Farbe; dein eigener Kartenpfeil nutzt nur die Farbe.",
         "Pacing" => "Taktung",
-        "Buffer" => "Puffer",
+        "Packet Buffer Size" => "Paketpuffergröße",
         "Delays remote players by this much to smooth out network jitter.\n\
                  0 = lowest latency; raise it if other cars stutter on the map." =>
             "Verzögert entfernte Spieler, um Netzwerk-Jitter zu glätten.\n\

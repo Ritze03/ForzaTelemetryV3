@@ -15,7 +15,7 @@ pub const PLUG:       &str = "\u{F1E6}"; // fa-plug      (connected)
 pub const NO_SIGNAL:  &str = "\u{F127}"; // fa-chain-broken (disconnected)
 
 pub const PENCIL:     &str = "\u{F040}"; // fa-pencil    (edit)
-pub const SEARCH:     &str = "\u{F002}"; // fa-search
+pub const SEARCH:     &str = "\u{F422}"; // engine/vehicle lookup (Engine Swaps web search)
 pub const FLOPPY:     &str = "\u{F0C7}"; // fa-floppy-o  (save)
 pub const CHECK:      &str = "\u{F00C}"; // fa-check
 pub const TIMES:      &str = "\u{F00D}"; // fa-times     (clear/close)

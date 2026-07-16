@@ -24,7 +24,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     crate::theme::card(ui, tr("Your Identity"), |ui| {
         ui.horizontal(|ui| {
-            ui.label(tr("Name"));
+            ui.label(tr("Player name"));
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut app.config.coop_name)
                     .hint_text(tr("Player"))
@@ -39,7 +39,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
         // Colour: label | slider + a swatch preview pinned to the right (where a
         // value spinner sits on other rows).
         let changed = ui.columns(2, |c| {
-            crate::theme::row_label(&mut c[0], tr("Color"));
+            crate::theme::row_label(&mut c[0], tr("Player color"));
             c[1].horizontal(|ui| {
                 const SW: f32 = 22.0;
                 let rail = (ui.available_width() - SW - ui.spacing().item_spacing.x).max(40.0);
@@ -66,7 +66,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     crate::theme::card(ui, tr("Pacing"), |ui| {
-        if crate::theme::slider_row(ui, tr("Buffer"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms").changed() {
+        if crate::theme::slider_row(ui, tr("Packet Buffer Size"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms").changed() {
             app.coop.set_buffer_ms(app.config.coop_buffer_ms);
         }
         ui.label(
