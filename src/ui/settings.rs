@@ -449,17 +449,16 @@ fn import_source_json(app: &ForzaApp) -> String {
     }
 }
 
-/// Read-only JSON preview in a fixed-height bordered scroll box. The editor is
-/// **frameless** so its own border can't scroll out from under the box's rounded frame.
+/// Read-only JSON preview in a fixed-height bordered scroll box. A **selectable**
+/// monospace label — you can select text and copy it, but not edit — that extends
+/// (no wrap) so long lines scroll horizontally inside the box.
 fn json_preview(ui: &mut Ui, id: &str, height: f32, json: &str) {
     scroll_box(ui, id, height, true, |ui| {
-        let mut text = if json.is_empty() { "{}".to_string() } else { json.to_string() };
+        let text = if json.is_empty() { "{}" } else { json };
         ui.add(
-            egui::TextEdit::multiline(&mut text)
-                .frame(false)
-                .code_editor()
-                .desired_width(f32::INFINITY)
-                .interactive(false),
+            egui::Label::new(egui::RichText::new(text).monospace())
+                .selectable(true)
+                .wrap_mode(egui::TextWrapMode::Extend),
         );
     });
 }
@@ -593,7 +592,7 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
             ui.horizontal(|ui| {
                 let cancel_w = 96.0;
                 let big_w = (ui.available_width() - cancel_w - ui.spacing().item_spacing.x).max(120.0);
-                let label = if is_export { tr("Export") } else { tr("Import") };
+                let label = if is_export { tr("Copy to clipboard") } else { tr("Import") };
                 let ok = is_export || !import_source_json(app).trim().is_empty();
                 let clicked = ui
                     .add_enabled_ui(ok, |ui| ui.add_sized([big_w, 34.0], crate::theme::primary_button(label)).clicked())
