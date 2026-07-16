@@ -216,11 +216,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Conditions" => "Bedingungen",
         "Enabled" => "Aktiviert",
         "Dynamic RPM" => "Dynamische Drehzahl",
-        "Min:" => "Min:",
-        "Max:" => "Max:",
         "Range" => "Bereich",
-        "Min RPM:" => "Min. Drehzahl:",
-        "RPM interval:" => "Drehzahl-Intervall:",
+        "Min RPM" => "Min. U/min",
+        "RPM interval" => "Drehzahl-Intervall",
         "Key press duration:" => "Tastendruck-Dauer:",
         "Disable if standing still" => "Im Stand deaktivieren",
         "Test mode (ignores throttle/RPM conditions)" =>
