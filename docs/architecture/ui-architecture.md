@@ -122,7 +122,7 @@ UI tree renders between two `set_language` calls, so a global is fine; see the
   site. English passes `s` straight through; German looks it up in `de(s)`
   (`src/i18n.rs:75-688`), a single big `match` keyed by the exact English source
   string, grouped by area with `// ── Section ──` comments (tabs, page-settings,
-  dashboard widgets, gearbox tab, Co-Op, recording, …).
+  dashboard widgets, gearbox tab, Co-Op, …).
 - **Fallback, not blank**: any string missing from `de()` (the `_ => return None` arm)
   falls back to the English source via `.unwrap_or(s)` in `tr` — nothing ever renders
   empty for want of a translation.

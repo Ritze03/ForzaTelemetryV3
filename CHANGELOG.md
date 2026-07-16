@@ -44,7 +44,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ### Removed
 - **Separate tyre style**: folded into the single adaptive "Tires" view (was three styles, now Tires + Bars).
 - **Duplicate engine-type caption** in the Car widget — it now lives in the Engine widget instead.
-- **Recording replay**: the replay/loop playback was removed; recording, CSV export, and delete stay.
+- **Recording**: the telemetry recorder is gone entirely — the Settings tab's Recording card (Record/Stop, Export CSV, delete) and the status-bar REC indicator have been removed, along with the `.ftr` capture and CSV export.
 - **Load Preset in Setup**: preset loading now lives only in the dashboard mini-settings (it was in both).
 - **Forza Motorsport 7 mode**: dropped entirely — the app is now Forza Horizon 6 only, and the game-selection dropdown in Setup is gone.
 

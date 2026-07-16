@@ -56,5 +56,4 @@ Power Graph widget reads — one control set, rendered by `power_curve::options_
 ## Notes
 
 - The capture is in-memory only — closing the app or switching cars discards it unless
-  you've hit "Save reference". There's no way to export a captured curve to a file; for
-  raw data logging use [[recording]] instead.
+  you've hit "Save reference". There's no way to export a captured curve to a file.

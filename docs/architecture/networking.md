@@ -31,10 +31,10 @@ behind the packet rate. For each packet it:
    suspension-travel stats, wheel-radius estimate, speed history/delta, and the
    ~25 Hz speed/RPM trace buffer.
 3. Calls each listener's `update(&pkt, …)` (see table below).
-4. Relays the packet to Co-Op (`self.coop.push_local`), writes it to the CSV recorder
-   if active, and finally calls `self.telemetry.update(pkt)` (`src/telemetry.rs`), which
-   stores `latest`, flips `is_connected`, and recomputes `packets_per_sec` once per
-   second of wall-clock elapsed.
+4. Relays the packet to Co-Op (`self.coop.push_local`), then calls
+   `self.telemetry.update(pkt)` (`src/telemetry.rs`), which stores `latest`, flips
+   `is_connected`, and recomputes `packets_per_sec` once per second of wall-clock
+   elapsed.
 
 `self.last_packet_time` drives a 2-second-since-last-packet disconnect check right after
 the drain loop.

@@ -625,11 +625,6 @@ pub struct ForzaApp {
     pub coop_join_input: String,
     pub coop_copied_at: Option<Instant>,
 
-    // Recording
-    pub recorder: Option<crate::recorder::RecordState>,
-    pub replay_selected: Option<usize>,
-    pub csv_export_msg: Option<String>,
-
     receiver: Receiver<ForzaPacket>,
     _network: NetworkHandle,
 }
@@ -783,9 +778,6 @@ impl ForzaApp {
             ),
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
-            recorder: None,
-            replay_selected: None,
-            csv_export_msg: None,
             receiver,
             _network: network,
         }
@@ -797,18 +789,6 @@ impl ForzaApp {
         self.receiver = receiver;
         self._network = network;
         self.config.listen_port = port;
-    }
-
-    /// Start/stop recording received telemetry to a file.
-    pub fn toggle_recording(&mut self) {
-        if self.recorder.is_some() {
-            self.recorder = None; // Drop flushes and closes the file.
-        } else {
-            match crate::recorder::RecordState::start() {
-                Ok(r) => self.recorder = Some(r),
-                Err(e) => eprintln!("recording failed to start: {e}"),
-            }
-        }
     }
 
     /// True while Backfire's simulated keypress may still be echoing back in
@@ -1033,11 +1013,6 @@ impl ForzaApp {
                 self.coop.push_local(&out);
             } else {
                 self.coop.push_local(&pkt);
-            }
-
-            // Recording: capture the packet with its timestamp.
-            if let Some(rec) = self.recorder.as_mut() {
-                rec.write_packet(&pkt.to_bytes());
             }
 
             self.telemetry.update(pkt);
@@ -1468,22 +1443,6 @@ impl eframe::App for ForzaApp {
                         ui.colored_label(
                             c,
                             format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
-                        );
-                    }
-
-                    // Recording indicator (visible from any tab)
-                    if let Some(rec) = self.recorder.as_ref() {
-                        ui.separator();
-                        let s = rec.elapsed().as_secs();
-                        ui.colored_label(
-                            crate::theme::DANGER,
-                            format!(
-                                "{}  REC {}:{:02} · {} pkts",
-                                icons::CIRCLE,
-                                s / 60,
-                                s % 60,
-                                rec.packets
-                            ),
                         );
                     }
 

@@ -1,4 +1,4 @@
-# Settings — network, units, display, recording
+# Settings — network, units, display
 
 The **Settings** tab holds the app-wide options that aren't tied to a single
 dashboard widget. Rendered from `src/ui/settings.rs`; values persist in
@@ -28,16 +28,6 @@ dashboard widget. Rendered from `src/ui/settings.rs`; values persist in
   limiter uses `request_repaint_after`, so it renders at most this often even
   though telemetry still arrives at ~60 Hz).
 - **Always on top** — keep the window above other windows.
-
-## Recording
-
-- **Record / Stop Recording** — capture live telemetry to a recording file; the
-  status bar shows a REC indicator while active.
-- **Export CSV** — export a saved recording to CSV for analysis.
-- **Delete** — remove a recording.
-
-There is **no in-app playback** — recordings are for offline analysis. Full
-detail in [[recording]].
 
 ## Save
 

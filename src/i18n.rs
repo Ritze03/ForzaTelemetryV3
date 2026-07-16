@@ -675,16 +675,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Distance" => "Distanz",
         "Car class" => "Fahrzeugklasse",
 
-        // ── Recording ──────────────────────────────────────────────────
-        "Recording" => "Aufnahme",
-        "Record" => "Aufnehmen",
-        "Stop Recording" => "Aufnahme beenden",
-        "Recording live telemetry to a file…" => "Nehme Live-Telemetrie in eine Datei auf…",
-        "No recordings yet." => "Noch keine Aufnahmen.",
-        "Export CSV" => "CSV exportieren",
-        "Saved" => "Gespeichert",
-        "CSV export failed:" => "CSV-Export fehlgeschlagen:",
-
         _ => return None,
     })
 }

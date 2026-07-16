@@ -62,7 +62,6 @@ app.rs:ForzaApp::drain_packets()   (called first each frame)
       │    trace_history (Speed Trace, active-time axis)
       ├─ listeners fire (see below)
       ├─ coop.push_local(&pkt)          → relay to peers (coop.rs)
-      ├─ recorder.write_packet(...)     → optional .ftr recording (recorder.rs)
       └─ telemetry.update(pkt)          → stores latest + packet-rate (telemetry.rs)
       ▼
 egui::CentralPanel dispatch → crate::ui::<tab>::show(ui, self)
@@ -99,7 +98,7 @@ which several stats and the Co-Op relay respect.
 5. Global hotkeys — F10 (map orientation), F11 (fullscreen, Windows), Ctrl+S
    (mini-settings popup), Ctrl+E (dashboard edit mode).
 6. Chrome panels — top **tab bar** (`TopBottomPanel::top`, three styles via
-   `tab_button`/`page_pill`), bottom **status bar** (connection, pps, Co-Op, recording,
+   `tab_button`/`page_pill`), bottom **status bar** (connection, pps, Co-Op,
    cog), and the floating **mini-settings window** (`page_settings_*`, driven by
    `PageSettingsTab` / `DashboardSubTab`).
 7. **Central panel dispatch** — `match self.current_tab { … }` calls the one
@@ -130,7 +129,6 @@ which several stats and the Co-Op relay respect.
 | `labels.rs` | Car class / drivetrain label images + PI-stamping renderer. |
 | `input.rs` | `InputSender` — synthetic keypresses (drives backfire/gearbox into the game) on a worker thread; the shared "synthetic echo" window. |
 | `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. See [[coop]]. |
-| `recorder.rs` | Packet recording to `.ftr` + CSV export. See [[recording]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
 
 ### `src/listeners/` (event-driven, fire inside `drain_packets`)

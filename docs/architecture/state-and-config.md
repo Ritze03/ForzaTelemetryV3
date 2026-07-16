@@ -1,8 +1,8 @@
 # State & Configuration
 
 Where the app's data lives, split three ways: persisted settings (`AppConfig`), one
-in-memory app struct (`ForzaApp`) holding session/runtime state, and small
-purpose-built structs (telemetry connection, recording) owned by `ForzaApp`.
+in-memory app struct (`ForzaApp`) holding session/runtime state, and a small
+purpose-built struct (telemetry connection) owned by `ForzaApp`.
 
 ## Where runtime state lives
 
@@ -34,7 +34,7 @@ purpose-built structs (telemetry connection, recording) owned by `ForzaApp`.
   - **Transient UI/session state**: current tab, mini-settings popup open/tab state,
     drag/resize state for the dashboard grid, minimap texture/zoom/season cache,
     Co-Op trails and roster cache, speed-trace ring buffer, changelog filter toggles,
-    pending preset selection, recorder handle. None of this round-trips through
+    pending preset selection. None of this round-trips through
     `AppConfig`.
 - **`src/telemetry.rs` — `TelemetryState`.** Connection state, held at
   `ForzaApp::telemetry`: `latest: Option<ForzaPacket>` (most recent packet),
@@ -44,13 +44,6 @@ purpose-built structs (telemetry connection, recording) owned by `ForzaApp`.
   window. There is no disconnect detection here — `is_connected` only ever goes
   true; `ForzaApp::last_packet_time: Option<Instant>` is what the UI uses elsewhere to
   notice a stall.
-- **`src/recorder.rs` — `RecordState`.** Held as `ForzaApp::recorder: Option<RecordState>`
-  — `None` when not recording, `Some` for the duration of one recording. Holds the
-  open `BufWriter<File>`, a start `Instant`, and a running `packets` counter; each
-  packet is appended as `[u32 elapsed_ms][u16 len][len bytes]` to a `.ftr` file under
-  `<app data dir>/recordings/`. `Drop` flushes the writer, so ending a recording is
-  just replacing the `Option` with `None`. See [[recording]] for the user-facing
-  behaviour and CSV export.
 
 ## Config persistence lifecycle
 
@@ -152,4 +145,3 @@ preset overlay/export machinery (`apply_preset_overlay`, `export_preset`,
 - [[presets]] — user-facing preset/mini-settings behaviour, key lists (kept in sync
   with the lists documented here), bundled preset details.
 - [[ui-architecture]] — how `src/ui/*` and the mini-settings popup consume this state.
-- [[recording]] — `RecordState` usage from the Settings tab.

@@ -8,8 +8,7 @@ Graphite theme.*
 
 A summary of everything added on this branch. Built and screenshot-verified end
 to end (co-op tested over both LAN and a real trycloudflare tunnel, with 2 and 3
-players; recording verified by capturing a run and exporting it to CSV). No game
-required — a synthetic packet sender (`tools/sim.py`) drives it.
+players). No game required — a synthetic packet sender (`tools/sim.py`) drives it.
 
 ## 1. Co-Op — shared telemetry (highest priority)
 
@@ -49,18 +48,6 @@ Modules sub-tab):
 - **Session Stats** — top speed, peak power/torque/boost, peak G, max RPM.
 
 Plus the G-force meter gained a fading **traction-circle trail**.
-
-## 4. Telemetry recording
-
-In **Settings → Recording**:
-
-- **Record** live telemetry to a file (status-bar REC indicator).
-- **Export CSV** — a saved recording exported to CSV for analysis in a spreadsheet
-  / pandas.
-- **Delete** a recording you no longer need.
-
-(There is no in-app playback — recordings are for export/analysis. See
-[[recording]] for details.)
 
 ## Hotkeys
 
