@@ -24,7 +24,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     crate::theme::card(ui, tr("Your Identity"), |ui| {
         ui.horizontal(|ui| {
-            ui.label(tr("Name:"));
+            ui.label(tr("Name"));
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut app.config.coop_name)
                     .hint_text(tr("Player"))
@@ -66,7 +66,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     crate::theme::card(ui, tr("Pacing"), |ui| {
-        if crate::theme::slider_row(ui, tr("Buffer:"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms").changed() {
+        if crate::theme::slider_row(ui, tr("Buffer"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms").changed() {
             app.coop.set_buffer_ms(app.config.coop_buffer_ms);
         }
         ui.label(
@@ -118,7 +118,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                     app.coop.start_host(app.config.coop_port, &n, h, b);
                 }
                 ui.add_space(8.0);
-                ui.label(tr("…or join with a code:"));
+                ui.label(tr("…or join with a code"));
                 ui.add_space(2.0);
                 // Join button pinned to the right; the code field fills the rest.
                 let join_clicked = ui.horizontal(|ui| {
@@ -179,7 +179,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                     ui.add_space(8.0);
                     stop_button(ui, app, tr("Cancel"));
                 } else {
-                    ui.label(tr("Share this code so others can join:"));
+                    ui.label(tr("Share this code so others can join"));
                     ui.add_space(2.0);
                     match app.coop.words() {
                         Some(words) => share_code(ui, app, &words),
@@ -192,7 +192,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                     }
                     if let Some(lan) = app.coop.lan_url() {
                         ui.add_space(6.0);
-                        ui.label(RichText::new(tr("Same network? Lower latency with:"))
+                        ui.label(RichText::new(tr("Same network? Lower latency with"))
                             .size(11.0).color(crate::theme::FAINT));
                         ui.add(egui::Label::new(RichText::new(lan).monospace().size(13.0)).selectable(true));
                     }
@@ -203,7 +203,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
             Role::Client => {
                 if let Some(words) = app.coop.words() {
                     ui.horizontal(|ui| {
-                        ui.label(tr("Connected to:"));
+                        ui.label(tr("Connected to"));
                         ui.label(RichText::new(words).monospace().strong());
                     });
                 }

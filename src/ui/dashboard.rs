@@ -32,7 +32,7 @@ fn show_waiting_screen(ui: &mut Ui, listen_port: u16) {
         );
         ui.add_space(12.0);
         ui.label(
-            RichText::new(tr("Enable Data Out in Forza — scroll all the way down:"))
+            RichText::new(tr("Enable Data Out in Forza — scroll all the way down"))
                 .size(15.0)
                 .color(theme::DIM),
         );
@@ -1165,7 +1165,7 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         (torque_cur, app.max_torque_nm, "Nm", 0),
         (boost_cur,  boost_max,         boost_unit, 2),
     ];
-    let labels = [tr("Power:"), tr("Torque:"), tr("Boost:")];
+    let labels = [tr("Power"), tr("Torque"), tr("Boost")];
 
     // Pad the label to the widest one (labels differ per language) so the value column
     // lines up; {unit:<3} pads "PS"/"Nm" so the "(" column matches "bar".
@@ -1362,8 +1362,8 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         widget_title(ui, app, tr("Race"));
         ui.add_space(4.0);
 
-        ui.label(format!("{} P{}", tr("Position:"), pkt.race_position));
-        ui.label(format!("{:<9} {}", tr("Lap:"), pkt.lap_number));
+        ui.label(format!("{} P{}", tr("Position"), pkt.race_position));
+        ui.label(format!("{:<9} {}", tr("Lap"), pkt.lap_number));
         ui.add_space(6.0);
         ui.label(RichText::new(format!("{:<9} {}", tr("Current"), fmt_lap(pkt.current_lap))).size(15.0));
         ui.label(RichText::new(format!("{:<9} {}", tr("Last"), fmt_lap(pkt.last_lap))).size(15.0));
@@ -1373,8 +1373,8 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
                 .color(Color32::from_rgb(255, 210, 40)),
         );
         ui.add_space(8.0);
-        ui.label(format!("{} {}", tr("Race time:"), fmt_lap(pkt.current_race_time)));
-        ui.label(format!("{}  {:.1} km", tr("Distance:"), pkt.distance_traveled / 1000.0));
+        ui.label(format!("{} {}", tr("Race time"), fmt_lap(pkt.current_race_time)));
+        ui.label(format!("{}  {:.1} km", tr("Distance"), pkt.distance_traveled / 1000.0));
     }
 }
 
@@ -1728,8 +1728,8 @@ fn show_gforce_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             // Peak marker orange, matching the peak ring drawn by draw_gforce_plot.
             let peak_col = Color32::from_rgb(255, 140, 0);
             // Build the lines up front so we can measure the widest and scale to fit.
-            let hdr_cur  = tr("Current:").to_string();
-            let hdr_peak = tr("Peak:").to_string();
+            let hdr_cur  = tr("Current").to_string();
+            let hdr_peak = tr("Peak").to_string();
             let cur_lat  = format!("  {:<5} {:+.2} g", format!("{}:", tr("Lat")),  lat);
             let cur_long = format!("  {:<5} {:+.2} g", format!("{}:", tr("Long")), lon);
             let cur_vert = format!("  {:<5} {:+.2} g", format!("{}:", tr("Vert")), vert);
