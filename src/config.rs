@@ -1009,14 +1009,15 @@ impl AppConfig {
         name
     }
 
-    /// Duplicate `src` under a fresh "<src> copy" name and switch to the copy.
-    pub fn duplicate_profile(&mut self, src: &str) -> String {
+    /// Duplicate `src` under `name` (sanitised + de-duped) and switch to the copy.
+    pub fn duplicate_profile_as(&mut self, src: &str, name: &str) -> String {
         self.save();
-        let name = unique_profile_name(&format!("{src} copy"));
+        let name = unique_profile_name(&sanitize_profile_name(name));
         std::fs::copy(profile_path(src), profile_path(&name)).ok();
         self.switch_profile(&name); // re-asserts active_profile inside the copied file
         name
     }
+
 
     /// Rename the active profile's file and update `active_profile`.
     pub fn rename_active_profile(&mut self, new_name: &str) -> String {
@@ -1184,7 +1185,7 @@ mod tests {
         assert_eq!(cfg.grid_cols, 40, "Racing kept its edit across the round-trip");
 
         // Duplicate makes a distinct file and becomes active.
-        let copy = cfg.duplicate_profile(&racing);
+        let copy = cfg.duplicate_profile_as(&racing, "Racing copy");
         assert!(profile_path(&copy).exists());
         assert_ne!(copy, racing);
 

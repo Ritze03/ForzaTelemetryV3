@@ -154,11 +154,15 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             });
         });
     });
+
+    // Floats above the whole tab; only visible when a profile dialog is open.
+    profile_dialog_modal(ui, app);
 }
 
-/// The PROFILES category: active-profile dropdown, a scrollable profile list, and
-/// the New / Duplicate / Rename / Delete row. First card in the left column; the
-/// Export/Import card ([`export_import_card`]) sits directly below it.
+/// The PROFILES category: a scrollable profile list and the New / Duplicate /
+/// Rename / Delete row. First card in the left column; the Export/Import card
+/// ([`export_import_card`]) sits directly below it. The buttons open a modal
+/// ([`profile_dialog_modal`], rendered at the end of [`show`]).
 ///
 /// Save is continuous (the live config mirrors the active profile on every
 /// change — see `AppConfig::save`), so there is no explicit Save button and
@@ -168,28 +172,8 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
     let profiles = config::list_profiles();
     let active = app.config.active_profile.clone();
 
-    // Compact mirror of the active profile.
-    control_row(ui, tr("Active profile"), |ui| {
-        let mut switch_to: Option<String> = None;
-        egui::ComboBox::from_id_salt("profile_active_combo")
-            .selected_text(active.as_str())
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for name in &profiles {
-                    if ui.selectable_label(*name == active, name).clicked() && *name != active {
-                        switch_to = Some(name.clone());
-                    }
-                }
-            });
-        if let Some(name) = switch_to {
-            app.config.switch_profile(&name);
-            app.profile_io_status = format!("{} {}", tr("Loaded profile"), name);
-        }
-    });
-
-    ui.add_space(4.0);
-
     // Scrollable list: fixed height, one row per profile, active row washed + checked.
+    // Clicking a row switches to it (the list replaces the old dropdown).
     let mut switch_to: Option<String> = None;
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::same(2))
@@ -216,73 +200,147 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
 
     ui.add_space(6.0);
 
-    // Four equal-width action buttons.
+    // Four equal-width action buttons — each opens a modal dialog.
     ui.columns(4, |c| {
         if c[0].add_sized([c[0].available_width(), 24.0], egui::Button::new(tr("New"))).clicked() {
-            app.profile_dialog = ProfileDialog::New;
-            app.profile_name_buf.clear();
+            open_profile_dialog(app, ProfileDialog::New, String::new());
         }
         if c[1].add_sized([c[1].available_width(), 24.0], egui::Button::new(tr("Duplicate"))).clicked() {
-            let name = app.config.duplicate_profile(&active);
-            app.profile_io_status = format!("{} {}", tr("Created profile"), name);
+            open_profile_dialog(app, ProfileDialog::Duplicate, format!("{active} copy"));
         }
         if c[2].add_sized([c[2].available_width(), 24.0], egui::Button::new(tr("Rename"))).clicked() {
-            app.profile_dialog = ProfileDialog::Rename;
-            app.profile_name_buf = active.clone();
+            open_profile_dialog(app, ProfileDialog::Rename, active.clone());
         }
         let can_delete = profiles.len() > 1;
         if c[3].add_enabled_ui(can_delete, |ui| {
             ui.add_sized([ui.available_width(), 24.0], egui::Button::new(tr("Delete"))).clicked()
         }).inner {
-            app.profile_dialog = ProfileDialog::ConfirmDelete;
+            open_profile_dialog(app, ProfileDialog::ConfirmDelete, String::new());
         }
     });
+}
 
-    // Inline New / Rename / Delete-confirm.
-    match app.profile_dialog {
-        ProfileDialog::New | ProfileDialog::Rename => {
-            let is_new = app.profile_dialog == ProfileDialog::New;
+/// Open a profile dialog: set the kind, seed the name field, and request focus on it.
+fn open_profile_dialog(app: &mut ForzaApp, kind: ProfileDialog, name_seed: String) {
+    app.profile_dialog = kind;
+    app.profile_name_buf = name_seed;
+    app.profile_dialog_focus = true;
+}
+
+/// The modal for New / Duplicate / Rename / Delete: a dim backdrop that swallows
+/// clicks plus a centered window. New/Duplicate/Rename carry a text field; Delete
+/// is a plain confirm. Enter confirms, Esc or the backdrop cancels. Rendered at the
+/// end of [`show`] so it floats above the whole Settings tab.
+fn profile_dialog_modal(ui: &mut Ui, app: &mut ForzaApp) {
+    let dialog = app.profile_dialog;
+    if dialog == ProfileDialog::None {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let active = app.config.active_profile.clone();
+
+    let (title, is_text, primary, danger) = match dialog {
+        ProfileDialog::New => (tr("New Profile"), true, tr("Create"), false),
+        ProfileDialog::Duplicate => (tr("Duplicate Profile"), true, tr("Duplicate"), false),
+        ProfileDialog::Rename => (tr("Rename Profile"), true, tr("Rename"), false),
+        ProfileDialog::ConfirmDelete => (tr("Delete Profile"), false, tr("Delete"), true),
+        ProfileDialog::None => return,
+    };
+
+    // Backdrop: dim the tab and swallow clicks so only the dialog is interactive.
+    let screen = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("profile_modal_backdrop"))
+        .order(egui::Order::Middle)
+        .fixed_pos(egui::Pos2::ZERO)
+        .interactable(true)
+        .show(&ctx, |ui| {
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(160));
+            let r = ui.allocate_response(screen.size(), egui::Sense::click());
+            if r.clicked() {
+                app.profile_dialog = ProfileDialog::None;
+            }
+        });
+
+    let mut confirm = false;
+    let mut cancel = false;
+    egui::Window::new(RichText::new(title).strong())
+        .order(egui::Order::Foreground)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(&ctx, |ui| {
+            ui.set_max_width(320.0);
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add(
+            if is_text {
+                let sub = match dialog {
+                    ProfileDialog::New => tr("Name the new profile — it starts from your current settings."),
+                    ProfileDialog::Duplicate => tr("Name the copy of this profile."),
+                    ProfileDialog::Rename => tr("Enter a new name for this profile."),
+                    _ => "",
+                };
+                ui.label(RichText::new(sub).size(12.0).color(crate::theme::TEXT_DIM));
+                ui.add_space(8.0);
+                let te = ui.add(
                     egui::TextEdit::singleline(&mut app.profile_name_buf)
-                        .hint_text(tr("Profile name"))
-                        .desired_width(160.0),
+                        .desired_width(f32::INFINITY)
+                        .hint_text(tr("Profile name")),
                 );
-                let ok = !app.profile_name_buf.trim().is_empty();
-                if ui.add_enabled(ok, egui::Button::new(tr("OK"))).clicked() {
-                    if is_new {
-                        let name = app.config.new_profile(&app.profile_name_buf.clone());
-                        app.profile_io_status = format!("{} {}", tr("Created profile"), name);
-                    } else {
-                        let name = app.config.rename_active_profile(&app.profile_name_buf.clone());
-                        app.profile_io_status = format!("{} {}", tr("Renamed to"), name);
-                    }
-                    app.profile_dialog = ProfileDialog::None;
+                if app.profile_dialog_focus {
+                    te.request_focus();
+                    app.profile_dialog_focus = false;
                 }
-                if ui.button(tr("Cancel")).clicked() {
-                    app.profile_dialog = ProfileDialog::None;
+                if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    confirm = true;
                 }
-            });
-        }
-        ProfileDialog::ConfirmDelete => {
-            ui.add_space(4.0);
+            } else {
+                ui.label(format!("{} \"{}\"? {}", tr("Delete profile"), active, tr("This cannot be undone.")));
+            }
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{} '{}'?", tr("Delete"), active))
-                        .color(Color32::from_rgb(220, 120, 120)),
-                );
-                if ui.button(tr("Yes")).clicked() {
-                    app.config.delete_profile(&active);
-                    app.profile_io_status = format!("{} {}", tr("Deleted profile"), active);
-                    app.profile_dialog = ProfileDialog::None;
+                let ok = !is_text || !app.profile_name_buf.trim().is_empty();
+                let primary_btn = if danger {
+                    crate::theme::danger_button(primary)
+                } else {
+                    crate::theme::primary_button(primary)
+                };
+                if ui.add_enabled(ok, primary_btn).clicked() {
+                    confirm = true;
                 }
-                if ui.button(tr("No")).clicked() {
-                    app.profile_dialog = ProfileDialog::None;
+                if ui.add(crate::theme::secondary_button(tr("Cancel"))).clicked() {
+                    cancel = true;
                 }
             });
+        });
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel = true;
+    }
+
+    if confirm && (!is_text || !app.profile_name_buf.trim().is_empty()) {
+        let name = app.profile_name_buf.clone();
+        match dialog {
+            ProfileDialog::New => {
+                let n = app.config.new_profile(&name);
+                app.profile_io_status = format!("{} {}", tr("Created profile"), n);
+            }
+            ProfileDialog::Duplicate => {
+                let n = app.config.duplicate_profile_as(&active, &name);
+                app.profile_io_status = format!("{} {}", tr("Created profile"), n);
+            }
+            ProfileDialog::Rename => {
+                let n = app.config.rename_active_profile(&name);
+                app.profile_io_status = format!("{} {}", tr("Renamed to"), n);
+            }
+            ProfileDialog::ConfirmDelete => {
+                app.config.delete_profile(&active);
+                app.profile_io_status = format!("{} {}", tr("Deleted profile"), active);
+            }
+            ProfileDialog::None => {}
         }
-        ProfileDialog::None => {}
+        app.profile_dialog = ProfileDialog::None;
+    }
+    if cancel {
+        app.profile_dialog = ProfileDialog::None;
     }
 }
 

@@ -530,12 +530,13 @@ pub enum DashboardSubTab {
     MiniMap,
 }
 
-/// Inline dialog state for the Profile Manager (Settings → PROFILES).
+/// Modal dialog state for the Profile Manager (Settings → PROFILES).
 #[derive(PartialEq, Clone, Copy, Default)]
 pub enum ProfileDialog {
     #[default]
     None,
     New,
+    Duplicate,
     Rename,
     ConfirmDelete,
 }
@@ -653,9 +654,10 @@ pub struct ForzaApp {
     pub page_map_sub_tab: MiniMapTab,
     // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
     // crate::config::KEY_GROUPS by index.
-    pub profile_dialog: ProfileDialog,       // inline New / Rename / Delete-confirm
+    pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete-confirm
+    pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
     pub profile_io_tab: ProfileIoTab,        // Export / Import card active tab
-    pub profile_name_buf: String,            // name field for New / Rename
+    pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
     pub profile_export_sel: Vec<bool>,
     pub profile_import_buf: String,
@@ -850,6 +852,7 @@ impl ForzaApp {
             page_dashboard_sub_tab: DashboardSubTab::default(),
             page_map_sub_tab: MiniMapTab::default(),
             profile_dialog: ProfileDialog::None,
+            profile_dialog_focus: false,
             profile_io_tab: ProfileIoTab::Export,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
