@@ -7,16 +7,51 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.1.0] – 2026-07-16
 
 ### Added
-- **Profile Manager**: a new **PROFILES** card at the top of the Settings tab lets you keep multiple named settings profiles and switch between them — create, duplicate, rename, and delete. A new profile starts from your current settings (on Windows it also defaults to *Game window focused* + *Only send inputs when game focused*). Switching auto-saves the profile you're leaving first, so nothing is ever lost — there's no Save button. **Selective export/import**: tick exactly what to include by group (Dashboard layout / mini-settings, Settings categories, and tuning tabs) and copy it to the clipboard, or paste JSON to import — into a new profile *or* over an existing one, overwriting only the settings you ticked. The bundled Ale/Ritze presets are now built-in import sources. (The old mini-settings *Config* tab is removed — its export/import lives here now.)
+- **Profile Manager**: a new **PROFILES** card at the top of the Settings tab lets you keep multiple named settings profiles and switch between them — create, duplicate, rename, and delete. A new profile starts from your current settings (on Windows it also defaults to *Game window focused* + *Only send inputs when game focused*). Switching auto-saves the profile you're leaving first, so nothing is ever lost — there's no Save button.
+- **Selective export/import**: Export and Import open a large two-pane dialog — on the left you tick exactly what to include by group (Dashboard layout / mini-settings, Settings categories, and tuning tabs), plus the source and destination; on the right a live JSON preview shows exactly what will be written. Copy it to the clipboard, or paste JSON to import — into a new profile *or* over an existing one, overwriting only the settings you ticked. The bundled Ale/Ritze presets are now built-in import sources.
+- **Global hotkeys**: rebindable keys that work while the game is focused — default `G` toggles Automatic Gearbox, `B` toggles Backfire — plus rebindable `Ctrl+S` (open mini-settings) / `Ctrl+E` (Dashboard edit mode). Configure them in Settings → Hotkeys, with Telemetry-live or window-focus triggering (Hyprland / X11 / custom command on Linux, with a Detect button to capture the game's window name and a live focus status readout). Optionally suppress backfire/gearbox key injection unless the game is focused. On Linux this needs your user in the `input` group (a status light shows whether it's working).
+- **Status-bar Backfire & Gearbox indicators**: the bottom status bar now shows Backfire and Automatic Gearbox state, centered with a divider between them, each with its tab icon and an **Active** / **Deactivated** label (Gearbox also shows **Uncalibrated** while it's enabled but hasn't engaged yet). A *Status bar: show text labels* toggle in the General mini-settings collapses both to icon-only. Hovering either indicator shows a tooltip naming the feature and its current state.
+- **Split gearbox reset**: the single *Clear calibration* button is now two — **Clear RPM calibration** (wipes the detected redline + engagement, keeps the per-gear speed map) and **Clear gear map** (wipes the per-gear speeds, keeps the redline). The **Reset RPM Calibration** hotkey (default `F`) now clears only the RPM calibration. Each also updates the saved per-car profile so a car reload can't restore what you cleared.
+- **Gearbox calibration from any gear**: the Automatic Gearbox no longer needs a clean 1st-gear pull to engage — it now calibrates and engages on your first manual upshift from *any* gear, so rolling starts and high-gear spawns work. The **Clear calibration** button is now always visible (disabled until there's a calibration to clear).
 - **Mini-settings transparency toggle**: the cog-wheel mini-settings window fades translucent when you're not hovering it; a new *Mini-settings fade when not hovered* switch (General page, on by default) lets you turn that off and keep it fully opaque.
-- **Split gearbox reset**: the single *Clear calibration* button is now two — **Clear RPM calibration** (wipes the detected redline + engagement, keeps the per-gear speed map) and **Clear gear map** (wipes the per-gear speeds, keeps the redline). The **Reset RPM Calibration** hotkey (default `F`, renamed from *Reset Gearbox Calibration*) now clears only the RPM calibration. Each also updates the saved per-car profile so a car reload can't restore what you cleared.
-- **Status-bar Backfire & Gearbox indicators**: the bottom status bar now shows Backfire and Automatic Gearbox state, centered with a divider between them, each with its tab icon and an **Active** / **Deactivated** label (Gearbox also shows pastel-amber **Uncalibrated** while it's enabled but hasn't engaged — i.e. before your first manual upshift teaches it the redline). A new *Status bar: show text labels* toggle in the General mini-settings collapses both to icon-only. Hovering either indicator shows a tooltip naming the feature and its current state.
-- **Refreshed tab icons**: Automatic Gearbox now uses a cogs glyph and Engine Swaps an engine glyph (were gamepad/wrench).
-- **Gearbox calibration from any gear**: the Automatic Gearbox no longer needs a clean 1st-gear pull to engage — it now calibrates and engages on your first manual upshift from *any* gear (so rolling race starts and high-gear spawns work). Added a **Reset Gearbox Calibration** hotkey (default `F`) that wipes the calibration so the next manual upshift re-learns it, and the **Clear calibration** button is now always visible (disabled until there's a calibration to clear).
 - **Curated default settings**: a fresh install (no `config.json` yet) now starts from a well-rounded real-world setup — dashboard layout, units, and tuning — instead of bare defaults. Personal Co-Op fields (name, colour, last join code) stay neutral. Existing configs are untouched.
-- **Global hotkeys**: rebindable keys that work while the game is focused — default `G` toggles Automatic Gearbox, `B` toggles Backfire — plus rebindable `Ctrl+S` / `Ctrl+E`. Configure them in Settings → Hotkeys, with Telemetry-live or window-focus triggering (Hyprland / X11 / custom command on Linux, and a Detect button to capture the game's window name). Optionally suppress backfire/gearbox key injection unless the game is focused. On Linux this needs your user in the `input` group (a status light shows whether it's working).
+- **Refreshed tab icons**: Automatic Gearbox now uses a cogs glyph, Engine Swaps an engine glyph, and Backfire a flame (were gamepad/wrench/bolt).
+
+### Fixed
+- **Consistent label style (no trailing colons)**: swept every tab and mini-settings page to drop the trailing `:` from field/section labels, which were mixed inconsistently across the UI — Settings, Dashboard, Co-Op, Automatic Gearbox, Backfire, Power Graph, Engines, and the accel/decel trackers now all read colon-free.
+- **Backfire RPM labels spelled out**: the RPM Range sliders' `Min` / `Max` now read **Minimum RPM** / **Maximum RPM**.
+- **Co-Op label clarity**: the identity fields are now **Player name** / **Player color** (aligned to the two-column row layout), and the pacing slider is **Packet Buffer Size**.
+- **Engine Swaps search icon**: the web-lookup search now uses a vehicle-lookup glyph instead of the plain magnifying glass.
+- **Race widget auto-fit**: the Race/Sprint widget's *Race* view now scales its rows to fit the cell in both width and height, matching the Sprint view — it previously rendered at fixed sizes and overflowed small widgets.
+- **Steady tab bar with the current-page pill**: the Modern top bar's current-tab pill now reserves the width of the longest tab name, so switching tabs no longer nudges the icon tabs sideways.
+- **Gearbox viz theming**: the Automatic Gearbox live-view now draws its chrome — borders, bar tracks, dim labels, neutral text — from the shared theme tokens instead of hard-coded greys/whites; the semantic gear-state colours are unchanged.
+- **Steadier settings rows**: the host-port spinner is right-pinned and control-row heights are bounded, so right-aligned rows no longer drift toward the panel's vertical middle.
+- **Category page top spacing**: the first category card no longer sits with a doubled gap below the tab bar; the top inset now matches the left/right inset on every card-based tab.
+- **Centered status-bar cog**: the settings cog in the status bar is now ink-centred in its button, matching the tab-bar icons.
+- **Settings scrolling**: the inner scroll panes no longer chain-scroll the outer pane at their edges, and always capture the wheel while hovered.
+
+### Removed
+- **Recording**: the telemetry recorder is gone entirely — the Settings tab's Recording card (Record/Stop, Export CSV, delete) and the status-bar REC indicator have been removed, along with the `.ftr` capture and CSV export.
+- **Mini-settings *Config* tab**: the dashboard cog's Config sub-tab (Load Preset / Export / Import) is gone — its export/import is now the Settings → Profiles card, and the bundled presets are import sources there.
+- **F10 map-orientation hotkey**: removed; use the "Lock map north-up" checkbox in the minimap mini-settings.
+
+### Info
+- **Settings tab restyled and reorganised**: cards are regrouped — left column holds **Profiles** and **Hotkey**; right column holds **Repository / Credits** (renamed from *Repository*), **Display**, **Network**, **Co-Op**, and **Input** — with a coloured connection status dot, auto-save, and no more Save button.
+- **Styled radio buttons**: one-of-N choices (unit pickers, import target, engine display mode) now use a custom radio that matches the app's accent checkbox — a circle with a white centre dot — and the Display unit rows (km/h · mph, °C · °F, bar · PSI) are column-aligned.
+- **Profile actions use dialogs**: New / Duplicate / Rename / Delete open a centered modal (with a name field where relevant, Enter to confirm, Esc to cancel) instead of inline rows, and the redundant active-profile dropdown is gone — the profile list is the single picker.
+
+## [0.1.0] – 2026-07-15
+
+### Added
 - **Power Graph widget options**: the dashboard Power Graph widget's mini-settings (Dashboard → Graphs) now expose the full Power Graph tab's capture options too — RPM step size, forced-induction detection, and save-FI-state — so you can tune the widget without opening the Power Graph tab. The mini-settings tab is also renamed from "Power" to "Power Graph".
 - **Clearer "waiting for telemetry" screen**: while no data is coming in, the dashboard now spells out the exact Data Out settings to enter in Forza — reminds you to scroll all the way down, and shows Data Out = On, IP Address = 127.0.0.1, and the Port to match your app's listen port — in a tidy card.
+
+### Fixed
+- **Aligned control rows**: labels now sit vertically centred against the slider, dropdown, or spinner beside them across the settings and tuning cards, instead of clinging to the top of the row; checkboxes share the same row height, so each label + control reads as one straight band.
+
+## [0.1.0] – 2026-07-13
+
+### Added
 - **Consistent card layout**: Backfire, Automatic Gearbox, Co-Op, and the Power Curve titles now share the same bordered cards with blue section titles and a uniform 8px gap between them. Backfire now uses the Gearbox's two-column control rows (label + slider + value) in a left-aligned column, and checkboxes in these cards share one fixed width.
 - **Co-Op tidy-up**: the connection status now sits inside the Session card, the name and join-code fields fill the available width, and the colour swatch moved to the right of the hue slider.
 - **Engine widget display modes**: choose Current, Max, or Both values per line in the mini-settings, and optionally show the engine type (Electric / cylinder count) underneath.
@@ -39,19 +74,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Top bar styles**: a new General page in the mini-settings lets you pick the top bar look — Modern (app title + current-page pill with centered icon tabs), Simple (icon-only tabs), or Legacy (the full labelled buttons). Modern adds a "Show current tab pill" toggle, and a "High contrast icons" toggle draws the compact tab icons white instead of the accent tone.
 - **Suspension invert + end labels** (on by default): the bars now read as ride height (extension up), with rotated Compressed/Extended labels beside them; a mini-setting toggles back to raw compression.
 - **What's New viewer**: this changelog, opened from the top-right of the tab bar, with filters for each category.
-- **Backfire icon**: the Backfire tab now uses a flame glyph instead of the bolt icon.
 
 ### Fixed
-- **Race widget auto-fit**: the Race/Sprint widget's *Race* view (shown once you're in a race) now scales its rows to fit the cell in both width and height, matching the Sprint view — it previously rendered at fixed sizes and overflowed small widgets.
-- **Co-Op label clarity**: the identity fields are now **Player name** / **Player color**, and the pacing slider is **Packet Buffer Size** (was Name / Color / Buffer).
-- **Engine Swaps search icon**: the web-lookup search now uses a vehicle-lookup glyph instead of the plain magnifying glass.
-- **Consistent label style (no trailing colons)**: swept every tab and mini-settings page to drop the trailing `:` from field/section labels, which were mixed inconsistently across the UI — Settings, Dashboard, Co-Op, Automatic Gearbox, Backfire, Power Graph, Engines, and the accel/decel trackers now all read colon-free.
-- **Backfire RPM labels spelled out**: the RPM Range sliders' `Min` / `Max` (and `Min RPM` / `Max RPM`) now read **Minimum RPM** / **Maximum RPM**.
-- **Steady tab bar with the current-page pill**: the Modern top bar's current-tab pill now reserves the width of the longest tab name, so switching to a longer- or shorter-named tab no longer nudges the icon tabs sideways. They stay centered and only shift — once, uniformly — when the window gets genuinely narrow.
-- **Gearbox viz theming**: the Automatic Gearbox live-view (right half) now draws its chrome — borders, bar tracks, dim labels, neutral text — from the shared theme tokens instead of hard-coded greys/whites, so it matches the rest of the app. The semantic gear-state colours (green/amber/red/cyan) are unchanged.
-- **Category page top spacing**: the first category card no longer sits with a doubled gap below the tab bar — the top inset now matches the left/right inset on every card-based tab (Backfire, Automatic Gearbox, Co-Op, Settings).
-- **Centered status-bar cog**: the settings cog in the status bar is now ink-centred in its button (matching the tab-bar icons) instead of sitting slightly off-centre.
-- **Aligned control rows**: labels now sit vertically centred against the slider, dropdown, or spinner beside them across the settings and tuning cards, instead of clinging to the top of the row; checkboxes share the same row height, so each label + control reads as one straight band.
 - **Steady number spinners**: the value boxes in the Automatic Gearbox and Backfire tabs now reserve room for their widest value, so rows no longer shift as digits are added; Backfire percentages always show one decimal, and the Key Press mode dropdown is left-aligned.
 - **Steady packet-rate readout**: the packets-per-second display in the status bar reserves a fixed width, so it no longer shifts sideways as the number gains or loses a digit.
 - **Consistent widget spacing**: uniform margins across the Boost, Speed Trace, Sprint, and RPM widgets so they line up when placed side by side.
@@ -59,18 +83,12 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Titles**: widget titles render consistently; the Power Graph compact title sits over the graph without stealing space, and "Hide widget titles" now covers it too.
 
 ### Removed
-- **Mini-settings *Config* tab**: the dashboard cog's Config sub-tab (Load Preset / Export / Import) is gone — its export/import is now the Settings → Profiles card, and the bundled presets are import sources there.
-- **F10 map-orientation hotkey**: removed; use the "Lock map north-up" checkbox in the minimap mini-settings.
 - **Separate tyre style**: folded into the single adaptive "Tires" view (was three styles, now Tires + Bars).
 - **Duplicate engine-type caption** in the Car widget — it now lives in the Engine widget instead.
-- **Recording**: the telemetry recorder is gone entirely — the Settings tab's Recording card (Record/Stop, Export CSV, delete) and the status-bar REC indicator have been removed, along with the `.ftr` capture and CSV export.
 - **Load Preset in Setup**: preset loading now lives only in the dashboard mini-settings (it was in both).
 - **Forza Motorsport 7 mode**: dropped entirely — the app is now Forza Horizon 6 only, and the game-selection dropdown in Setup is gone.
 
 ### Info
-- **Styled radio buttons**: one-of-N choices (unit pickers, import target, engine display mode) now use a custom radio that matches the app's accent checkbox — a circle with a white centre dot — instead of the default egui look.
-- **Profile actions use dialogs**: New / Duplicate / Rename / Delete now open a centered modal (with a name field where relevant, Enter to confirm, Esc to cancel) instead of inline rows, and the redundant active-profile dropdown is gone — the profile list is the single picker.
-- **Settings tab reorganised**: cards are regrouped — left column holds **Profiles** and **Hotkey**; right column holds **Repository / Credits** (renamed from *Repository*), **Display**, **Network**, **Co-Op**, and **Input**. The Profiles card is compact — a scrollable profile list with the active one checked, then New / Duplicate / Rename / Delete and **Export** / **Import** buttons. Export and Import now open a **large two-pane dialog**: on the left you pick what to include (and, for import, the source and destination); on the right a **live JSON preview** shows exactly what will be written, filtered by your ticks; a big blue button along the bottom does it. Choosing a bundled preset to import uses it by reference instead of dumping its JSON, and the import destination is a profile list (with a *New profile* row) so it never jumps.
 - **Presets carry your mini-settings**: exporting a preset or your config now includes the per-widget mini-settings, not just the grid layout.
 - **Setup tab**: "Settings" is renamed "Setup" and moved to the far right, next to What's New.
 - **Tab order**: reordered to Dashboard, Power Curve, Co-Op, Backfire, Automatic Gearbox, Engine Swaps.
