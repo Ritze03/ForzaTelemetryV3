@@ -1693,9 +1693,11 @@ impl eframe::App for ForzaApp {
                         if pad > gap {
                             ui.add_space(pad);
                         }
-                        ui.colored_label(bf_color, bf_text);
+                        ui.colored_label(bf_color, bf_text)
+                            .on_hover_text(format!("{} — {}", tr("Backfire"), bf_word));
                         ui.separator();
-                        ui.colored_label(gb_color, gb_text);
+                        ui.colored_label(gb_color, gb_text)
+                            .on_hover_text(format!("{} — {}", tr("Automatic Gearbox"), gb_word));
                     } else {
                         // Icon-only: two fixed 22px boxes, no divider, ink-centred glyphs.
                         let box_w = 22.0;
@@ -1705,14 +1707,18 @@ impl eframe::App for ForzaApp {
                             ui.add_space(pad);
                         }
                         let font = egui::FontId::proportional(14.0);
-                        for (icon, color) in [(icons::BOLT, bf_color), (icons::GEARBOX, gb_color)] {
-                            let (rect, _) = ui
+                        for (icon, color, hover) in [
+                            (icons::BOLT, bf_color, format!("{} — {}", tr("Backfire"), bf_word)),
+                            (icons::GEARBOX, gb_color, format!("{} — {}", tr("Automatic Gearbox"), gb_word)),
+                        ] {
+                            let (rect, resp) = ui
                                 .allocate_exact_size(egui::vec2(box_w, 18.0), egui::Sense::hover());
                             let pos = self
                                 .icon_center_cache
                                 .centered_pos(ui, icon, font.clone(), rect.center());
                             ui.painter()
                                 .text(pos, egui::Align2::LEFT_TOP, icon, font.clone(), color);
+                            resp.on_hover_text(hover);
                         }
                     }
 
