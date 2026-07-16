@@ -1,7 +1,7 @@
 # Global Hotkeys — Design Spec
 
 **Date:** 2026-07-16
-**Status:** Approved design, pre-implementation
+**Status:** Implemented (this is the design record + rationale; for current behaviour see [[hotkeys]])
 **Feature:** Rebindable hotkeys that work while the *game* is focused (not just the
 telemetry app), on Windows, Linux/X11, and Linux/Wayland — plus a shared window-focus
 detector reused to gate synthetic input.

@@ -16,9 +16,9 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
     mid-pull.
   - At least **RPM interval** RPM below the last pop, so it doesn't
     machine-gun.
-- **RPM range** is either fixed (Min RPM / Max RPM) or **Dynamic RPM** — a
-  percentage of the car's detected max RPM (Dynamic min % / max %), so one
-  setting works across every car.
+- **RPM range** is either fixed (Minimum RPM / Maximum RPM absolute values) or
+  **Dynamic RPM** — a percentage of the car's detected max RPM (Minimum RPM /
+  Maximum RPM as %), so one setting works across every car.
 - **Key-press duration** is either a fixed number of ms, or **Dynamic key
   press duration**, matched to the game's own frame length:
   - *Time-based* — estimated from the current packet rate (`1000 / pps`,
@@ -42,10 +42,10 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
 Open the **Backfire** tab:
 
 - **Activation** — **Enabled** turns the whole feature on or off.
-- **RPM Range** — **Dynamic RPM** toggle; when on, **Min**/**Max** are shown
-  as % of the car's max RPM (with a live "Range: X – Y RPM" readout below);
-  when off, **Min RPM**/**Max RPM** are absolute values. **RPM interval**
-  sets the minimum RPM drop between two pops.
+- **RPM Range** — **Dynamic RPM** toggle; when on, **Minimum RPM**/**Maximum
+  RPM** are shown as % of the car's max RPM (with a live "Range: X – Y RPM"
+  readout below); when off, they are absolute RPM values. **RPM interval** sets
+  the minimum RPM drop between two pops.
 - **Key Press** — **Dynamic key press duration** toggle with a **Time-based
   / Packet-based** mode dropdown; when off, a fixed **Key press duration**
   slider (ms) appears instead.

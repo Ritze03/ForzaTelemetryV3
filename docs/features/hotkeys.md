@@ -1,7 +1,7 @@
 # Hotkeys
 
 Rebindable keyboard shortcuts, configured in **Settings → Hotkeys**. Two scopes,
-one rebind UI. Full design + rationale: `docs/superpowers/specs/2026-07-16-global-hotkeys-design.md`.
+one rebind UI. Full design + rationale: [[hotkeys-design]] (`docs/features/hotkeys-design.md`).
 
 ## Two scopes
 

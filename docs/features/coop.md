@@ -18,7 +18,7 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
 
 ## Using it
 
-1. Open the **Co-Op** tab. Set your **Name** and **Colour** (hue).
+1. Open the **Co-Op** tab. Set your **Player name** and **Player color** (hue).
 2. **Host Session** → wait for "Tunnel ready" → share the word-code (Copy button, or
    select it and copy by hand).
 3. Others paste/type the code and press **Join**.

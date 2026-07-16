@@ -71,7 +71,7 @@ control in the right half. This keeps every row's control edge aligned.
 ### Slider rows
 
 ```rust
-theme::slider_row(ui, tr("Buffer:"), &mut value, 0..=500, 10.0, 0, " ms");
+theme::slider_row(ui, tr("Packet Buffer Size"), &mut value, 0..=500, 10.0, 0, " ms");
 ```
 
 `slider_row<N: Numeric>(ui, label, value, range, step, decimals, suffix)` draws the
@@ -121,6 +121,14 @@ Both return the checkbox response (wrap in a tooltip `hover(...)` if needed).
 `theme::styled_checkbox` (content-sized) is still used for the cog **Mini-Settings**
 popup, which is not a category.
 
+### No trailing colons on labels
+
+Field and section labels do **not** end in a colon — write `tr("Listen port")`, not
+`tr("Listen port:")`. *Why:* the colon was applied inconsistently across tabs (some rows
+had it, most didn't); dropping it everywhere is the one consistent convention. The
+control sits in the right column, so the colon adds nothing. This applies to slider,
+combobox, checkbox, and text-input row labels alike.
+
 ### Row labels — use `theme::row_label`
 
 Draw the left-column label of a two-column row with **`theme::row_label(ui, label)`**,
@@ -128,7 +136,7 @@ not a bare `ui.label`:
 
 ```rust
 ui.columns(2, |c| {
-    theme::row_label(&mut c[0], tr("Color"));   // vertically centred, no letter-spread
+    theme::row_label(&mut c[0], tr("Player color"));   // vertically centred, no letter-spread
     c[1].horizontal(|ui| { /* slider / combobox / spinner */ });
 });
 ```

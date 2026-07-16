@@ -28,6 +28,7 @@ The navigation reference — read these to move around the source efficiently.
 - [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism and bundled presets.
 - [Settings](features/settings.md) — network, units, display (the Settings tab).
 - [Hotkeys](features/hotkeys.md) — rebindable global + in-app shortcuts, evdev/GetAsyncKeyState capture, window-focus detection.
+- [Hotkeys — Design Spec](features/hotkeys-design.md) — the design record + rationale behind the hotkeys feature (why evdev, why not a compositor API, the focus-gate rules).
 
 ## protocol/ — the wire format
 

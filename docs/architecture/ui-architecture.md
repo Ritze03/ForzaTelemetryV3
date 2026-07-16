@@ -143,7 +143,7 @@ Three small modules provide non-widget visual chrome shared across tabs:
 - **`src/icons.rs`** — Nerd Font (`GeistMonoNerdFont`) codepoint constants
   (`&'static str`, Font Awesome v4 range `U+F000`–`U+F2FF`): `DASHBOARD`, `BOLT`,
   `STOP`, `LINE_CHART`, `WRENCH`, `COG`, `CIRCLE`, `PLUG`, `NO_SIGNAL`, `PENCIL`,
-  `SEARCH`, `FLOPPY`, `CHECK`, `TIMES`, `CLOCK`, `GAMEPAD`, `USERS`, `COPY`, `GLOBE`,
+  `SEARCH`, `FLOPPY`, `CHECK`, `TIMES`, `CLOCK`, `GEARBOX`, `ENGINE`, `USERS`, `COPY`, `GLOBE`,
   `LINK`, `PAUSE`, `BULLHORN`, etc. These are just glyph strings; call sites (tab bar,
   buttons, status indicators) draw them with `ui.painter().text(...)` or as part of a
   `RichText`, no rendering logic lives here.
