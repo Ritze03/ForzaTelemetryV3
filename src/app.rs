@@ -534,8 +534,8 @@ pub struct ForzaApp {
     pub backfire: BackfireListener,
     pub dsg: DsgListener,
     input: InputSender,
-    hotkeys: HotkeyListener,
-    focus: FocusDetector,
+    pub hotkeys: HotkeyListener,
+    pub focus: FocusDetector,
     input_allowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Settings-tab rebind state: the action currently capturing a new key.
     pub rebinding: Option<crate::config::HotkeyAction>,

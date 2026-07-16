@@ -56,10 +56,6 @@ macro_rules! hotkeys {
                 match self { $(HotKey::$variant => $label),+ }
             }
             #[cfg(target_os = "linux")]
-            pub fn to_evdev(self) -> evdev::Key {
-                match self { $(HotKey::$variant => evdev::Key::$evdev),+ }
-            }
-            #[cfg(target_os = "linux")]
             pub fn from_evdev(k: evdev::Key) -> Option<Self> {
                 match k { $(evdev::Key::$evdev => Some(HotKey::$variant),)+ _ => None }
             }
