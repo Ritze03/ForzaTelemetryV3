@@ -1,9 +1,14 @@
 # Settings — network, units, display
 
 The **Settings** tab holds the app-wide options that aren't tied to a single
-dashboard widget. Rendered from `src/ui/settings.rs`; values persist in
-`config.json` (see [[state-and-config]]). Per-widget tuning lives in the cog
-**Mini-Settings** popup instead — see [[presets]].
+dashboard widget. Rendered from `src/ui/settings.rs` as bordered category cards
+laid out per the [styling guide](../ui/STYLING-GUIDE.md) (label-left / control-right
+rows); values persist in `config.json` (see [[state-and-config]]). Per-widget tuning
+lives in the cog **Mini-Settings** popup instead — see [[presets]].
+
+Cards: **Network**, **Co-Op**, **Display** (left column); **Hotkey**, **Input**,
+**Repository** (right column). Hotkeys and window/input detection get their own doc
+— see [[hotkeys]].
 
 ## Network
 
@@ -29,6 +34,11 @@ dashboard widget. Rendered from `src/ui/settings.rs`; values persist in
   though telemetry still arrives at ~60 Hz).
 - **Always on top** — keep the window above other windows.
 
+## Hotkey & Input
+
+The **Hotkey** and **Input** cards configure rebindable shortcuts and window-focus
+detection — documented in full in [[hotkeys]].
+
 ## Save
 
-Settings save when you press **Save Settings** and are also auto-saved on exit.
+Settings save automatically (on change and on exit) — there is no Save button.
