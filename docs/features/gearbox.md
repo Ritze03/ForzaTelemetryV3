@@ -7,13 +7,21 @@ gear-ratio table.
 ## How it works
 
 - **Calibration first.** The box stays completely hands-off until you do one
-  manual full-throttle pull in 1st gear to redline and shift up yourself —
-  that single pull calibrates 1st gear's redline speed and "engages" the box.
-  From there, every gear you drive through gets continuously calibrated: past
-  60% of the detected redline, with little tire slip, springs loaded, and
-  moving in a straight line, it extrapolates that gear's speed-at-full-redline
-  and keeps a rolling median of the last 10 samples — so a bad sample
-  self-corrects instead of locking in.
+  manual full-throttle pull to redline and shift up yourself — from **any**
+  gear, not just 1st. That first manual upshift "engages" the box and lets the
+  redline detector lock the peak RPM it uses from then on. *(Why no first-gear
+  requirement: races that start rolling, or spawning in a high gear, never gave
+  a clean 1st-gear pull — so engagement now keys off the first manual upshift
+  wherever you are.)* From there, every gear you drive through gets continuously
+  calibrated: past 60% of the detected redline, with little tire slip, springs
+  loaded, and moving in a straight line, it extrapolates that gear's
+  speed-at-full-redline and keeps a rolling median of the last 10 samples — so a
+  bad sample self-corrects instead of locking in.
+- **Reset calibration** — the **Clear calibration** button (Automatic Gearbox
+  tab, always shown but disabled until there's a calibration) or the
+  **Reset Gearbox Calibration** hotkey (default `Ctrl+R`, see [[hotkeys]]) wipes
+  the calibration and engagement; the box goes hands-off until your next manual
+  upshift re-learns it, and any saved per-car profile is forgotten.
 - **Shift decision**, in order, each packet:
   1. **Hard redline upshift** — once RPM reaches **Shift RPM** (% of the
      detected max RPM) and road speed has reached **Upshift min. speed** (%
@@ -49,7 +57,7 @@ gear-ratio table.
   each car's measured gear speeds and detected redline are saved to
   `automatic-gearbox-saved-calibrations.json` in the app data dir (keyed by
   car), and reloaded automatically next time you get in that car, skipping
-  the manual first-gear pull.
+  the manual calibration pull.
 - **Ignore Backfire input** keeps the shift logic (and the live throttle-bar
   visualization) reacting only to your real pedal, not the synthetic key
   [[backfire]] briefly presses to fake its pop.

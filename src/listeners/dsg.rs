@@ -68,12 +68,11 @@ pub struct DsgListener {
     /// Last ≤10 valid redline-speed estimates per gear; the committed value is their median.
     /// Never locked — the median keeps updating so a wrong value self-corrects.
     gear_samples: [VecDeque<f32>; 11],
-    /// False until the driver manually shifts out of 1st. While false the box stays hands-off so
-    /// the driver can do a clean first-gear redline pull (calibrates gear 1 + nails the redline).
+    /// False until the driver manually upshifts once (from any gear). While false the box stays
+    /// hands-off so the driver can rev out and the redline detector locks the peak RPM to use.
     pub engaged: bool,
-    /// Whether we've actually seen 1st gear this session — engagement requires a real 1st→up shift,
-    /// not merely starting in a high gear (e.g. spawning in 4th).
-    seen_first_gear: bool,
+    /// Last forward gear seen — used to detect the driver's manual upshift that engages the box.
+    prev_gear: i32,
     phase: ShiftPhase,
     last_shift_done: Option<Instant>,
     kickdown_triggered: bool,
@@ -109,7 +108,7 @@ impl DsgListener {
             gear_redline_speeds: [0.0; 11],
             gear_samples: std::array::from_fn(|_| VecDeque::new()),
             engaged: false,
-            seen_first_gear: false,
+            prev_gear: 0,
             phase: ShiftPhase::Idle,
             last_shift_done: None,
             kickdown_triggered: false,
@@ -138,7 +137,7 @@ impl DsgListener {
     /// Clear the shift state machine (e.g. on car change).
     pub fn reset_state(&mut self) {
         self.engaged = false;
-        self.seen_first_gear = false;
+        self.prev_gear = 0;
         self.phase = ShiftPhase::Idle;
         self.last_shift_done = None;
         self.kickdown_triggered = false;
@@ -180,26 +179,26 @@ impl DsgListener {
         let gear = pkt.gear as i32;
         let in_drive_gear = (1..=10).contains(&gear);
 
-        // Engage only after a real first-gear pull: the car must have actually been in 1st and then
-        // shifted up into a *forward* gear. Starting already in a high gear (e.g. spawning in 4th)
-        // must NOT engage, and neither must shifting 1st→Reverse — that passes through Neutral
-        // (gear 10+, R is 0), which `>= 2` wrongly counted as an upshift.
-        if gear == 1 {
-            self.seen_first_gear = true;
-        }
-        if self.seen_first_gear && (2..=9).contains(&gear) {
+        // Engage on the first manual UPSHIFT from any gear: the box stays hands-off until the
+        // driver revs out once and shifts up, which lets the redline detector lock the peak RPM
+        // used from then on. The trigger is a gear increase between two forward gears — so
+        // spawning already in a high gear, or 1→Reverse through Neutral (gear 10+, R is 0),
+        // must NOT count. `prev_gear` only tracks forward gears, so those glitches can't fake it.
+        let prev = self.prev_gear;
+        if !self.engaged && (1..=9).contains(&prev) && (2..=10).contains(&gear) && gear > prev {
             self.engaged = true;
         }
+        if in_drive_gear {
+            self.prev_gear = gear;
+        }
 
-        // ── Continuous calibration (runs even before we engage, to learn gear 1) ────────────
+        // ── Continuous calibration (runs even before we engage) ─────────────────────────────
         // Extrapolate each gear's speed at the full redline (100% RPM) from the current
         // RPM/speed ratio. Conditions: past 60% of the redline (accurate ratio), little wheel
         // slip (<0.8), springs loaded (≥0.1), and moving straight (velocity aligned with heading
-        // within ~5%) so the road-speed magnitude reflects what the wheels are doing.
-        // Gear 1 must be calibrated first (the driver's manual redline pull): until it is, don't
-        // record any higher gear — every later gear is extrapolated off the redline that pull nails.
-        let first_gear_ready = self.gear_redline_speeds[1] > 0.0;
-        if in_drive_gear && effective_max_rpm > 0.0 && kmh > 5.0 && (gear == 1 || first_gear_ready) {
+        // within ~5%) so the road-speed magnitude reflects what the wheels are doing. Any gear the
+        // driver pulls out is recorded — no gear-1-first requirement — against the detected redline.
+        if in_drive_gear && effective_max_rpm > 0.0 && kmh > 5.0 {
             let gear_idx = gear as usize;
 
             let no_slip = pkt.tire_slip_ratio_fl.abs() < CALIB_SLIP

@@ -74,6 +74,7 @@ impl GearboxMode {
 pub enum HotkeyAction {
     ToggleGearbox,
     ToggleBackfire,
+    ResetCalibration,
     MiniSettings,
     DashboardEdit,
 }
@@ -89,12 +90,15 @@ impl HotkeyAction {
     pub const ALL: &'static [HotkeyAction] = &[
         HotkeyAction::ToggleGearbox,
         HotkeyAction::ToggleBackfire,
+        HotkeyAction::ResetCalibration,
         HotkeyAction::MiniSettings,
         HotkeyAction::DashboardEdit,
     ];
     pub fn scope(self) -> HotkeyScope {
         match self {
-            HotkeyAction::ToggleGearbox | HotkeyAction::ToggleBackfire => HotkeyScope::Global,
+            HotkeyAction::ToggleGearbox
+            | HotkeyAction::ToggleBackfire
+            | HotkeyAction::ResetCalibration => HotkeyScope::Global,
             HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => HotkeyScope::AppFocused,
         }
     }
@@ -103,6 +107,7 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleGearbox => "Toggle Automatic Gearbox",
             HotkeyAction::ToggleBackfire => "Toggle Backfire",
+            HotkeyAction::ResetCalibration => "Reset Gearbox Calibration",
             HotkeyAction::MiniSettings => "Open mini-settings",
             HotkeyAction::DashboardEdit => "Toggle dashboard edit",
         }
@@ -148,11 +153,21 @@ pub struct HotkeyConfig {
 fn default_game_match() -> String { "Forza".to_string() }
 fn default_poll_hz() -> f32 { 4.0 }
 
+/// Ensure every `HotkeyAction` has a binding, filling any missing from defaults — so an
+/// older config (or a newly-added action) stays usable without a manual rebind.
+pub fn inject_missing_hotkeys(hk: &mut HotkeyConfig) {
+    let defaults = default_bindings();
+    for action in HotkeyAction::ALL.iter().copied() {
+        hk.bindings.entry(action).or_insert_with(|| defaults[&action]);
+    }
+}
+
 fn default_bindings() -> HashMap<HotkeyAction, crate::keymap::HotkeyBinding> {
     use crate::keymap::{HotKey, HotkeyBinding, Mods};
     let mut m = HashMap::new();
     m.insert(HotkeyAction::ToggleGearbox, HotkeyBinding { mods: Mods::default(), key: HotKey::G });
     m.insert(HotkeyAction::ToggleBackfire, HotkeyBinding { mods: Mods::default(), key: HotKey::B });
+    m.insert(HotkeyAction::ResetCalibration, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::R });
     m.insert(HotkeyAction::MiniSettings, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::S });
     m.insert(HotkeyAction::DashboardEdit, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::E });
     m
@@ -830,6 +845,7 @@ impl AppConfig {
         // Ensure every widget kind has at least one entry in the layout.
         // New kinds added to WidgetKind won't appear in old saved configs otherwise.
         inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
+        inject_missing_hotkeys(&mut cfg.hotkeys);
         cfg
     }
 

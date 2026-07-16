@@ -139,19 +139,14 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                 );
 
                 // Calibration is shown live in the gear map on the right — just the reset here.
-                if app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0) {
-                    ui.add_space(4.0);
-                    if ui.button(tr("Clear calibration")).clicked() {
-                        // Full wipe — same as a car change: gear data, detected redline and the
-                        // engaged flag go back to zero, so a fresh manual first-gear pull is needed.
-                        // Also forget the saved profile, or it would silently reload.
-                        app.dsg.reset_calibration();
-                        app.dsg.reset_state();
-                        app.dynamic_max_rpm = 0.0;
-                        if app.car_calibrations.remove(&app.last_car_ordinal).is_some() {
-                            crate::config::save_car_calibrations(&app.car_calibrations);
-                        }
-                    }
+                // Always shown; disabled (not clickable) until there's a calibration to clear.
+                ui.add_space(4.0);
+                let has_calibration = app.dsg.gear_redline_speeds.iter().skip(1).any(|&s| s > 0.0);
+                if ui
+                    .add_enabled(has_calibration, egui::Button::new(tr("Clear calibration")))
+                    .clicked()
+                {
+                    app.reset_gearbox_calibration();
                 }
             });
 

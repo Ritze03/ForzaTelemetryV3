@@ -877,7 +877,20 @@ impl ForzaApp {
         match action {
             ToggleGearbox => { self.config.dsg_enabled = !self.config.dsg_enabled; }
             ToggleBackfire => { self.config.backfire_enabled = !self.config.backfire_enabled; }
+            ResetCalibration => self.reset_gearbox_calibration(),
             _ => {}
+        }
+    }
+
+    /// Wipe the gearbox calibration + engagement (shared by the tab button and the
+    /// Reset-Calibration hotkey): the box goes hands-off until the driver's next manual
+    /// upshift re-learns it, and the saved per-car profile is forgotten so it can't reload.
+    pub fn reset_gearbox_calibration(&mut self) {
+        self.dsg.reset_calibration();
+        self.dsg.reset_state();
+        self.dynamic_max_rpm = 0.0;
+        if self.car_calibrations.remove(&self.last_car_ordinal).is_some() {
+            crate::config::save_car_calibrations(&self.car_calibrations);
         }
     }
 

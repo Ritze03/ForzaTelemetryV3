@@ -559,6 +559,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Press a key…" => "Taste drücken…",
         "Toggle Automatic Gearbox" => "Automatikgetriebe umschalten",
         "Toggle Backfire" => "Fehlzündung umschalten",
+        "Reset Gearbox Calibration" => "Getriebe-Kalibrierung zurücksetzen",
         "Open mini-settings" => "Mini-Einstellungen öffnen",
         "Toggle dashboard edit" => "Dashboard-Bearbeitung umschalten",
         "Window Detection" => "Fenster-Erkennung",
