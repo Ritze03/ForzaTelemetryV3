@@ -5,6 +5,7 @@ mod config;
 mod coop;
 mod engines;
 mod focus;
+mod hotkeys;
 mod i18n;
 mod iconcache;
 mod icons;
