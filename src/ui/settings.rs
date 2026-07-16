@@ -96,20 +96,20 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 });
                 control_row(ui, tr("Speed unit"), |ui| {
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut app.config.use_mph, false, "km/h");
-                        ui.radio_value(&mut app.config.use_mph, true, "mph");
+                        crate::theme::styled_radio(ui, &mut app.config.use_mph, false, "km/h");
+                        crate::theme::styled_radio(ui, &mut app.config.use_mph, true, "mph");
                     });
                 });
                 control_row(ui, tr("Tire temp unit"), |ui| {
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut app.config.use_fahrenheit, false, "°C");
-                        ui.radio_value(&mut app.config.use_fahrenheit, true, "°F");
+                        crate::theme::styled_radio(ui, &mut app.config.use_fahrenheit, false, "°C");
+                        crate::theme::styled_radio(ui, &mut app.config.use_fahrenheit, true, "°F");
                     });
                 });
                 control_row(ui, tr("Boost / pressure"), |ui| {
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut app.config.use_bar, true, "bar");
-                        ui.radio_value(&mut app.config.use_bar, false, "PSI");
+                        crate::theme::styled_radio(ui, &mut app.config.use_bar, true, "bar");
+                        crate::theme::styled_radio(ui, &mut app.config.use_bar, false, "PSI");
                     });
                 });
                 let fps_on = app.config.fps_limit_enabled;
@@ -423,7 +423,7 @@ fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
 
     // Target: new profile, or overwrite an existing one.
     ui.horizontal(|ui| {
-        ui.radio_value(&mut app.profile_import_new, true, tr("New profile"));
+        crate::theme::styled_radio(ui, &mut app.profile_import_new, true, tr("New profile"));
         if app.profile_import_new {
             ui.add(
                 egui::TextEdit::singleline(&mut app.profile_import_new_name)
@@ -433,7 +433,7 @@ fn import_body(ui: &mut Ui, app: &mut ForzaApp) {
         }
     });
     ui.horizontal(|ui| {
-        ui.radio_value(&mut app.profile_import_new, false, tr("Overwrite"));
+        crate::theme::styled_radio(ui, &mut app.profile_import_new, false, tr("Overwrite"));
         if !app.profile_import_new {
             if app.profile_import_overwrite.is_empty() {
                 app.profile_import_overwrite = active.clone();

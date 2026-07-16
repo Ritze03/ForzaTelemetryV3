@@ -2098,7 +2098,7 @@ impl eframe::App for ForzaApp {
                                         (EDM::Max,     "Max values"),
                                         (EDM::Both,    "Both"),
                                     ] {
-                                        ui.radio_value(&mut self.config.engine_display_mode, mode, tr(lbl));
+                                        crate::theme::styled_radio(ui, &mut self.config.engine_display_mode, mode, tr(lbl));
                                     }
                                     ui.add_space(8.0);
                                     crate::theme::styled_checkbox(ui, &mut self.config.engine_show_type, tr("Show engine type"));

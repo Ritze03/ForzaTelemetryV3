@@ -116,10 +116,17 @@ pub fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
 }
 
-// ---- Checkbox ------------------------------------------------------------
+// ---- Checkbox & radio ----------------------------------------------------
 
-/// Outline of an unchecked box — light enough to read on the panel.
+/// Outline of an unchecked box/circle — light enough to read on the panel.
 pub const CHECK_OUTLINE: Color32 = steel(150);
+
+/// Whether [`mark_ui`] draws a rounded square (checkbox) or a circle (radio).
+#[derive(Clone, Copy, PartialEq)]
+enum MarkShape {
+    Check,
+    Radio,
+}
 
 /// A checkbox styled like the Ritz launcher: an 18px rounded box (accent-filled
 /// with a white check when on, hairline outline when off) followed by the label,
@@ -145,6 +152,26 @@ pub fn styled_checkbox_enabled(
     checkbox_ui(ui, checked, label.into(), 0.0, f32::INFINITY, enabled)
 }
 
+/// A radio button matching the styled checkbox — same 18px mark, accent fill, hover
+/// wash and whole-row click target, but drawn as a circle with a white centre dot
+/// when selected. `*current` is set to `value` on click. Content-sized; group them
+/// in a `ui.horizontal` (or stack them) like `ui.radio_value`.
+pub fn styled_radio<T: PartialEq>(
+    ui: &mut egui::Ui,
+    current: &mut T,
+    value: T,
+    label: impl Into<String>,
+) -> egui::Response {
+    let selected = *current == value;
+    let mut resp = mark_ui(ui, selected, label.into(), 0.0, f32::INFINITY, true, MarkShape::Radio);
+    if resp.clicked() && !selected {
+        *current = value;
+        resp.mark_changed();
+    }
+    resp
+}
+
+/// Checkbox behaviour on top of [`mark_ui`]: toggles `*checked` on click.
 fn checkbox_ui(
     ui: &mut egui::Ui,
     checked: &mut bool,
@@ -153,15 +180,34 @@ fn checkbox_ui(
     max_w: f32,
     enabled: bool,
 ) -> egui::Response {
+    let mut resp = mark_ui(ui, *checked, label, min_w, max_w, enabled, MarkShape::Check);
+    if enabled && resp.clicked() {
+        *checked = !*checked;
+        resp.mark_changed();
+    }
+    resp
+}
+
+/// Shared renderer for the styled checkbox and radio: lays out an 18px mark + label
+/// as one click-target row with a hover wash, and paints the mark per `shape`. Pure
+/// rendering — returns the row response; callers apply the state change on click.
+fn mark_ui(
+    ui: &mut egui::Ui,
+    on: bool,
+    label: String,
+    min_w: f32,
+    max_w: f32,
+    enabled: bool,
+    shape: MarkShape,
+) -> egui::Response {
     const BOX: f32 = 18.0;
     const GAP: f32 = 7.0;
-    let on = *checked;
 
     let font = TextStyle::Body.resolve(ui.style());
     // Width is the label content clamped to [min_w, max_w]: category checkboxes
     // pass a min of half the card (so short ones read a uniform width) and a max
     // of the card (so a long label never forces the card wider — it wraps first).
-    // `styled_checkbox` passes [0, ∞] to stay content-sized.
+    // The content-sized entry points pass [0, ∞] to stay content-sized.
     let no_wrap = ui.painter().layout_no_wrap(label.clone(), font.clone(), TEXT);
     let content_w = BOX + GAP + no_wrap.size().x;
     let w = content_w.clamp(min_w, max_w);
@@ -172,14 +218,14 @@ fn checkbox_ui(
     };
     let stretched = max_w.is_finite();
     let gsize = galley.size();
-    // Occupy the standard control row height so a checkbox lines up with sliders /
-    // comboboxes sharing its row (the box + label stay centered within it).
+    // Occupy the standard control row height so it lines up with sliders / comboboxes
+    // sharing its row (the mark + label stay centered within it).
     let size = egui::vec2(w, ui.spacing().interact_size.y.max(BOX).max(gsize.y));
     // Disabled rows don't sense clicks, so they can't toggle or show a hover wash.
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
-    let (rect, mut resp) = ui.allocate_exact_size(size, sense);
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
 
-    // Dim everything one step when disabled: the fill, the check, the outline, the text.
+    // Dim everything one step when disabled: the fill, the mark, the outline, the text.
     let fill_col = if enabled { ACCENT } else { steel(70) };
     let mark_col = if enabled { Color32::WHITE } else { steel(150) };
     let outline_col = if enabled { CHECK_OUTLINE } else { steel(90) };
@@ -196,29 +242,38 @@ fn checkbox_ui(
             egui::Vec2::splat(BOX),
         )
         .shrink(1.0);
-        let round = CornerRadius::same(5);
-        if on {
-            painter.rect_filled(box_rect, round, fill_col);
-            let g = painter.layout_no_wrap(
-                crate::icons::CHECK.to_owned(),
-                FontId::proportional(11.0),
-                mark_col,
-            );
-            // Centre on the glyph's ink, not its advance box (Nerd glyphs are offset).
-            let ink = g
-                .rows
-                .first()
-                .and_then(|r| r.glyphs.first())
-                .map(|gl| gl.pos.to_vec2() + gl.uv_rect.offset + gl.uv_rect.size * 0.5)
-                .unwrap_or_else(|| g.size() * 0.5);
-            painter.galley(box_rect.center() - ink, g, mark_col);
-        } else {
-            painter.rect_stroke(
-                box_rect,
-                round,
-                Stroke::new(1.5, outline_col),
-                egui::StrokeKind::Inside,
-            );
+        match shape {
+            MarkShape::Check => {
+                let round = CornerRadius::same(5);
+                if on {
+                    painter.rect_filled(box_rect, round, fill_col);
+                    let g = painter.layout_no_wrap(
+                        crate::icons::CHECK.to_owned(),
+                        FontId::proportional(11.0),
+                        mark_col,
+                    );
+                    // Centre on the glyph's ink, not its advance box (Nerd glyphs are offset).
+                    let ink = g
+                        .rows
+                        .first()
+                        .and_then(|r| r.glyphs.first())
+                        .map(|gl| gl.pos.to_vec2() + gl.uv_rect.offset + gl.uv_rect.size * 0.5)
+                        .unwrap_or_else(|| g.size() * 0.5);
+                    painter.galley(box_rect.center() - ink, g, mark_col);
+                } else {
+                    painter.rect_stroke(box_rect, round, Stroke::new(1.5, outline_col), egui::StrokeKind::Inside);
+                }
+            }
+            MarkShape::Radio => {
+                let c = box_rect.center();
+                let r = box_rect.width() / 2.0;
+                if on {
+                    painter.circle_filled(c, r, fill_col);
+                    painter.circle_filled(c, r * 0.4, mark_col); // white centre dot
+                } else {
+                    painter.circle_stroke(c, r - 0.75, Stroke::new(1.5, outline_col));
+                }
+            }
         }
         painter.galley(
             egui::pos2(box_rect.right() + GAP, rect.center().y - gsize.y / 2.0),
@@ -227,10 +282,6 @@ fn checkbox_ui(
         );
     }
 
-    if enabled && resp.clicked() {
-        *checked = !*checked;
-        resp.mark_changed();
-    }
     resp
 }
 
