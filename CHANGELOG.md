@@ -9,6 +9,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ### Added
 - **Backfire "Online Mode" note**: the Backfire tab's first card is now **General** (was *Activation*) and shows a hint that Backfire only works in Online Mode.
 
+### Fixed
+- **Race widget left margin**: the Race view's rows now have the same small left inset as the Sprint view — values no longer sat flush against the widget's left edge.
+
 ## [0.2.0] – 2026-07-16
 
 ### Added

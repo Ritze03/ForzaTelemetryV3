@@ -1407,7 +1407,10 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
             if let Some(c) = color {
                 rt = rt.color(c);
             }
-            ui.label(rt);
+            ui.horizontal(|ui| {
+                ui.add_space(SPRINT_EDGE); // left margin, matching the Sprint rows
+                ui.label(rt);
+            });
         }
     }
 }
