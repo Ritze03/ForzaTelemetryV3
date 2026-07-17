@@ -1367,7 +1367,7 @@ fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         // (text, base font size, colour, gap reserved above the row). Scaled to fit
         // the cell in both axes just like the Sprint branch above.
         let rows: [(String, f32, Option<Color32>, f32); 7] = [
-            (format!("{} P{}", tr("Position"), pkt.race_position), 14.0, None, 0.0),
+            (format!("{}  P{}", tr("Position"), pkt.race_position), 14.0, None, 0.0),
             (format!("{:<9} {}", tr("Lap"), pkt.lap_number), 14.0, None, 0.0),
             (format!("{:<9} {}", tr("Current"), fmt_lap(pkt.current_lap)), 15.0, None, 6.0),
             (format!("{:<9} {}", tr("Last"), fmt_lap(pkt.last_lap)), 15.0, None, 0.0),
