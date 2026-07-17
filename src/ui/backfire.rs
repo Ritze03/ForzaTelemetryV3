@@ -14,9 +14,14 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
             {
                 ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
 
-                // ── Activation ───────────────────────────────────────────
-                crate::theme::card(ui, tr("Activation"), |ui| {
+                // ── General ──────────────────────────────────────────────
+                crate::theme::card(ui, tr("General"), |ui| {
                     crate::theme::checkbox_row(ui, &mut app.config.backfire_enabled, tr("Enabled"));
+                    ui.label(
+                        RichText::new(tr("Only works in Online Mode"))
+                            .size(11.0)
+                            .color(Color32::GRAY),
+                    );
                 });
 
                 // ── RPM Range ────────────────────────────────────────────

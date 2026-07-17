@@ -41,7 +41,8 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
 
 Open the **Backfire** tab:
 
-- **Activation** — **Enabled** turns the whole feature on or off.
+- **General** — **Enabled** turns the whole feature on or off. A hint notes
+  that Backfire only works in Online Mode.
 - **RPM Range** — **Dynamic RPM** toggle; when on, **Minimum RPM**/**Maximum
   RPM** are shown as % of the car's max RPM (with a live "Range: X – Y RPM"
   readout below); when off, they are absolute RPM values. **RPM interval** sets

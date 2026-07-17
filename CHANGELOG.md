@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.2.1] – 2026-07-17
+
+### Added
+- **Backfire "Online Mode" note**: the Backfire tab's first card is now **General** (was *Activation*) and shows a hint that Backfire only works in Online Mode.
+
 ## [0.2.0] – 2026-07-16
 
 ### Added

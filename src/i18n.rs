@@ -258,7 +258,7 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Backfire tab ───────────────────────────────────────────────
         "Triggers Backfire by spamming 'W'" => "Löst Fehlzündungen durch wiederholtes Drücken von „W“ aus",
-        "Activation" => "Aktivierung",
+        "Only works in Online Mode" => "Funktioniert nur im Online-Modus",
         "RPM Range" => "Drehzahlbereich",
         "Key Press" => "Tastendruck",
         "Conditions" => "Bedingungen",
