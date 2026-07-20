@@ -16,6 +16,9 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
     mid-pull.
   - At least **RPM interval** RPM below the last pop, so it doesn't
     machine-gun.
+  - Not drifting — no wheel's slip-ratio magnitude is above `1.1`
+    (`DRIFT_SLIP_MAX`). A slide or wheelspin isn't a clean lift-off, so the pop
+    is suppressed while it lasts. Gated behind **Drift detection**.
 - **RPM range** is either fixed (Minimum RPM / Maximum RPM absolute values) or
   **Dynamic RPM** — a percentage of the car's detected max RPM (Minimum RPM /
   Maximum RPM as %), so one setting works across every car.
@@ -50,8 +53,8 @@ Open the **Backfire** tab:
 - **Key Press** — **Dynamic key press duration** toggle with a **Time-based
   / Packet-based** mode dropdown; when off, a fixed **Key press duration**
   slider (ms) appears instead.
-- **Conditions** — **Disable if standing still** and **Test mode (ignores
-  throttle/RPM conditions)**.
+- **Conditions** — **Disable if standing still**, **Drift detection (no pop
+  while sliding)**, and **Test mode (ignores throttle/RPM conditions)**.
 
 ## Options
 
@@ -66,6 +69,7 @@ Open the **Backfire** tab:
 | `backfire_dynamic_mode` | Packet-based | `TimeBased` or `PacketBased` — how the dynamic duration is derived. |
 | `backfire_accel_time_ms` | 8 ms | Fixed key-press duration (used when Dynamic key press duration is off). |
 | `backfire_disable_standstill` | on | Suppress the effect below ~1 km/h. |
+| `backfire_drift_detection` | on | Suppress the pop while any wheel's slip-ratio magnitude exceeds `1.1` (a slide/wheelspin). |
 | `backfire_test_mode` | off | Ignore all throttle/RPM/speed conditions — always fires on lift-off. |
 | `inputs_filter_backfire_accel` | on | Dashboard **Inputs** widget shows Accel as 0 while a backfire pop is actively firing, so the synthetic tap doesn't show up as a real pedal input. |
 

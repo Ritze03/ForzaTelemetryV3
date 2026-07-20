@@ -457,6 +457,7 @@ pub struct AppConfig {
     pub backfire_dynamic_mode: BackfireDynamicMode, // when dynamic: estimate hold from packets/sec, or hold until next packet
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
+    pub backfire_drift_detection: bool, // suppress the pop while any wheel's slip ratio magnitude exceeds DRIFT_SLIP_MAX (a slide/wheelspin isn't a clean lift-off)
     pub inputs_filter_backfire_accel: bool, // Inputs widget shows Accel as 0 while Backfire is actively firing
     // Hotkeys (global + app-focused rebindable shortcuts + focus detection)
     #[serde(default)]
@@ -584,6 +585,7 @@ impl Default for AppConfig {
             backfire_dynamic_mode: BackfireDynamicMode::PacketBased,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
+            backfire_drift_detection: true,
             inputs_filter_backfire_accel: true,
             hotkeys: HotkeyConfig::default(),
             dsg_enabled: false,
@@ -746,6 +748,7 @@ const BACKFIRE_KEYS: &[&str] = &[
     "backfire_dynamic_max_pct", "backfire_max_rpm", "backfire_min_rpm",
     "backfire_interval_rpm", "backfire_accel_time_ms", "backfire_dynamic_duration",
     "backfire_dynamic_mode", "backfire_test_mode", "backfire_disable_standstill",
+    "backfire_drift_detection",
 ];
 
 const DSG_KEYS: &[&str] = &[

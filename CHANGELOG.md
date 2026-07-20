@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.2.2] – 2026-07-20
+
+### Added
+- **Backfire drift detection**: a new **Drift detection** condition (on by default) stops the pop from firing while the car is sliding or spinning up — whenever any wheel's slip ratio goes above 1.1. Turn it off in the Backfire tab's **Conditions** card.
+
 ## [0.2.1] – 2026-07-17
 
 ### Added

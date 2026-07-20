@@ -85,6 +85,7 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                 // ── Conditions ───────────────────────────────────────────
                 crate::theme::card(ui, tr("Conditions"), |ui| {
                     crate::theme::checkbox_row(ui, &mut app.config.backfire_disable_standstill, tr("Disable if standing still"));
+                    crate::theme::checkbox_row(ui, &mut app.config.backfire_drift_detection, tr("Drift detection (no pop while sliding)"));
                     crate::theme::checkbox_row(ui, &mut app.config.backfire_test_mode, tr("Test mode (ignores throttle/RPM conditions)"));
                 });
             }

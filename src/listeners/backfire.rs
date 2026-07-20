@@ -7,6 +7,11 @@ use std::time::Duration;
 /// telemetry (empirical round-trip margin).
 pub const ECHO_MS: u64 = 150;
 
+/// Drift detection: while any wheel's slip-ratio magnitude exceeds this, the car
+/// is sliding / spinning up rather than in a clean lift-off, so the pop is
+/// suppressed. Gated behind `backfire_drift_detection`.
+pub const DRIFT_SLIP_MAX: f32 = 1.1;
+
 /// Packet-based hold safety: if telemetry stops before the next packet arrives,
 /// the input worker auto-releases the held key after this long so it can't stick.
 pub const MAX_HOLD_MS: u64 = 120;
@@ -91,7 +96,17 @@ impl BackfireListener {
         let no_brake = pkt.brake == 0 || kmh == 0.0;
         let not_accelerating = self.last_kmh >= kmh;
 
-        if off_throttle && no_brake && in_rpm_range && rpm_delta_ok && not_accelerating {
+        // Drift detection: a slide/wheelspin (any wheel's slip-ratio magnitude past
+        // the threshold) isn't a clean lift-off, so never pop while it's happening.
+        let max_slip_ratio = pkt
+            .tire_slip_ratio_fl
+            .abs()
+            .max(pkt.tire_slip_ratio_fr.abs())
+            .max(pkt.tire_slip_ratio_rl.abs())
+            .max(pkt.tire_slip_ratio_rr.abs());
+        let no_drift = !cfg.backfire_drift_detection || max_slip_ratio <= DRIFT_SLIP_MAX;
+
+        if off_throttle && no_brake && in_rpm_range && rpm_delta_ok && not_accelerating && no_drift {
             self.last_backfire_rpm = rpm;
             if let Some(key) = char_to_key('w') {
                 if cfg.backfire_dynamic_duration

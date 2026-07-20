@@ -270,6 +270,8 @@ fn de(s: &str) -> Option<&'static str> {
         "RPM interval" => "Drehzahl-Intervall",
         "Key press duration" => "Tastendruck-Dauer",
         "Disable if standing still" => "Im Stand deaktivieren",
+        "Drift detection (no pop while sliding)" =>
+            "Drifterkennung (keine Fehlzündung beim Rutschen)",
         "Test mode (ignores throttle/RPM conditions)" =>
             "Testmodus (ignoriert Gas-/Drehzahl-Bedingungen)",
         "Filter Accel while Backfire fires" => "Gas filtern, solange Fehlzündung auslöst",
