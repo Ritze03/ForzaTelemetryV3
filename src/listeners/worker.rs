@@ -7,12 +7,12 @@
 //! means the game loses its synthetic keypresses the moment the window is covered. Both
 //! features must not depend on redraws, so they run here instead, straight off the UDP
 //! channel, together with the state they need (per-car calibration, the detected redline,
-//! the packet rate) and the global hotkeys that toggle them. Every packet is then forwarded
-//! to the UI, which keeps doing everything else in `ForzaApp::drain_packets`.
+//! the packet rate) and the global hotkeys that toggle them. Every packet is then handed to
+//! the UI, which keeps doing everything else in `ForzaApp::drain_packets`.
 //!
-//! **Synchronisation** is two one-way mailboxes, each with its own mutex, plus an mpsc
-//! channel for one-shot commands. Neither lock is ever held across a blocking call, disk IO
-//! or UI drawing, and neither side ever holds both:
+//! **Synchronisation** is three one-way mailboxes, each with its own mutex, plus an mpsc
+//! channel for one-shot commands. No lock is ever held across a blocking call, disk IO or
+//! UI drawing, and no side ever holds two at once:
 //!
 //! - **listener → UI**: [`ListenerView`]. The thread locks only to overwrite it from its
 //!   local copy, then unlocks. The UI `try_lock`s once a frame, clones, drops the guard
@@ -20,13 +20,16 @@
 //! - **UI → listener**: [`ToListener`] — the config plus the two focus facts only egui
 //!   knows. The UI writes it with `try_lock` (a miss is retried next frame); the thread
 //!   picks it up with `try_lock` once per loop.
+//! - **listener → UI packet queue**: an `Arc<Mutex<VecDeque<ForzaPacket>>>` capped at
+//!   [`UI_BACKLOG_CAP`], oldest dropped on overflow. Same mailbox style, and unlike a
+//!   channel it can't grow without bound while the UI isn't draining it.
 //! - **commands** ([`Command`]) go down an `mpsc` channel, which never blocks the sender and
 //!   never drops a one-shot the user asked for (a calibration reset, shutdown).
 //!
 //! Why so loose: the UI may show a one-frame-stale value, which is fine because nothing in
 //! it is critical, while the loop that actually drives the game is never affected by the UI.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -39,7 +42,7 @@ use crate::config::{
 };
 use crate::focus::FocusDetector;
 use crate::input::InputSender;
-use crate::listeners::backfire::{echo_grace, BackfireListener, BackfireView};
+use crate::listeners::backfire::{BackfireListener, BackfireView};
 use crate::listeners::dsg::{DsgListener, DsgView};
 use crate::packet::ForzaPacket;
 
@@ -47,6 +50,25 @@ use crate::packet::ForzaPacket;
 const IDLE_POLL: Duration = Duration::from_millis(200);
 /// No packet for this long ⇒ telemetry isn't live (the `TelemetryLive` hotkey gate).
 const STALE_AFTER: Duration = Duration::from_secs(2);
+/// How long a pushed [`ToListener::our_focused`] / `wants_text` stays believable.
+///
+/// They only change when the UI is drawn, and a hidden window is never drawn — so without
+/// an expiry they would freeze at whatever the last visible frame said, and the global
+/// hotkey gate would be stuck open (bare `G`/`B`/`F` typed in *any* other app would toggle
+/// the gearbox or wipe the calibration) or stuck shut (if a text field had focus). After
+/// this long with no push we treat the window as neither focused nor typing, which is what
+/// a hidden window actually is; the gate then falls back to "is the game focused?".
+///
+/// 1 s is ~5× the slowest frame the UI can legitimately take: `update` always re-arms a
+/// repaint (`request_repaint_after(1/fps_limit)` or `request_repaint()`, `app.rs`), and the
+/// FPS-limit slider floor is 5 fps = 200 ms (`ui/settings.rs`). A hand-edited `fps_limit`
+/// below 1 would expire the facts early, which only ever fails *closed* (hotkeys then need
+/// the game focused), never open.
+const FOCUS_FACTS_TTL: Duration = Duration::from_secs(1);
+/// Packets held for the UI at most. The UI drains every frame; while it isn't being drawn
+/// the queue fills and the **oldest** are dropped, so a restore replays at most this many
+/// packets instead of minutes of stale telemetry (and the queue can't grow without bound).
+pub const UI_BACKLOG_CAP: usize = 200;
 
 /// Everything the UI displays out of the listener thread.
 #[derive(Clone, Default)]
@@ -73,7 +95,8 @@ struct ToListener {
     ack_gen: u64,
     /// `ctx.input(|i| i.focused)` and `ctx.wants_keyboard_input()` — the global-hotkey gate
     /// needs both and neither exists off the UI thread. They stop updating while the window
-    /// is hidden, which is harmless: a hidden window isn't focused and isn't typing.
+    /// is hidden, so the listener ages them out after `FOCUS_FACTS_TTL` rather than trusting
+    /// a frozen value.
     our_focused: bool,
     wants_text: bool,
 }
@@ -88,10 +111,14 @@ pub enum Command {
     Shutdown,
 }
 
+/// Packets waiting for the UI, newest-wins (see [`UI_BACKLOG_CAP`]).
+pub type PacketQueue = Arc<Mutex<VecDeque<ForzaPacket>>>;
+
 /// The UI's end of the listener thread.
 pub struct ListenerHandle {
     view: Arc<Mutex<ListenerView>>,
     inbox: Arc<Mutex<Option<ToListener>>>,
+    packets: PacketQueue,
     cmd_tx: Sender<Command>,
     join: Option<JoinHandle<()>>,
 }
@@ -103,17 +130,42 @@ impl ListenerHandle {
         self.view.try_lock().ok().map(|v| v.clone())
     }
 
+    /// Blocking read, for the one caller that must not miss: `on_exit`, where a `try_view`
+    /// miss would save a stale Backfire/Gearbox toggle. Safe to block on — the thread holds
+    /// this lock only long enough to overwrite the struct.
+    pub fn view_now(&self) -> Option<ListenerView> {
+        self.view.lock().ok().map(|v| v.clone())
+    }
+
+    /// Take everything queued for the UI, leaving the deque empty. The lock is held only
+    /// for the `take` — the caller processes packets after it is dropped.
+    pub fn take_packets(&self) -> VecDeque<ForzaPacket> {
+        match self.packets.lock() {
+            Ok(mut q) => std::mem::take(&mut *q),
+            Err(_) => VecDeque::new(),
+        }
+    }
+
+    /// True once the listener thread has stopped while the app is still running — i.e. it
+    /// panicked. Backfire and the gearbox are then dead, so the UI says so instead of
+    /// showing a frozen "Active".
+    pub fn is_dead(&self) -> bool {
+        self.join.as_ref().is_some_and(|j| j.is_finished())
+    }
+
     /// Hand over the current config + focus facts. Pushed every frame (an `AppConfig` clone
     /// per frame, exactly what `drain_packets` used to do for `fun_cfg`), so a push the
     /// thread happens to be holding the lock for is simply repeated next frame.
     pub fn push(&self, cfg: &AppConfig, ack_gen: u64, our_focused: bool, wants_text: bool) {
+        // Cloned before taking the lock: the listener must never wait on our allocator.
+        let msg = ToListener {
+            cfg: cfg.clone(),
+            ack_gen,
+            our_focused,
+            wants_text,
+        };
         if let Ok(mut slot) = self.inbox.try_lock() {
-            *slot = Some(ToListener {
-                cfg: cfg.clone(),
-                ack_gen,
-                our_focused,
-                wants_text,
-            });
+            *slot = Some(msg);
         }
     }
 
@@ -130,11 +182,10 @@ impl ListenerHandle {
     }
 }
 
-/// Start the thread. It owns `packets` (the UDP channel) and forwards every packet on
-/// `to_ui` for the UI-side features that stay tied to redraws.
+/// Start the thread. It owns `udp` (the UDP channel) and hands every packet to the UI
+/// through the shared [`PacketQueue`], for the features that stay tied to redraws.
 pub fn spawn(
-    packets: Receiver<ForzaPacket>,
-    to_ui: Sender<ForzaPacket>,
+    udp: Receiver<ForzaPacket>,
     hotkeys: Receiver<HotkeyAction>,
     input: InputSender,
     input_allowed: Arc<AtomicBool>,
@@ -147,13 +198,14 @@ pub fn spawn(
         ..Default::default()
     }));
     let inbox: Arc<Mutex<Option<ToListener>>> = Arc::new(Mutex::new(None));
+    let to_ui: PacketQueue = Arc::new(Mutex::new(VecDeque::new()));
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
 
-    let (view_t, inbox_t) = (view.clone(), inbox.clone());
+    let (view_t, inbox_t, to_ui_t) = (view.clone(), inbox.clone(), to_ui.clone());
     let join = std::thread::spawn(move || {
         run(Ctx {
-            packets,
-            to_ui,
+            udp,
+            to_ui: to_ui_t,
             hotkeys,
             cmd_rx,
             input,
@@ -168,6 +220,7 @@ pub fn spawn(
     ListenerHandle {
         view,
         inbox,
+        packets: to_ui,
         cmd_tx,
         join: Some(join),
     }
@@ -175,8 +228,8 @@ pub fn spawn(
 
 /// Everything the loop is handed at spawn (a struct purely to keep `run`'s signature sane).
 struct Ctx {
-    packets: Receiver<ForzaPacket>,
-    to_ui: Sender<ForzaPacket>,
+    udp: Receiver<ForzaPacket>,
+    to_ui: PacketQueue,
     hotkeys: Receiver<HotkeyAction>,
     cmd_rx: Receiver<Command>,
     input: InputSender,
@@ -189,7 +242,7 @@ struct Ctx {
 
 fn run(ctx: Ctx) {
     let Ctx {
-        packets,
+        udp,
         to_ui,
         hotkeys,
         cmd_rx,
@@ -209,6 +262,8 @@ fn run(ctx: Ctx) {
     let mut toggle_gen = 0_u64;
     let mut our_focused = false;
     let mut wants_text = false;
+    // When the UI last pushed; None = never. Ages out via FOCUS_FACTS_TTL.
+    let mut last_push: Option<Instant> = None;
     // Own packet-rate measurement (Backfire's dynamic press length needs it). The UI's
     // `TelemetryState::packets_per_sec` is computed per frame and stops when frames do.
     let mut pps = 0.0_f32;
@@ -224,6 +279,7 @@ fn run(ctx: Ctx) {
                 let (dsg_on, bf_on) = (cfg.dsg_enabled, cfg.backfire_enabled);
                 our_focused = msg.our_focused;
                 wants_text = msg.wants_text;
+                last_push = Some(Instant::now());
                 cfg = msg.cfg;
                 if stale_toggles {
                     cfg.dsg_enabled = dsg_on;
@@ -262,7 +318,11 @@ fn run(ctx: Ctx) {
                 }
                 GateMode::WindowFocus => focus.focused(),
             };
-            if !crate::app::global_hotkey_allowed(our_focused, wants_text, game_focused) {
+            // Stale focus facts mean the UI hasn't been drawn for a while — i.e. the window
+            // is hidden, so it is neither focused nor typing. See FOCUS_FACTS_TTL.
+            let fresh = last_push.map(|t| t.elapsed() < FOCUS_FACTS_TTL).unwrap_or(false);
+            let (ours, typing) = if fresh { (our_focused, wants_text) } else { (false, false) };
+            if !crate::app::global_hotkey_allowed(ours, typing, game_focused) {
                 continue;
             }
             match action {
@@ -291,7 +351,7 @@ fn run(ctx: Ctx) {
         );
 
         // ── One packet. The only blocking call, and no lock is held across it. ──
-        match packets.recv_timeout(IDLE_POLL) {
+        match udp.recv_timeout(IDLE_POLL) {
             Ok(pkt) => {
                 last_packet = Some(Instant::now());
                 pps_count += 1;
@@ -335,8 +395,11 @@ fn run(ctx: Ctx) {
                 }
 
                 backfire.update(&pkt, &cfg, &input, pps);
+                // No grace here: `echo_grace` exists for consumers that read the window a
+                // frame late behind an FPS limit, and this thread reads it the instant the
+                // packet lands. See `backfire::echo_grace`.
                 let suppress_gearbox_accel =
-                    cfg.dsg_ignore_backfire_accel && input.synthetic_active(echo_grace(&cfg));
+                    cfg.dsg_ignore_backfire_accel && input.synthetic_active(Duration::ZERO);
                 dsg.update(&pkt, &cfg, &input, dynamic_max_rpm, suppress_gearbox_accel);
 
                 // Opt-in: keep the in-memory per-car calibration current; written to its own
@@ -354,9 +417,14 @@ fn run(ctx: Ctx) {
                     );
                 }
 
-                // Everything else (stats, Co-Op, telemetry, widgets) stays UI-side.
-                if to_ui.send(pkt).is_err() {
-                    break; // UI gone
+                // Everything else (stats, Co-Op, telemetry, widgets) stays UI-side. Hand the
+                // packet over and drop the oldest if the UI isn't draining (hidden window);
+                // the lock covers only the push, never the processing above or below.
+                if let Ok(mut q) = to_ui.lock() {
+                    if q.len() >= UI_BACKLOG_CAP {
+                        q.pop_front();
+                    }
+                    q.push_back(pkt);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}

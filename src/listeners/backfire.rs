@@ -16,10 +16,15 @@ pub const DRIFT_SLIP_MAX: f32 = 1.1;
 /// the input worker auto-releases the held key after this long so it can't stick.
 pub const MAX_HOLD_MS: u64 = 120;
 
-/// Grace to add on top of the echo window when CHECKING it: with a render-FPS
-/// limit active, packets sit in the drain queue for up to one frame interval,
-/// so a packet generated inside the window can be processed after it expired.
-/// Single source of truth — every echo-window consumer must use the same grace.
+/// Grace to add on top of the echo window when CHECKING it **from the UI thread**:
+/// with a render-FPS limit active, packets sit in the drain queue for up to one
+/// frame interval, so a packet generated inside the window can be drawn after it
+/// expired. Single source of truth for every UI-side consumer
+/// (`ForzaApp::backfire_echo_active`).
+///
+/// The listener thread does **not** use it: it reads the window the instant the
+/// packet arrives, with no frame in between, so any grace there would only widen
+/// the suppression window for no reason.
 pub fn echo_grace(cfg: &AppConfig) -> Duration {
     if cfg.fps_limit_enabled {
         Duration::from_secs_f32(1.0 / cfg.fps_limit.max(1.0))
@@ -141,7 +146,9 @@ impl BackfireListener {
                 }
             }
         } else if !(off_throttle && no_brake && in_rpm_range)
-            && !input.synthetic_active(echo_grace(cfg))
+            // No grace: this runs on the listener thread, one step after the packet
+            // arrived — see `echo_grace`.
+            && !input.synthetic_active(Duration::ZERO)
         {
             // Don't react to our OWN echo: the fake accel makes off_throttle false
             // for a few frames, and zeroing last_backfire_rpm here would make

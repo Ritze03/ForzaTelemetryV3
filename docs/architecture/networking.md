@@ -20,18 +20,21 @@ The **listener thread** (`src/listeners/worker.rs`, see [[overview]]) owns the m
 `Receiver` and blocks on `recv_timeout(200 ms)`. Per packet it detects a car change (DSG
 calibration restore/flush), tracks the dynamic (measured) max RPM, runs
 `BackfireListener::update` then `DsgListener::update` — the two listeners that drive the
-game — and then forwards the packet down a **second** channel to the UI. *Why the extra
-hop:* a minimized or fully occluded window on GNOME/Wayland gets no frame callbacks, so
+game — and then hands the packet to the UI through a **capped mailbox**
+(`Arc<Mutex<VecDeque<ForzaPacket>>>`, `worker::UI_BACKLOG_CAP` = 200, oldest dropped).
+*Why the extra hop:* a minimized or fully occluded window on GNOME/Wayland gets no frame callbacks, so
 winit stops calling `eframe::App::update` and anything inside it stops with it; key output
 must not depend on redraws. `ForzaApp` keeps the UDP channel's `Sender`, so a port change
 (`src/app.rs:ForzaApp::restart_receiver`) only swaps the UDP thread — the listener thread
 and its state are untouched.
 
-Every `eframe::App::update` frame calls `self.drain_packets()`, which first drains the
-forwarded channel with `try_recv`, keeping only the newest **200** packets
-(`UI_BACKLOG_CAP`) — a window that was hidden for minutes hands back minutes of telemetry,
-and replaying it through the sprint timer, trace buffer and Co-Op relay is worse than
-skipping it. For each kept packet it:
+Every `eframe::App::update` frame calls `self.drain_packets()`, which takes the whole
+mailbox in one lock (`ListenerHandle::take_packets`, a `std::mem::take`) and then processes
+it **unlocked**. A window hidden for minutes hands back at most 200 packets — replaying
+minutes of telemetry through the sprint timer, trace buffer and Co-Op relay is worse than
+skipping it, and a plain `mpsc` channel here would also grow without bound (~71 MB/hour)
+while nobody drained it. A `sync_channel` was rejected because `try_send` drops the
+*newest* packets, which are the only ones the UI wants. For each packet it:
 
 1. Detects a car change (`pkt.car_ordinal` changed) and resets per-car UI state
    (sprint timer, power capture, perf test, session maxima). The gearbox's own per-car
@@ -102,8 +105,11 @@ pure read/derive listeners with no output side effect. That split is exactly the
 across threads. `worker.rs:run` calls Backfire before DSG and threads a
 `suppress_gearbox_accel` flag (from `InputSender::synthetic_active`) into DSG's `update`
 when `dsg_ignore_backfire_accel` is on, so DSG can ignore the throttle spike Backfire's own
-key-press causes to echo back in telemetry. The UI reads the same window through
-`ForzaApp::backfire_echo_active()` for its own displays.
+key-press causes to echo back in telemetry. On that thread the window is read with **zero
+grace**, because the packet is processed the instant it arrives. The UI reads the same
+window through `ForzaApp::backfire_echo_active()`, which *does* add
+`backfire::echo_grace(cfg)` — an active FPS limit can delay drawing by up to one frame past
+the raw window.
 
 ## Synthetic-input path
 
@@ -139,3 +145,15 @@ Backfire uses `press_tracked`/`hold_tracked` (its press must be filtered out of 
 DSG throttle read and out of Power Capture's full-throttle detection). DSG uses plain
 untracked `press` for its `E`/`Q` shift presses — its own shifts aren't telemetry that
 other listeners need to filter out.
+
+## Blocking IO on the listener thread
+
+The listener thread sits between a packet and the synthetic keypress it may produce, so
+blocking work on it directly delays key output. What remains:
+
+- `config::save_car_calibrations` — on car change, on a calibration reset and at shutdown.
+  Rare and bounded, so it stays inline.
+- **Not** the per-shift CSV row: `dsg.rs:write_shift_log` formats the row and hands it to
+  `dsg.rs:shift_log_writer`, a lazily-started thread behind a bounded `sync_channel(64)`
+  that does the open/append. Fire-and-forget — a full or dead writer drops the row, because
+  logging must never disrupt shifting.

@@ -46,7 +46,8 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
   `eframe::App::update` and everything in it stops too. The thread measures its own
   packet rate there as well, which is what **Dynamic key-press duration** keys off.
   The Backfire tab reads a copy of the listener's state (`BackfireView`) refreshed
-  once a frame — see [[overview]].
+  once a frame — see [[overview]]. If that thread ever dies, the status-bar Backfire
+  indicator reads **Stopped (error)** rather than a frozen *Active*.
 
 ## Using it
 

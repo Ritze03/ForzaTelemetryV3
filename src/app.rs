@@ -706,8 +706,6 @@ pub struct ForzaApp {
     pub coop_join_input: String,
     pub coop_copied_at: Option<Instant>,
 
-    /// Packets forwarded by the listener thread, after it has run Backfire + the gearbox.
-    receiver: Receiver<ForzaPacket>,
     /// The UDP threads' end of the raw packet channel; kept so a port change can start a
     /// fresh UDP thread on the same channel, leaving the listener thread untouched.
     packet_tx: Sender<ForzaPacket>,
@@ -760,9 +758,9 @@ impl ForzaApp {
         let config = AppConfig::load();
         let engines = load_engines();
 
-        // Two hops: UDP thread → listener thread (Backfire + gearbox) → UI.
+        // Two hops: UDP thread → listener thread (Backfire + gearbox) → UI. The second hop
+        // is the listener's capped packet mailbox, not a channel — see `worker.rs`.
         let (packet_tx, packet_rx) = mpsc::channel();
-        let (forward_tx, receiver) = mpsc::channel();
         let network = start_receiver(config.listen_port, packet_tx.clone());
         let pending_port = config.listen_port;
 
@@ -806,7 +804,6 @@ impl ForzaApp {
         // global hotkeys, so they all keep running when the window stops being drawn.
         let listener = crate::listeners::worker::spawn(
             packet_rx,
-            forward_tx,
             hotkey_rx,
             input.clone(),
             input_allowed,
@@ -906,7 +903,6 @@ impl ForzaApp {
             ),
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
-            receiver,
             packet_tx,
             listener,
             last_toggle_gen: 0,
@@ -984,9 +980,12 @@ impl ForzaApp {
     /// the enable flags whenever the toggle generation moves; `last_toggle_gen` is echoed
     /// back on the next push so our (then stale) config can't undo the toggle.
     fn sync_listener_view(&mut self) {
-        let Some(view) = self.listener.try_view() else {
-            return;
-        };
+        if let Some(view) = self.listener.try_view() {
+            self.adopt_listener_view(view);
+        }
+    }
+
+    fn adopt_listener_view(&mut self, view: crate::listeners::worker::ListenerView) {
         self.dsg = view.dsg;
         self.backfire = view.backfire;
         self.dynamic_max_rpm = view.dynamic_max_rpm;
@@ -1005,20 +1004,11 @@ impl ForzaApp {
         let decel_e = self.config.decel_end_kmh;
         self.perf_test.decel.dynamic_mode = self.config.decel_dynamic_mode;
 
-        // ponytail: keep at most UI_BACKLOG_CAP packets. The listener thread forwards every
-        // packet whether or not we're being drawn, so a window that was minimized for minutes
-        // hands back minutes of telemetry — replaying it would run the sprint timer, traces
-        // and Co-Op relay through ancient state. Only the newest few frames matter here.
-        const UI_BACKLOG_CAP: usize = 200;
-        let mut queued: VecDeque<ForzaPacket> = VecDeque::new();
-        while let Ok(pkt) = self.receiver.try_recv() {
-            if queued.len() == UI_BACKLOG_CAP {
-                queued.pop_front();
-            }
-            queued.push_back(pkt);
-        }
-
-        for pkt in queued {
+        // Take the whole mailbox in one lock and process it unlocked. It is already capped
+        // at `worker::UI_BACKLOG_CAP` with the oldest dropped, so a window that was hidden
+        // for minutes hands back at most a few seconds of telemetry instead of replaying
+        // everything through the sprint timer, the trace buffer and the Co-Op relay.
+        for pkt in self.listener.take_packets() {
             self.last_packet_time = Some(Instant::now());
 
             // Car change: reset per-car state
@@ -1649,12 +1639,20 @@ impl eframe::App for ForzaApp {
                     // or red (off). With text on, each shows its tab icon + an
                     // Active/Deactivated word, split by a divider; icon-only otherwise, the
                     // glyphs ink-centred in fixed boxes exactly like the tab bar.
-                    let (bf_color, bf_word) = if self.config.backfire_enabled {
+                    // Both features live on the listener thread; if it ever dies (a panic),
+                    // they are silently gone, so say so here rather than leave a frozen
+                    // "Active" on screen. The tooltips pick the same word up.
+                    let dead = self.listener.is_dead();
+                    let (bf_color, bf_word) = if dead {
+                        (crate::theme::DANGER, tr("Stopped (error)"))
+                    } else if self.config.backfire_enabled {
                         (crate::theme::GOOD, tr("Active"))
                     } else {
                         (crate::theme::DANGER, tr("Deactivated"))
                     };
-                    let (gb_color, gb_word) = if !self.config.dsg_enabled {
+                    let (gb_color, gb_word) = if dead {
+                        (crate::theme::DANGER, tr("Stopped (error)"))
+                    } else if !self.config.dsg_enabled {
                         (crate::theme::DANGER, tr("Deactivated"))
                     } else if self.dsg.engaged {
                         (crate::theme::GOOD, tr("Active"))
@@ -2413,8 +2411,12 @@ impl eframe::App for ForzaApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Pick up a hotkey toggle we may never have been drawn to see (quitting from a
-        // minimized window), so the saved config matches what the user last pressed.
-        self.sync_listener_view();
+        // minimized window), so the saved config matches what the user last pressed. Unlike
+        // the per-frame sync this one blocks: there is no next frame to retry on, and the
+        // listener holds that lock only for a memcpy.
+        if let Some(view) = self.listener.view_now() {
+            self.adopt_listener_view(view);
+        }
         self.config.save();
         // The listener thread owns the per-car calibrations — let it flush them and stop.
         self.listener.shutdown();

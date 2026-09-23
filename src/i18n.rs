@@ -79,6 +79,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Backfire" => "Fehlzündung",
         "Automatic Gearbox" => "Automatikgetriebe",
         "Uncalibrated" => "Nicht kalibriert",
+        "Stopped (error)" => "Gestoppt (Fehler)",
         "Power Curve" => "Leistungskurve",
         "Engine Swaps" => "Motortausch",
         "Settings" => "Einstellungen",

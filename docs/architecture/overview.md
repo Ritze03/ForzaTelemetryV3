@@ -59,13 +59,33 @@ call, disk IO or drawing, and neither side ever holds both.
 | --- | --- | --- | --- |
 | listener → UI | `worker.rs:ListenerView` (`DsgView`, `BackfireView`, `dynamic_max_rpm`, the two enable flags + `toggle_gen`) | listener `lock`s once per loop and overwrites it from its local copy | UI `try_lock`s once a frame in `app.rs:sync_listener_view`, clones into `app.dsg` / `app.backfire` / `app.dynamic_max_rpm`, drops the guard |
 | UI → listener | `worker.rs:ToListener` (`AppConfig` + `our_focused` / `wants_text`, which only egui knows) | UI `try_lock`s at the end of every frame (`ListenerHandle::push`) | listener `try_lock`s once per loop and takes it |
+| listener → UI packets | `worker.rs:PacketQueue` = `Arc<Mutex<VecDeque<ForzaPacket>>>`, capped at `worker::UI_BACKLOG_CAP` (200) | listener locks, `push_back`, `pop_front` when over cap, unlocks | UI locks, `std::mem::take`s the deque, unlocks, *then* iterates (`ListenerHandle::take_packets`) |
 | UI → listener (one-shot) | `worker.rs:Command` — `ClearRpmCalibration`, `ClearGearMap`, `Shutdown` | UI, over an `mpsc` channel (never blocks, never dropped) | listener drains it once per loop |
+
+*Why a capped deque rather than a channel for the packets:* an `mpsc` channel is unbounded,
+so it would grow by ~71 MB/hour while the window is hidden and nobody drains it; a
+`sync_channel` would instead drop the **newest** packets, which are the only ones that
+matter. The capped deque drops the oldest and bounds memory at 200 packets.
 
 **Why this shape** (the user's own pattern): each side keeps a *local* copy and only opens
 the shared one to write it or copy it out, so the listener loop is never affected by the UI
 and the UI never blocks. A `try_lock` miss on the UI side just means it draws last frame's
 values — acceptable because nothing in the UI is critical, while the loop that drives the
 game must never stall.
+
+**Focus facts expire.** `our_focused` / `wants_text` (from `ctx.input(|i| i.focused)` and
+`ctx.wants_keyboard_input()`) only change when the UI is drawn, so the listener ignores them
+after `worker::FOCUS_FACTS_TTL` (1 s) and treats the window as neither focused nor typing —
+which is what a hidden window is. *Why it matters:* frozen at `(focused, not typing)` the
+global-hotkey gate would be stuck **open**, so a bare `G`/`B`/`F` typed in any other app
+would toggle the gearbox or wipe the calibration; frozen at `(focused, typing)` it would be
+stuck **shut** for as long as the window stayed hidden. 1 s is ~5× the slowest legitimate
+frame (`update` always re-arms a repaint, and the FPS-limit slider floors at 5 fps).
+
+**A dead thread is visible.** `ListenerHandle::is_dead()` (`JoinHandle::is_finished()`)
+tells the UI the listener panicked; the status-bar Backfire/Gearbox indicators then read
+*Stopped (error)* in `theme::DANGER` instead of a frozen "Active". There is deliberately no
+restart mechanism — the point is not to lie about the feature being alive.
 
 **The one two-writer field** is the `dsg_enabled` / `backfire_enabled` pair, which both a
 global hotkey (listener) and a checkbox (UI) can flip. The listener bumps `toggle_gen` on
@@ -96,11 +116,11 @@ listeners/worker.rs:run()          (runs whether or not we're being drawn)
       ├─ backfire.update(&pkt, …)   → synthetic W  (input.rs:InputSender)
       ├─ dsg.update(&pkt, …)        → synthetic E/Q
       ├─ publishes ListenerView into the listener→UI mailbox
-      ▼  mpsc::Sender<ForzaPacket>::send  (forward)
-──────────────────── channel ────────────────────
-      ▼  mpsc::Receiver::try_recv   [main thread]
+      ▼  push_back into the capped packet mailbox (oldest dropped)
+─────────── Arc<Mutex<VecDeque<ForzaPacket>>> ───────────
+      ▼  ListenerHandle::take_packets()  [main thread]
 app.rs:ForzaApp::drain_packets()   (called first each frame)
-      │  keeps only the newest 200 queued packets, then for each:
+      │  for each packet taken (at most 200):
       ├─ car-change reset (per-car session state, session maxima)
       ├─ session maxima + cached car identity (power/torque/boost/speed,
       │    wheel-radius estimate)  [only when is_race_on != 0]
@@ -127,12 +147,12 @@ listener thread; the three read-only ones still run inside `drain_packets`:
   full-throttle pulls (gated by `backfire_echo_active()` so fake blips don't seed it).
 - `perf_test.rs:PerfTest::update` — configurable accel/decel timers.
 
-**Backlog cap.** The forwarded channel keeps filling while the window is hidden, so
-`drain_packets` throws away all but the newest 200 queued packets (`UI_BACKLOG_CAP`)
-before processing any. *Why:* replaying minutes of stale telemetry through the sprint
-timer, the trace buffer and the Co-Op relay on restore is worse than skipping it. The
-listener thread itself never falls behind — it drains continuously and processes each
-packet as it arrives, so it can never replay stale input.
+**Backlog cap.** The packet mailbox keeps filling while the window is hidden, so the
+listener drops the **oldest** once it holds `worker::UI_BACKLOG_CAP` (200). *Why:* replaying
+minutes of stale telemetry through the sprint timer, the trace buffer and the Co-Op relay on
+restore is worse than skipping it, and an uncapped queue would also grow without bound. The
+listener thread itself never falls behind — it drains continuously and processes each packet
+as it arrives, so it can never replay stale input.
 
 `telemetry.rs:TelemetryState` holds `latest: Option<ForzaPacket>`, `is_connected`, and
 `packets_per_sec` (recomputed each 1 s window). Connection is marked **down** at the tail
@@ -148,7 +168,8 @@ which several stats and the Co-Op relay respect.
 2. `sync_listener_view()` — `try_lock` the listener→UI mailbox and copy it into
    `self.dsg` / `self.backfire` / `self.dynamic_max_rpm`; adopt the Backfire/Gearbox enable
    flags if a hotkey toggled them. On a lock miss, last frame's copy stands.
-3. `drain_packets()` — ingest everything queued since last frame (see above).
+3. `drain_packets()` — `take_packets()` from the listener's capped mailbox in one lock, then
+   process them unlocked (see above).
 4. `coop.tick()` — advance Co-Op jitter buffers; `update_minimap_trails()`.
 5. Poll the minimap image channel; handle season change; throttle/smooth the minimap
    camera (position cache, eased yaw, zoom).
@@ -173,9 +194,19 @@ which several stats and the Co-Op relay respect.
     flat-out. This governs render cadence and is independent of the packet rate — the UDP
     and listener threads keep working regardless.
 
-`on_exit` saves config, then `listener.shutdown()` tells the listener thread to flush the
-(opt-in) per-car DSG calibrations and joins it. The thread also flushes if the channel
-disconnects, so a drop without `on_exit` can't lose calibration data.
+`on_exit` reads the listener view **blocking** (`view_now`, so a quit from a minimized
+window can't save a stale Backfire/Gearbox toggle), saves config, then `listener.shutdown()`
+tells the listener thread to flush the (opt-in) per-car DSG calibrations and joins it. The
+thread also flushes when the packet channel disconnects, which covers an orderly drop
+without `on_exit` — but not a process kill, which can end the thread before it notices.
+Calibrations are also written on every car change, so at most the current car's progress
+since that point is at risk.
+
+**Blocking IO on the listener thread** is down to one thing: `save_car_calibrations` on car
+change, on a calibration reset and at shutdown. Those are rare and bounded. The per-shift
+`dsg_shift_log.csv` append was moved onto its own fire-and-forget writer thread
+(`dsg.rs:shift_log_writer`) precisely because it sat between a packet and the keypress it
+might produce.
 
 ## Module map
 
@@ -206,7 +237,7 @@ disconnects, so a drop without `on_exit` can't lose calibration data.
 | File | What it does |
 | --- | --- |
 | `mod.rs` | Re-exports the five listener modules plus `worker`. |
-| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, and the global hotkeys; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener`) + `Command` channel + `ListenerHandle`. |
+| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, and the global hotkeys; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener` / `PacketQueue`) + `Command` channel + `ListenerHandle`. |
 | `backfire.rs` | Synthetic anti-lag / throttle-blip; echo-window bookkeeping. See [[backfire]]. |
 | `dsg.rs` | DSG-style auto-shifter with per-car calibration. See [[gearbox]]. |
 | `perf_test.rs` | Configurable accel/decel timers. |

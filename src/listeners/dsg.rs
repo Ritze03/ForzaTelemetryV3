@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
+use std::sync::mpsc::SyncSender;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::config::{app_data_dir, AppConfig, GearboxMode};
@@ -739,23 +741,16 @@ fn sim_step(
     gear
 }
 
-/// Append one shift to `dsg_shift_log.csv` in the app data dir (writing a header if new).
-/// Best-effort: any IO error is silently ignored — logging must never disrupt shifting.
+/// Hand one confirmed shift to the log writer.
+///
+/// The row is formatted here and the *file* work — open, maybe header, append — happens on a
+/// tiny writer thread. **Why:** `update` runs on the key-output listener thread, and an
+/// `OpenOptions::open` + `writeln` per shift is blocking disk IO sitting directly between a
+/// packet and the synthetic keypress it may produce. The send is fire-and-forget: a full or
+/// dead writer drops the row, because logging must never disrupt shifting.
 fn write_shift_log(log: &PendingLog, rpm_post: f32, speed_post: f32) {
-    let path = app_data_dir().join("dsg_shift_log.csv");
-    let new_file = !path.exists();
-    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
-        return;
-    };
-    if new_file {
-        let _ = writeln!(
-            f,
-            "game_time_ms,event,gear_from,gear_to,rpm_pre,rpm_post,speed_pre_kmh,speed_post_kmh,accel_pct,brake_pct"
-        );
-    }
     let event = if log.to_gear > log.from_gear { "up" } else { "down" };
-    let _ = writeln!(
-        f,
+    let row = format!(
         "{},{},{},{},{:.0},{:.0},{:.1},{:.1},{},{}",
         log.game_time_ms,
         event,
@@ -768,6 +763,34 @@ fn write_shift_log(log: &PendingLog, rpm_post: f32, speed_post: f32) {
         log.accel_pct,
         log.brake_pct,
     );
+    let _ = shift_log_writer().try_send(row);
+}
+
+/// Lazily-started writer thread for `dsg_shift_log.csv`; bounded so a stalled disk can't
+/// grow the queue. Any IO error is silently ignored.
+fn shift_log_writer() -> &'static SyncSender<String> {
+    static WRITER: OnceLock<SyncSender<String>> = OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(64);
+        std::thread::spawn(move || {
+            for row in rx {
+                let path = app_data_dir().join("dsg_shift_log.csv");
+                let new_file = !path.exists();
+                let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path)
+                else {
+                    continue;
+                };
+                if new_file {
+                    let _ = writeln!(
+                        f,
+                        "game_time_ms,event,gear_from,gear_to,rpm_pre,rpm_post,speed_pre_kmh,speed_post_kmh,accel_pct,brake_pct"
+                    );
+                }
+                let _ = writeln!(f, "{row}");
+            }
+        });
+        tx
+    })
 }
 
 /// Accelerator position (0..1) shaped by the active mode's gamma curve, or 0 when off-power.

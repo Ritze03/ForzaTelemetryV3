@@ -79,6 +79,8 @@ gear-ratio table.
   **Clear gear map** buttons send it a command. A displayed value can therefore be
   one frame stale, which is fine — nothing shown is critical, and in exchange the
   shift loop is never affected by the UI. See [[overview]] for the mailbox design.
+  If that thread ever dies, the status-bar Gearbox indicator reads **Stopped
+  (error)** rather than a frozen *Active*.
 - **Ignore Backfire input** keeps the shift logic (and the live throttle-bar
   visualization) reacting only to your real pedal, not the synthetic key
   [[backfire]] briefly presses to fake its pop.
@@ -110,7 +112,9 @@ visualization on the right.
   mini-settings) — live decision state (engaged/current/target gear,
   detected redline, upshift RPM, kickdown cooldown countdown, desync count)
   and a **Log shifts to CSV** toggle that appends every shift to
-  `dsg_shift_log.csv` in the app data dir (cleared on each launch).
+  `dsg_shift_log.csv` in the app data dir (cleared on each launch). The file write
+  happens on a separate writer thread, so logging can never delay a shift; a row is
+  dropped rather than made to wait.
 - **Live visualization** (right column): **State** (big gear readout, target
   gear, active mode + decision rule, engaged/idle indicator, an RPM bar with
   down-point/target/shift-point markers), **Gear Map** (a stacked chart of

@@ -64,8 +64,15 @@ in an `AtomicBool`, read by both the hotkey gate and the input gate.
   The flag is driven from the listener thread — driving it from the frame loop froze it at
   whatever the last drawn frame stored, which could leave key output dead while hidden.
 - *"Our app focused"* and *"a text field wants keys"* only exist on the UI thread, so the UI
-  pushes both to the listener thread each frame. They stop updating while the window is
-  hidden, which is harmless: a hidden window is neither focused nor typing.
+  pushes both to the listener thread each frame — and they **expire after 1 s**
+  (`worker::FOCUS_FACTS_TTL`), after which the listener treats the window as neither focused
+  nor typing. *Why the expiry:* a hidden window is never drawn, so the pushed values freeze.
+  Frozen at *focused, not typing* the gate is stuck **open** — a bare `G`/`B`/`F` typed into
+  any other app would toggle the gearbox or wipe your calibration. Frozen at *focused,
+  typing* it is stuck **shut** for as long as the window stays hidden. Expired, the gate
+  falls back to "is the game focused?", which is the correct rule for a hidden window. 1 s is
+  ~5× the slowest frame the UI can legitimately take (the FPS-limit slider floors at 5 fps
+  and `update` always re-arms a repaint).
 
 ## Requirements & limitations
 

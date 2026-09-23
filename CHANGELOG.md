@@ -8,6 +8,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ### Fixed
 - **Backfire & Automatic Gearbox keep working while the window is hidden**: both now run on their own background thread instead of inside the window's redraw loop, so pops and shifts continue when the app is minimized or completely covered by the game — previously they stopped the moment the window stopped being drawn. The **G** / **B** / **Reset RPM Calibration** hotkeys work while hidden too, and the toggle state is shown correctly when you come back. Bringing the window back no longer replays the telemetry that piled up while it was hidden.
+- **Global hotkeys can't fire from the wrong window**: while the app is hidden, the bare **G** / **B** / **F** keys only act when the *game* is focused — they no longer react to those letters typed into other applications.
+- **Status bar reports a stopped Backfire/Gearbox**: if the background thread driving them ever fails, both status-bar indicators now read **Stopped (error)** in red instead of showing a frozen *Active*.
 
 ## [0.2.2] – 2026-07-20
 
