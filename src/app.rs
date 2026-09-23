@@ -1,21 +1,21 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{Context, Pos2, Vec2};
 
-use crate::config::{
-    load_car_calibrations, save_car_calibrations, AppConfig, CarCalibration, SpeedDeltaMode,
-};
+use crate::config::{AppConfig, SpeedDeltaMode};
 use crate::engines::{load_engines, EngineRecord};
 use crate::focus::{FocusDetector, FocusParams};
 use crate::hotkeys::HotkeyListener;
 use crate::input::InputSender;
-use crate::listeners::backfire::BackfireListener;
-use crate::listeners::dsg::DsgListener;
+use crate::listeners::backfire::BackfireView;
+use crate::listeners::dsg::DsgView;
 use crate::listeners::perf_test::PerfTest;
 use crate::listeners::power_capture::{PowerCapture, PowerCurveSnapshot};
 use crate::listeners::sprint_timer::SprintTimer;
+use crate::listeners::worker::{Command, ListenerHandle};
 use crate::network::{start_receiver, NetworkHandle};
 use crate::packet::ForzaPacket;
 use crate::telemetry::TelemetryState;
@@ -574,12 +574,14 @@ pub struct ForzaApp {
     pub current_tab: Tab,
 
     pub sprint_timer: SprintTimer,
-    pub backfire: BackfireListener,
-    pub dsg: DsgListener,
+    /// UI-local copies of the listener thread's Backfire / gearbox state, refreshed from its
+    /// mailbox once a frame (`listeners/worker.rs`). Read-only here — the live listeners run
+    /// on that thread so they keep working while the window is hidden.
+    pub backfire: BackfireView,
+    pub dsg: DsgView,
     input: InputSender,
     pub hotkeys: HotkeyListener,
-    pub focus: FocusDetector,
-    input_allowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub focus: Arc<FocusDetector>,
     /// Settings-tab rebind state: the action currently capturing a new key.
     pub rebinding: Option<crate::config::HotkeyAction>,
     /// Detect-button countdown deadline (active-window auto-fill).
@@ -599,10 +601,6 @@ pub struct ForzaApp {
     pub last_car_ordinal: i32,
     pub last_packet_time: Option<Instant>,
 
-    /// Saved per-car DSG calibrations (own file, not config.json). Used only when
-    /// `config.dsg_save_calibration` is on.
-    pub car_calibrations: HashMap<i32, CarCalibration>,
-
     // Session maxima (reset on car change)
     pub max_power_ps: f32,
     pub max_torque_nm: f32,
@@ -611,6 +609,7 @@ pub struct ForzaApp {
     pub cached_engine_max_rpm: f64,
     pub fi_detected: bool,
     /// Highest RPM seen while making power (>0 W) — the dynamically detected redline. Per-car.
+    /// Measured on the listener thread (the gearbox needs it there); this is the UI's copy.
     pub dynamic_max_rpm: f32,
     /// Estimated tire radius per wheel [FL, FR, RL, RR], meters. The packet has no radius,
     /// so it's derived from speed / wheel rotation while gripping (EMA-smoothed). Per-car.
@@ -707,7 +706,14 @@ pub struct ForzaApp {
     pub coop_join_input: String,
     pub coop_copied_at: Option<Instant>,
 
+    /// Packets forwarded by the listener thread, after it has run Backfire + the gearbox.
     receiver: Receiver<ForzaPacket>,
+    /// The UDP threads' end of the raw packet channel; kept so a port change can start a
+    /// fresh UDP thread on the same channel, leaving the listener thread untouched.
+    packet_tx: Sender<ForzaPacket>,
+    listener: ListenerHandle,
+    /// Last `ListenerView::toggle_gen` this UI has adopted — see `worker.rs`.
+    last_toggle_gen: u64,
     _network: NetworkHandle,
 }
 
@@ -754,8 +760,10 @@ impl ForzaApp {
         let config = AppConfig::load();
         let engines = load_engines();
 
-        let (sender, receiver) = mpsc::channel();
-        let network = start_receiver(config.listen_port, sender);
+        // Two hops: UDP thread → listener thread (Backfire + gearbox) → UI.
+        let (packet_tx, packet_rx) = mpsc::channel();
+        let (forward_tx, receiver) = mpsc::channel();
+        let network = start_receiver(config.listen_port, packet_tx.clone());
         let pending_port = config.listen_port;
 
         // Spawn background thread to load the seasonal map image (skip if Map module disabled)
@@ -782,17 +790,29 @@ impl ForzaApp {
 
         // Hotkeys: shared "input allowed" flag, focus detector, capture backend.
         let input_allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let focus = FocusDetector::new(FocusParams {
+        let focus = Arc::new(FocusDetector::new(FocusParams {
             method: config.hotkeys.focus_method,
             custom_cmd: config.hotkeys.custom_cmd.clone(),
             game_match: config.hotkeys.game_match.clone(),
             poll_hz: config.hotkeys.focus_poll_hz,
             enabled: config.hotkeys.input_focus_gate
                 || config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
-        });
-        let hotkeys = HotkeyListener::new(global_bindings(&config));
+        }));
+        let (hotkeys, hotkey_rx) = HotkeyListener::new(global_bindings(&config));
         let mut input = InputSender::new();
         input.set_focus_gate(input_allowed.clone());
+
+        // The listener thread owns Backfire, the gearbox, the per-car calibrations and the
+        // global hotkeys, so they all keep running when the window stops being drawn.
+        let listener = crate::listeners::worker::spawn(
+            packet_rx,
+            forward_tx,
+            hotkey_rx,
+            input.clone(),
+            input_allowed,
+            focus.clone(),
+            config.clone(),
+        );
 
         Self {
             config,
@@ -801,12 +821,11 @@ impl ForzaApp {
             telemetry: TelemetryState::new(),
             current_tab: Tab::Dashboard,
             sprint_timer: SprintTimer::new(),
-            backfire: BackfireListener::new(),
-            dsg: DsgListener::new(),
+            backfire: BackfireView::default(),
+            dsg: DsgView::default(),
             input,
             hotkeys,
             focus,
-            input_allowed,
             rebinding: None,
             detect_until: None,
             focus_preview: String::new(),
@@ -817,7 +836,6 @@ impl ForzaApp {
             pending_port,
             last_car_ordinal: 0,
             last_packet_time: None,
-            car_calibrations: load_car_calibrations(),
             max_power_ps: 0.0,
             max_torque_nm: 0.0,
             max_boost_psi: 0.0,
@@ -889,15 +907,18 @@ impl ForzaApp {
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
             receiver,
+            packet_tx,
+            listener,
+            last_toggle_gen: 0,
             _network: network,
         }
     }
 
+    /// Port change: start a fresh UDP thread on the same packet channel and drop the old
+    /// handle (its thread exits within its 200 ms read timeout). The listener thread keeps
+    /// its receiver — and therefore its calibration and shift state — right through.
     pub fn restart_receiver(&mut self, port: u16) {
-        let (sender, receiver) = mpsc::channel();
-        let network = start_receiver(port, sender);
-        self.receiver = receiver;
-        self._network = network;
+        self._network = start_receiver(port, self.packet_tx.clone());
         self.config.listen_port = port;
     }
 
@@ -929,49 +950,18 @@ impl ForzaApp {
         }
     }
 
-    /// Perform a global hotkey action (from the capture backend, already gated).
-    fn run_global_hotkey(&mut self, action: crate::config::HotkeyAction) {
-        use crate::config::HotkeyAction::*;
-        match action {
-            ToggleGearbox => { self.config.dsg_enabled = !self.config.dsg_enabled; }
-            ToggleBackfire => { self.config.backfire_enabled = !self.config.backfire_enabled; }
-            ResetCalibration => self.clear_rpm_calibration(),
-            _ => {}
-        }
-    }
-
-    /// Clear the RPM (redline) calibration + engagement (tab button + Reset-RPM hotkey):
-    /// forgets the detected redline and sets the box hands-off until the driver's next manual
-    /// upshift re-locks it. The per-gear speed map is left intact.
-    pub fn clear_rpm_calibration(&mut self) {
-        self.dsg.reset_state();
-        self.dynamic_max_rpm = 0.0;
-        self.persist_car_calibration();
+    /// Clear the RPM (redline) calibration + engagement (tab button; the Reset-RPM hotkey
+    /// does the same on the listener thread): forgets the detected redline and sets the box
+    /// hands-off until the driver's next manual upshift re-locks it. The per-gear speed map
+    /// is left intact. The listener thread owns the calibration, so this is a command — the
+    /// UI's copy catches up with the next snapshot.
+    pub fn clear_rpm_calibration(&self) {
+        self.listener.send(Command::ClearRpmCalibration);
     }
 
     /// Clear the per-gear speed map (tab button only). The detected redline is left intact.
-    pub fn clear_gear_map(&mut self) {
-        self.dsg.reset_calibration();
-        self.persist_car_calibration();
-    }
-
-    /// Rewrite (or drop) the saved per-car profile to match the live calibration, so a car
-    /// reload can't restore a part we just cleared. Entry removed once nothing's left to save.
-    fn persist_car_calibration(&mut self) {
-        let has_map = self.dsg.gear_redline_speeds[1] > 0.0;
-        let has_rpm = self.dynamic_max_rpm > 0.0;
-        if has_map || has_rpm {
-            self.car_calibrations.insert(
-                self.last_car_ordinal,
-                CarCalibration {
-                    gear_redline_speeds: self.dsg.gear_redline_speeds,
-                    max_rpm: self.dynamic_max_rpm,
-                },
-            );
-        } else {
-            self.car_calibrations.remove(&self.last_car_ordinal);
-        }
-        crate::config::save_car_calibrations(&self.car_calibrations);
+    pub fn clear_gear_map(&self) {
+        self.listener.send(Command::ClearGearMap);
     }
 
     /// Push current hotkey config to the live backend + focus detector. Call
@@ -988,6 +978,25 @@ impl ForzaApp {
         });
     }
 
+    /// Copy the listener thread's published state into our local copy, if it's free right
+    /// now — never wait, a missed frame just redraws the previous values. A global hotkey
+    /// can have toggled Backfire / the gearbox while we weren't being drawn at all, so adopt
+    /// the enable flags whenever the toggle generation moves; `last_toggle_gen` is echoed
+    /// back on the next push so our (then stale) config can't undo the toggle.
+    fn sync_listener_view(&mut self) {
+        let Some(view) = self.listener.try_view() else {
+            return;
+        };
+        self.dsg = view.dsg;
+        self.backfire = view.backfire;
+        self.dynamic_max_rpm = view.dynamic_max_rpm;
+        if view.toggle_gen != self.last_toggle_gen {
+            self.last_toggle_gen = view.toggle_gen;
+            self.config.dsg_enabled = view.dsg_enabled;
+            self.config.backfire_enabled = view.backfire_enabled;
+        }
+    }
+
     pub fn drain_packets(&mut self) {
         let step = self.config.power_curve_step;
         let accel_s = self.config.accel_start_kmh;
@@ -995,10 +1004,21 @@ impl ForzaApp {
         let decel_s = self.config.decel_start_kmh;
         let decel_e = self.config.decel_end_kmh;
         self.perf_test.decel.dynamic_mode = self.config.decel_dynamic_mode;
-        let fun_cfg = self.config.clone();
 
-        let mut received = 0;
+        // ponytail: keep at most UI_BACKLOG_CAP packets. The listener thread forwards every
+        // packet whether or not we're being drawn, so a window that was minimized for minutes
+        // hands back minutes of telemetry — replaying it would run the sprint timer, traces
+        // and Co-Op relay through ancient state. Only the newest few frames matter here.
+        const UI_BACKLOG_CAP: usize = 200;
+        let mut queued: VecDeque<ForzaPacket> = VecDeque::new();
         while let Ok(pkt) = self.receiver.try_recv() {
+            if queued.len() == UI_BACKLOG_CAP {
+                queued.pop_front();
+            }
+            queued.push_back(pkt);
+        }
+
+        for pkt in queued {
             self.last_packet_time = Some(Instant::now());
 
             // Car change: reset per-car state
@@ -1007,27 +1027,15 @@ impl ForzaApp {
                 self.sprint_timer.reset();
                 self.power_capture.on_car_changed();
                 self.perf_test.reset();
-                self.dsg.reset_calibration();
-                self.dsg.reset_state();
                 self.max_power_ps = 0.0;
                 self.max_torque_nm = 0.0;
                 self.max_boost_psi = 0.0;
                 self.max_speed_kmh = 0.0;
                 self.cached_engine_max_rpm = 0.0;
                 self.fi_detected = false;
-                self.dynamic_max_rpm = 0.0;
                 self.wheel_radius_est = [0.33; 4];
-
-                // Opt-in: flush saved calibrations to disk (car change is a natural checkpoint),
-                // then restore the new car's profile and skip the manual 1st→2nd pull.
-                if self.config.dsg_save_calibration {
-                    save_car_calibrations(&self.car_calibrations);
-                    if let Some(cal) = self.car_calibrations.get(&pkt.car_ordinal) {
-                        self.dsg.gear_redline_speeds = cal.gear_redline_speeds;
-                        self.dsg.engaged = true;
-                        self.dynamic_max_rpm = cal.max_rpm;
-                    }
-                }
+                // The gearbox's own per-car reset (calibration, shift state, saved profile)
+                // happens on the listener thread — it saw this packet first.
             }
 
             // Session maxima + cache car identity
@@ -1043,18 +1051,6 @@ impl ForzaApp {
                 }
                 if pkt.boost > 0.05 {
                     self.fi_detected = true;
-                }
-                // Dynamic redline: highest RPM seen while the engine is making power, ignoring
-                // moments where the handbrake is pulled or a tyre is slipping (>0.5) — those
-                // inflate RPM without real road speed.
-                if pkt.power > 0.0
-                    && pkt.hand_brake == 0
-                    && pkt.tire_slip_ratio_fl.abs() <= 0.5
-                    && pkt.tire_slip_ratio_fr.abs() <= 0.5
-                    && pkt.tire_slip_ratio_rl.abs() <= 0.5
-                    && pkt.tire_slip_ratio_rr.abs() <= 0.5
-                {
-                    self.dynamic_max_rpm = self.dynamic_max_rpm.max(pkt.current_engine_rpm);
                 }
                 if pkt.speed >= 0.1 {
                     self.max_power_ps = self.max_power_ps.max(pkt.power_ps());
@@ -1164,31 +1160,7 @@ impl ForzaApp {
             }
             self.perf_test
                 .update(&pkt, accel_s, accel_e, decel_s, decel_e);
-            self.backfire.update(&pkt, &fun_cfg, &self.input, self.telemetry.packets_per_sec);
-            let suppress_gearbox_accel =
-                self.config.dsg_ignore_backfire_accel && self.backfire_echo_active();
-            self.dsg.update(
-                &pkt,
-                &fun_cfg,
-                &self.input,
-                self.dynamic_max_rpm,
-                suppress_gearbox_accel,
-            );
-
-            // Opt-in: keep the in-memory per-car calibration current; it's written to its own
-            // file on car change and on exit.
-            if self.config.dsg_save_calibration
-                && pkt.car_ordinal != 0
-                && self.dsg.gear_redline_speeds[1] > 0.0
-            {
-                self.car_calibrations.insert(
-                    pkt.car_ordinal,
-                    CarCalibration {
-                        gear_redline_speeds: self.dsg.gear_redline_speeds,
-                        max_rpm: self.dynamic_max_rpm,
-                    },
-                );
-            }
+            // Backfire + the gearbox already ran on this packet, on the listener thread.
 
             // Co-Op: relay our locally-received telemetry to peers. A paused game
             // zeroes car class/PI, so carry over the cached values (same as the Car
@@ -1203,11 +1175,6 @@ impl ForzaApp {
             }
 
             self.telemetry.update(pkt);
-
-            received += 1;
-            if received >= 200 {
-                break;
-            }
         }
 
         // Mark disconnected after 2 s without a packet
@@ -1328,6 +1295,7 @@ impl ForzaApp {
 impl eframe::App for ForzaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.config.language);
+        self.sync_listener_view();
         self.drain_packets();
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
@@ -1501,21 +1469,8 @@ impl eframe::App for ForzaApp {
                 if pressed { self.run_app_hotkey(action); }
             }
         }
-        // Global actions: from the capture backend, gated on focus.
-        let our_focused = ctx.input(|i| i.focused);
-        let wants_text = ctx.wants_keyboard_input();
-        while let Some(action) = self.hotkeys.try_recv() {
-            let game_focused = match self.config.hotkeys.gate_mode {
-                crate::config::GateMode::TelemetryLive => self.telemetry.is_connected,
-                crate::config::GateMode::WindowFocus => self.focus.focused(),
-            };
-            if global_hotkey_allowed(our_focused, wants_text, game_focused) {
-                self.run_global_hotkey(action);
-            }
-        }
-        // Drive the synthetic-input gate from the detector (when enabled).
-        let allow_input = !self.config.hotkeys.input_focus_gate || self.focus.focused();
-        self.input_allowed.store(allow_input, std::sync::atomic::Ordering::Relaxed);
+        // Global actions (G / B / Reset-RPM) and the synthetic-input focus gate are handled
+        // on the listener thread — they have to keep working while this loop isn't running.
         // Detect button: when the 3s countdown elapses, capture the active window.
         if let Some(t) = self.detect_until {
             if std::time::Instant::now() >= t {
@@ -2437,6 +2392,17 @@ impl eframe::App for ForzaApp {
             Tab::Changelog => crate::ui::changelog::show(ui, self),
         });
 
+        // Hand the listener thread this frame's config plus the two focus facts only egui
+        // knows (the global-hotkey gate needs them). Pushed unconditionally — it's one
+        // AppConfig clone per frame, exactly what `drain_packets` used to do for `fun_cfg`,
+        // and repeating it means a push the thread was busy for simply lands next frame.
+        self.listener.push(
+            &self.config,
+            self.last_toggle_gen,
+            ctx.input(|i| i.focused),
+            ctx.wants_keyboard_input(),
+        );
+
         // FPS limiter
         if self.config.fps_limit_enabled {
             ctx.request_repaint_after(Duration::from_secs_f32(1.0 / self.config.fps_limit));
@@ -2446,10 +2412,12 @@ impl eframe::App for ForzaApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Pick up a hotkey toggle we may never have been drawn to see (quitting from a
+        // minimized window), so the saved config matches what the user last pressed.
+        self.sync_listener_view();
         self.config.save();
-        if self.config.dsg_save_calibration {
-            save_car_calibrations(&self.car_calibrations);
-        }
+        // The listener thread owns the per-car calibrations — let it flush them and stop.
+        self.listener.shutdown();
     }
 }
 

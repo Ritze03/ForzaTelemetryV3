@@ -17,7 +17,15 @@ A binding's *scope* is fixed per action (`HotkeyAction::scope`), not user-chosen
 ## Capture backend (`src/hotkeys.rs`)
 
 `HotkeyListener` runs a background backend that matches configured **global** combos and
-pushes the matched `HotkeyAction` down an mpsc channel drained each frame in `app.rs`.
+pushes the matched `HotkeyAction` down an mpsc channel. `HotkeyListener::new` hands that
+channel's `Receiver` to the **listener thread** (`src/listeners/worker.rs`), which drains it
+once per loop and applies the action there; only the in-app actions are handled in the frame
+loop. *Why:* a hidden window gets no frames on GNOME/Wayland, so a frame-loop drain would
+leave you with an auto-shifter you can't switch off while the game is fullscreen over it.
+`HotkeyListener` itself stays on the UI side purely to push rebound keys to the backend
+(`set_bindings`). The gearbox/backfire toggles live in `AppConfig`, so the listener thread
+publishes them back to the UI in its snapshot (with a generation counter, so the UI's next
+config push can't undo a toggle it hasn't seen yet — see [[overview]]).
 
 - **Linux — evdev read of `/dev/input/event*`.** *Why this way:* reading input devices sits
   *below* the display server, so it works identically on X11, Wayland, and console — no
@@ -53,6 +61,11 @@ in an `AtomicBool`, read by both the hotkey gate and the input gate.
   can't exclude a third app when auto-pause is off) or *Window-focus* (the detector).
 - **Synthetic-input gate** (opt-in, `input_focus_gate`): when on, backfire/DSG key injection
   is suppressed unless the game is focused, so alt-tabbing out never sprays keys elsewhere.
+  The flag is driven from the listener thread — driving it from the frame loop froze it at
+  whatever the last drawn frame stored, which could leave key output dead while hidden.
+- *"Our app focused"* and *"a text field wants keys"* only exist on the UI thread, so the UI
+  pushes both to the listener thread each frame. They stop updating while the window is
+  hidden, which is harmless: a hidden window is neither focused nor typing.
 
 ## Requirements & limitations
 

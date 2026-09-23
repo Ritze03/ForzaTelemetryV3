@@ -16,21 +16,30 @@ into the app; a short/garbled datagram is silently dropped. `NetworkHandle`
 (`src/network.rs:8`) is just the `stop_flag` handle — dropping it (e.g. on port change)
 signals the thread to stop.
 
-`ForzaApp` owns the matching `Receiver` and creates the pair in `restart_receiver`
-(`src/app.rs:794`), used both at startup and whenever the listen port changes.
+The **listener thread** (`src/listeners/worker.rs`, see [[overview]]) owns the matching
+`Receiver` and blocks on `recv_timeout(200 ms)`. Per packet it detects a car change (DSG
+calibration restore/flush), tracks the dynamic (measured) max RPM, runs
+`BackfireListener::update` then `DsgListener::update` — the two listeners that drive the
+game — and then forwards the packet down a **second** channel to the UI. *Why the extra
+hop:* a minimized or fully occluded window on GNOME/Wayland gets no frame callbacks, so
+winit stops calling `eframe::App::update` and anything inside it stops with it; key output
+must not depend on redraws. `ForzaApp` keeps the UDP channel's `Sender`, so a port change
+(`src/app.rs:ForzaApp::restart_receiver`) only swaps the UDP thread — the listener thread
+and its state are untouched.
 
-Every `eframe::App::update` frame (`src/app.rs:1167`) calls `self.drain_packets()`
-(`src/app.rs:824`), which drains up to 200 queued packets per frame with
-`self.receiver.try_recv()` — bounding worst-case per-frame work if the UI briefly falls
-behind the packet rate. For each packet it:
+Every `eframe::App::update` frame calls `self.drain_packets()`, which first drains the
+forwarded channel with `try_recv`, keeping only the newest **200** packets
+(`UI_BACKLOG_CAP`) — a window that was hidden for minutes hands back minutes of telemetry,
+and replaying it through the sprint timer, trace buffer and Co-Op relay is worse than
+skipping it. For each kept packet it:
 
-1. Detects a car change (`pkt.car_ordinal` changed) and resets per-car listener state
-   (sprint timer, power capture, perf test, DSG calibration, session maxima).
+1. Detects a car change (`pkt.car_ordinal` changed) and resets per-car UI state
+   (sprint timer, power capture, perf test, session maxima). The gearbox's own per-car
+   reset happened on the listener thread, which saw the packet first.
 2. Updates session-wide derived state directly on `ForzaApp` — session maxima
-   (max power/torque/boost/speed), the dynamic (measured) max RPM, G-force and
-   suspension-travel stats, wheel-radius estimate, speed history/delta, and the
-   ~25 Hz speed/RPM trace buffer.
-3. Calls each listener's `update(&pkt, …)` (see table below).
+   (max power/torque/boost/speed), G-force and suspension-travel stats, wheel-radius
+   estimate, speed history/delta, and the ~25 Hz speed/RPM trace buffer.
+3. Calls each **UI-side** listener's `update(&pkt, …)` (see table below).
 4. Relays the packet to Co-Op (`self.coop.push_local`), then calls
    `self.telemetry.update(pkt)` (`src/telemetry.rs`), which stores `latest`, flips
    `is_connected`, and recomputes `packets_per_sec` once per second of wall-clock
@@ -41,13 +50,23 @@ the drain loop.
 
 ## The listener pattern
 
-`src/listeners/mod.rs` is just five `pub mod` declarations — there is no shared trait or
-registry. Each listener is a plain struct owned as a field on `ForzaApp`
-(`src/app.rs:511-517`), constructed once in `ForzaApp::new`, and driven by an explicit
-`self.<listener>.update(&pkt, …)` call written by hand inside `drain_packets`. A listener
-takes whatever slice of the packet, `AppConfig`, and shared services (`InputSender`,
-derived values like `dynamic_max_rpm`) it needs as arguments, and mutates its own
-internal state plus (for the two that act) sends synthetic input.
+`src/listeners/mod.rs` is just `pub mod` declarations — there is no shared trait or
+registry. Each listener is a plain struct driven by an explicit `<listener>.update(&pkt, …)`
+call written by hand. The three read-only ones are fields on `ForzaApp`, constructed in
+`ForzaApp::new` and called from `drain_packets`; the two that drive the game are owned by
+the listener thread and called from `listeners/worker.rs:run`. A listener takes whatever
+slice of the packet, `AppConfig`, and shared services (`InputSender`, derived values like
+`dynamic_max_rpm`) it needs as arguments, and mutates its own internal state plus (for the
+two that act) sends synthetic input.
+
+Because the UI can't reach the two listeners on the other thread, each publishes a
+**display-only copy** — `dsg.rs:DsgView` and `backfire.rs:BackfireView`, built by their
+`view()` methods and shipped in `worker.rs:ListenerView`. The UI reads `app.dsg` /
+`app.backfire`, which hold the same field names, so widget code is unchanged. The pedal
+overlay's `sim_step` was made a **free function over just the calibration table**
+(`dsg.rs:sim_step`), exposed on both `DsgView` and (test-only) `DsgListener`: it is pure
+and display-only, so running it on the UI's copy keeps drawing code from ever mutating —
+or even touching — the live listener.
 
 **To add a new listener:**
 1. Create `src/listeners/<name>.rs` with a struct holding whatever state it needs across
@@ -56,14 +75,17 @@ internal state plus (for the two that act) sends synthetic input.
    driving.
 2. Add `pub mod <name>;` to `src/listeners/mod.rs`.
 3. Add a field to `ForzaApp` and initialize it in `ForzaApp::new` (`src/app.rs`).
-4. Call `self.<name>.update(...)` from `drain_packets` (`src/app.rs:824`), in whatever
-   order relative to the others matters (see the backfire-echo-suppression note below).
+4. Call `<name>.update(...)` in whatever order relative to the others matters (see the
+   backfire-echo-suppression note below): from `drain_packets` (`src/app.rs`) for a
+   read-only listener, or from `listeners/worker.rs:run` if it drives synthetic input —
+   anything driving the game must not depend on the frame loop.
 5. If it needs config, add fields to `AppConfig` (`src/config.rs`) and, if they should
    travel with presets, list them in `MINISETTINGS_KEYS`.
 
 There's no dynamic dispatch or event bus by design — every listener call is a visible,
-ordered line in `drain_packets`, which is what lets later listeners deliberately react to
-earlier ones (e.g. DSG suppressing itself during Backfire's synthetic-input echo).
+ordered line in `drain_packets` / `worker.rs:run`, which is what lets later listeners
+deliberately react to earlier ones (e.g. DSG suppressing itself during Backfire's
+synthetic-input echo).
 
 ## The five listeners
 
@@ -76,10 +98,12 @@ earlier ones (e.g. DSG suppressing itself during Backfire's synthetic-input echo
 | `DsgListener` | `src/listeners/dsg.rs` | Continuously calibrates per-gear redline speed from clean, on-throttle samples; once engaged, compares current RPM/gear against the shift-point/cruise-target math | Emits synthetic `E`/`Q` presses to shift up/down, tracked through a `ShiftPhase::{Idle, Shifting}` state machine that waits for the expected gear (or times out and resyncs). See [[gearbox]]. |
 
 Only `BackfireListener` and `DsgListener` drive `InputSender`; the other three are
-pure read/derive listeners with no output side effect. `drain_packets` calls Backfire
-before DSG and threads a `suppress_gearbox_accel` flag (from `backfire_echo_active()`)
-into DSG's `update` when `dsg_ignore_backfire_accel` is on, so DSG can ignore the
-throttle spike Backfire's own key-press causes to echo back in telemetry.
+pure read/derive listeners with no output side effect. That split is exactly the split
+across threads. `worker.rs:run` calls Backfire before DSG and threads a
+`suppress_gearbox_accel` flag (from `InputSender::synthetic_active`) into DSG's `update`
+when `dsg_ignore_backfire_accel` is on, so DSG can ignore the throttle spike Backfire's own
+key-press causes to echo back in telemetry. The UI reads the same window through
+`ForzaApp::backfire_echo_active()` for its own displays.
 
 ## Synthetic-input path
 

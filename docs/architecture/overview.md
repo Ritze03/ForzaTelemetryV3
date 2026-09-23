@@ -18,24 +18,61 @@ all derived/session state, and it implements `eframe::App`.
 
 ## Threading model
 
-Two long-lived threads plus a few short-lived helpers. State crosses the UDP→UI
-boundary through an **`mpsc` channel**, not shared memory.
+Three long-lived threads plus a few short-lived helpers. Packets cross UDP → listener → UI
+through two **`mpsc` channels**; the listener↔UI *state* exchange is the mailbox pair
+described below.
 
 - **UDP receive thread** — spawned in `network.rs:start_receiver`. Binds
   `0.0.0.0:<port>`, sets a 200 ms read timeout, and loops: `socket.recv` →
   `packet.rs:ForzaPacket::from_bytes` → `sender.send(pkt)`. It owns nothing the UI
   touches; it only pushes parsed packets down the channel. A `network.rs:NetworkHandle`
   holds an `Arc<AtomicBool>` stop flag; when the handle is dropped (`Drop`), the flag
-  flips and the thread exits its loop. Changing the port drops the old handle and starts
-  a fresh thread + channel (`app.rs:ForzaApp::restart_receiver`).
-- **egui/eframe render thread (main)** — owns `ForzaApp` including the `Receiver`
-  end of the channel. Everything UI, all listeners, and all state mutation happen here,
-  single-threaded, so no locking is needed around app state.
+  flips and the thread exits its loop. Changing the port starts a fresh thread on the
+  **same** channel and drops the old handle (`app.rs:ForzaApp::restart_receiver`) — the
+  listener thread keeps its receiver, and therefore its calibration and shift state.
+- **Listener thread** — `listeners/worker.rs:spawn`. Owns the packet `Receiver`, the
+  `BackfireListener`, the `DsgListener`, the per-car calibration map, the detected redline
+  (`dynamic_max_rpm`), its own packets-per-second measurement, a clone of `InputSender`,
+  and the global-hotkey event receiver. Blocks on `recv_timeout(200 ms)` — never holding a
+  lock while it waits — runs Backfire then DSG on every packet, then forwards the packet to
+  the UI. **Why:** GNOME/Wayland stops delivering frame callbacks for a minimized or fully
+  occluded window and winit gates `RedrawRequested` on that callback
+  (`winit wayland/event_loop/mod.rs:486`), so `eframe::App::update` simply stops being
+  called. Anything key-output-driving that lives in the frame loop dies with it, so these
+  two features (and the `G`/`B`/reset hotkeys that toggle them, and the synthetic-input
+  focus gate) must not depend on redraws.
+- **egui/eframe render thread (main)** — owns `ForzaApp`, including the receiver of
+  *forwarded* packets. Everything else — stats, Co-Op, the three read-only listeners,
+  widgets — still happens here, single-threaded.
 - **Short-lived background threads** — the seasonal minimap image decode
   (`app.rs:map_load_thread`, results returned over its own `mpsc` channel of
   `MapLoadMessage`), and Co-Op's WebSocket relay + cloudflared tunnel
   (`coop.rs`, see [[coop]]). Synthetic keypress emission (`input.rs:InputSender`) also
-  runs on its own worker thread.
+  runs on its own worker thread, as does the focus poll (`focus.rs`).
+
+### Listener ↔ UI: two mailboxes
+
+Each direction has its own `Arc<Mutex<…>>`; neither lock is ever held across a blocking
+call, disk IO or drawing, and neither side ever holds both.
+
+| Direction | Payload | Writer | Reader |
+| --- | --- | --- | --- |
+| listener → UI | `worker.rs:ListenerView` (`DsgView`, `BackfireView`, `dynamic_max_rpm`, the two enable flags + `toggle_gen`) | listener `lock`s once per loop and overwrites it from its local copy | UI `try_lock`s once a frame in `app.rs:sync_listener_view`, clones into `app.dsg` / `app.backfire` / `app.dynamic_max_rpm`, drops the guard |
+| UI → listener | `worker.rs:ToListener` (`AppConfig` + `our_focused` / `wants_text`, which only egui knows) | UI `try_lock`s at the end of every frame (`ListenerHandle::push`) | listener `try_lock`s once per loop and takes it |
+| UI → listener (one-shot) | `worker.rs:Command` — `ClearRpmCalibration`, `ClearGearMap`, `Shutdown` | UI, over an `mpsc` channel (never blocks, never dropped) | listener drains it once per loop |
+
+**Why this shape** (the user's own pattern): each side keeps a *local* copy and only opens
+the shared one to write it or copy it out, so the listener loop is never affected by the UI
+and the UI never blocks. A `try_lock` miss on the UI side just means it draws last frame's
+values — acceptable because nothing in the UI is critical, while the loop that drives the
+game must never stall.
+
+**The one two-writer field** is the `dsg_enabled` / `backfire_enabled` pair, which both a
+global hotkey (listener) and a checkbox (UI) can flip. The listener bumps `toggle_gen` on
+every hotkey toggle; the UI adopts both flags whenever it sees a new generation and echoes
+the generation back as `ack_gen`. A config push whose `ack_gen` is behind is treated as
+stale for those two fields only — otherwise the first push after a hotkey press would undo
+the key the user just hit while the window was hidden.
 
 The receive thread is the only place raw bytes become a `ForzaPacket`; the main thread
 never blocks on the socket (it uses non-blocking `try_recv`).
@@ -52,15 +89,24 @@ network.rs:start_receiver          [UDP thread]
       │  ForzaPacket::from_bytes()  (packet.rs)
       ▼  mpsc::Sender<ForzaPacket>::send
 ──────────────────── channel ────────────────────
+      ▼  mpsc::Receiver::recv_timeout  [listener thread]
+listeners/worker.rs:run()          (runs whether or not we're being drawn)
+      ├─ car-change reset + per-car calibration restore/flush (DSG)
+      ├─ dynamic redline (highest RPM while making power)
+      ├─ backfire.update(&pkt, …)   → synthetic W  (input.rs:InputSender)
+      ├─ dsg.update(&pkt, …)        → synthetic E/Q
+      ├─ publishes ListenerView into the listener→UI mailbox
+      ▼  mpsc::Sender<ForzaPacket>::send  (forward)
+──────────────────── channel ────────────────────
       ▼  mpsc::Receiver::try_recv   [main thread]
 app.rs:ForzaApp::drain_packets()   (called first each frame)
-      │  for each packet (capped at 200/frame):
-      ├─ car-change reset (per-car session state, DSG calibration)
+      │  keeps only the newest 200 queued packets, then for each:
+      ├─ car-change reset (per-car session state, session maxima)
       ├─ session maxima + cached car identity (power/torque/boost/speed,
-      │    dynamic redline, wheel-radius estimate)  [only when is_race_on != 0]
+      │    wheel-radius estimate)  [only when is_race_on != 0]
       ├─ stats: gforce_stats.update / suspension_stats.update / speed-delta /
       │    trace_history (Speed Trace, active-time axis)
-      ├─ listeners fire (see below)
+      ├─ UI-side listeners fire (see below)
       ├─ coop.push_local(&pkt)          → relay to peers (coop.rs)
       └─ telemetry.update(pkt)          → stores latest + packet-rate (telemetry.rs)
       ▼
@@ -70,15 +116,23 @@ egui::CentralPanel dispatch → crate::ui::<tab>::show(ui, self)
 frame drawn; repaint rescheduled (FPS limiter)
 ```
 
-**Listeners** (each `update(&pkt, …)` inside `drain_packets`, wired via
-`listeners/mod.rs`):
+**Listeners** (wired via `listeners/mod.rs`). The two that drive the game run on the
+listener thread; the three read-only ones still run inside `drain_packets`:
+- `backfire.rs:BackfireListener::update` — decides when to inject a synthetic throttle
+  blip, driving the game through `input.rs:InputSender`. *(listener thread)*
+- `dsg.rs:DsgListener::update` — DSG-style auto-shifter; also drives `InputSender`.
+  *(listener thread)*
 - `sprint_timer.rs:SprintTimer::update` — 0→100…400→500 km/h splits.
 - `power_capture.rs:PowerCapture::update` — captures RPM/power/torque/boost during
   full-throttle pulls (gated by `backfire_echo_active()` so fake blips don't seed it).
 - `perf_test.rs:PerfTest::update` — configurable accel/decel timers.
-- `backfire.rs:BackfireListener::update` — decides when to inject a synthetic throttle
-  blip, driving the game through `input.rs:InputSender`.
-- `dsg.rs:DsgListener::update` — DSG-style auto-shifter; also drives `InputSender`.
+
+**Backlog cap.** The forwarded channel keeps filling while the window is hidden, so
+`drain_packets` throws away all but the newest 200 queued packets (`UI_BACKLOG_CAP`)
+before processing any. *Why:* replaying minutes of stale telemetry through the sprint
+timer, the trace buffer and the Co-Op relay on restore is worse than skipping it. The
+listener thread itself never falls behind — it drains continuously and processes each
+packet as it arrives, so it can never replay stale input.
 
 `telemetry.rs:TelemetryState` holds `latest: Option<ForzaPacket>`, `is_connected`, and
 `packets_per_sec` (recomputed each 1 s window). Connection is marked **down** at the tail
@@ -91,26 +145,37 @@ which several stats and the Co-Op relay respect.
 `app.rs:<ForzaApp as eframe::App>::update` runs once per repaint and does, in order:
 
 1. `i18n::set_language(config.language)` — pick the active language for `tr(...)`.
-2. `drain_packets()` — ingest everything queued since last frame (see above).
-3. `coop.tick()` — advance Co-Op jitter buffers; `update_minimap_trails()`.
-4. Poll the minimap image channel; handle season change; throttle/smooth the minimap
+2. `sync_listener_view()` — `try_lock` the listener→UI mailbox and copy it into
+   `self.dsg` / `self.backfire` / `self.dynamic_max_rpm`; adopt the Backfire/Gearbox enable
+   flags if a hotkey toggled them. On a lock miss, last frame's copy stands.
+3. `drain_packets()` — ingest everything queued since last frame (see above).
+4. `coop.tick()` — advance Co-Op jitter buffers; `update_minimap_trails()`.
+5. Poll the minimap image channel; handle season change; throttle/smooth the minimap
    camera (position cache, eased yaw, zoom).
-5. Hotkeys — app-focused actions (Ctrl+S mini-settings, Ctrl+E dashboard edit) matched
-   from config against egui input; global actions (G gearbox, B backfire) drained from the
-   `hotkeys.rs` capture backend and gated on focus (`focus.rs`); F11 fullscreen (Windows)
-   stays hardcoded. Rebindable in Settings → Hotkeys. See [[hotkeys]].
-6. Chrome panels — top **tab bar** (`TopBottomPanel::top`, three styles via
+6. Hotkeys — only the app-focused actions (Ctrl+S mini-settings, Ctrl+E dashboard edit),
+   matched from config against egui input; F11 fullscreen (Windows) stays hardcoded. The
+   global actions (G gearbox, B backfire, F reset-RPM) and the synthetic-input focus gate
+   live on the listener thread instead — they have to work while this loop isn't running.
+   Rebindable in Settings → Hotkeys. See [[hotkeys]].
+7. Chrome panels — top **tab bar** (`TopBottomPanel::top`, three styles via
    `tab_button`/`page_pill`), bottom **status bar** (connection, pps, Co-Op,
    cog), and the floating **mini-settings window** (`page_settings_*`, driven by
    `PageSettingsTab` / `DashboardSubTab`).
-7. **Central panel dispatch** — `match self.current_tab { … }` calls the one
+8. **Central panel dispatch** — `match self.current_tab { … }` calls the one
    `crate::ui::<tab>::show(ui, self)` for the active `Tab`.
-8. **FPS limiter** — if `config.fps_limit_enabled`,
-   `ctx.request_repaint_after(1.0 / fps_limit)`; otherwise `ctx.request_repaint()` to run
-   flat-out. This governs render cadence and is independent of the packet rate — the UDP
-   thread keeps filling the channel regardless.
+9. `listener.push(...)` — hand the listener thread this frame's `AppConfig` plus
+   `ctx.input(|i| i.focused)` / `ctx.wants_keyboard_input()` (the global-hotkey gate needs
+   both and neither exists off the UI thread). Pushed unconditionally: one `AppConfig`
+   clone per frame, exactly what `drain_packets` used to do for its own `fun_cfg` clone,
+   and repeating it means a push the thread was busy for simply lands next frame.
+10. **FPS limiter** — if `config.fps_limit_enabled`,
+    `ctx.request_repaint_after(1.0 / fps_limit)`; otherwise `ctx.request_repaint()` to run
+    flat-out. This governs render cadence and is independent of the packet rate — the UDP
+    and listener threads keep working regardless.
 
-`on_exit` saves config and (opt-in) per-car DSG calibrations.
+`on_exit` saves config, then `listener.shutdown()` tells the listener thread to flush the
+(opt-in) per-car DSG calibrations and joins it. The thread also flushes if the channel
+disconnects, so a drop without `on_exit` can't lose calibration data.
 
 ## Module map
 
@@ -119,7 +184,7 @@ which several stats and the Co-Op relay respect.
 | File | What it does |
 | --- | --- |
 | `main.rs` | Entry point: `eframe::run_native`, viewport size, constructs `ForzaApp`. |
-| `app.rs` | `ForzaApp` (all app + session state), the `eframe::App` update loop, `drain_packets`, tab bar, status bar, mini-settings popup, minimap camera logic, season detection. The hub everything hangs off. |
+| `app.rs` | `ForzaApp` (all app + session state), the `eframe::App` update loop, `drain_packets`, `sync_listener_view`, tab bar, status bar, mini-settings popup, minimap camera logic, season detection. The hub everything hangs off. |
 | `network.rs` | UDP receive thread + `NetworkHandle` (stop flag, `Drop`-based shutdown). See [[networking]]. |
 | `packet.rs` | 324-byte FH6 packet: `ForzaPacket` struct, `from_bytes`/`to_bytes`, helpers (`is_paused`, `power_ps`, `car_class_str`, …). See [[forza-fh6-packet-format]]. |
 | `telemetry.rs` | `TelemetryState`: latest packet, connection flag, packets-per-second. |
@@ -131,7 +196,7 @@ which several stats and the Co-Op relay respect.
 | `labels.rs` | Car class / drivetrain label images + PI-stamping renderer. |
 | `input.rs` | `InputSender` — synthetic keypresses (drives backfire/gearbox into the game) on a worker thread; the shared "synthetic echo" window; optional focus gate (suppress emission when the game isn't focused). |
 | `keymap.rs` | `HotKey`/`Mods`/`HotkeyBinding` — serde-stable key identity with egui/evdev/VK mapping tables. See [[hotkeys]]. |
-| `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel. See [[hotkeys]]. |
+| `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel, whose `Receiver` `new()` hands to the listener thread. See [[hotkeys]]. |
 | `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/Custom/Windows); reused by the hotkey gate and the input gate. See [[hotkeys]]. |
 | `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
@@ -140,7 +205,8 @@ which several stats and the Co-Op relay respect.
 
 | File | What it does |
 | --- | --- |
-| `mod.rs` | Re-exports the five listener modules. |
+| `mod.rs` | Re-exports the five listener modules plus `worker`. |
+| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, and the global hotkeys; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener`) + `Command` channel + `ListenerHandle`. |
 | `backfire.rs` | Synthetic anti-lag / throttle-blip; echo-window bookkeeping. See [[backfire]]. |
 | `dsg.rs` | DSG-style auto-shifter with per-car calibration. See [[gearbox]]. |
 | `perf_test.rs` | Configurable accel/decel timers. |
@@ -175,11 +241,16 @@ which several stats and the Co-Op relay respect.
   user-facing string in `tr("...")` at the call site.
 - **Add a top-level tab** → add a variant to `app.rs:Tab`, a `ui/<tab>.rs` module with
   `show(...)` (declared in `ui/mod.rs`), a tab-bar entry, and a `CentralPanel` match arm.
-- **Tune / add a listener** → the relevant `listeners/<name>.rs`; it's called from
-  `app.rs:drain_packets`. Listeners that drive the game go through `input.rs:InputSender`.
-- **Hotkeys / a new bindable action** → `config.rs:HotkeyAction` (+ `scope`), the dispatch in
-  `app.rs:run_app_hotkey`/`run_global_hotkey`, and the `hotkeys.rs` backend / `focus.rs`
-  gate. Keys map via `keymap.rs`. See [[hotkeys]].
+- **Tune / add a listener** → the relevant `listeners/<name>.rs`. A read-only listener is
+  called from `app.rs:drain_packets`; one that drives the game (through
+  `input.rs:InputSender`) belongs on the listener thread, in `listeners/worker.rs:run`.
+- **Show new gearbox/backfire state in the UI** → add the field to `DsgView`/`BackfireView`
+  (`listeners/dsg.rs`, `listeners/backfire.rs`) and to the matching `view()`; the UI reads
+  `app.dsg` / `app.backfire`, never the live listener.
+- **Hotkeys / a new bindable action** → `config.rs:HotkeyAction` (+ `scope`); dispatch for
+  app-focused actions in `app.rs:run_app_hotkey`, for global ones in
+  `listeners/worker.rs:run`; backend in `hotkeys.rs`, gate in `focus.rs`. Keys map via
+  `keymap.rs`. See [[hotkeys]].
 - **Change packet parsing / a new field** → `packet.rs` (struct + `from_bytes`/`to_bytes`)
   against [[forza-fh6-packet-format]].
 - **Networking / port / connection** → `network.rs` (receive thread) and

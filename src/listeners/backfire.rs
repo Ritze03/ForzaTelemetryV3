@@ -36,7 +36,23 @@ pub struct BackfireListener {
     pub last_max_rpm: f32,
 }
 
+/// Display-only copy of the listener, published to the UI by the listener thread
+/// (`listeners/worker.rs`) — the real listener lives on that thread.
+#[derive(Clone, Copy, Default)]
+pub struct BackfireView {
+    pub last_min_rpm: f32,
+    pub last_max_rpm: f32,
+}
+
 impl BackfireListener {
+    /// Snapshot of what the UI shows (the live RPM window).
+    pub fn view(&self) -> BackfireView {
+        BackfireView {
+            last_min_rpm: self.last_min_rpm,
+            last_max_rpm: self.last_max_rpm,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             last_backfire_rpm: 0.0,

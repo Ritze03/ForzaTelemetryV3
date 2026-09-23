@@ -65,7 +65,20 @@ gear-ratio table.
   each car's measured gear speeds and detected redline are saved to
   `automatic-gearbox-saved-calibrations.json` in the app data dir (keyed by
   car), and reloaded automatically next time you get in that car, skipping
-  the manual calibration pull.
+  the manual calibration pull. The file is written on every car change and once
+  more when the app quits.
+- **Runs off the frame loop.** The box lives on its own listener thread
+  (`src/listeners/worker.rs`), not inside the UI's per-frame packet drain, so it
+  keeps shifting while the window is minimized or fully covered. *Why:* on
+  GNOME/Wayland a hidden window gets no frame callbacks, winit then stops calling
+  `eframe::App::update` (it gates `RedrawRequested` on that callback,
+  `winit wayland/event_loop/mod.rs:486`), and everything in it — including the
+  shift logic — simply stopped. The thread owns the live `DsgListener` and the
+  per-car calibrations; the Automatic Gearbox tab reads a copy of its state
+  (`DsgView`) refreshed once a frame, and the **Clear RPM calibration** /
+  **Clear gear map** buttons send it a command. A displayed value can therefore be
+  one frame stale, which is fine — nothing shown is critical, and in exchange the
+  shift loop is never affected by the UI. See [[overview]] for the mailbox design.
 - **Ignore Backfire input** keeps the shift logic (and the live throttle-bar
   visualization) reacting only to your real pedal, not the synthetic key
   [[backfire]] briefly presses to fake its pop.

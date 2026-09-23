@@ -338,25 +338,28 @@ impl DsgListener {
         }
     }
 
-    /// Predicted engine RPM for `gear` at the current speed, referenced to the full redline.
-    /// Returns `None` for uncalibrated gears.
-    fn predicted_rpm(&self, gear: i32, kmh: f32, effective_max_rpm: f32) -> Option<f32> {
-        if !(1..=10).contains(&gear) {
-            return None;
+    /// Snapshot of everything the UI shows, published to it by the listener thread.
+    pub fn view(&self) -> DsgView {
+        DsgView {
+            gear_redline_speeds: self.gear_redline_speeds,
+            engaged: self.engaged,
+            expected: self.debug_expected(),
+            dbg_desired_gear: self.dbg_desired_gear,
+            dbg_effective_max_rpm: self.dbg_effective_max_rpm,
+            dbg_shift_threshold: self.dbg_shift_threshold,
+            dbg_kickdown_secs_left: self.dbg_kickdown_secs_left,
+            dbg_target_rpm: self.dbg_target_rpm,
+            dbg_down_point: self.dbg_down_point,
+            dbg_wheelspin: self.dbg_wheelspin,
+            dbg_rule: self.dbg_rule,
+            desync_count: self.desync_count,
+            last_desync: self.last_desync,
         }
-        let redline_speed = self.gear_redline_speeds[gear as usize];
-        if redline_speed <= 0.0 {
-            return None;
-        }
-        Some(effective_max_rpm * kmh / redline_speed)
     }
 
-    /// Hypothetical one-step gear decision, for the UI overlay that shows which gear each pedal
-    /// position targets. Pure — no `&mut`, no live RPM/slip; the rpm in a gear is taken as its
-    /// predicted rpm at `kmh`. Mirrors `select_desired_gear`'s upshift + downshift rules so the
-    /// overlay can't drift from the real box. `throttle` is the gamma-curved pedal; `in_race_pos`
-    /// is whether a race is on (P1+). Returns the gear the box would move toward (a kickdown lands
-    /// its final gear in one call); returns `gear` unchanged when it would hold.
+    /// See [`sim_step`] — kept as a method so the unit tests below (and anything holding a
+    /// real listener) can call it directly.
+    #[cfg(test)]
     pub fn sim_step(
         &self,
         gear: i32,
@@ -366,69 +369,7 @@ impl DsgListener {
         cfg: &AppConfig,
         in_race_pos: bool,
     ) -> i32 {
-        let Some(pred_cur) = self.predicted_rpm(gear, kmh, eff_max) else {
-            return gear; // uncalibrated — never reason about an unknown gear
-        };
-        let is_race = cfg.dsg_effective_mode(in_race_pos) == GearboxMode::Race;
-        let shift = eff_max * (cfg.dsg_shift_rpm_pct / 100.0);
-        let full_thr = (cfg.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
-        let target = if is_race || throttle >= full_thr {
-            shift
-        } else {
-            let cruise = cfg.dsg_active_tuning().cruise_rpm_pct / 100.0;
-            let deadzone = cfg.dsg_downshift_deadzone_pct / 100.0;
-            let eco = throttle / full_thr;
-            shift * (cruise + (deadzone - cruise).max(0.0) * eco)
-        };
-
-        // Hard redline upshift (the live slip/upshift-speed gates are implied at steady state,
-        // since shift_pct > upshift_speed_pct) and the gentle cruise upshift toward the target.
-        if gear < 10 {
-            if let Some(pred_next) = self.predicted_rpm(gear + 1, kmh, eff_max) {
-                if pred_cur >= shift || pred_next >= target {
-                    return gear + 1;
-                }
-            }
-        }
-
-        // Downshift: hold until revs fall below the down point, then kick down to the gear that
-        // reaches the target, bounded by the powerband buffer (can skip gears).
-        let down_point = if is_race || throttle >= full_thr {
-            target
-        } else {
-            (target - CRUISE_HYSTERESIS * shift).max(0.0)
-        };
-        if pred_cur < down_point && gear > 1 {
-            let buffer = if !is_race && throttle >= full_thr {
-                cfg.dsg_kickdown_powerband_buffer_pct / 100.0
-            } else {
-                cfg.dsg_downshift_powerband_buffer_pct / 100.0
-            };
-            let landing_cap = if is_race {
-                shift - (cfg.dsg_race_gear_overlap_pct / 100.0).max(0.0) * eff_max
-            } else {
-                shift
-            };
-            let mut target_gear = gear;
-            let mut above_pred = pred_cur;
-            for g in (1..gear).rev() {
-                let Some(pred_g) = self.predicted_rpm(g, kmh, eff_max) else {
-                    break;
-                };
-                let jump = (pred_g - above_pred).max(0.0);
-                if pred_g + buffer * jump >= landing_cap {
-                    break;
-                }
-                target_gear = g;
-                above_pred = pred_g;
-                if pred_g >= down_point {
-                    break;
-                }
-            }
-            return target_gear;
-        }
-
-        gear
+        sim_step(&self.gear_redline_speeds, gear, throttle, kmh, eff_max, cfg, in_race_pos)
     }
 
     /// Choose the ideal gear for the current driving intent.
@@ -546,7 +487,7 @@ impl DsgListener {
         // every part-throttle upshift and defeat the economical behaviour. Suppressed while holding
         // the lower gear after a kickdown (still on throttle, or during the cooldown).
         if !hold_lower_gear && pkt.brake == 0 && current_gear < 10 {
-            if let Some(pred_next) = self.predicted_rpm(current_gear + 1, kmh, effective_max_rpm) {
+            if let Some(pred_next) = predicted_rpm(&self.gear_redline_speeds, current_gear + 1, kmh, effective_max_rpm) {
                 if pred_next >= target_rpm {
                     self.dbg_rule = "cruise upshift";
                     return current_gear + 1;
@@ -576,7 +517,7 @@ impl DsgListener {
         };
         self.dbg_down_point = down_point;
         if rpm < down_point && current_gear > 1 {
-            if let Some(pred_cur) = self.predicted_rpm(current_gear, kmh, effective_max_rpm) {
+            if let Some(pred_cur) = predicted_rpm(&self.gear_redline_speeds, current_gear, kmh, effective_max_rpm) {
                 // A full-throttle kickdown uses its own (usually smaller) buffer so it drops deeper
                 // into the powerband than a lazy coasting/braking downshift. Race is always in the
                 // powerband, so it has no separate kickdown regime — it just uses the Powerband
@@ -601,7 +542,7 @@ impl DsgListener {
                 // RPM of the gear directly above the candidate (starts at the current gear).
                 let mut above_pred = pred_cur;
                 for g in (1..current_gear).rev() {
-                    let Some(pred_g) = self.predicted_rpm(g, kmh, effective_max_rpm) else {
+                    let Some(pred_g) = predicted_rpm(&self.gear_redline_speeds, g, kmh, effective_max_rpm) else {
                         break; // uncalibrated lower gear → never drop into the unknown
                     };
                     // The landing must clear the landing cap by `buffer%` of the ADJACENT inter-gear
@@ -637,6 +578,165 @@ impl DsgListener {
         self.dbg_rule = "hold";
         current_gear
     }
+}
+
+/// Display-only copy of the gearbox state, published to the UI by the listener thread
+/// (`listeners/worker.rs`). The real `DsgListener` lives on that thread and is never
+/// touched from a draw call; the UI reads these fields instead, at most one frame stale.
+#[derive(Clone)]
+pub struct DsgView {
+    pub gear_redline_speeds: [f32; 11],
+    pub engaged: bool,
+    /// `DsgListener::debug_expected()` at snapshot time.
+    expected: Option<i32>,
+    pub dbg_desired_gear: i32,
+    pub dbg_effective_max_rpm: f32,
+    pub dbg_shift_threshold: f32,
+    pub dbg_kickdown_secs_left: f32,
+    pub dbg_target_rpm: f32,
+    pub dbg_down_point: f32,
+    pub dbg_wheelspin: bool,
+    pub dbg_rule: &'static str,
+    pub desync_count: u32,
+    pub last_desync: Option<Instant>,
+}
+
+impl Default for DsgView {
+    /// Matches a freshly constructed `DsgListener`, so the UI shows the same placeholders
+    /// before the first packet as it always has.
+    fn default() -> Self {
+        Self {
+            gear_redline_speeds: [0.0; 11],
+            engaged: false,
+            expected: None,
+            dbg_desired_gear: 0,
+            dbg_effective_max_rpm: 0.0,
+            dbg_shift_threshold: 0.0,
+            dbg_kickdown_secs_left: 0.0,
+            dbg_target_rpm: 0.0,
+            dbg_down_point: 0.0,
+            dbg_wheelspin: false,
+            dbg_rule: "\u{2014}",
+            desync_count: 0,
+            last_desync: None,
+        }
+    }
+}
+
+impl DsgView {
+    /// The gear a shift was waiting on, if any (for the debug panel).
+    pub fn debug_expected(&self) -> Option<i32> {
+        self.expected
+    }
+
+    /// The pedal-overlay simulation, run on this copy of the calibration — see [`sim_step`].
+    pub fn sim_step(
+        &self,
+        gear: i32,
+        throttle: f32,
+        kmh: f32,
+        eff_max: f32,
+        cfg: &AppConfig,
+        in_race_pos: bool,
+    ) -> i32 {
+        sim_step(&self.gear_redline_speeds, gear, throttle, kmh, eff_max, cfg, in_race_pos)
+    }
+}
+
+/// Predicted engine RPM for `gear` at the current speed, referenced to the full redline.
+/// Returns `None` for uncalibrated gears.
+fn predicted_rpm(speeds: &[f32; 11], gear: i32, kmh: f32, effective_max_rpm: f32) -> Option<f32> {
+    if !(1..=10).contains(&gear) {
+        return None;
+    }
+    let redline_speed = speeds[gear as usize];
+    if redline_speed <= 0.0 {
+        return None;
+    }
+    Some(effective_max_rpm * kmh / redline_speed)
+}
+
+/// Hypothetical one-step gear decision, for the UI overlay that shows which gear each pedal
+/// position targets. Pure — no state, no live RPM/slip; the rpm in a gear is taken as its
+/// predicted rpm at `kmh`. Mirrors `select_desired_gear`'s upshift + downshift rules so the
+/// overlay can't drift from the real box. `throttle` is the gamma-curved pedal; `in_race_pos`
+/// is whether a race is on (P1+). Returns the gear the box would move toward (a kickdown lands
+/// its final gear in one call); returns `gear` unchanged when it would hold.
+///
+/// Free function over just the calibration table: the overlay runs on the UI thread against
+/// [`DsgView`]'s copy, while the live listener runs it (indirectly) on its own.
+fn sim_step(
+    speeds: &[f32; 11],
+    gear: i32,
+    throttle: f32,
+    kmh: f32,
+    eff_max: f32,
+    cfg: &AppConfig,
+    in_race_pos: bool,
+) -> i32 {
+    let Some(pred_cur) = predicted_rpm(speeds, gear, kmh, eff_max) else {
+        return gear; // uncalibrated — never reason about an unknown gear
+    };
+    let is_race = cfg.dsg_effective_mode(in_race_pos) == GearboxMode::Race;
+    let shift = eff_max * (cfg.dsg_shift_rpm_pct / 100.0);
+    let full_thr = (cfg.dsg_full_throttle_pct / 100.0).clamp(0.05, 1.0);
+    let target = if is_race || throttle >= full_thr {
+        shift
+    } else {
+        let cruise = cfg.dsg_active_tuning().cruise_rpm_pct / 100.0;
+        let deadzone = cfg.dsg_downshift_deadzone_pct / 100.0;
+        let eco = throttle / full_thr;
+        shift * (cruise + (deadzone - cruise).max(0.0) * eco)
+    };
+
+    // Hard redline upshift (the live slip/upshift-speed gates are implied at steady state,
+    // since shift_pct > upshift_speed_pct) and the gentle cruise upshift toward the target.
+    if gear < 10 {
+        if let Some(pred_next) = predicted_rpm(speeds, gear + 1, kmh, eff_max) {
+            if pred_cur >= shift || pred_next >= target {
+                return gear + 1;
+            }
+        }
+    }
+
+    // Downshift: hold until revs fall below the down point, then kick down to the gear that
+    // reaches the target, bounded by the powerband buffer (can skip gears).
+    let down_point = if is_race || throttle >= full_thr {
+        target
+    } else {
+        (target - CRUISE_HYSTERESIS * shift).max(0.0)
+    };
+    if pred_cur < down_point && gear > 1 {
+        let buffer = if !is_race && throttle >= full_thr {
+            cfg.dsg_kickdown_powerband_buffer_pct / 100.0
+        } else {
+            cfg.dsg_downshift_powerband_buffer_pct / 100.0
+        };
+        let landing_cap = if is_race {
+            shift - (cfg.dsg_race_gear_overlap_pct / 100.0).max(0.0) * eff_max
+        } else {
+            shift
+        };
+        let mut target_gear = gear;
+        let mut above_pred = pred_cur;
+        for g in (1..gear).rev() {
+            let Some(pred_g) = predicted_rpm(speeds, g, kmh, eff_max) else {
+                break;
+            };
+            let jump = (pred_g - above_pred).max(0.0);
+            if pred_g + buffer * jump >= landing_cap {
+                break;
+            }
+            target_gear = g;
+            above_pred = pred_g;
+            if pred_g >= down_point {
+                break;
+            }
+        }
+        return target_gear;
+    }
+
+    gear
 }
 
 /// Append one shift to `dsg_shift_log.csv` in the app data dir (writing a header if new).

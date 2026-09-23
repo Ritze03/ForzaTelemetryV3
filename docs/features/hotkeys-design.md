@@ -85,7 +85,10 @@ We sidestep both:
 ```
 
 Mirrors the existing thread+channel pattern (`network.rs`, `input.rs`): background
-producer, main thread consumes via `try_recv`, no shared-state locking on app state.
+producer, a single consumer via `try_recv`, no shared-state locking on app state.
+*(Implemented: the consumer is the **listener thread**, `src/listeners/worker.rs`, not the
+main thread — global hotkeys have to work while a minimized/occluded window is getting no
+frames. See [[overview]].)*
 
 ## 5. Config model (`src/config.rs`)
 
@@ -131,7 +134,8 @@ files load unchanged (defaults fill the new block). No migration needed.
 `HotkeyListener` spawns the platform backend, shares the current bindings via
 `Arc<Mutex<Vec<(Combo, HotkeyAction)>>>` (updated on every rebind), and exposes:
 
-- `try_recv() -> Option<HotkeyAction>` — drained each frame like packets.
+- the matched-action `Receiver` — *(implemented: `HotkeyListener::new` returns it, and the
+  listener thread drains it once per loop instead of the frame loop doing so)*.
 - `status() -> HotkeyStatus` (`Ok` / `NoPermission` / `NoDevice` / `Unsupported`) — drives
   the settings status light.
 - `set_bindings(&[…])` — push updated global bindings after a rebind.
@@ -182,9 +186,11 @@ case-insensitive) decides the match:
 reports "focused/allowed" so input and hotkeys keep working, and the settings light goes
 **red** so the failure is visible rather than silently blocking the feature.
 
-### Consumer 1 — global hotkey gate (main thread)
+### Consumer 1 — global hotkey gate (listener thread)
 Global hotkeys fire when **either** the game **or** our own telemetry window is focused, and
-are ignored when a third app is focused. On each `hotkeys.try_recv()` global action:
+are ignored when a third app is focused. On each global action received
+(`our_window_focused` / `wants_keyboard_input` are pushed over from the UI each frame, since
+only egui knows them):
 
 ```rust
 let allow = if our_window_focused {

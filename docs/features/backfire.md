@@ -39,6 +39,14 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
   that means `/dev/uinput` access (the running user must be in the `input`
   group); on Windows it goes through `enigo`. If the virtual device can't be
   created, backfire silently does nothing.
+- **Runs off the frame loop.** `BackfireListener` lives on its own listener thread
+  (`src/listeners/worker.rs`) rather than inside the UI's per-frame packet drain,
+  so pops keep firing while the window is minimized or fully covered. *Why:* on
+  GNOME/Wayland a hidden window gets no frame callbacks, so winit stops calling
+  `eframe::App::update` and everything in it stops too. The thread measures its own
+  packet rate there as well, which is what **Dynamic key-press duration** keys off.
+  The Backfire tab reads a copy of the listener's state (`BackfireView`) refreshed
+  once a frame — see [[overview]].
 
 ## Using it
 

@@ -1,9 +1,9 @@
 //! Global key capture. A background backend (Linux: evdev read of /dev/input;
 //! Windows: GetAsyncKeyState poll) matches configured global-scope combos and
-//! pushes the matched HotkeyAction down an mpsc channel drained on the main
+//! pushes the matched HotkeyAction down an mpsc channel drained on the listener
 //! thread. Match-only: no other keystroke is stored, sent, or logged. See spec.
 
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use crate::config::HotkeyAction;
@@ -18,22 +18,19 @@ pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: M
 }
 
 pub struct HotkeyListener {
-    rx: Receiver<HotkeyAction>,
     binds: Bindings,
 }
 
 impl HotkeyListener {
-    pub fn new(initial: Vec<(HotkeyBinding, HotkeyAction)>) -> Self {
+    /// Starts the capture backend and hands back the matched-action receiver, which the
+    /// listener thread (`listeners/worker.rs`) drains — global hotkeys must keep working
+    /// while the window is hidden and the frame loop is stopped. The `HotkeyListener`
+    /// itself stays on the UI side, purely to push rebound keys to the backend.
+    pub fn new(initial: Vec<(HotkeyBinding, HotkeyAction)>) -> (Self, Receiver<HotkeyAction>) {
         let binds: Bindings = Arc::new(Mutex::new(initial));
         let (tx, rx) = std::sync::mpsc::channel();
         backend::spawn(binds.clone(), tx);
-        HotkeyListener { rx, binds }
-    }
-    pub fn try_recv(&self) -> Option<HotkeyAction> {
-        match self.rx.try_recv() {
-            Ok(a) => Some(a),
-            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
-        }
+        (HotkeyListener { binds }, rx)
     }
     pub fn set_bindings(&self, b: Vec<(HotkeyBinding, HotkeyAction)>) { *self.binds.lock().unwrap() = b; }
 }

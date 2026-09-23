@@ -26,11 +26,13 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
   - **Cached car identity** (`cached_car_class_str`, `cached_car_pi`,
     `cached_drivetrain_str`, `cached_num_cylinders`, …) — held so the UI keeps showing
     the last known car while `IsRaceOn == 0` (paused/menu) blanks the live packet.
-  - **Per-car calibration** (`car_calibrations: HashMap<i32, CarCalibration>`) — loaded
-    from its *own* file, `automatic-gearbox-saved-calibrations.json`
-    (`config::load_car_calibrations` / `save_car_calibrations`), not `config.json`.
-    Only persisted when `config.dsg_save_calibration` is on; flushed at car-change and
-    on exit.
+  - **Per-car calibration** (`HashMap<i32, CarCalibration>`) — loaded from its *own* file,
+    `automatic-gearbox-saved-calibrations.json` (`config::load_car_calibrations` /
+    `save_car_calibrations`), not `config.json`. Only persisted when
+    `config.dsg_save_calibration` is on; flushed at car-change and on exit. **Not** on
+    `ForzaApp`: it is owned by the listener thread (`listeners/worker.rs`) together with
+    the `DsgListener` that fills it, so it stays live while the window is hidden. `on_exit`
+    sends that thread a `Shutdown` command and joins it, which is what flushes the file.
   - **Transient UI/session state**: current tab, mini-settings popup open/tab state,
     drag/resize state for the dashboard grid, minimap texture/zoom/season cache,
     Co-Op trails and roster cache, speed-trace ring buffer, changelog filter toggles,
