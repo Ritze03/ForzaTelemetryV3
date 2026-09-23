@@ -1137,7 +1137,7 @@ impl ForzaApp {
             }
 
             // Brake + HandBrake both at 100% → clear power curve only
-            if pkt.brake >= 255 && pkt.hand_brake >= 255 {
+            if pkt.brake == 255 && pkt.hand_brake == 255 {
                 self.power_capture.clear();
             }
 
