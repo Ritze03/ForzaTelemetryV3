@@ -29,7 +29,18 @@ Overlay tab's Hide HUD row) arms `app.rebinding`; the key is taken by one shared
 
 - **Esc** cancels; **Backspace** clears the binding ("Not set", shown faint); any other
   bindable key binds with the held Ctrl/Alt/Shift.
-- While a capture is armed the key doesn't also fire an in-app hotkey.
+- While a capture is armed the key doesn't also fire an in-app hotkey, and the listener is
+  told `wants_text` (`app.rs`, the per-frame `listener.push`), so global hotkeys are gated
+  too: binding G doesn't also toggle the gearbox, H doesn't hide the HUD.
+- The key that ends a capture (bind / Backspace / Esc) is **consumed** from egui's input,
+  so it doesn't also reach a widget.
+- The capture **disarms without binding** on a primary press anywhere but the armed button
+  (its id + rect are recorded each frame by `ForzaApp::track_rebind_button`), when another
+  widget holds keyboard focus (e.g. a text field), and on a tab switch. *Why:* otherwise an
+  armed capture outlived the page and silently rebound Hide HUD to a key meant for something
+  else (Ctrl+S on the Dashboard, Backspace in a text field). The armed button itself may
+  hold focus (armed via Tab + Enter), so the check is "another widget is focused", not
+  `wants_keyboard_input()`.
 - Unbinding goes through `HotkeyConfig::unbind`, which removes the binding **and** records
   the action in `hotkeys.unbound`, so `inject_missing_hotkeys` doesn't restore the default on
   the next load. `HotkeyConfig::bind` clears that mark. Always edit through `bind` /

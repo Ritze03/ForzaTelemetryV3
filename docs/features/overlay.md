@@ -13,7 +13,8 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
 
 ## Platform support
 
-- **Works:** Wayland compositors with `wlr-layer-shell` (Hyprland, Sway, KDE Plasma). It is
+- **Works:** Wayland compositors with `wlr-layer-shell`. Tested on Hyprland; should work on
+  others with it, such as Sway and KDE Plasma (untested). It is
   a surface on the `overlay` layer, which sits above fullscreen games.
 - **Doesn't:** GNOME (Mutter has no layer-shell), X11 sessions, Windows. The overlay reports
   a *disabled* reason instead of failing, and the Overlay tab's status line shows it (e.g.
@@ -249,7 +250,10 @@ push apply every change to the running HUD, so there's no Apply button.
   disc and cap), fade, and a pointer to Setup → Window Detection. There's no "hide when
   paused" option: that's automatic.
 - **Layout:** one shared 3×3 grid; drag a module chip onto a cell, or select one and click a
-  cell / use the arrow keys; **Reset layout**. Chip stacking in the grid reuses
+  cell / use the arrow keys; **Reset layout**. The selection drops after a cell-click move,
+  on a press outside the grid, on Esc and on a tab switch (`clear_layout_selection`), so
+  stray arrow keys can't move a chip while you're elsewhere; arrow-key moves keep it so you
+  can keep stepping. Chip stacking in the grid reuses
   `hud::layout::layout`. The drag-and-drop is hand-rolled because egui's `dnd_drop_zone`
   sizes to its content.
 - **Drive Cluster / Minimap / Race Block / Drift Counter:** a module on/off toggle plus the

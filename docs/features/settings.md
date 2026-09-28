@@ -55,8 +55,11 @@ sub-heading is gone) holds the focus detection that several features share:
 
 - **Active if** (hotkey gate: Telemetry live / Game window focused); the detection method
   and game window title (with **Detect**), shown when window focus gates something (Active
-  if = Game window focused, the input gate, or the overlay's focus-only option); and the
-  **Focus check rate**.
+  if = Game window focused, the input gate, the overlay's focus-only option, or the overlay
+  being enabled); and the
+  **Focus check rate**. *Why the enabled overlay counts:* its monitor detection only trusts
+  the focused monitor once the detector matches FH6, so a user stuck on amber *Game window
+  not focused* must be able to see and fix the method / title.
 - A status dot with three states: green *Game window focused*, **amber** *Game window not
   focused* (a normal waiting state, not an error), red *Focus detection failed*. It shows
   while the detector runs (including whenever the overlay is enabled). The colours are the

@@ -45,7 +45,7 @@ impl fmt::Display for DisabledReason {
             Self::NoWayland => f.write_str(tr("The overlay needs a Wayland session (WAYLAND_DISPLAY is not set).")),
             Self::Wayland(e) => write!(f, "{} {e}", tr("Couldn't connect to the Wayland compositor:")),
             Self::NoLayerShell => f.write_str(tr(
-                "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay works on Hyprland, Sway and KDE Plasma.",
+                "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay is tested on Hyprland and should work on other compositors with wlr-layer-shell, such as Sway and KDE Plasma.",
             )),
             Self::Egl(e) => write!(f, "{} {e}", tr("Couldn't set up OpenGL (EGL) for the overlay:")),
         }

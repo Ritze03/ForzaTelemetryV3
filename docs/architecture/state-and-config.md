@@ -144,7 +144,9 @@ preset overlay/export machinery (`apply_preset_overlay`, `export_preset`,
   effect. Both bundled presets (`PRESET_NAMES`/`PRESET_DATA`, backed by
   `assets/configs/ale.json` / `ritze.json`) and the Config sub-tab's Export/Import
   paste box go through the same `apply_preset_overlay` — see [[presets]] for the
-  user-facing flow and the `apply_preset_overlay` step order.
+  user-facing flow and the `apply_preset_overlay` step order. After the merge it runs
+  `inject_missing_widget_kinds` and `inject_missing_hotkeys` (same as `load()`), so an
+  older profile/preset gains newly added widgets and hotkey actions such as Hide HUD.
 
 ## See also
 

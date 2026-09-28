@@ -768,8 +768,8 @@ fn de(s: &str) -> Option<&'static str> {
         "The overlay needs a Wayland session (WAYLAND_DISPLAY is not set)."
             => "Das Overlay braucht eine Wayland-Sitzung (WAYLAND_DISPLAY ist nicht gesetzt).",
         "Couldn't connect to the Wayland compositor:" => "Verbindung zum Wayland-Compositor fehlgeschlagen:",
-        "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay works on Hyprland, Sway and KDE Plasma."
-            => "Dein Compositor unterstützt wlr-layer-shell nicht (z. B. GNOME). Das Overlay läuft unter Hyprland, Sway und KDE Plasma.",
+        "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay is tested on Hyprland and should work on other compositors with wlr-layer-shell, such as Sway and KDE Plasma."
+            => "Dein Compositor unterstützt wlr-layer-shell nicht (z. B. GNOME). Das Overlay ist unter Hyprland getestet und sollte auf anderen Compositors mit wlr-layer-shell laufen, etwa Sway und KDE Plasma.",
         "Couldn't set up OpenGL (EGL) for the overlay:" => "OpenGL (EGL) für das Overlay konnte nicht eingerichtet werden:",
 
         // ── Overlay tab ────────────────────────────────────────────────
