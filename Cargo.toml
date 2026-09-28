@@ -27,6 +27,9 @@ wayland-backend = { version = "0.3", features = ["client_system"] }
 glutin = { version = "0.32", default-features = false, features = ["egl", "wayland"] }
 raw-window-handle = "0.6"
 egui_glow = { version = "0.33", default-features = false }
+# Opt-in X11/XWayland overlay backend (src/overlay/x11.rs). Same version and features winit
+# already builds (libxcb loaded at runtime via dl-libxcb), so nothing new is compiled.
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "dl-libxcb", "randr", "shape"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enigo = "0.6"

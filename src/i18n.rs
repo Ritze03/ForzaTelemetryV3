@@ -773,6 +773,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay is tested on Hyprland and should work on other compositors with wlr-layer-shell, such as Sway and KDE Plasma."
             => "Dein Compositor unterstützt wlr-layer-shell nicht (z. B. GNOME). Das Overlay ist unter Hyprland getestet und sollte auf anderen Compositors mit wlr-layer-shell laufen, etwa Sway und KDE Plasma.",
         "Couldn't set up OpenGL (EGL) for the overlay:" => "OpenGL (EGL) für das Overlay konnte nicht eingerichtet werden:",
+        "The X11 overlay needs an X display (DISPLAY is not set)."
+            => "Das X11-Overlay braucht ein X-Display (DISPLAY ist nicht gesetzt).",
+        "Couldn't use the X display for the overlay:" => "Das X-Display konnte für das Overlay nicht genutzt werden:",
 
         // ── Overlay tab ────────────────────────────────────────────────
         "Enable overlay" => "Overlay aktivieren",

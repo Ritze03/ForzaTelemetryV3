@@ -16,10 +16,51 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
 - **Works:** Wayland compositors with `wlr-layer-shell`. Tested on Hyprland; should work on
   others with it, such as Sway and KDE Plasma (untested). It is
   a surface on the `overlay` layer, which sits above fullscreen games.
-- **Doesn't:** GNOME (Mutter has no layer-shell), X11 sessions, Windows. The overlay reports
-  a *disabled* reason instead of failing, and the Overlay tab's status line shows it (e.g.
-  "Your compositor doesn't support wlr-layer-shell (e.g. GNOME)…"). On non-Linux builds the
-  tab says the overlay is Linux (Wayland) only.
+- **Doesn't (by default):** GNOME (Mutter has no layer-shell), X11 sessions, Windows. The
+  overlay reports a *disabled* reason instead of failing, and the Overlay tab's status line
+  shows it (e.g. "Your compositor doesn't support wlr-layer-shell (e.g. GNOME)…"). On
+  non-Linux builds the tab says the overlay is Linux (Wayland) only.
+- **Experimental, opt-in: X11 / XWayland backend** (`overlay/x11.rs`) for GNOME, and native
+  X11 sessions. Chosen by the env var `FORZA_OVERLAY_BACKEND` (`overlay::Backend`):
+  - unset / empty / anything else = `wayland`: layer-shell only, **exactly the old
+    behaviour** (Hyprland users are unaffected);
+  - `x11`: the X11 backend only (needs `DISPLAY`; on GNOME Wayland that's XWayland);
+  - `auto`: layer-shell first, X11 if that fails (the layer-shell reason is logged).
+
+  e.g. `FORZA_OVERLAY_BACKEND=x11 cargo run --release`, then Overlay tab → Enable overlay; or
+  `FORZA_OVERLAY_TEST=1 FORZA_OVERLAY_BACKEND=x11 …` for the test pattern. Not in the
+  changelog yet: it's a spike awaiting a GNOME test.
+  - **How:** an **override-redirect** window with a **32-bit ARGB visual** (and its own
+    colormap; border 0, background None), sized to one XRandR monitor, made click-through by
+    an **empty XShape input region** (`shape_rectangles(SET, INPUT, …, [])`; the bounding
+    shape stays full so it still draws). Never takes focus (override-redirect windows aren't
+    managed). Mapped on show, **destroyed on hide**, like the layer surface.
+  - *Why override-redirect + XShape:* Mutter has no layer-shell, and a normal window can't sit
+    above a fullscreen game. Mutter keeps override-redirect X windows in its topmost stacking
+    layer (above normal and fullscreen windows), and XWayland is always there on GNOME, so an
+    OR window is the one surface a GNOME client can put over a fullscreen game. The empty
+    *input* shape (not the bounding shape) is X11's equivalent of the empty `wl_region`.
+  - EGL runs on the xcb connection (`EGL_EXT_platform_xcb`, Mesa ≥ 21) with the same 8-bit
+    RGBA / no-MSAA config filter, narrowed to configs whose native visual is a depth-32
+    TrueColor visual (Mesa also offers alpha configs on the 24-bit visual, whose alpha the
+    compositor would ignore). `x11rb` is the same version/features winit already builds, so
+    no new crate. ponytail: older NVIDIA drivers (before ~560) only support the Xlib platform.
+  - **Output names:** the target (Fixed monitor / monitor detection / `FORZA_OVERLAY_OUTPUT`)
+    is matched against RandR 1.5 monitor names; no match → the primary monitor → the first.
+    On GNOME 50 XWayland reports the real connector names (`DP-2`…), but older Mutter/XWayland
+    name them `XWAYLAND0…`, which never match. The backend logs
+    `overlay[x11]: outputs: NAME WxH+X+Y (primary), …` at start (and on each RandR change)
+    and `overlay[x11]: showing on NAME (no output named "X")` when it falls back. RandR
+    screen/output/CRTC change events re-read the list and recreate the window if its monitor
+    changed.
+  - **Pacing:** no frame callbacks on X11, so every ping draws one frame (packets are ~60 Hz)
+    and the same animation timer drives fades without packets; swap interval 0. The window
+    also redraws on Expose/MapNotify, because a frame swapped before XWayland/the compositor
+    adopted the window can be lost (the static test pattern would stay blank).
+  - Known gaps (ponytail): no scale handling (1.0; GNOME without xwayland-native-scaling
+    reports 1:1 px), and in a *native* X11 session a game raised later could cover the
+    window (no re-raise). The Focus-only option needs a GNOME focus method (Window Calls
+    extension); monitor detection's Hyprland default fails on GNOME, so use Fixed monitor.
 - *Why layer-shell:* an ordinary window can't sit above a fullscreen game on Hyprland; a
   layer-shell overlay surface can (D1). No crate renders egui into layer-shell (winit has
   no layer-shell support), so the runtime is hand-built on sctk + glutin + egui_glow (all
@@ -306,7 +347,9 @@ Overlay**, appended last so existing group indices don't shift). The Hide HUD bi
 
 - **overlay** (`overlay/wayland.rs:run`) — its own Wayland connection, a **calloop** event
   loop, sctk layer shell, glutin EGL (`overlay/gl.rs`), its own `egui::Context` and an
-  `egui_glow::Painter` (`overlay/render.rs`). One per enabled overlay.
+  `egui_glow::Painter` (`overlay/render.rs`). One per enabled overlay. With the opt-in X11
+  backend the thread body is `overlay/x11.rs:run` instead: same channels and contract, an
+  xcb connection (x11rb) whose fd is a calloop source, same `Renderer` and `Gl`.
   - *Why in-process, not a separate binary:* `network.rs` binds the FH6 UDP port without
     `SO_REUSEPORT` and nothing forwards packets, so a second process couldn't receive them.
   - *Why its own thread:* the eframe frame loop stops while the game covers the window; the
@@ -388,9 +431,14 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
 - **EGL failures:** a failed swap/surface creation rebuilds the surface; 3 in a row (lost
   context, GPU reset) stop the thread, which the tab reports as stopped.
 - **Disabled reasons** (`overlay::DisabledReason`, translated): no `WAYLAND_DISPLAY`,
-  couldn't connect, no layer-shell, EGL failed. The probe order is a pure, unit-tested
-  function (`overlay::capability`); `WAYLAND_DISPLAY` is checked before connecting because
-  `connect_to_env` would otherwise fall back to `wayland-0` from an X11 session.
+  couldn't connect, no layer-shell, EGL failed; for the X11 backend no `DISPLAY` and
+  connect/extension failure (SHAPE, RANDR 1.5). The probe orders are pure, unit-tested
+  functions (`overlay::capability`, `overlay::capability_x11`); `WAYLAND_DISPLAY` is checked
+  before connecting because `connect_to_env` would otherwise fall back to `wayland-0` from an
+  X11 session.
+- **X11 teardown** follows the same rule: EGL surface → X window (`Live` field order,
+  `destroy_window`), painter → `Gl` (`eglTerminate`), and `Gl::_native` holds an `Arc` of the
+  xcb connection so it closes last.
 
 ### Dev and test hooks
 
@@ -398,6 +446,10 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
   `FORZA_OVERLAY_OUTPUT` (default: first output); `=2` also wakes it at ~60 Hz with a frame
   counter, to check game frametimes under a redrawing overlay. While set, the app doesn't
   start the real HUD (the dev hook wins, so two overlays never fight).
+- **X11 smoke test:** `cargo test x11_backend_smoke -- --ignored --nocapture` opens the X11
+  backend on `$DISPLAY` for ~1 s with the test pattern and checks, from a second connection,
+  that the window is override-redirect, viewable, depth 32 with an empty input shape, and
+  gone after Hide. Ignored because it opens a window.
 - **Offscreen PNG harness:** `cargo test render_spec_states -- --ignored --nocapture` renders
   every widget in its spec states (cruise / redline / shift / pulse, place gained / lost, lap
   hold, drift chip, both drift styles) plus 1080p composites through the real `Renderer` on a

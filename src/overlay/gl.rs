@@ -1,7 +1,9 @@
 //! EGL through glutin. The display, config and context live as long as the overlay thread;
-//! window surfaces come and go with the layer surface (see `wayland.rs`), and between them
+//! window surfaces come and go with the layer surface / X window (see `wayland.rs`,
+//! `x11.rs`), and between them
 //! the context is current *surfaceless*, so fonts and textures never need a re-upload.
 
+use std::any::Any;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
@@ -26,9 +28,10 @@ pub struct Gl {
     context: ManuallyDrop<PossiblyCurrentContext>,
     config: Config,
     display: ManuallyDrop<Display>,
-    /// Keeps our `wl_display` alive until after `eglTerminate`. Must stay the *last* field:
-    /// fields drop after `Drop::drop` and in declaration order.
-    _conn: Connection,
+    /// Keeps the native display (our `wl_display`, or the X11 backend's xcb connection) alive
+    /// until after `eglTerminate`. Must stay the *last* field: fields drop after `Drop::drop`
+    /// and in declaration order.
+    _native: Box<dyn Any>,
 }
 
 impl Gl {
@@ -38,17 +41,31 @@ impl Gl {
         let ptr = NonNull::new(conn.backend().display_ptr().cast::<c_void>())
             .ok_or("no wl_display pointer")?;
         let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(ptr));
-        // SAFETY: `ptr` is the live wl_display of `conn`. `Gl` holds a clone of `conn` as its
-        // last field, so the wl_display outlives the EGLDisplay's teardown in `Drop` (and the
-        // error path below terminates before `conn` can go).
+        // SAFETY: `ptr` is the live wl_display of `conn`, and `native` keeps a clone of it.
+        unsafe { Self::with_native(raw, &|_| true, Box::new(conn.clone())) }
+    }
+
+    /// EGL on any native display. `accept` narrows the config choice (the X11 backend needs
+    /// one whose native visual is 32-bit ARGB).
+    ///
+    /// # Safety
+    /// `raw` must stay valid for as long as `native` lives. `Gl` holds `native` as its last
+    /// field, so the display outlives the EGLDisplay's teardown in `Drop` (and the error path
+    /// below terminates before `native` can go).
+    pub unsafe fn with_native(
+        raw: RawDisplayHandle,
+        accept: &dyn Fn(&Config) -> bool,
+        native: Box<dyn Any>,
+    ) -> Result<Self, String> {
+        // SAFETY: the caller's contract.
         let display = unsafe { Display::new(raw) }.map_err(|e| format!("EGL display: {e}"))?;
-        match Self::init(&display, ConfigSurfaceTypes::WINDOW) {
+        match Self::init(&display, ConfigSurfaceTypes::WINDOW, accept) {
             Ok((glow, context, config)) => Ok(Self {
                 glow: Arc::new(glow),
                 context: ManuallyDrop::new(context),
                 config,
                 display: ManuallyDrop::new(display),
-                _conn: conn.clone(),
+                _native: native,
             }),
             Err(e) => {
                 // SAFETY: nothing created from this display survived `init`'s failure.
@@ -60,7 +77,11 @@ impl Gl {
 
     /// `surfaces`: what the config must support (`WINDOW` for the overlay; nothing for the
     /// headless harness, which renders into an FBO).
-    fn init(display: &Display, surfaces: ConfigSurfaceTypes) -> Result<(glow::Context, PossiblyCurrentContext, Config), String> {
+    fn init(
+        display: &Display,
+        surfaces: ConfigSurfaceTypes,
+        accept: &dyn Fn(&Config) -> bool,
+    ) -> Result<(glow::Context, PossiblyCurrentContext, Config), String> {
         let template = ConfigTemplateBuilder::new()
             .with_alpha_size(8)
             .with_transparency(true)
@@ -74,7 +95,7 @@ impl Gl {
         let rgba8 = Some(ColorBufferType::Rgb { r_size: 8, g_size: 8, b_size: 8 });
         let config = configs
             .into_iter()
-            .find(|c| c.alpha_size() == 8 && c.num_samples() == 0 && c.color_buffer_type() == rgba8)
+            .find(|c| c.alpha_size() == 8 && c.num_samples() == 0 && c.color_buffer_type() == rgba8 && accept(c))
             .ok_or("no 8-bit RGBA EGL config")?;
 
         // SAFETY: config comes from this display; no window handle needed for EGL contexts.
@@ -92,19 +113,32 @@ impl Gl {
     /// The caller must drop it (after `release`) before the `wl_surface` is destroyed.
     pub fn create_surface(&self, wl_surface: &WlSurface, w: u32, h: u32) -> Result<WinSurface, String> {
         let ptr = NonNull::new(wl_surface.id().as_ptr().cast::<c_void>()).ok_or("dead wl_surface")?;
-        let (w, h) = (NonZeroU32::new(w).ok_or("zero width")?, NonZeroU32::new(h).ok_or("zero height")?);
-        let attrs = SurfaceAttributesBuilder::<WindowSurface>::new()
-            .build(RawWindowHandle::Wayland(WaylandWindowHandle::new(ptr)), w, h);
         // SAFETY: the wl_surface outlives the EGL surface (wayland.rs drops this first).
+        unsafe { self.create_window_surface(RawWindowHandle::Wayland(WaylandWindowHandle::new(ptr)), w, h) }
+    }
+
+    /// [`Self::create_surface`] for any native window.
+    ///
+    /// # Safety
+    /// The native window must outlive the returned surface (drop it, after `release`, first).
+    pub unsafe fn create_window_surface(&self, window: RawWindowHandle, w: u32, h: u32) -> Result<WinSurface, String> {
+        let (w, h) = (NonZeroU32::new(w).ok_or("zero width")?, NonZeroU32::new(h).ok_or("zero height")?);
+        let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(window, w, h);
+        // SAFETY: the caller's contract.
         let surface = unsafe { self.display.create_window_surface(&self.config, &attrs) }
             .map_err(|e| format!("EGL window surface: {e}"))?;
         self.make_current(&surface)?;
-        // Interval 0: we pace with our own frame callbacks. With 1, Mesa requests its own
-        // callback and blocks the next swap on it, which throttles twice. Not fatal if refused.
+        // Interval 0: we pace with our own frame callbacks (Wayland) or pings/timer (X11). With
+        // 1, Mesa blocks the next swap on vblank, which throttles twice. Not fatal if refused.
         if let Err(e) = surface.set_swap_interval(&self.context, SwapInterval::DontWait) {
             eprintln!("overlay: swap interval 0 refused: {e}");
         }
         Ok(surface)
+    }
+
+    /// The chosen config's `EGL_NATIVE_VISUAL_ID` (the X visual on X11).
+    pub fn native_visual(&self) -> u32 {
+        self.config.native_visual()
     }
 
     pub fn make_current(&self, surface: &WinSurface) -> Result<(), String> {
@@ -136,9 +170,9 @@ impl Gl {
 
 impl Drop for Gl {
     /// Context before display, then `eglTerminate`: our EGLDisplay belongs to our own
-    /// wl_display, and this Mesa lacks `EGL_KHR_display_reference`, so nothing else would
-    /// terminate it; a stale initialised one could be handed back by Mesa if a later
-    /// connection reuses the same pointer. `_conn` drops after this body.
+    /// wl_display / xcb connection, and this Mesa lacks `EGL_KHR_display_reference`, so nothing
+    /// else would terminate it; a stale initialised one could be handed back by Mesa if a later
+    /// connection reuses the same pointer. `_native` drops after this body.
     /// Callers must have dropped every window surface first (`Live` goes before `Gl`).
     fn drop(&mut self) {
         // SAFETY: each field is taken exactly once, here, and never touched again.
@@ -177,7 +211,7 @@ impl Headless {
                     continue;
                 }
             };
-            match Gl::init(&display, ConfigSurfaceTypes::empty()) {
+            match Gl::init(&display, ConfigSurfaceTypes::empty(), &|_| true) {
                 Ok((glow, context, _)) => {
                     return Ok(Self { glow: Arc::new(glow), context: ManuallyDrop::new(context), display: ManuallyDrop::new(display) })
                 }

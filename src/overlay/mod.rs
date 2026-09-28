@@ -7,6 +7,10 @@
 //! Control: [`OverlayCmd`]s over a channel. Data: the listener writes a [`HudSnapshot`]
 //! into [`OverlayHandle::slot`] and calls [`Waker::wake`]; each wake draws one frame
 //! (D17), paced by the compositor's frame callbacks.
+//!
+//! Opt-in second surface backend (`x11.rs`, [`Backend`]): an override-redirect X11 window,
+//! for GNOME (no layer-shell) through XWayland. Selected by `FORZA_OVERLAY_BACKEND`; unset
+//! keeps the layer-shell-only behaviour.
 
 #[allow(dead_code)] // pending: most snapshot fields are read by the HUD renderer (I6)
 pub mod snapshot;
@@ -17,6 +21,8 @@ mod gl;
 mod render;
 #[cfg(target_os = "linux")]
 mod wayland;
+#[cfg(target_os = "linux")]
+mod x11;
 
 use std::fmt;
 
@@ -36,6 +42,10 @@ pub enum DisabledReason {
     NoLayerShell,
     /// EGL display/config/context or the egui_glow painter failed.
     Egl(String),
+    /// X11 backend: `DISPLAY` unset or empty.
+    NoX11,
+    /// X11 backend: connecting failed or a needed extension is missing.
+    X11(String),
 }
 
 impl fmt::Display for DisabledReason {
@@ -48,6 +58,8 @@ impl fmt::Display for DisabledReason {
                 "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay is tested on Hyprland and should work on other compositors with wlr-layer-shell, such as Sway and KDE Plasma.",
             )),
             Self::Egl(e) => write!(f, "{} {e}", tr("Couldn't set up OpenGL (EGL) for the overlay:")),
+            Self::NoX11 => f.write_str(tr("The X11 overlay needs an X display (DISPLAY is not set).")),
+            Self::X11(e) => write!(f, "{} {e}", tr("Couldn't use the X display for the overlay:")),
         }
     }
 }
@@ -68,6 +80,48 @@ pub fn capability(
     match egl_error {
         Some(e) => Err(DisabledReason::Egl(e.to_string())),
         None => Ok(()),
+    }
+}
+
+/// X11 backend's startup check, same shape as [`capability`]: `DISPLAY`, then the first
+/// missing X extension (SHAPE, RANDR 1.5), then EGL.
+pub fn capability_x11(
+    x_display: Option<&str>,
+    missing_extension: Option<&str>,
+    egl_error: Option<&str>,
+) -> Result<(), DisabledReason> {
+    if x_display.is_none_or(str::is_empty) {
+        return Err(DisabledReason::NoX11);
+    }
+    if let Some(ext) = missing_extension {
+        return Err(DisabledReason::X11(format!("missing extension {ext}")));
+    }
+    match egl_error {
+        Some(e) => Err(DisabledReason::Egl(e.to_string())),
+        None => Ok(()),
+    }
+}
+
+/// Which surface backend `OverlayHandle::spawn` uses (`FORZA_OVERLAY_BACKEND`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// wlr-layer-shell only (the default; unchanged behaviour).
+    Wayland,
+    /// Override-redirect X11 window (XWayland on GNOME, or an X11 session). Experimental.
+    X11,
+    /// Layer-shell, falling back to X11 when it's unavailable.
+    Auto,
+}
+
+impl Backend {
+    /// `FORZA_OVERLAY_BACKEND`'s value; unset, empty or unknown = [`Backend::Wayland`], so the
+    /// default can never pick the experimental backend.
+    pub fn from_env(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("x11") => Self::X11,
+            Some(v) if v.eq_ignore_ascii_case("auto") => Self::Auto,
+            _ => Self::Wayland,
+        }
     }
 }
 
@@ -106,7 +160,16 @@ mod linux {
     use smithay_client_toolkit::reexports::calloop::{channel, ping};
 
     use super::snapshot::SnapshotSlot;
-    use super::{wayland, DisabledReason, OverlayCmd, OverlayOptions};
+    use super::{wayland, x11, Backend, DisabledReason, OverlayCmd, OverlayOptions};
+
+    /// A backend's thread body (`wayland::run` / `x11::run`): same channels, same contract.
+    type ThreadBody = fn(
+        OverlayOptions,
+        channel::Channel<OverlayCmd>,
+        ping::PingSource,
+        SnapshotSlot,
+        mpsc::Sender<Result<(), DisabledReason>>,
+    );
 
     /// Wakes the overlay to draw one frame. Cheap, coalescing, `Send + Clone`: hand it to the
     /// listener thread and call it after each snapshot write.
@@ -144,9 +207,23 @@ mod linux {
         /// Start the overlay thread, hidden. The HUD then shows/hides by following
         /// `HudSnapshot::visible`; the test pattern by [`OverlayCmd::Show`]/`Hide`. Blocks until the
         /// thread has connected and set up EGL, so the caller learns right away whether the
-        /// overlay is usable.
+        /// overlay is usable. The backend comes from `FORZA_OVERLAY_BACKEND` ([`Backend`]);
+        /// unset = layer-shell only.
         pub fn spawn(opts: OverlayOptions) -> Result<Self, DisabledReason> {
-            let io = |e: std::io::Error| DisabledReason::Wayland(e.to_string());
+            match Backend::from_env(std::env::var("FORZA_OVERLAY_BACKEND").ok().as_deref()) {
+                Backend::Wayland => Self::spawn_on(wayland::run, false, opts),
+                Backend::X11 => Self::spawn_on(x11::run, true, opts),
+                Backend::Auto => Self::spawn_on(wayland::run, false, opts.clone()).or_else(|reason| {
+                    eprintln!("overlay: layer-shell unavailable ({reason}); trying X11");
+                    Self::spawn_on(x11::run, true, opts)
+                }),
+            }
+        }
+
+        /// `is_x11` only picks the variant for thread-start errors.
+        fn spawn_on(body: ThreadBody, is_x11: bool, opts: OverlayOptions) -> Result<Self, DisabledReason> {
+            let fail = move |e: String| if is_x11 { DisabledReason::X11(e) } else { DisabledReason::Wayland(e) };
+            let io = |e: std::io::Error| fail(e.to_string());
             let (cmds, cmd_rx) = channel::channel();
             let (ping, ping_rx) = ping::make_ping().map_err(io)?;
             let slot: SnapshotSlot = Arc::new(Mutex::new(None));
@@ -154,7 +231,7 @@ mod linux {
             let thread_slot = slot.clone();
             let join = thread::Builder::new()
                 .name("overlay".into())
-                .spawn(move || wayland::run(opts, cmd_rx, ping_rx, thread_slot, ready_tx))
+                .spawn(move || body(opts, cmd_rx, ping_rx, thread_slot, ready_tx))
                 .map_err(io)?;
             // Connect + roundtrip + EGL init is tens of ms; the timeout only guards a hung compositor.
             match ready_rx.recv_timeout(Duration::from_secs(5)) {
@@ -165,7 +242,7 @@ mod linux {
                 }
                 // Timed out (thread left detached; it exits once it sees the closed channel)
                 // or the thread died during startup.
-                Err(e) => Err(DisabledReason::Wayland(format!("overlay thread didn't start: {e}"))),
+                Err(e) => Err(fail(format!("overlay thread didn't start: {e}"))),
             }
         }
 
@@ -271,5 +348,29 @@ mod tests {
             Err(DisabledReason::Egl("no 8-bit RGBA EGL config".into()))
         );
         assert_eq!(capability(Some("wayland-1"), true, None), Ok(()));
+    }
+
+    #[test]
+    fn capability_x11_reports_first_missing_piece() {
+        assert_eq!(capability_x11(None, None, None), Err(DisabledReason::NoX11));
+        assert_eq!(capability_x11(Some(""), Some("SHAPE"), Some("x")), Err(DisabledReason::NoX11));
+        assert_eq!(
+            capability_x11(Some(":0"), Some("SHAPE"), Some("x")),
+            Err(DisabledReason::X11("missing extension SHAPE".into()))
+        );
+        assert_eq!(capability_x11(Some(":0"), None, Some("no config")), Err(DisabledReason::Egl("no config".into())));
+        assert_eq!(capability_x11(Some(":0"), None, None), Ok(()));
+    }
+
+    #[test]
+    fn backend_defaults_to_wayland() {
+        // Unset / empty / unknown never selects the experimental X11 backend.
+        assert_eq!(Backend::from_env(None), Backend::Wayland);
+        assert_eq!(Backend::from_env(Some("")), Backend::Wayland);
+        assert_eq!(Backend::from_env(Some("wayland")), Backend::Wayland);
+        assert_eq!(Backend::from_env(Some("xorg")), Backend::Wayland);
+        assert_eq!(Backend::from_env(Some("x11")), Backend::X11);
+        assert_eq!(Backend::from_env(Some(" X11 ")), Backend::X11);
+        assert_eq!(Backend::from_env(Some("auto")), Backend::Auto);
     }
 }
