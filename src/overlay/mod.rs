@@ -8,9 +8,9 @@
 //! into [`OverlayHandle::slot`] and calls [`Waker::wake`]; each wake draws one frame
 //! (D17), paced by the compositor's frame callbacks.
 //!
-//! Opt-in second surface backend (`x11.rs`, [`Backend`]): an override-redirect X11 window,
-//! for GNOME (no layer-shell) through XWayland. Selected by `FORZA_OVERLAY_BACKEND`; unset
-//! keeps the layer-shell-only behaviour.
+//! Second surface backend (`x11.rs`, [`Backend`]): an override-redirect X11 window, for
+//! GNOME (no layer-shell) through XWayland. By default layer-shell is tried first and X11 is
+//! the fallback; `FORZA_OVERLAY_BACKEND` forces one (developer override).
 
 #[allow(dead_code)] // pending: most snapshot fields are read by the HUD renderer (I6)
 pub mod snapshot;
@@ -52,10 +52,10 @@ impl fmt::Display for DisabledReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // The fixed text is translated; the `{e}` detail stays as the system reported it.
-            Self::NoWayland => f.write_str(tr("The overlay needs a Wayland session (WAYLAND_DISPLAY is not set).")),
+            Self::NoWayland => f.write_str(tr("The overlay needs a Wayland or X11 session (neither WAYLAND_DISPLAY nor DISPLAY is set).")),
             Self::Wayland(e) => write!(f, "{} {e}", tr("Couldn't connect to the Wayland compositor:")),
             Self::NoLayerShell => f.write_str(tr(
-                "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay is tested on Hyprland and should work on other compositors with wlr-layer-shell, such as Sway and KDE Plasma.",
+                "Your compositor doesn't support wlr-layer-shell (e.g. GNOME) and the X11 fallback is switched off (FORZA_OVERLAY_BACKEND=wayland). Unset it to try the experimental X11/XWayland fallback.",
             )),
             Self::Egl(e) => write!(f, "{} {e}", tr("Couldn't set up OpenGL (EGL) for the overlay:")),
             Self::NoX11 => f.write_str(tr("The X11 overlay needs an X display (DISPLAY is not set).")),
@@ -102,25 +102,40 @@ pub fn capability_x11(
     }
 }
 
+/// Which error to show when [`Backend::Auto`] failed on both backends. The X11 one, since
+/// that's the backend that could have worked there (GNOME, X11 sessions) — except:
+/// - layer-shell was *present* but failed later (connect/EGL): that's a layer-shell desktop
+///   (Hyprland…), so its own error is the real problem, not the fallback's;
+/// - there is neither `WAYLAND_DISPLAY` nor `DISPLAY`: [`DisabledReason::NoWayland`], whose
+///   text names both variables (no graphical session at all).
+pub fn auto_error(layer_shell: DisabledReason, x11: DisabledReason) -> DisabledReason {
+    match (layer_shell, x11) {
+        (DisabledReason::NoWayland, DisabledReason::NoX11) => DisabledReason::NoWayland,
+        (DisabledReason::NoWayland | DisabledReason::NoLayerShell, x11) => x11,
+        (layer_shell, _) => layer_shell,
+    }
+}
+
 /// Which surface backend `OverlayHandle::spawn` uses (`FORZA_OVERLAY_BACKEND`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    /// wlr-layer-shell only (the default; unchanged behaviour).
+    /// wlr-layer-shell only (`wayland`).
     Wayland,
     /// Override-redirect X11 window (XWayland on GNOME, or an X11 session). Experimental.
     X11,
-    /// Layer-shell, falling back to X11 when it's unavailable.
+    /// Layer-shell, falling back to X11 when it's unavailable. The default.
     Auto,
 }
 
 impl Backend {
-    /// `FORZA_OVERLAY_BACKEND`'s value; unset, empty or unknown = [`Backend::Wayland`], so the
-    /// default can never pick the experimental backend.
+    /// `FORZA_OVERLAY_BACKEND`'s value (a developer override); unset, empty or unknown =
+    /// [`Backend::Auto`], so a plain `cargo run` works on Hyprland and GNOME alike. On a
+    /// layer-shell desktop Auto's first try succeeds, so it behaves exactly like `wayland`.
     pub fn from_env(value: Option<&str>) -> Self {
         match value.map(str::trim) {
             Some(v) if v.eq_ignore_ascii_case("x11") => Self::X11,
-            Some(v) if v.eq_ignore_ascii_case("auto") => Self::Auto,
-            _ => Self::Wayland,
+            Some(v) if v.eq_ignore_ascii_case("wayland") => Self::Wayland,
+            _ => Self::Auto,
         }
     }
 }
@@ -208,14 +223,14 @@ mod linux {
         /// `HudSnapshot::visible`; the test pattern by [`OverlayCmd::Show`]/`Hide`. Blocks until the
         /// thread has connected and set up EGL, so the caller learns right away whether the
         /// overlay is usable. The backend comes from `FORZA_OVERLAY_BACKEND` ([`Backend`]);
-        /// unset = layer-shell only.
+        /// unset = auto (layer-shell, then X11). The dev test pattern goes through here too.
         pub fn spawn(opts: OverlayOptions) -> Result<Self, DisabledReason> {
             match Backend::from_env(std::env::var("FORZA_OVERLAY_BACKEND").ok().as_deref()) {
                 Backend::Wayland => Self::spawn_on(wayland::run, false, opts),
                 Backend::X11 => Self::spawn_on(x11::run, true, opts),
                 Backend::Auto => Self::spawn_on(wayland::run, false, opts.clone()).or_else(|reason| {
                     eprintln!("overlay: layer-shell unavailable ({reason}); trying X11");
-                    Self::spawn_on(x11::run, true, opts)
+                    Self::spawn_on(x11::run, true, opts).map_err(|x11| super::auto_error(reason, x11))
                 }),
             }
         }
@@ -363,14 +378,29 @@ mod tests {
     }
 
     #[test]
-    fn backend_defaults_to_wayland() {
-        // Unset / empty / unknown never selects the experimental X11 backend.
-        assert_eq!(Backend::from_env(None), Backend::Wayland);
-        assert_eq!(Backend::from_env(Some("")), Backend::Wayland);
+    fn backend_defaults_to_auto() {
+        // Unset / empty / unknown = auto; the env var only forces one backend.
+        assert_eq!(Backend::from_env(None), Backend::Auto);
+        assert_eq!(Backend::from_env(Some("")), Backend::Auto);
+        assert_eq!(Backend::from_env(Some("xorg")), Backend::Auto);
+        assert_eq!(Backend::from_env(Some("AUTO")), Backend::Auto);
         assert_eq!(Backend::from_env(Some("wayland")), Backend::Wayland);
-        assert_eq!(Backend::from_env(Some("xorg")), Backend::Wayland);
+        assert_eq!(Backend::from_env(Some("Wayland")), Backend::Wayland);
         assert_eq!(Backend::from_env(Some("x11")), Backend::X11);
         assert_eq!(Backend::from_env(Some(" X11 ")), Backend::X11);
         assert_eq!(Backend::from_env(Some("auto")), Backend::Auto);
+    }
+
+    #[test]
+    fn auto_error_prefers_the_backend_that_could_work() {
+        use DisabledReason::*;
+        // GNOME: no layer-shell, X11 failed -> the X11 reason.
+        assert_eq!(auto_error(NoLayerShell, X11("e".into())), X11("e".into()));
+        assert_eq!(auto_error(NoWayland, Egl("x".into())), Egl("x".into()));
+        // No session at all.
+        assert_eq!(auto_error(NoWayland, NoX11), NoWayland);
+        // Layer-shell desktop whose own setup failed -> its reason.
+        assert_eq!(auto_error(Egl("w".into()), NoX11), Egl("w".into()));
+        assert_eq!(auto_error(Wayland("c".into()), X11("e".into())), Wayland("c".into()));
     }
 }

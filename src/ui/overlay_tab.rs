@@ -105,7 +105,7 @@ fn module_card(
 
 fn general(ui: &mut Ui, app: &mut ForzaApp) {
     theme::card(ui, tr("General"), |ui| {
-        // The overlay is Linux only (wlr-layer-shell): greyed out elsewhere.
+        // The overlay is Linux only (layer-shell or X11): greyed out elsewhere.
         ui.add_enabled_ui(cfg!(target_os = "linux"), |ui| {
             theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay"));
         });
@@ -123,7 +123,7 @@ fn general(ui: &mut Ui, app: &mut ForzaApp) {
 /// it is that toggle's outcome (e.g. "needs Wayland").
 fn overlay_status_line(ui: &mut Ui, app: &ForzaApp) {
     if !cfg!(target_os = "linux") {
-        status_line(ui, theme::FAINT, tr("The in-game overlay is available on Linux (Wayland) only."));
+        status_line(ui, theme::FAINT, tr("The in-game overlay is available on Linux only (Wayland or X11)."));
         return;
     }
     let (col, msg) = match app.overlay_status() {

@@ -14,7 +14,7 @@ telemetry** — a fixed 324-byte packet at the game's frame rate — parses each
 folds it into state held on one big struct (`app.rs:ForzaApp`), lets event-driven
 listeners react (backfire, auto-gearbox, timers, power capture), and redraws a tabbed
 dashboard. `ForzaApp` *is* the application: it owns config, telemetry, listeners, and
-all derived/session state, and it implements `eframe::App`. On Linux/Wayland an optional
+all derived/session state, and it implements `eframe::App`. On Linux (Wayland, or X11/XWayland) an optional
 **in-game HUD overlay** draws over the game from its own thread (see [[overlay]]).
 
 ## Threading model
@@ -49,9 +49,10 @@ described below.
 - **Overlay thread** (Linux, only while `overlay.enabled`) — `overlay/wayland.rs:run`: its own
   Wayland connection, calloop loop, layer-shell surface, glutin EGL context, `egui::Context`
   and `egui_glow` painter. Draws the HUD from the listener's `HudSnapshot` mailbox, one frame
-  per packet. Owned by `overlay::OverlayHandle`, held in `app.rs:OverlayRuntime`. Opt-in
-  `FORZA_OVERLAY_BACKEND=x11|auto` runs `overlay/x11.rs:run` instead (an override-redirect X11
-  window via XWayland, for GNOME); unset = layer-shell only. **Why its
+  per packet. Owned by `overlay::OverlayHandle`, held in `app.rs:OverlayRuntime`. By default
+  (auto) it falls back to `overlay/x11.rs:run` when layer-shell is unavailable (an
+  override-redirect X11 window via XWayland, for GNOME); `FORZA_OVERLAY_BACKEND=wayland|x11`
+  forces one. **Why its
   own thread:** like the listener, it must keep working while the game covers the main
   window. Helpers: `overlay-start` (runs the blocking `OverlayHandle::spawn`, up to 5 s),
   `overlay-drop` (drop = shutdown + join, kept off the UI thread), `hud-map` (loads the
@@ -257,9 +258,9 @@ might produce.
 
 | File | What it does |
 | --- | --- |
-| `mod.rs` | `OverlayHandle` (spawn / send / waker / slot / `is_dead`; drop = shutdown + join), `OverlayCmd`, `DisabledReason` + the pure `capability` / `capability_x11` probes, `Backend` (`FORZA_OVERLAY_BACKEND`), the `FORZA_OVERLAY_TEST` dev pattern (`spawn_dev_test`). |
+| `mod.rs` | `OverlayHandle` (spawn / send / waker / slot / `is_dead`; drop = shutdown + join), `OverlayCmd`, `DisabledReason` + the pure `capability` / `capability_x11` probes, `Backend` (auto by default; `FORZA_OVERLAY_BACKEND` override) + `auto_error` (which reason to show when both fail), the `FORZA_OVERLAY_TEST` dev pattern (`spawn_dev_test`). |
 | `wayland.rs` | The overlay thread: calloop loop, sctk layer surface on `Layer::Overlay` (empty input region), surface create/destroy following `snapshot.visible`, output selection, frame-callback pacing (`next_wake`). |
-| `x11.rs` | Opt-in X11/XWayland backend (`FORZA_OVERLAY_BACKEND=x11\|auto`): override-redirect 32-bit ARGB window per RandR monitor (name → primary → first), empty XShape input region, ping/timer pacing, destroyed on hide. |
+| `x11.rs` | Experimental X11/XWayland fallback backend (auto when layer-shell is missing, or `FORZA_OVERLAY_BACKEND=x11`): override-redirect 32-bit ARGB window per RandR monitor (name → primary → first), empty XShape input region, ping/timer pacing, destroyed on hide. |
 | `gl.rs` | glutin EGL: `Gl` (display + context, current surfaceless between surfaces) and `Headless` (for the PNG harness); the teardown order. |
 | `render.rs` | `Renderer`: the overlay's own `egui::Context` + `egui_glow::Painter`, one frame per call, the map texture, co-op teammates; the dev test pattern. |
 | `snapshot.rs` | `HudSnapshot`, `SnapshotSlot`, `HudSink`, `hud_clock()`. Platform-neutral, since the listener compiles everywhere. |

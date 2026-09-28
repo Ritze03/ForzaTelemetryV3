@@ -16,20 +16,28 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
 - **Works:** Wayland compositors with `wlr-layer-shell`. Tested on Hyprland; should work on
   others with it, such as Sway and KDE Plasma (untested). It is
   a surface on the `overlay` layer, which sits above fullscreen games.
-- **Doesn't (by default):** GNOME (Mutter has no layer-shell), X11 sessions, Windows. The
-  overlay reports a *disabled* reason instead of failing, and the Overlay tab's status line
-  shows it (e.g. "Your compositor doesn't support wlr-layer-shell (e.g. GNOME)…"). On
-  non-Linux builds the tab says the overlay is Linux (Wayland) only.
-- **Experimental, opt-in: X11 / XWayland backend** (`overlay/x11.rs`) for GNOME, and native
-  X11 sessions. Chosen by the env var `FORZA_OVERLAY_BACKEND` (`overlay::Backend`):
-  - unset / empty / anything else = `wayland`: layer-shell only, **exactly the old
-    behaviour** (Hyprland users are unaffected);
-  - `x11`: the X11 backend only (needs `DISPLAY`; on GNOME Wayland that's XWayland);
-  - `auto`: layer-shell first, X11 if that fails (the layer-shell reason is logged).
+- **Experimental fallback: X11 / XWayland backend** (`overlay/x11.rs`) for GNOME (Mutter has
+  no layer-shell) and native X11 sessions. **Picked automatically, no setup:** a plain
+  `cargo run` tries layer-shell first and falls back to X11 (the layer-shell reason is logged:
+  `overlay: layer-shell unavailable (<reason>); trying X11`). Pending a real GNOME test.
+- **Doesn't:** Windows/macOS. When no backend works the overlay reports a *disabled* reason
+  instead of failing, shown in the Overlay tab's status line. On non-Linux builds the tab says
+  the overlay is Linux only (Wayland or X11).
+- **Backend selection** (`overlay::Backend::from_env`, env var `FORZA_OVERLAY_BACKEND`, a
+  developer override only):
+  - unset / empty / unknown / `auto` (case-insensitive) = **auto**: layer-shell, then X11. On
+    Hyprland the first try succeeds, so it behaves exactly like `wayland`;
+  - `wayland`: layer-shell only (then GNOME shows the `NoLayerShell` reason);
+  - `x11`: the X11 backend only (needs `DISPLAY`; on GNOME Wayland that's XWayland).
 
-  e.g. `FORZA_OVERLAY_BACKEND=x11 cargo run --release`, then Overlay tab → Enable overlay; or
-  `FORZA_OVERLAY_TEST=1 FORZA_OVERLAY_BACKEND=x11 …` for the test pattern. Not in the
-  changelog yet: it's a spike awaiting a GNOME test.
+  The dev test pattern (`FORZA_OVERLAY_TEST=1`) spawns through the same selection, so it works
+  on GNOME without the variable too.
+  - *Why auto by default:* the user wants a plain `cargo run` to just work (or visibly not)
+    on any desktop, with no environment variables.
+  - *Which error when both fail* (`overlay::auto_error`): the X11 one, since X11 is what could
+    have worked there — unless layer-shell *was* present and failed later (connect/EGL), which
+    means a layer-shell desktop whose own setup broke, so its error wins; and when neither
+    `WAYLAND_DISPLAY` nor `DISPLAY` is set, `NoWayland`, whose text names both variables.
   - **How:** an **override-redirect** window with a **32-bit ARGB visual** (and its own
     colormap; border 0, background None), sized to one XRandR monitor, made click-through by
     an **empty XShape input region** (`shape_rectangles(SET, INPUT, …, [])`; the bounding
