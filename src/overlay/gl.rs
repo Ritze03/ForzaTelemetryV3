@@ -3,6 +3,7 @@
 //! the context is current *surfaceless*, so fonts and textures never need a re-upload.
 
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -18,11 +19,16 @@ use smithay_client_toolkit::reexports::client::{protocol::wl_surface::WlSurface,
 
 pub type WinSurface = Surface<WindowSurface>;
 
+/// Dropping it tears EGL down in the only safe order (see `Drop`), on every path: normal
+/// shutdown, an `init` error or a panic.
 pub struct Gl {
     pub glow: Arc<glow::Context>,
-    context: PossiblyCurrentContext,
+    context: ManuallyDrop<PossiblyCurrentContext>,
     config: Config,
-    display: Display,
+    display: ManuallyDrop<Display>,
+    /// Keeps our `wl_display` alive until after `eglTerminate`. Must stay the *last* field:
+    /// fields drop after `Drop::drop` and in declaration order.
+    _conn: Connection,
 }
 
 impl Gl {
@@ -32,9 +38,27 @@ impl Gl {
         let ptr = NonNull::new(conn.backend().display_ptr().cast::<c_void>())
             .ok_or("no wl_display pointer")?;
         let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(ptr));
-        // SAFETY: `ptr` is the live wl_display of `conn`; the overlay thread keeps the
-        // connection alive until after `destroy` has run.
+        // SAFETY: `ptr` is the live wl_display of `conn`. `Gl` holds a clone of `conn` as its
+        // last field, so the wl_display outlives the EGLDisplay's teardown in `Drop` (and the
+        // error path below terminates before `conn` can go).
         let display = unsafe { Display::new(raw) }.map_err(|e| format!("EGL display: {e}"))?;
+        match Self::init(&display) {
+            Ok((glow, context, config)) => Ok(Self {
+                glow: Arc::new(glow),
+                context: ManuallyDrop::new(context),
+                config,
+                display: ManuallyDrop::new(display),
+                _conn: conn.clone(),
+            }),
+            Err(e) => {
+                // SAFETY: nothing created from this display survived `init`'s failure.
+                unsafe { display.terminate() };
+                Err(e)
+            }
+        }
+    }
+
+    fn init(display: &Display) -> Result<(glow::Context, PossiblyCurrentContext, Config), String> {
 
         let template = ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(true).build();
         // SAFETY: plain config query on a valid display.
@@ -56,7 +80,7 @@ impl Gl {
 
         // SAFETY: the context is current on this thread and stays so for the thread's lifetime.
         let glow = unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) };
-        Ok(Self { glow: Arc::new(glow), context, config, display })
+        Ok((glow, context, config))
     }
 
     /// EGL window surface (`wl_egl_window`) on `wl_surface`, made current, swap interval 0.
@@ -103,17 +127,22 @@ impl Gl {
         surface.swap_buffers_with_damage(&self.context, &[]).map_err(|e| format!("EGL swap: {e}"))
     }
 
+}
+
+impl Drop for Gl {
     /// Context before display, then `eglTerminate`: our EGLDisplay belongs to our own
-    /// wl_display, and a stale initialised one could be handed back by Mesa if a later
-    /// connection reuses the same pointer.
-    pub fn destroy(self) {
-        let Self { glow, context, config, display } = self;
-        drop(glow);
+    /// wl_display, and this Mesa lacks `EGL_KHR_display_reference`, so nothing else would
+    /// terminate it; a stale initialised one could be handed back by Mesa if a later
+    /// connection reuses the same pointer. `_conn` drops after this body.
+    /// Callers must have dropped every window surface first (`Live` goes before `Gl`).
+    fn drop(&mut self) {
+        // SAFETY: each field is taken exactly once, here, and never touched again.
+        let (context, display) = unsafe { (ManuallyDrop::take(&mut self.context), ManuallyDrop::take(&mut self.display)) };
         // Not current first, or eglDestroyContext only defers the destruction.
         drop(context.make_not_current());
-        drop(config);
         // SAFETY: every surface and the context from this display are gone, and no other
-        // library uses this EGLDisplay (it wraps our private wl_display).
+        // library uses this EGLDisplay (it wraps our private wl_display). `config` still holds
+        // a display handle, but dropping it after terminate only releases an Arc.
         unsafe { display.terminate() };
     }
 }

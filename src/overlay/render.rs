@@ -49,9 +49,14 @@ impl Renderer {
         animating
     }
 
-    /// Frees GL objects; needs the context current. `Drop` alone only warns and leaks.
-    pub fn destroy(&mut self) {
-        self.painter.destroy();
+}
+
+impl Drop for Renderer {
+    /// Frees GL objects; needs the context current (surfaceless is fine), which holds because
+    /// every owner drops `Renderer` before `Gl`: the `(Renderer, Gl)` tuple in `init`, and
+    /// `Overlay`'s field order after its `Drop` has released the window surface.
+    fn drop(&mut self) {
+        self.painter.destroy(); // idempotent
     }
 }
 
@@ -59,15 +64,16 @@ impl Renderer {
 pub fn draw(ctx: &egui::Context, snapshot: Option<&HudSnapshot>, test_pattern: bool) -> bool {
     let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
     if test_pattern {
-        draw_test_pattern(&painter, ctx.content_rect());
+        draw_test_pattern(&painter, ctx.content_rect(), ctx.cumulative_pass_nr());
     }
     let _ = snapshot; // TODO(I6): the HUD widgets.
     false
 }
 
-/// Dev pattern (`FORZA_OVERLAY_TEST=1`): a pill plate, outlined text and a ring, bottom
+/// Dev pattern (`FORZA_OVERLAY_TEST=1`/`2`): a pill plate, outlined text and a ring, bottom
 /// centre, to check the overlay sits above fullscreen FH6 and passes clicks/keys through.
-fn draw_test_pattern(p: &Painter, screen: Rect) {
+/// The text carries the frame counter (mod 1000, so it fits the pill), so the 60 Hz mode (`2`) visibly redraws.
+fn draw_test_pattern(p: &Painter, screen: Rect, frame: u64) {
     // rgba(9,13,21,.68) from the mockup; `from_rgba_unmultiplied` because Color32 is premultiplied.
     let plate = Color32::from_rgba_unmultiplied(9, 13, 21, 173);
     let rim = Color32::from_rgba_unmultiplied(255, 255, 255, 30);
@@ -77,7 +83,7 @@ fn draw_test_pattern(p: &Painter, screen: Rect) {
     p.rect(pill, CornerRadius::same(28), plate, Stroke::new(1.5, rim), StrokeKind::Inside);
 
     // Outlined text: one layout, 8 dark offset copies (round outline), then the white fill.
-    let galley = p.layout_no_wrap("OVERLAY TEST 142".into(), FontId::proportional(30.0), Color32::WHITE);
+    let galley = p.layout_no_wrap(format!("OVERLAY TEST {:03}", frame % 1000), FontId::proportional(30.0), Color32::WHITE);
     let pos = pill.center() - galley.size() / 2.0;
     let outline = Color32::from_rgba_unmultiplied(0, 0, 0, 153);
     for i in 0..8 {

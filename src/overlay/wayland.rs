@@ -2,12 +2,14 @@
 //! `Layer::Overlay` surface that exists only while shown, and frame-callback pacing.
 
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::channel::{Channel, Event};
 use smithay_client_toolkit::reexports::calloop::ping::PingSource;
-use smithay_client_toolkit::reexports::calloop::EventLoop;
+use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle, RegistrationToken};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::{registry_queue_init, GlobalList};
 use smithay_client_toolkit::reexports::client::protocol::{wl_output::{self, WlOutput}, wl_surface::WlSurface};
@@ -27,6 +29,30 @@ use super::{capability, DisabledReason, OverlayCmd, OverlayOptions};
 /// Layer namespace, for compositor rules (e.g. Hyprland `no_anim`).
 const NAMESPACE: &str = "forza-telemetry-hud";
 
+/// No ping for this long means packets stopped (2.5 frames at FH6's ~60 Hz), so a running
+/// animation must be driven by our own timer instead.
+const PING_STALE: Duration = Duration::from_millis(40);
+/// Animation step when no packets drive frames: ~60 Hz, like packets, never the monitor's
+/// rate (DP-1 is 280 Hz VRR; extra commits there cause judder).
+const ANIM_FRAME: Duration = Duration::from_millis(16);
+/// Consecutive make_current/swap failures before the overlay gives up (lost context or GPU
+/// reset: every swap fails, so recreating the surface forever would only spam stderr).
+const MAX_EGL_FAILURES: u8 = 3;
+
+/// D17 pacing: after a frame, when must the next one come without a new packet? `None` =
+/// only on the next ping. While packets flow the timer is a fallback that the next ping
+/// cancels, so it only fires if packets stop mid-animation (then frames step at
+/// [`ANIM_FRAME`]). A frame is never scheduled per frame callback, i.e. at the monitor's rate.
+fn next_wake(animating: bool, since_ping: Option<Duration>) -> Option<Duration> {
+    if !animating {
+        return None;
+    }
+    match since_ping {
+        Some(t) if t < PING_STALE => Some(PING_STALE - t),
+        _ => Some(ANIM_FRAME),
+    }
+}
+
 /// The mapped surface. Field order is drop order: the EGL surface (and its
 /// `wl_egl_window`) must go before the `wl_surface` the layer surface owns.
 struct Live {
@@ -42,6 +68,9 @@ pub(super) struct Overlay {
     compositor: CompositorState,
     layer_shell: LayerShell,
     qh: QueueHandle<Overlay>,
+    handle: LoopHandle<'static, Overlay>,
+    // Drop order (see `impl Drop for Overlay`): `live` (window surface) is already gone, then
+    // `renderer` (painter, needs the context current), then `gl` (context, eglTerminate).
     live: Option<Live>,
     renderer: Renderer,
     gl: Option<Gl>,
@@ -51,11 +80,23 @@ pub(super) struct Overlay {
     /// Output name to show on; `None` = the first output.
     target: Option<String>,
     test_pattern: bool,
-    /// A redraw is wanted (new packet, configure, or an animation still running).
+    /// A redraw is wanted (new packet, configure, or the animation timer fired).
     dirty: bool,
     /// A frame callback is outstanding: the compositor hasn't shown our last frame yet.
     frame_pending: bool,
+    last_ping: Option<Instant>,
+    /// The one pending animation timer (see [`next_wake`]).
+    anim_timer: Option<RegistrationToken>,
+    egl_failures: u8,
     exit: bool,
+}
+
+impl Drop for Overlay {
+    /// Runs on every path (shutdown, init error, panic): detach and drop the window surface
+    /// so the remaining fields drop with the context current surfaceless.
+    fn drop(&mut self) {
+        self.destroy_surface();
+    }
 }
 
 struct Wl {
@@ -94,13 +135,8 @@ pub(super) fn run(
             break;
         }
     }
-    // Teardown: surface first (EGL then wl), painter with the context current, then EGL.
-    // The connection (inside the event loop) outlives all of it.
-    state.destroy_surface();
-    state.renderer.destroy();
-    if let Some(gl) = state.gl.take() {
-        gl.destroy();
-    }
+    // Teardown is structural: Overlay's Drop releases the surface, then the painter and EGL
+    // drop in field order. `Gl` holds its own connection clone, so the wl_display outlives it.
     drop(state);
     drop(event_loop);
 }
@@ -128,6 +164,8 @@ fn init(
     };
 
     let err = |e: &dyn std::fmt::Display| DisabledReason::Wayland(e.to_string());
+    let event_loop = EventLoop::<Overlay>::try_new().map_err(|e| err(&e))?;
+    let handle = event_loop.handle();
     let qh = queue.handle();
     let mut state = Overlay {
         registry: RegistryState::new(&globals),
@@ -135,6 +173,7 @@ fn init(
         compositor: CompositorState::bind(&globals, &qh).map_err(|e| err(&e))?,
         layer_shell,
         qh,
+        handle: handle.clone(),
         live: None,
         renderer,
         gl: Some(gl),
@@ -145,13 +184,14 @@ fn init(
         test_pattern: opts.test_pattern,
         dirty: false,
         frame_pending: false,
+        last_ping: None,
+        anim_timer: None,
+        egl_failures: 0,
         exit: false,
     };
     // One roundtrip so output names are known before the first Show.
     queue.roundtrip(&mut state).map_err(|e| err(&e))?;
 
-    let event_loop = EventLoop::<Overlay>::try_new().map_err(|e| err(&e))?;
-    let handle = event_loop.handle();
     WaylandSource::new(conn, queue).insert(handle.clone()).map_err(|e| err(&e.error))?;
     handle
         .insert_source(cmds, |ev, _, s: &mut Overlay| match ev {
@@ -162,6 +202,10 @@ fn init(
     // Per-packet wake-up (D17): one redraw per ping, coalesced by calloop.
     handle
         .insert_source(ping, |_, _, s: &mut Overlay| {
+            s.last_ping = Some(Instant::now());
+            if let Some(t) = s.anim_timer.take() {
+                s.handle.remove(t); // packets are driving frames again
+            }
             s.dirty = true;
             s.maybe_render();
         })
@@ -235,7 +279,7 @@ impl Overlay {
     }
 
     fn maybe_render(&mut self) {
-        if self.frame_pending || !self.dirty {
+        if self.exit || self.frame_pending || !self.dirty {
             return;
         }
         let (Some(live), Some(gl)) = (&self.live, &self.gl) else { return };
@@ -251,14 +295,42 @@ impl Overlay {
         match result.and_then(|animating| gl.swap(egl).map(|()| animating)) {
             Ok(animating) => {
                 self.frame_pending = true;
-                self.dirty = animating; // keep drawing on frame callbacks until settled
+                self.dirty = false;
+                self.egl_failures = 0;
+                let wake = next_wake(animating, self.last_ping.map(|t| t.elapsed()));
+                self.arm_anim_timer(wake);
+            }
+            Err(e) if self.egl_failures + 1 >= MAX_EGL_FAILURES => {
+                // Lost context / GPU reset: stop the thread; the handle reports is_dead().
+                eprintln!("overlay: {e}; {MAX_EGL_FAILURES} EGL failures in a row, shutting the overlay down");
+                self.exit = true;
             }
             Err(e) => {
                 // Usually EGL_BAD_SURFACE / BAD_NATIVE_WINDOW: rebuild the surface.
+                self.egl_failures += 1;
                 eprintln!("overlay: {e}; recreating the surface");
                 self.destroy_surface();
                 self.ensure_surface(None);
             }
+        }
+    }
+
+    /// Replace any pending animation timer with one firing after `after` (`None`: cancel).
+    /// A skipped render gets no frame callback, so without this timer nothing would wake us.
+    fn arm_anim_timer(&mut self, after: Option<Duration>) {
+        if let Some(t) = self.anim_timer.take() {
+            self.handle.remove(t);
+        }
+        let Some(after) = after else { return };
+        let timer = Timer::from_duration(after);
+        match self.handle.insert_source(timer, |_, _, s: &mut Overlay| {
+            s.anim_timer = None;
+            s.dirty = true;
+            s.maybe_render(); // if a frame is still pending, its callback renders instead
+            TimeoutAction::Drop
+        }) {
+            Ok(token) => self.anim_timer = Some(token),
+            Err(e) => eprintln!("overlay: animation timer: {}", e.error),
         }
     }
 }
@@ -343,3 +415,30 @@ delegate_compositor!(Overlay);
 delegate_output!(Overlay);
 delegate_layer!(Overlay);
 delegate_registry!(Overlay);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_wake_idle_when_not_animating() {
+        assert_eq!(next_wake(false, None), None);
+        assert_eq!(next_wake(false, Some(Duration::ZERO)), None);
+        assert_eq!(next_wake(false, Some(Duration::from_secs(5))), None);
+    }
+
+    #[test]
+    fn next_wake_packets_flowing_only_arms_the_stale_fallback() {
+        // Frame drawn right on a ping: the next ping (~16.7 ms) comes before the fallback.
+        assert_eq!(next_wake(true, Some(Duration::ZERO)), Some(PING_STALE));
+        assert_eq!(next_wake(true, Some(Duration::from_millis(10))), Some(Duration::from_millis(30)));
+        assert!(next_wake(true, Some(Duration::ZERO)).is_some_and(|d| d > Duration::from_micros(16_667)));
+    }
+
+    #[test]
+    fn next_wake_packets_stopped_steps_at_anim_frame() {
+        assert_eq!(next_wake(true, None), Some(ANIM_FRAME));
+        assert_eq!(next_wake(true, Some(PING_STALE)), Some(ANIM_FRAME));
+        assert_eq!(next_wake(true, Some(Duration::from_secs(3))), Some(ANIM_FRAME));
+    }
+}

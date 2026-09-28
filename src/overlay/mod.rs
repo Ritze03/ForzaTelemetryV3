@@ -86,12 +86,13 @@ pub enum OverlayCmd {
 pub struct OverlayOptions {
     /// Initial target output name; `None` = the first output.
     pub output: Option<String>,
-    /// Draw the dev test pattern (`FORZA_OVERLAY_TEST=1`).
+    /// Draw the dev test pattern (`FORZA_OVERLAY_TEST=1` or `2`).
     pub test_pattern: bool,
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
@@ -118,6 +119,8 @@ mod linux {
         waker: Waker,
         slot: SnapshotSlot,
         join: Option<JoinHandle<()>>,
+        /// Set on drop; stops the dev 60 Hz pinger (`FORZA_OVERLAY_TEST=2`).
+        dev_stop: Option<Arc<AtomicBool>>,
     }
 
     impl OverlayHandle {
@@ -137,7 +140,7 @@ mod linux {
                 .map_err(io)?;
             // Connect + roundtrip + EGL init is tens of ms; the timeout only guards a hung compositor.
             match ready_rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(Ok(())) => Ok(Self { cmds, waker: Waker(ping), slot, join: Some(join) }),
+                Ok(Ok(())) => Ok(Self { cmds, waker: Waker(ping), slot, join: Some(join), dev_stop: None }),
                 Ok(Err(reason)) => {
                     let _ = join.join();
                     Err(reason)
@@ -169,6 +172,9 @@ mod linux {
 
     impl Drop for OverlayHandle {
         fn drop(&mut self) {
+            if let Some(stop) = &self.dev_stop {
+                stop.store(true, Ordering::Relaxed);
+            }
             self.send(OverlayCmd::Shutdown);
             if let Some(join) = self.join.take() {
                 let _ = join.join();
@@ -176,17 +182,38 @@ mod linux {
         }
     }
 
-    /// Dev switch (phase A): `FORZA_OVERLAY_TEST=1` shows the test pattern on the output
-    /// named by `FORZA_OVERLAY_OUTPUT` (default: the first output). Keep the returned handle
-    /// alive for as long as the pattern should stay up. I7 replaces this with the real spawn.
+    /// Dev switch (phase A): `FORZA_OVERLAY_TEST=1` shows the static test pattern on the
+    /// output named by `FORZA_OVERLAY_OUTPUT` (default: the first output). `=2` also wakes
+    /// the overlay at ~60 Hz, like packets would (D17), so the frame counter in the pattern
+    /// runs and game frametimes can be checked under a redrawing overlay. Keep the returned
+    /// handle alive for as long as the pattern should stay up. I7 replaces this with the
+    /// real spawn.
     pub fn spawn_dev_test() -> Option<OverlayHandle> {
-        if std::env::var("FORZA_OVERLAY_TEST").as_deref() != Ok("1") {
-            return None;
-        }
+        let live = match std::env::var("FORZA_OVERLAY_TEST").as_deref() {
+            Ok("1") => false,
+            Ok("2") => true,
+            _ => return None,
+        };
         let output = std::env::var("FORZA_OVERLAY_OUTPUT").ok().filter(|s| !s.is_empty());
         match OverlayHandle::spawn(OverlayOptions { output, test_pattern: true }) {
-            Ok(handle) => {
+            Ok(mut handle) => {
                 handle.send(OverlayCmd::Show);
+                if live {
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let (waker, thread_stop) = (handle.waker(), stop.clone());
+                    // Detached: it exits within one tick of the handle dropping, and a
+                    // process exit ends it anyway, so joining could only delay app close.
+                    let spawned = thread::Builder::new().name("overlay-dev-ping".into()).spawn(move || {
+                        while !thread_stop.load(Ordering::Relaxed) {
+                            waker.wake();
+                            thread::sleep(Duration::from_micros(16_667));
+                        }
+                    });
+                    match spawned {
+                        Ok(_) => handle.dev_stop = Some(stop),
+                        Err(e) => eprintln!("overlay: dev pinger didn't start: {e}"),
+                    }
+                }
                 Some(handle)
             }
             Err(reason) => {
