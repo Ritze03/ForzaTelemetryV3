@@ -133,6 +133,21 @@ fn linux_query(method: FocusMethod, custom_cmd: &str) -> Result<String, String> 
                 }
             }
         }
+        FocusMethod::Gnome => {
+            // Window Calls extension (extensions.gnome.org/extension/4724): GNOME on Wayland
+            // has no built-in focused-window API. Direct gdbus, no shell: see parse_gnome_list.
+            // stderr is kept (unlike `run`) so the preview can say e.g. the extension is missing.
+            let o = Command::new("gdbus")
+                .args(["call", "--session", "--timeout", "1", "--dest", "org.gnome.Shell",
+                       "--object-path", "/org/gnome/Shell/Extensions/Windows",
+                       "--method", "org.gnome.Shell.Extensions.Windows.List"])
+                .output().map_err(|e| format!("gdbus: {e}"))?;
+            if !o.status.success() {
+                return Err(format!("gdbus exited {}: {}", o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()));
+            }
+            parse_gnome_list(&String::from_utf8_lossy(&o.stdout))
+        }
         FocusMethod::Custom => {
             if custom_cmd.trim().is_empty() { return Err("empty custom command".into()); }
             let out = Command::new("sh").arg("-c").arg(custom_cmd).output()
@@ -144,6 +159,53 @@ fn linux_query(method: FocusMethod, custom_cmd: &str) -> Result<String, String> 
             }
         }
     }
+}
+
+/// `gdbus call … Windows.List` output → `"{wm_class} {wm_class_instance} {title}"` of the
+/// focused window, or `""` when none is focused (e.g. the overview has focus).
+///
+/// gdbus prints a GVariant `(s)` tuple: `('[…json…]',)`. If the string contains a `'` (any
+/// window title with an apostrophe), GLib switches to `"` delimiters and escapes inner `"`
+/// as `\"` — which is why a naive `sed` strip breaks. So: strip the tuple, unescape the
+/// GVariant string, then parse the JSON.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn parse_gnome_list(out: &str) -> Result<String, String> {
+    let bad = || format!("unexpected gdbus output: {:?}", out.chars().take(80).collect::<String>());
+    let inner = out.trim().strip_prefix('(').and_then(|s| s.strip_suffix(",)")).ok_or_else(bad)?;
+    let q = inner.chars().next().filter(|c| *c == '\'' || *c == '"').ok_or_else(bad)?;
+    let body = inner.strip_prefix(q).and_then(|s| s.strip_suffix(q)).ok_or_else(bad)?;
+    let json = gvariant_unescape(body).ok_or_else(bad)?;
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&json).map_err(|e| format!("Window Calls JSON: {e}"))?;
+    let Some(w) = list.iter().find(|w| w["focus"] == serde_json::Value::Bool(true)) else {
+        return Ok(String::new()); // nothing focused → not the game, not an error
+    };
+    let f = |k: &str| w[k].as_str().unwrap_or("");
+    Ok(format!("{} {} {}", f("wm_class"), f("wm_class_instance"), f("title")))
+}
+
+/// Undo GVariant text-format string escapes (`g_variant_print`). `None` on a bad escape.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn gvariant_unescape(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' { out.push(c); continue; }
+        let e = it.next()?;
+        out.push(match e {
+            '\\' | '\'' | '"' => e,
+            'n' => '\n', 't' => '\t', 'r' => '\r',
+            'b' => '\u{8}', 'f' => '\u{c}', 'v' => '\u{b}', 'a' => '\u{7}',
+            'u' | 'U' => {
+                let n = if e == 'u' { 4 } else { 8 };
+                let hex: String = it.by_ref().take(n).collect();
+                if hex.chars().count() != n { return None; }
+                char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?
+            }
+            _ => return None,
+        });
+    }
+    Some(out)
 }
 
 #[cfg(target_os = "windows")]
@@ -175,5 +237,45 @@ mod tests {
         // An empty game_match would match everything; treat it as "no match" so
         // hotkeys aren't accidentally allowed for every window.
         assert!(!window_matches("Forza", ""));
+    }
+
+    #[test]
+    fn gnome_list_picks_focused_window() {
+        let out = r#"('[{"wm_class":"steam_app_1234","wm_class_instance":"forzahorizon6.exe","title":"Forza Horizon 6","focus":true},{"wm_class":"firefox","title":"x","focus":false}]',)"#;
+        let got = parse_gnome_list(&format!("{out}\n")).unwrap();
+        assert_eq!(got, "steam_app_1234 forzahorizon6.exe Forza Horizon 6");
+        assert!(window_matches(&got, "Forza"));
+    }
+
+    #[test]
+    fn gnome_list_apostrophe_switches_to_double_quotes() {
+        let out = r#"("[{\"wm_class\":\"firefox\",\"title\":\"Bob's\",\"focus\":true}]",)"#;
+        // Missing wm_class_instance → "".
+        assert_eq!(parse_gnome_list(out).unwrap(), "firefox  Bob's");
+    }
+
+    #[test]
+    fn gnome_list_unescapes_backslash_and_unicode() {
+        // JSON title `C:\x<U+0001> é` is `"C:\\x\u0001 é"`; GVariant then doubles each backslash.
+        let out = r#"('[{"wm_class":"a","title":"C:\\\\x\\u0001 é","focus":true}]',)"#;
+        assert_eq!(parse_gnome_list(out).unwrap(), "a  C:\\x\u{1} é");
+        // A GVariant-level escape (non-printable char) decodes too.
+        assert_eq!(gvariant_unescape(r"a\u00e9\tb\\").as_deref(), Some("a\u{e9}\tb\\"));
+    }
+
+    #[test]
+    fn gnome_list_without_focus_is_empty_not_error() {
+        assert_eq!(parse_gnome_list(r#"('[{"wm_class":"a","title":"b","focus":false}]',)"#), Ok(String::new()));
+        assert_eq!(parse_gnome_list("('[]',)"), Ok(String::new()));
+    }
+
+    #[test]
+    fn gnome_list_rejects_garbage() {
+        assert!(parse_gnome_list("").is_err());
+        assert!(parse_gnome_list("Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown").is_err());
+        assert!(parse_gnome_list(r#"('[]",)"#).is_err()); // mismatched delimiters
+        assert!(parse_gnome_list("('not json',)").is_err());
+        assert!(parse_gnome_list(r"('\q',)").is_err()); // unknown escape
+        assert!(parse_gnome_list(r"('\u12',)").is_err()); // short \u
     }
 }

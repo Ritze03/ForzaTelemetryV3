@@ -45,8 +45,10 @@ backend immediately — never stored, sent, or logged.
 One `FocusDetector` + one poll thread (at the configured Hz) caches "is the game focused?"
 in an `AtomicBool`, read by both the hotkey gate and the input gate.
 
-- **Methods:** Hyprland (`hyprctl activewindow`), X11 (`xdotool`/`xprop`), Custom (a
-  user command), and native `GetForegroundWindow` on Windows. Each yields the active
+- **Methods:** Hyprland (`hyprctl activewindow`), X11 (`xdotool`/`xprop`), GNOME (`gdbus`
+  → the **Window Calls** Shell extension's `List()`, since GNOME on Wayland has no built-in
+  focused-window API; see [[hotkeys-design]] §7), Custom (a user command), and native
+  `GetForegroundWindow` on Windows. Each yields the active
   window's name; `game_match` (case-insensitive substring, default "Forza") decides.
 - **Detect button:** 3-second countdown, then one query auto-fills `game_match` — handles
   opaque titles (e.g. GameScope).

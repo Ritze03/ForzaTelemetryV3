@@ -886,20 +886,39 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
         #[cfg(target_os = "linux")]
         {
             use crate::config::FocusMethod;
+            let method_before = app.config.hotkeys.focus_method;
             control_row(ui, tr("Window Detection Method"), |ui| {
                 egui::ComboBox::from_id_salt("hk_focus_method")
                     .selected_text(match app.config.hotkeys.focus_method {
                         FocusMethod::Hyprland => "Hyprland",
                         FocusMethod::X11 => "X11",
                         FocusMethod::Custom => tr("Custom"),
+                        FocusMethod::Gnome => tr("GNOME (Window Calls extension)"),
                     })
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
                         changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Hyprland, "Hyprland").changed();
                         changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::X11, "X11").changed();
+                        changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Gnome, tr("GNOME (Window Calls extension)")).changed();
                         changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Custom, tr("Custom")).changed();
                     });
             });
+            if app.config.hotkeys.focus_method != method_before {
+                app.focus_preview.clear(); // a preview from the old method would mislead
+            }
+            if app.config.hotkeys.focus_method == FocusMethod::Gnome {
+                hint(ui, tr("Requires the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."));
+                control_row(ui, tr("Active window"), |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(tr("Test")).clicked() {
+                            app.focus_preview = app.focus.query_now().unwrap_or_else(|e| format!("error: {e}"));
+                        }
+                    });
+                });
+                if !app.focus_preview.is_empty() {
+                    hint(ui, &format!("\u{2192} {}", app.focus_preview));
+                }
+            }
             if app.config.hotkeys.focus_method == FocusMethod::Custom {
                 control_row(ui, tr("Command"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
