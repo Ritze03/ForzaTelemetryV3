@@ -21,7 +21,7 @@ fn frame(ctx: &egui::Context, hud: &mut Hud, snap: &HudSnapshot, now: f64) -> bo
     let mut animating = false;
     let _ = ctx.run(raw, |ctx| {
         let p = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
-        animating = hud.draw(&p, ctx.content_rect(), snap, now, None);
+        animating = hud.draw(&p, ctx.content_rect(), snap, now, None, &[]);
     });
     animating
 }

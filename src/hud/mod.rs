@@ -97,7 +97,8 @@ impl Hud {
     /// Draw the whole HUD on `screen`. Returns true while anything still animates (fade,
     /// shift flash, pulse, place layer, lap hold, chip, count-up, drift bar, map easing);
     /// false once settled, and false after the fade-out finished (the surface can go).
-    pub fn draw(&mut self, p: &Painter, screen: Rect, snap: &HudSnapshot, now: f64, map: Option<minimap::MapTex>) -> bool {
+    /// `teammates` are the co-op markers for M2′ (empty when off or not connected).
+    pub fn draw(&mut self, p: &Painter, screen: Rect, snap: &HudSnapshot, now: f64, map: Option<minimap::MapTex>, teammates: &[minimap::Teammate]) -> bool {
         let cfg = &*snap.cfg;
         let dt = self.last_now.map_or(0.0, |t| (now - t).clamp(0.0, 0.1) as f32);
         self.last_now = Some(now);
@@ -120,10 +121,7 @@ impl Hud {
         for ((module, _, _), rect) in items.iter().zip(rects) {
             let xf = Xf { o: screen.min + rect.min.to_vec2(), s, a: self.fade };
             animating |= match module {
-                Module::Map => {
-                    // Co-op teammates: not wired yet (see `minimap::Teammate`).
-                    minimap::draw(p, &xf, snap, now, &mut self.map_anim, map, &[])
-                }
+                Module::Map => minimap::draw(p, &xf, snap, now, &mut self.map_anim, map, teammates),
                 Module::Cluster => match cfg.cluster_style {
                     ClusterStyle::Pill => cluster::draw_pill(p, &xf, snap, now),
                     ClusterStyle::Halo => cluster::draw_halo(p, &xf, snap, now),

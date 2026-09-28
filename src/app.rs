@@ -951,7 +951,11 @@ impl ForzaApp {
     /// a helper thread and [`Self::sync_overlay_thread`] polls the result.
     #[cfg(target_os = "linux")]
     fn start_overlay(&mut self) {
-        let opts = crate::overlay::OverlayOptions { output: self.focus.monitor_output(), test_pattern: false };
+        let opts = crate::overlay::OverlayOptions {
+            output: self.focus.monitor_output(),
+            test_pattern: false,
+            coop: Some(self.coop.reader()),
+        };
         let (tx, rx) = mpsc::channel();
         let spawned = std::thread::Builder::new().name("overlay-start".into()).spawn(move || {
             // A dropped receiver (app closing) drops the handle here, which shuts it down.

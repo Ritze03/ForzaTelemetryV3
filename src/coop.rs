@@ -12,7 +12,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -120,6 +120,57 @@ struct Inner {
     /// cloudflared download in flight: (bytes so far, total if known). `None` when
     /// not downloading; drives the progress indicator in the Co-Op tab.
     download: Option<(u64, Option<u64>)>,
+}
+
+/// Advance every jitter buffer to `now - buffer_ms`. Time-based, so calling it from more
+/// than one thread (the UI each frame, the overlay each HUD frame) is harmless.
+fn tick(inner: &Mutex<Inner>) {
+    let mut inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    let delay = Duration::from_millis(inner.buffer_ms as u64);
+    for buf in inner.remote.values_mut() {
+        buf.advance(delay);
+    }
+}
+
+fn remote_players(inner: &Mutex<Inner>) -> Vec<(PlayerInfo, ForzaPacket)> {
+    let inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut out = Vec::new();
+    for info in &inner.roster {
+        if info.id == inner.my_id {
+            continue;
+        }
+        if let Some(buf) = inner.remote.get(&info.id) {
+            if buf.last_recv.elapsed() < Duration::from_secs(3) {
+                if let Some(pkt) = &buf.current {
+                    out.push((info.clone(), pkt.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Cheap `Send + Sync` handle on the shared co-op state, for a thread that doesn't own
+/// [`CoopState`] (the HUD overlay). The inner `Arc` is never replaced (stop/host/join reuse
+/// it), so a reader taken once stays valid for the app's lifetime.
+#[derive(Clone)]
+pub struct CoopReader(Arc<Mutex<Inner>>);
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
+impl CoopReader {
+    /// Advance the jitter buffers, then snapshot the remote players (as
+    /// [`CoopState::remote_players`]). It advances them itself because the UI's `tick` stops
+    /// while the game covers the window. Empty while co-op is off (`stop` clears them).
+    pub fn remote_players(&self) -> Vec<(PlayerInfo, ForzaPacket)> {
+        tick(&self.0);
+        remote_players(&self.0)
+    }
+}
+
+impl std::fmt::Debug for CoopReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CoopReader")
+    }
 }
 
 /// Best-effort local LAN IP (the address a same-network peer would reach us on).
@@ -300,30 +351,18 @@ impl CoopState {
 
     /// Advance every jitter buffer; call once per frame before rendering.
     pub fn tick(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let delay = Duration::from_millis(inner.buffer_ms as u64);
-        for buf in inner.remote.values_mut() {
-            buf.advance(delay);
-        }
+        tick(&self.inner);
     }
 
     /// Snapshot of remote players that have a recent packet, for the minimap.
     pub fn remote_players(&self) -> Vec<(PlayerInfo, ForzaPacket)> {
-        let inner = self.inner.lock().unwrap();
-        let mut out = Vec::new();
-        for info in &inner.roster {
-            if info.id == inner.my_id {
-                continue;
-            }
-            if let Some(buf) = inner.remote.get(&info.id) {
-                if buf.last_recv.elapsed() < Duration::from_secs(3) {
-                    if let Some(pkt) = &buf.current {
-                        out.push((info.clone(), pkt.clone()));
-                    }
-                }
-            }
-        }
-        out
+        remote_players(&self.inner)
+    }
+
+    /// A read handle for another thread (the HUD overlay's teammate markers).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
+    pub fn reader(&self) -> CoopReader {
+        CoopReader(self.inner.clone())
     }
 
     pub fn stop(&mut self) {

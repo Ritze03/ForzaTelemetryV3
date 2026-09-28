@@ -161,7 +161,7 @@ fn init(
     let wl = if display.as_deref().is_some_and(|d| !d.is_empty()) { Some(connect()?) } else { None };
     let layer_shell = wl.as_ref().and_then(|w| LayerShell::bind(&w.globals, &w.queue.handle()).ok());
     let gpu = match (&wl, &layer_shell) {
-        (Some(w), Some(_)) => Gl::new(&w.conn).and_then(|gl| Ok((Renderer::new(gl.glow.clone())?, gl))),
+        (Some(w), Some(_)) => Gl::new(&w.conn).and_then(|gl| Ok((Renderer::new(gl.glow.clone(), opts.coop.clone())?, gl))),
         _ => Err(String::new()),
     };
     capability(display.as_deref(), layer_shell.is_some(), gpu.as_ref().err().map(String::as_str))?;

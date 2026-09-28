@@ -17,7 +17,7 @@ use egui_glow::glow::{self, HasContext};
 use super::super::gl::Headless;
 use super::{paint, Renderer};
 use crate::config::{ClusterStyle, OverlayConfig};
-use crate::hud::minimap::{MapAnim, MapTex};
+use crate::hud::minimap::{MapAnim, MapTex, Teammate};
 use crate::hud::prims::Xf;
 use crate::hud::{cluster, drift, minimap, race};
 use crate::minimap::{MapCalibration, Season, OVERLAY_MAP_TEXTURE_OPTIONS};
@@ -83,6 +83,17 @@ fn drift_state(score: f32, chip: Option<(f32, f64)>, cycle: Option<f64>) -> HudS
 
 /// A procedural stand-in map (the real one takes 2 s to load): fields, a road grid, a
 /// highway and a lake, so rotation and scale are visible.
+/// Two teammates around `snap`'s car, placed along its heading (the map is heading-up, so
+/// "ahead" is screen-up): one ahead-left turning right, one right-behind heading back. At the
+/// default driving zoom (1500 m, 0.045 px/m) they land about (−18, −36) and (54, 23) px from
+/// the car.
+fn coop_mates(snap: &HudSnapshot) -> Vec<Teammate> {
+    let (x, z, yaw) = (snap.pkt.position_x, snap.pkt.position_z, snap.pkt.yaw);
+    let at = |ahead: f32, right: f32| (x + ahead * yaw.sin() + right * yaw.cos(), z + ahead * yaw.cos() - right * yaw.sin());
+    let mate = |(x, z): (f32, f32), dyaw: f32, name: &str, hue: f32| Teammate { x, z, yaw: yaw + dyaw, name: name.into(), colour: crate::ui::coop::hue_color(hue) };
+    vec![mate(at(800.0, -400.0), 0.4, "Kai", 36.0), mate(at(-500.0, 1200.0), -2.0, "Mo", 200.0)]
+}
+
 fn synthetic_map(winter: bool) -> ColorImage {
     let n = 1024usize;
     let mut px = Vec::with_capacity(n * n);
@@ -164,7 +175,7 @@ fn render_spec_states() -> Result<(), String> {
         (fbo, rb)
     };
     // Declared after `headless`, so it drops first (the painter needs the context).
-    let mut r = Renderer::new(gl.clone())?;
+    let mut r = Renderer::new(gl.clone(), None)?;
     std::fs::create_dir_all(out_dir()).map_err(|e| format!("{}: {e}", out_dir().display()))?;
 
     let summer = r.ctx.load_texture("test-map-summer", synthetic_map(false), OVERLAY_MAP_TEXTURE_OPTIONS);
@@ -208,7 +219,13 @@ fn render_spec_states() -> Result<(), String> {
     compass_off.pkt.speed = 20.0;
     let mut driving = base(OverlayConfig::default());
     driving.pkt.speed = 20.0;
-    let maps = [("summer", driving.clone(), map_s), ("winter", driving, map_w), ("compass_off", compass_off, map_s)];
+    let mates = coop_mates(&driving);
+    let maps = [
+        ("summer", driving.clone(), map_s, &[][..]),
+        ("winter", driving.clone(), map_w, &[][..]),
+        ("compass_off", compass_off, map_s, &[][..]),
+        ("coop", driving, map_s, &mates[..]),
+    ];
 
     let mut failures = Vec::new();
     let mut written = Vec::new();
@@ -279,13 +296,17 @@ fn render_spec_states() -> Result<(), String> {
             }
             written.push(save(&img, &id)?);
         }
-        for (name, snap, map) in &maps {
+        for (name, snap, map, mates) in &maps {
             let img = tile(&mut r, minimap::SIZE, s, |p, xf| {
-                minimap::draw(p, xf, snap, NOW, &mut MapAnim::default(), Some(*map), &[]);
+                minimap::draw(p, xf, snap, NOW, &mut MapAnim::default(), Some(*map), mates);
             });
             let id = format!("m2_{name}_{sfx}");
             if s == 1.0 {
                 check(&mut failures, &img, &id, (104, 70), [255, 255, 255], "car marker");
+                if *name == "coop" {
+                    let [r, g, b, _] = crate::ui::coop::hue_color(36.0).to_array();
+                    check(&mut failures, &img, &id, (87, 30), [r, g, b], "teammate arrow fill");
+                }
                 let frame = px(&img, 11, 78);
                 println!("  {id} frame border (1,68): {frame:?}");
                 if frame.iter().any(|&c| c > 70) {

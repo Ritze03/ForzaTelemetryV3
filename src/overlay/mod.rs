@@ -90,6 +90,8 @@ pub struct OverlayOptions {
     pub output: Option<String>,
     /// Draw the dev test pattern (`FORZA_OVERLAY_TEST=1` or `2`).
     pub test_pattern: bool,
+    /// Co-op state, read each HUD frame for the teammate markers on M2′ (`None` = none).
+    pub coop: Option<crate::coop::CoopReader>,
 }
 
 #[cfg(target_os = "linux")]
@@ -219,7 +221,7 @@ mod linux {
             _ => return None,
         };
         let output = std::env::var("FORZA_OVERLAY_OUTPUT").ok().filter(|s| !s.is_empty());
-        match OverlayHandle::spawn(OverlayOptions { output, test_pattern: true }) {
+        match OverlayHandle::spawn(OverlayOptions { output, test_pattern: true, coop: None }) {
             Ok(mut handle) => {
                 handle.send(OverlayCmd::Show);
                 if live {

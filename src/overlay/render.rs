@@ -10,7 +10,9 @@ use egui::{Color32, CornerRadius, FontId, Id, LayerId, Order, Painter, Pos2, Rec
 use egui_glow::glow;
 
 use super::snapshot::{hud_clock, HudSnapshot};
-use crate::hud::{fonts, minimap::MapLoader, Hud};
+use crate::coop::CoopReader;
+use crate::hud::minimap::{MapLoader, Teammate};
+use crate::hud::{fonts, Hud};
 
 pub struct Renderer {
     ctx: egui::Context,
@@ -18,16 +20,18 @@ pub struct Renderer {
     start: Instant,
     hud: Hud,
     map: MapLoader,
+    /// Co-op teammates for M2′, read per frame (never through the UI thread).
+    coop: Option<CoopReader>,
 }
 
 impl Renderer {
     /// Needs the GL context current (surfaceless is fine): compiles the shaders.
-    pub fn new(gl: Arc<glow::Context>) -> Result<Self, String> {
+    pub fn new(gl: Arc<glow::Context>, coop: Option<CoopReader>) -> Result<Self, String> {
         // Dithering on: removes banding in long, faint vertex-colour fades on an 8-bit buffer.
         let painter = egui_glow::Painter::new(gl, "", None, true).map_err(|e| format!("egui_glow: {e}"))?;
         let ctx = egui::Context::default();
         fonts::install(&ctx);
-        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default() })
+        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default(), coop })
     }
 
     /// Draw one frame of `size` physical px. Returns true while an animation still needs
@@ -40,16 +44,38 @@ impl Renderer {
     /// [`Self::frame`] at a pinned `now` ([`hud_clock`] seconds) over a premultiplied
     /// `clear` colour (the PNG harness renders over an opaque backdrop).
     fn frame_at(&mut self, size: [u32; 2], snapshot: Option<&HudSnapshot>, test_pattern: bool, now: f64, clear: [f32; 4]) -> bool {
-        let (hud, map) = (&mut self.hud, &mut self.map);
+        let (hud, map, coop) = (&mut self.hud, &mut self.map, &self.coop);
         paint(&self.ctx, &mut self.painter, self.start, size, clear, |ctx, p| {
             if test_pattern {
                 draw_test_pattern(p, ctx.content_rect(), ctx.cumulative_pass_nr());
             }
             let Some(snap) = snapshot else { return false };
             let tex = map.poll(ctx, now, snap.cfg.minimap_on);
-            hud.draw(p, ctx.content_rect(), snap, now, tex)
+            let cfg = &*snap.cfg;
+            let mates = match coop {
+                Some(c) if cfg.minimap_on && cfg.coop_teammates => teammates(c),
+                _ => Vec::new(),
+            };
+            hud.draw(p, ctx.content_rect(), snap, now, tex, &mates)
         })
     }
+}
+
+/// The live, unpaused remote players as map markers, in their identity colour (as on the
+/// Dashboard map). Paused teammates are skipped: their packet sits at the world origin and
+/// their last-known spot is UI-side state (`ForzaApp::coop_last_pos`).
+fn teammates(coop: &CoopReader) -> Vec<Teammate> {
+    coop.remote_players()
+        .into_iter()
+        .filter(|(_, pkt)| !pkt.is_paused())
+        .map(|(info, pkt)| Teammate {
+            x: pkt.position_x,
+            z: pkt.position_z,
+            yaw: pkt.yaw,
+            name: info.name,
+            colour: crate::ui::coop::hue_color(info.hue),
+        })
+        .collect()
 }
 
 /// Run one egui frame over `size` px with `draw` on a background-layer painter, then

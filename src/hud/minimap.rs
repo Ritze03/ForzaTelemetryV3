@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use egui::epaint::Vertex;
 use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, TextureHandle, TextureId, Vec2};
 
-use super::col;
+use super::{col, fonts};
 use super::prims::{self, Xf};
 use crate::minimap::{self as mm, MapCalibration, MapView, Season};
 use crate::overlay::snapshot::HudSnapshot;
@@ -139,13 +139,77 @@ impl MapAnim {
     }
 }
 
-/// A co-op teammate on the map (not wired yet: the positions live UI-side and need their
-/// own path to the overlay thread). The seam `draw` takes today, always called empty.
+/// A co-op teammate on the map: world position, raw heading (`pkt.yaw`), name and identity
+/// colour (the Dashboard map's `hue_color`).
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // pending: co-op teammates on the HUD map
 pub struct Teammate {
     pub x: f32,
     pub z: f32,
+    pub yaw: f32,
+    pub name: String,
+    pub colour: Color32,
+}
+
+/// Teammate arrow (spec "Co-op marker", 12 × 14, apex up at 0): a chevron, as two triangles
+/// sharing the (tip, notch) edge.
+const MATE_ARROW: [[f32; 2]; 4] = [[0.0, -8.0], [6.0, 6.0], [0.0, 3.0], [-6.0, 6.0]];
+const MATE_EDGE: Color32 = prims::rgba(0, 0, 0, 0.7);
+/// A teammate is drawn only while its arrow centre is this far (design px) inside the pill,
+/// so the whole arrow stays within the frame. Off-map teammates are skipped (the spec has
+/// no edge clamp).
+const MATE_MARGIN: f32 = 11.0;
+
+/// `off` (screen px from the pill centre) is at least `margin` inside a rounded rect of
+/// `half` extents and corner `radius` (a rounded-box signed distance).
+fn inside_pill(off: [f32; 2], half: Vec2, radius: f32, margin: f32) -> bool {
+    let q = vec2(off[0].abs(), off[1].abs()) - (half - Vec2::splat(radius));
+    let dist = q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - radius;
+    dist <= -margin
+}
+
+/// `MATE_ARROW` rotated by `angle` (radians, clockwise on screen, 0 = up), same rotation as
+/// the Dashboard's remote arrows.
+fn mate_arrow(angle: f32) -> [[f32; 2]; 4] {
+    let (sa, ca) = angle.sin_cos();
+    MATE_ARROW.map(|[x, y]| [x * ca - y * sa, x * sa + y * ca])
+}
+
+/// The spec's co-op markers: an arrow at each teammate's position turned to their heading,
+/// then the name 10 px to its right (Barlow 600 9.5 px, mapped to [`fonts::W800`]) with a
+/// dark outline. Clipped to the pill's inner rect.
+fn draw_teammates(p: &Painter, xf: &Xf, view: &MapView, centre: Pos2, teammates: &[Teammate]) {
+    let p = p.with_clip_rect(xf.rect(3.0, 3.0, SIZE.x - 6.0, SIZE.y - 6.0));
+    let (half, radius, margin) = (SIZE * xf.s / 2.0, xf.l(RADIUS), xf.l(MATE_MARGIN));
+    let edge = xf.c(MATE_EDGE);
+    let font = egui::FontId::new(xf.l(9.5), egui::FontFamily::Name(fonts::W800.into()));
+    for t in teammates {
+        let off = view.world_to_offset(t.x, t.z);
+        if !inside_pill(off, half, radius, margin) {
+            continue;
+        }
+        let at = centre + vec2(off[0], off[1]);
+        let pts: Vec<Pos2> = mate_arrow(view.arrow_angle(t.yaw)).iter().map(|&[x, y]| at + vec2(x, y) * xf.s).collect();
+        // Concave, so a plain (unfeathered) mesh; the 1.5 px stroke on top anti-aliases the edge.
+        let mut mesh = Mesh::default();
+        let fill = xf.c(t.colour);
+        for &pt in &pts {
+            mesh.colored_vertex(pt, fill);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        p.add(mesh);
+        p.add(egui::Shape::closed_line(pts, egui::Stroke::new(xf.l(1.5), edge)));
+
+        // ponytail: the 3 px text stroke is 8 offset copies at 1.5 px, so their overlap
+        // reads darker than the spec's .7. Upgrade: an SDF/outline text pass if it matters.
+        let g = p.layout_no_wrap(t.name.clone(), font.clone(), fill);
+        let pos = at + vec2(xf.l(10.0), -g.size().y / 2.0);
+        for i in 0..8 {
+            let a = i as f32 * std::f32::consts::FRAC_PI_4;
+            p.galley_with_override_text_color(pos + xf.l(1.5) * Vec2::angled(a), g.clone(), edge);
+        }
+        p.galley(pos, g, fill);
+    }
 }
 
 /// Draw M2′. Returns true while the view is still easing.
@@ -179,9 +243,7 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
         }
     }
 
-    // TODO(co-op): teammate markers (arrow 12 × 14 + name, #F2A93B, spec sheet "Co-op
-    // marker") once teammates reach the overlay thread.
-    let _ = teammates;
+    draw_teammates(p, xf, &view, centre, teammates);
 
     // Compass (D12): disc at (18, 18) r 11, two-colour needle 16 × 6 pointing to world north.
     if snap.cfg.compass {
@@ -223,5 +285,56 @@ fn fan(mesh: &mut Mesh, centre: Pos2, outline: &[Pos2], vertex: impl Fn(Pos2) ->
     let n = outline.len() as u32;
     for i in 0..n {
         mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HALF: Vec2 = vec2(104.0, 68.0);
+
+    #[test]
+    fn teammate_ahead_is_above_the_car_and_inside_the_pill() {
+        // Heading-up at yaw 0.6 rad (clockwise from +Z), 400 m to the nearest edge of a
+        // 136 px-tall view = 0.17 px/m. A teammate 100 m along the car's heading sits 17 px
+        // straight above the car; 100 m to its right, 17 px to the right.
+        let (yaw, car) = (0.6_f32, (1200.0, -800.0));
+        let view = MapView::new(car.0, car.1, yaw, 400.0, 136.0);
+        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        let ahead = view.world_to_offset(car.0 + 100.0 * yaw.sin(), car.1 + 100.0 * yaw.cos());
+        assert!(close(ahead, [0.0, -17.0]), "{ahead:?}");
+        assert!(inside_pill(ahead, HALF, RADIUS, MATE_MARGIN));
+        let right = view.world_to_offset(car.0 + 100.0 * yaw.cos(), car.1 - 100.0 * yaw.sin());
+        assert!(close(right, [17.0, 0.0]), "{right:?}");
+        // 1 km ahead is off the map (skipped, not clamped).
+        let far = view.world_to_offset(car.0 + 1000.0 * yaw.sin(), car.1 + 1000.0 * yaw.cos());
+        assert!(!inside_pill(far, HALF, RADIUS, MATE_MARGIN));
+    }
+
+    #[test]
+    fn pill_bounds_and_rounded_corners() {
+        assert!(inside_pill([0.0, 0.0], HALF, RADIUS, MATE_MARGIN));
+        // Beyond the margin on the long and short axes.
+        assert!(inside_pill([104.0 - 12.0, 0.0], HALF, RADIUS, MATE_MARGIN));
+        assert!(!inside_pill([104.0 - 10.0, 0.0], HALF, RADIUS, MATE_MARGIN));
+        assert!(!inside_pill([0.0, 68.0 - 10.0], HALF, RADIUS, MATE_MARGIN));
+        assert!(!inside_pill([500.0, -500.0], HALF, RADIUS, MATE_MARGIN));
+        // Inside the bounding rect by the margin but cut off by the corner rounding.
+        assert!(!inside_pill([104.0 - 12.0, 68.0 - 12.0], HALF, RADIUS, MATE_MARGIN));
+        assert!(inside_pill([104.0 - 22.0, 68.0 - 12.0], HALF, RADIUS, MATE_MARGIN));
+    }
+
+    #[test]
+    fn teammate_arrow_turns_with_their_heading_relative_to_the_view() {
+        let view = MapView::new(0.0, 0.0, 0.6, 400.0, 136.0);
+        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
+        // Same heading as the car: apex straight up, unrotated.
+        assert!(close(mate_arrow(view.arrow_angle(0.6))[0], [0.0, -8.0]));
+        // A quarter turn clockwise: apex points right; the notch stays behind it.
+        let a = mate_arrow(view.arrow_angle(0.6 + std::f32::consts::FRAC_PI_2));
+        assert!(close(a[0], [8.0, 0.0]) && close(a[2], [-3.0, 0.0]), "{a:?}");
+        // Opposite heading: apex down.
+        assert!(close(mate_arrow(view.arrow_angle(0.6 + std::f32::consts::PI))[0], [0.0, 8.0]));
     }
 }
