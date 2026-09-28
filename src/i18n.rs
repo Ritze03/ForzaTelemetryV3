@@ -787,6 +787,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Setup → Hotkey" => "Setup → Hotkey",
         "The HUD is hidden. Press the Hide HUD key again to show it."
             => "Das HUD ist ausgeblendet. Drücke die „HUD ausblenden\"-Taste erneut, um es zu zeigen.",
+        "Only when game window is focused" => "Nur wenn das Spielfenster im Fokus ist",
+        "Hides the in-game overlay while another window is focused. Uses the detection method above."
+            => "Blendet das In-Game-Overlay aus, solange ein anderes Fenster im Fokus ist. Nutzt die Erkennungsmethode oben.",
         "Scale" => "Skalierung",
         "Plate opacity" => "Hintergrund-Deckkraft",
         "Fade on show / hide" => "Beim Ein-/Ausblenden überblenden",

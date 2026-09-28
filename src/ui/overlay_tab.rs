@@ -183,35 +183,6 @@ fn method_label(m: MonitorMethod) -> &'static str {
     })
 }
 
-/// One-shot monitor query for Test / Detect, run on the UI thread like Setup's focus Test.
-/// ponytail: mirrors the private `focus::query_monitor` (same tools, same parsers); make that
-/// one `pub` and call it if the two ever drift.
-fn query_monitor_now(method: MonitorMethod, cmd: &str) -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::Command;
-        let custom = method == MonitorMethod::Custom;
-        let out = if custom {
-            Command::new("sh").arg("-c").arg(cmd).output()
-        } else {
-            Command::new("hyprctl").arg("activeworkspace").output()
-        }
-        .map_err(|e| e.to_string())?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        let name = if custom {
-            crate::focus::trim_monitor_name(&text)
-        } else {
-            crate::focus::parse_hyprland_monitor(&text)
-        };
-        name.ok_or_else(|| tr("No monitor name in the output").to_string())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (method, cmd);
-        Err(tr("Linux only").to_string())
-    }
-}
-
 fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
     // Last Test / Detect result, kept in egui memory (UI-only, not config).
     let test_id = Id::new("overlay_monitor_test");
@@ -240,7 +211,7 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
                 control_row(ui, tr("Command"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(tr("Test")).clicked() {
-                            test = Some(query_monitor_now(o.monitor_method, &o.monitor_cmd));
+                            test = Some(crate::focus::query_monitor(o.monitor_method, &o.monitor_cmd));
                         }
                         ui.add(
                             egui::TextEdit::singleline(&mut o.monitor_cmd)
@@ -257,7 +228,7 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
                         // Fills the field with the monitor Hyprland reports as focused: the one
                         // this window is on when you click.
                         if ui.button(tr("Detect")).clicked() {
-                            match query_monitor_now(MonitorMethod::Hyprland, "") {
+                            match crate::focus::query_monitor(MonitorMethod::Hyprland, "") {
                                 Ok(name) => o.monitor_fixed = name,
                                 Err(e) => test = Some(Err(e)),
                             }
@@ -314,7 +285,7 @@ fn monitor_status_line(ui: &mut Ui, app: &ForzaApp, test: &mut Option<Result<Str
         if o.monitor_method != MonitorMethod::Fixed {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(tr("Detect")).clicked() {
-                    *test = Some(query_monitor_now(o.monitor_method, &o.monitor_cmd));
+                    *test = Some(crate::focus::query_monitor(o.monitor_method, &o.monitor_cmd));
                 }
                 status_line(ui, col, &msg);
             });

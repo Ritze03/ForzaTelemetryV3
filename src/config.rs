@@ -164,7 +164,6 @@ pub struct HotkeyConfig {
     pub unbound: Vec<HotkeyAction>,
 }
 
-#[allow(dead_code)] // pending: wired up by the overlay app wiring / Overlay tab
 impl HotkeyConfig {
     /// Bind `action` to `binding` (clears a previous unbind).
     pub fn bind(&mut self, action: HotkeyAction, binding: crate::keymap::HotkeyBinding) {
@@ -242,7 +241,6 @@ pub enum HudCell {
     BottomRight,
 }
 
-#[allow(dead_code)] // pending: wired up by the overlay app wiring / Overlay tab
 impl HudCell {
     /// All nine slots, row-major (index = `row * 3 + col`).
     pub const ALL: [HudCell; 9] = [
@@ -359,7 +357,6 @@ impl OverlayConfig {
     pub const DEFAULT_RACE_CELL: HudCell = HudCell::TopLeft;
 
     /// Layout card's Reset: put every module back in its default slot.
-    #[allow(dead_code)] // pending: Overlay tab
     pub fn reset_layout(&mut self) {
         self.cluster_cell = Self::DEFAULT_CLUSTER_CELL;
         self.minimap_cell = Self::DEFAULT_MINIMAP_CELL;

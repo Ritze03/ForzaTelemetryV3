@@ -138,13 +138,11 @@ impl FocusDetector {
         lock(&self.monitor).detected.clone().flatten()
     }
 
-    #[allow(dead_code)] // pending: Overlay tab status dot (I9)
     pub fn monitor_status(&self) -> MonitorStatus {
         lock(&self.monitor).status
     }
 
     /// Why the last detection failed (with [`MonitorStatus::Failed`]).
-    #[allow(dead_code)] // pending: Overlay tab status dot (I9)
     pub fn monitor_error(&self) -> Option<String> {
         lock(&self.monitor).error.clone()
     }
@@ -251,8 +249,9 @@ pub fn trim_monitor_name(out: &str) -> Option<String> {
     out.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
 }
 
-/// Run the Hyprland/Custom monitor query (Fixed never gets here).
-fn query_monitor(method: MonitorMethod, cmd: &str) -> Result<String, String> {
+/// Run the Hyprland/Custom monitor query (Fixed never gets here). Also the Overlay tab's
+/// synchronous Test / Detect.
+pub fn query_monitor(method: MonitorMethod, cmd: &str) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         use std::process::Command;

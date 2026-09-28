@@ -33,10 +33,18 @@ fn sub_heading(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(11.0).color(crate::theme::TEXT_DIM).strong());
 }
 
+/// The state a [`status_dot`] shows: green, amber (waiting / not focused) or red.
+#[derive(Clone, Copy)]
+enum Dot { Ok, Warn, Bad }
+
 /// A coloured status dot + message (● renders in the font; emoji don't).
-fn status_dot(ui: &mut Ui, ok: bool, msg: &str) {
+fn status_dot(ui: &mut Ui, dot: Dot, msg: &str) {
     ui.horizontal(|ui| {
-        let col = if ok { Color32::from_rgb(80, 200, 120) } else { Color32::from_rgb(220, 100, 100) };
+        let col = match dot {
+            Dot::Ok => crate::theme::GOOD,
+            Dot::Warn => crate::theme::WARN,
+            Dot::Bad => crate::theme::DANGER,
+        };
         ui.label(RichText::new("\u{25CF}").color(col));
         ui.label(RichText::new(msg).size(11.0));
     });
@@ -166,7 +174,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 hint(ui, tr("Local port the tunnel points at. Change only if it clashes with another app."));
             });
 
-            crate::theme::card(right, tr("Input"), |ui| input_card(ui, app));
+            crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));
         });
     });
 
@@ -814,7 +822,6 @@ fn group_tree(ui: &mut Ui, sel: &mut [bool], present: Option<&[bool]>) {
 /// The "Hotkey" category: rebind rows grouped by scope.
 fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::config::{HotkeyAction, HotkeyScope};
-    let mut changed = false;
 
     for (scope, heading) in [
         (HotkeyScope::Global, tr("Global (while in-game)")),
@@ -824,9 +831,12 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
         for action in HotkeyAction::ALL.iter().copied().filter(|a| a.scope() == scope) {
             let capturing = app.rebinding == Some(action);
             let text = if capturing {
-                tr("Press a key…").to_string()
+                RichText::new(tr("Press a key…"))
             } else {
-                app.config.hotkeys.bindings.get(&action).map(|b| b.label()).unwrap_or_default()
+                match app.config.hotkeys.bindings.get(&action) {
+                    Some(b) => RichText::new(b.label()),
+                    None => RichText::new(tr("Not set")).color(crate::theme::FAINT),
+                }
             };
             control_row(ui, tr(action.label()), |ui| {
                 let h = ui.spacing().interact_size.y;
@@ -834,41 +844,21 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
                     app.rebinding = if capturing { None } else { Some(action) };
                 }
             });
-        }
-    }
-
-    // Capture the next key while rebinding.
-    if let Some(action) = app.rebinding {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            app.rebinding = None;
-        } else if let Some(hk) = ui.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, pressed: true, .. } => crate::keymap::HotKey::from_egui(*key),
-                _ => None,
-            })
-        }) {
-            if hk != crate::keymap::HotKey::Escape {
-                let m = ui.input(|i| i.modifiers);
-                app.config.hotkeys.bindings.insert(action, crate::keymap::HotkeyBinding {
-                    mods: crate::keymap::Mods { ctrl: m.ctrl, alt: m.alt, shift: m.shift, sup: false },
-                    key: hk,
-                });
-                app.rebinding = None;
-                changed = true;
+            if capturing {
+                hint(ui, tr("Esc cancels. Backspace clears the binding."));
             }
         }
     }
-
-    if changed { app.sync_hotkeys(); }
+    // Key capture (bind / Backspace unbind / Esc cancel) is `ForzaApp::capture_rebind`,
+    // which runs before the UI and re-syncs the hotkeys itself.
 }
 
-/// The "Input" category: window detection + synthetic-input gating.
+/// The "Window Detection" category: detection method + what it gates (hotkeys, the
+/// in-game overlay, synthetic input).
 fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::config::GateMode;
     let mut changed = false;
 
-    // ── Window Detection ──
-    sub_heading(ui, tr("Window Detection"));
     control_row(ui, tr("Active if"), |ui| {
         egui::ComboBox::from_id_salt("hk_gate_mode")
             .selected_text(match app.config.hotkeys.gate_mode {
@@ -882,7 +872,12 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
             });
     });
 
-    if app.config.hotkeys.gate_mode == GateMode::WindowFocus {
+    // The method / title rows matter whenever anything consults the detector, not only
+    // for hotkey gating.
+    let uses_focus = app.config.hotkeys.gate_mode == GateMode::WindowFocus
+        || app.config.hotkeys.input_focus_gate
+        || app.config.overlay.focus_only;
+    if uses_focus {
         #[cfg(target_os = "linux")]
         {
             use crate::config::FocusMethod;
@@ -957,17 +952,22 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
 
     // Live game-window status light (last entry). The detector polls whenever
     // window-focus gating or the input gate is on.
-    let detector_active = app.config.hotkeys.input_focus_gate
-        || app.config.hotkeys.gate_mode == GateMode::WindowFocus;
+    // (Mirrors `focus_params` in app.rs: the overlay runs the detector too.)
+    let detector_active = uses_focus || app.config.overlay.enabled;
     if detector_active {
         if app.focus.status() == crate::focus::FocusStatus::QueryFailed {
-            status_dot(ui, false, tr("Focus detection failed — check the method/command"));
+            status_dot(ui, Dot::Bad, tr("Focus detection failed — check the method/command"));
+        } else if app.focus.focused() {
+            status_dot(ui, Dot::Ok, tr("Game window focused"));
         } else {
-            let focused = app.focus.focused();
-            let msg = if focused { tr("Game window focused") } else { tr("Game window not focused") };
-            status_dot(ui, focused, msg);
+            status_dot(ui, Dot::Warn, tr("Game window not focused"));
         }
     }
+
+    // ── Overlay ── (read live by `ForzaApp::sync_overlay`; no hotkey re-sync needed)
+    sub_heading(ui, tr("Overlay"));
+    crate::theme::checkbox_row(ui, &mut app.config.overlay.focus_only, tr("Only when game window is focused"));
+    hint(ui, tr("Hides the in-game overlay while another window is focused. Uses the detection method above."));
 
     // ── Send Input ──
     sub_heading(ui, tr("Send Input"));
