@@ -415,7 +415,7 @@ pub enum MiniMapTab {
 }
 
 /// Last-known non-paused position of a co-op player, so a paused player can still
-/// be drawn at their last spot. (Class/PI travel in the packet — see push_local.)
+/// be drawn at their last spot. (Class/PI travel in the packet — see coop::outgoing.)
 #[derive(Clone, Copy)]
 pub struct CoopSeen {
     pub x: f32,
@@ -706,9 +706,6 @@ impl ForzaApp {
         };
 
         let initial_zoom = config.minimap_zoom_stopped_m;
-        let config_coop_name = config.coop_name.clone();
-        let config_coop_hue = config.coop_hue;
-        let config_coop_buffer_ms = config.coop_buffer_ms;
         let config_coop_last_code = config.coop_last_code.clone();
 
         // Hotkeys: shared "input allowed" flag, focus detector, capture backend.
@@ -720,6 +717,11 @@ impl ForzaApp {
 
         // The listener thread owns Backfire, the gearbox, the per-car calibrations and the
         // global hotkeys, so they all keep running when the window stops being drawn.
+        let coop = crate::coop::CoopState::new(
+            &config.coop_name,
+            config.coop_hue,
+            config.coop_buffer_ms,
+        );
         let listener = crate::listeners::worker::spawn(
             packet_rx,
             hotkey_rx,
@@ -727,6 +729,7 @@ impl ForzaApp {
             input_allowed,
             focus.clone(),
             config.clone(),
+            coop.reader(),
         );
 
         Self {
@@ -814,11 +817,7 @@ impl ForzaApp {
             trace_history: VecDeque::new(),
             trace_active_secs: 0.0,
             trace_last_sample: None,
-            coop: crate::coop::CoopState::new(
-                &config_coop_name,
-                config_coop_hue,
-                config_coop_buffer_ms,
-            ),
+            coop,
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
             packet_tx,
@@ -1173,17 +1172,7 @@ impl ForzaApp {
                 .update(&pkt, accel_s, accel_e, decel_s, decel_e);
             // Backfire + the gearbox already ran on this packet, on the listener thread.
 
-            // Co-Op: relay our locally-received telemetry to peers. A paused game
-            // zeroes car class/PI, so carry over the cached values (same as the Car
-            // widget) so peers keep showing our real class while we're paused.
-            if pkt.is_paused() && self.cached_car_pi != 0 {
-                let mut out = pkt.clone();
-                out.car_class = self.cached_car_class;
-                out.car_performance_index = self.cached_car_pi;
-                self.coop.push_local(&out);
-            } else {
-                self.coop.push_local(&pkt);
-            }
+            // Co-Op's outgoing relay runs on the listener thread too (see worker.rs).
 
             self.telemetry.update(pkt);
         }

@@ -42,8 +42,9 @@ described below.
   two features (and the `G`/`B`/reset hotkeys that toggle them, and the synthetic-input
   focus gate) must not depend on redraws.
 - **egui/eframe render thread (main)** — owns `ForzaApp`, including the receiver of
-  *forwarded* packets. Everything else — stats, Co-Op, the three read-only listeners,
-  widgets — still happens here, single-threaded.
+  *forwarded* packets. Everything else — stats, the three read-only listeners, Co-Op's
+  incoming side (jitter buffers, roster, minimap), widgets — still happens here,
+  single-threaded. Co-Op's *outgoing* relay runs on the listener thread (see [[coop]]).
 - **Short-lived background threads** — the seasonal minimap image decode
   (`app.rs:map_load_thread`, results returned over its own `mpsc` channel of
   `MapLoadMessage`), and Co-Op's WebSocket relay + cloudflared tunnel
@@ -115,6 +116,8 @@ listeners/worker.rs:run()          (runs whether or not we're being drawn)
       ├─ dynamic redline (highest RPM while making power)
       ├─ backfire.update(&pkt, …)   → synthetic W  (input.rs:InputSender)
       ├─ dsg.update(&pkt, …)        → synthetic E/Q
+      ├─ coop.push_local(&coop::outgoing(..)) → relay to peers (coop.rs; paused class/PI
+      │    carried over). Here because the UI loop stops while the game covers the window
       ├─ publishes ListenerView into the listener→UI mailbox
       ▼  push_back into the capped packet mailbox (oldest dropped)
 ─────────── Arc<Mutex<VecDeque<ForzaPacket>>> ───────────
@@ -127,7 +130,6 @@ app.rs:ForzaApp::drain_packets()   (called first each frame)
       ├─ stats: gforce_stats.update / suspension_stats.update / speed-delta /
       │    trace_history (Speed Trace, active-time axis)
       ├─ UI-side listeners fire (see below)
-      ├─ coop.push_local(&pkt)          → relay to peers (coop.rs)
       └─ telemetry.update(pkt)          → stores latest + packet-rate (telemetry.rs)
       ▼
 egui::CentralPanel dispatch → crate::ui::<tab>::show(ui, self)
@@ -149,8 +151,7 @@ listener thread; the three read-only ones still run inside `drain_packets`:
 
 **Backlog cap.** The packet mailbox keeps filling while the window is hidden, so the
 listener drops the **oldest** once it holds `worker::UI_BACKLOG_CAP` (200). *Why:* replaying
-minutes of stale telemetry through the sprint timer, the trace buffer and the Co-Op relay on
-restore is worse than skipping it, and an uncapped queue would also grow without bound. The
+minutes of stale telemetry through the sprint timer and the trace buffer on restore is worse than skipping it, and an uncapped queue would also grow without bound. The
 listener thread itself never falls behind — it drains continuously and processes each packet
 as it arrives, so it can never replay stale input.
 

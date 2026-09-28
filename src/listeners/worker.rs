@@ -7,8 +7,9 @@
 //! means the game loses its synthetic keypresses the moment the window is covered. Both
 //! features must not depend on redraws, so they run here instead, straight off the UDP
 //! channel, together with the state they need (per-car calibration, the detected redline,
-//! the packet rate) and the global hotkeys that toggle them. Every packet is then handed to
-//! the UI, which keeps doing everything else in `ForzaApp::drain_packets`.
+//! the packet rate) and the global hotkeys that toggle them. Co-Op's outgoing relay runs here
+//! for the same reason (peers must see us move while the game covers the window). Every
+//! packet is then handed to the UI, which keeps doing everything else in `ForzaApp::drain_packets`.
 //!
 //! **Synchronisation** is three one-way mailboxes, each with its own mutex, plus an mpsc
 //! channel for one-shot commands. No lock is ever held across a blocking call, disk IO or
@@ -45,6 +46,7 @@ use crate::config::{
     load_car_calibrations, save_car_calibrations, AppConfig, CarCalibration, GateMode,
     HotkeyAction,
 };
+use crate::coop::CoopReader;
 use crate::focus::FocusDetector;
 use crate::input::InputSender;
 use crate::listeners::backfire::{BackfireListener, BackfireView};
@@ -215,6 +217,7 @@ pub fn spawn(
     input_allowed: Arc<AtomicBool>,
     focus: Arc<FocusDetector>,
     cfg: AppConfig,
+    coop: CoopReader,
 ) -> ListenerHandle {
     let view = Arc::new(Mutex::new(ListenerView {
         dsg_enabled: cfg.dsg_enabled,
@@ -238,6 +241,7 @@ pub fn spawn(
             view: view_t,
             inbox: inbox_t,
             cfg,
+            coop,
         })
     });
 
@@ -262,6 +266,7 @@ struct Ctx {
     view: Arc<Mutex<ListenerView>>,
     inbox: Arc<Mutex<Option<ToListener>>>,
     cfg: AppConfig,
+    coop: CoopReader,
 }
 
 fn run(ctx: Ctx) {
@@ -276,6 +281,7 @@ fn run(ctx: Ctx) {
         view,
         inbox,
         mut cfg,
+        coop,
     } = ctx;
 
     let mut dsg = DsgListener::new();
@@ -302,6 +308,8 @@ fn run(ctx: Ctx) {
     let mut hud_visible = false;
     let mut hud_force = false;
     let mut hud_cfg = Arc::new(cfg.overlay.clone());
+    // Co-Op: (class, PI) of the last race-on packet, restored into paused packets.
+    let mut coop_car = (-1, 0);
 
     loop {
         // ── UI → listener: config + focus facts ────────────────────────────
@@ -467,7 +475,11 @@ fn run(ctx: Ctx) {
                     );
                 }
 
-                // Everything else (stats, Co-Op, telemetry, widgets) stays UI-side. Hand the
+                // Co-Op relay to peers. Here, not in `drain_packets`, because the UI loop stops
+                // while the game covers the window — exactly while we're driving.
+                coop.push_local(&crate::coop::outgoing(&pkt, &mut coop_car));
+
+                // Everything else (stats, telemetry, widgets) stays UI-side. Hand the
                 // packet over and drop the oldest if the UI isn't draining (hidden window);
                 // the lock covers only the push, never the processing above or below.
                 if let Ok(mut q) = to_ui.lock() {

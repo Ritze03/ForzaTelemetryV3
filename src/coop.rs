@@ -150,20 +150,63 @@ fn remote_players(inner: &Mutex<Inner>) -> Vec<(PlayerInfo, ForzaPacket)> {
     out
 }
 
+/// Send one locally-received packet to peers. A no-op (one uncontended lock) while co-op is
+/// off. Only `try_send`s under the lock, so it never blocks the caller (the listener thread).
+fn push_local(inner: &Mutex<Inner>, pkt: &ForzaPacket) {
+    let mut inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    if inner.role == Role::Off {
+        return;
+    }
+    let mut frame = Vec::with_capacity(ID_LEN + WIRE_LEN);
+    frame.extend_from_slice(&inner.my_id_bytes);
+    frame.extend_from_slice(&pkt.to_bytes());
+    let msg = Message::Binary(frame);
+    match inner.role {
+        Role::Host => inner.broadcast(msg, None),
+        Role::Client => {
+            if let Some(tx) = &inner.client_out {
+                let _ = tx.try_send(msg);
+            }
+        }
+        Role::Off => {}
+    }
+}
+
+/// The packet we relay for `pkt`. A paused game zeroes car class/PI, so while paused carry
+/// over the last live values (same as the Car widget) and peers keep seeing our real class.
+/// `last` is (class, PI) from the last race-on packet; start it at `(-1, 0)`.
+pub fn outgoing(pkt: &ForzaPacket, last: &mut (i32, i32)) -> ForzaPacket {
+    if pkt.is_race_on != 0 {
+        *last = (pkt.car_class, pkt.car_performance_index);
+    }
+    let mut out = pkt.clone();
+    if pkt.is_paused() && last.1 != 0 {
+        (out.car_class, out.car_performance_index) = *last;
+    }
+    out
+}
+
 /// Cheap `Send + Sync` handle on the shared co-op state, for a thread that doesn't own
-/// [`CoopState`] (the HUD overlay). The inner `Arc` is never replaced (stop/host/join reuse
-/// it), so a reader taken once stays valid for the app's lifetime.
+/// [`CoopState`]: the HUD overlay reads teammates through it, the listener thread sends our
+/// telemetry through it. The inner `Arc` is never replaced (stop/host/join reuse
+/// it), so a handle taken once stays valid for the app's lifetime.
 #[derive(Clone)]
 pub struct CoopReader(Arc<Mutex<Inner>>);
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
 impl CoopReader {
     /// Advance the jitter buffers, then snapshot the remote players (as
     /// [`CoopState::remote_players`]). It advances them itself because the UI's `tick` stops
     /// while the game covers the window. Empty while co-op is off (`stop` clears them).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
     pub fn remote_players(&self) -> Vec<(PlayerInfo, ForzaPacket)> {
         tick(&self.0);
         remote_players(&self.0)
+    }
+
+    /// Send our locally-received packet to peers (listener thread, every packet — it runs
+    /// while the game covers the window, which the UI loop doesn't). No-op while co-op is off.
+    pub fn push_local(&self, pkt: &ForzaPacket) {
+        push_local(&self.0, pkt);
     }
 }
 
@@ -305,27 +348,6 @@ impl CoopState {
         }
     }
 
-    /// Push the locally-received telemetry packet out to peers.
-    pub fn push_local(&self, pkt: &ForzaPacket) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.role == Role::Off {
-            return;
-        }
-        let mut frame = Vec::with_capacity(ID_LEN + WIRE_LEN);
-        frame.extend_from_slice(&inner.my_id_bytes);
-        frame.extend_from_slice(&pkt.to_bytes());
-        let msg = Message::Binary(frame);
-        match inner.role {
-            Role::Host => inner.broadcast(msg, None),
-            Role::Client => {
-                if let Some(tx) = &inner.client_out {
-                    let _ = tx.try_send(msg);
-                }
-            }
-            Role::Off => {}
-        }
-    }
-
     /// Update my displayed identity; propagate to peers.
     pub fn update_identity(&self, name: &str, hue: f32) {
         let mut inner = self.inner.lock().unwrap();
@@ -359,8 +381,8 @@ impl CoopState {
         remote_players(&self.inner)
     }
 
-    /// A read handle for another thread (the HUD overlay's teammate markers).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
+    /// A handle for another thread (the listener's outgoing packets, the HUD overlay's
+    /// teammate markers).
     pub fn reader(&self) -> CoopReader {
         CoopReader(self.inner.clone())
     }
@@ -1116,6 +1138,33 @@ fn head_content_length(url: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_carries_class_pi_over_pause() {
+        let mut last = (-1, 0);
+        // Paused before any live packet: nothing cached, sent as-is.
+        let paused = ForzaPacket::default();
+        assert_eq!(outgoing(&paused, &mut last).car_performance_index, 0);
+        // Live packet: sent as-is, and cached.
+        let live = ForzaPacket {
+            is_race_on: 1,
+            car_class: 5,
+            car_performance_index: 900,
+            position_x: 10.0,
+            ..Default::default()
+        };
+        let out = outgoing(&live, &mut last);
+        assert_eq!((out.car_class, out.car_performance_index), (5, 900));
+        assert_eq!(last, (5, 900));
+        // Paused (zeroed class/PI, at origin): the cached values are substituted.
+        let out = outgoing(&paused, &mut last);
+        assert_eq!((out.car_class, out.car_performance_index), (5, 900));
+        // Not paused but race off (menu with a position): untouched, cache kept.
+        let menu = ForzaPacket { position_x: 1.0, ..Default::default() };
+        let out = outgoing(&menu, &mut last);
+        assert_eq!((out.car_class, out.car_performance_index), (0, 0));
+        assert_eq!(last, (5, 900));
+    }
 
     #[test]
     fn parse_tunnel_words() {

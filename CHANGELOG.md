@@ -9,6 +9,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ### Added
 - **GNOME window detection**: Settings → Window Detection has a new "GNOME (Window Calls extension)" method, so "only when the game is focused" works on GNOME too. It needs the free Window Calls GNOME Shell extension (extensions.gnome.org/extension/4724); the Test button shows the active window, or why detection failed (e.g. the extension isn't installed).
 
+### Fixed
+- **Co-Op while driving**: your position now keeps reaching teammates while the game window covers the app — previously you only moved on their map while the app itself was visible.
+
 ## [0.2.3] – 2026-09-23
 
 ### Fixed

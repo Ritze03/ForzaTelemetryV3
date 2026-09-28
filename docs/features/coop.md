@@ -13,6 +13,12 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
 - Each player's raw 324-byte FH6 packet is relayed to everyone in **binary** WebSocket
   frames (prefixed with a 16-byte sender UUID) — minimal bandwidth. Names/colours travel
   as small JSON control messages.
+- **Who sends:** the listener thread (`listeners/worker.rs`), on every received packet, via
+  a `CoopReader` handle (`CoopState::reader()`) passed to `worker::spawn`. While paused, the
+  game zeroes car class/PI, so `coop::outgoing` substitutes the last race-on values.
+  **Why not the UI thread:** egui stops calling `update` while the game window covers the
+  app — i.e. the whole time you're driving — so a send from `drain_packets` meant peers saw
+  us frozen. The shared `Inner` is never replaced, so the one handle stays valid.
 - The host is authoritative: it assigns every player a random UUID and owns the roster,
   so **duplicate names are fine** — identity is the UUID.
 
