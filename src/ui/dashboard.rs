@@ -2195,25 +2195,23 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     };
 
     let cfg = &app.config;
-    let px_per_m  = cfg.minimap_px_per_m;
-    let origin_wx = cfg.minimap_world_origin_x;
-    let origin_wz = cfg.minimap_world_origin_z;
+    let cal = crate::minimap::MapCalibration::from_config(cfg);
 
     let car_x = app.minimap_cached_car_x;
     let car_z = app.minimap_cached_car_z;
     // North-up locks the map (yaw 0); otherwise it's heading-up (rotates with the car).
     let yaw   = if cfg.minimap_north_up { 0.0 } else { app.minimap_smoothed_yaw };
 
-    // Metres visible from widget centre to nearest edge
-    let zoom  = app.minimap_current_zoom.max(1.0);
-    let scale = rect.width().min(rect.height()) / (2.0 * zoom);
+    // Metres visible from widget centre to nearest edge (zoom); rotates world displacement
+    // into car-relative screen space (see `minimap::MapView` for the conventions).
+    let view = crate::minimap::MapView::new(
+        car_x, car_z, yaw, app.minimap_current_zoom, rect.width().min(rect.height()));
+    let to_screen = |wx: f32, wz: f32| -> Pos2 {
+        let [ox, oy] = view.world_to_offset(wx, wz);
+        pos2(cx + ox, cy + oy)
+    };
 
-    let [orig_w, orig_h] = app.minimap_orig_size;
-
-    // Rotate world displacement into car-relative screen space.
-    // Assumes yaw=0 → car faces +Z (north); positive yaw clockwise viewed from above.
-    let cos_yaw = yaw.cos();
-    let sin_yaw = yaw.sin();
+    let orig_size = app.minimap_orig_size;
 
     let mut mesh = egui::Mesh::with_texture(texture.id());
     mesh.indices = vec![0, 1, 2, 0, 2, 3];
@@ -2224,34 +2222,20 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         // regions with a reflected copy of the map.
         let half_w = rect.width()  * 0.5;
         let half_h = rect.height() * 0.5;
-        let inv_scale = 1.0 / scale;
         for (sx, sy) in [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)] {
-            let wx = car_x + (sx * cos_yaw - sy * sin_yaw) * inv_scale;
-            let wz = car_z - (sx * sin_yaw + sy * cos_yaw) * inv_scale;
+            let [u, v] = view.uv_at_offset(&cal, orig_size, sx, sy);
             mesh.vertices.push(egui::epaint::Vertex {
                 pos:   pos2(cx + sx, cy + sy),
-                uv:    pos2((wx - origin_wx) * px_per_m / orig_w as f32,
-                            (origin_wz - wz) * px_per_m / orig_h as f32),
+                uv:    pos2(u, v),
                 color: Color32::WHITE,
             });
         }
     } else {
         // Mesh covers exactly the map image; UVs are always [0,1] so no mirroring occurs.
-        let map_world_w = orig_w as f32 / px_per_m;
-        let map_world_h = orig_h as f32 / px_per_m;
-        let corners = [
-            (origin_wx,               origin_wz,               pos2(0.0, 0.0)),
-            (origin_wx + map_world_w, origin_wz,               pos2(1.0, 0.0)),
-            (origin_wx + map_world_w, origin_wz - map_world_h, pos2(1.0, 1.0)),
-            (origin_wx,               origin_wz - map_world_h, pos2(0.0, 1.0)),
-        ];
-        for (wx, wz, uv) in corners {
-            let dx = wx - car_x;
-            let dz = wz - car_z;
+        for (wx, wz, [u, v]) in cal.image_corners(orig_size) {
             mesh.vertices.push(egui::epaint::Vertex {
-                pos:   pos2(cx + (dx * cos_yaw - dz * sin_yaw) * scale,
-                            cy - (dx * sin_yaw + dz * cos_yaw) * scale),
-                uv,
+                pos:   to_screen(wx, wz),
+                uv:    pos2(u, v),
                 color: Color32::WHITE,
             });
         }
@@ -2263,12 +2247,6 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // Co-op breadcrumb trails (drawn behind the car arrows). Each player's recent
     // path fades from faint (old) to solid (recent) in their identity colour.
     if !app.minimap_trails.is_empty() {
-        let to_screen = |wx: f32, wz: f32| -> Pos2 {
-            let dx = wx - car_x;
-            let dz = wz - car_z;
-            pos2(cx + (dx * cos_yaw - dz * sin_yaw) * scale,
-                 cy - (dx * sin_yaw + dz * cos_yaw) * scale)
-        };
         let now = std::time::Instant::now();
         let fade_secs = cfg.coop_trail_fade_secs.max(0.5);
         let fade_m = cfg.coop_trail_fade_m.max(1.0);
@@ -2326,8 +2304,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             };
             let dx = px - car_x;
             let dz = pz - car_z;
-            let sx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
-            let sy = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
+            let Pos2 { x: sx, y: sy } = to_screen(px, pz);
             let col = if paused {
                 crate::theme::steel(170)
             } else {
@@ -2407,7 +2384,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     } else {
         Color32::WHITE
     };
-    let arrow_angle = app.minimap_cached_raw_yaw - yaw;
+    let arrow_angle = view.arrow_angle(app.minimap_cached_raw_yaw);
     let (sin_a, cos_a) = arrow_angle.sin_cos();
     let rot = |vx: f32, vy: f32| -> Pos2 {
         pos2(cx + vx * cos_a - vy * sin_a, cy + vx * sin_a + vy * cos_a)
@@ -2426,10 +2403,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     if !app.config.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
         if map_resp.clicked() {
             if let Some(m) = map_resp.interact_pointer_pos() {
-                let a = (m.x - cx) / scale;
-                let b = -(m.y - cy) / scale;
-                let wx = car_x + a * cos_yaw + b * sin_yaw;
-                let wz = car_z - a * sin_yaw + b * cos_yaw;
+                let [wx, wz] = view.offset_to_world(m.x - cx, m.y - cy);
                 app.coop.set_waypoint(Some((wx, wz)), app.config.coop_hue);
             }
         }
@@ -2440,8 +2414,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     for (_pid, wx, wz, hue) in app.coop.waypoints() {
         let dx = wx - car_x;
         let dz = wz - car_z;
-        let mut mx = cx + (dx * cos_yaw - dz * sin_yaw) * scale;
-        let mut my = cy - (dx * sin_yaw + dz * cos_yaw) * scale;
+        let Pos2 { x: mut mx, y: mut my } = to_screen(wx, wz);
         let col = crate::ui::coop::hue_color(hue);
         if !rect.shrink(6.0).contains(pos2(mx, my)) {
             let d = pos2(mx, my) - rect.center();
@@ -2478,8 +2451,8 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         let r = 12.0_f32;
         painter.circle_filled(cc, r + 2.0, Color32::from_black_alpha(130));
         painter.circle_stroke(cc, r, Stroke::new(1.0, crate::theme::steel(150)));
-        let (ns, nc) = yaw.sin_cos();
-        let north = vec2(-ns, -nc); // screen direction of world-north
+        let [nx, ny] = view.north_dir();
+        let north = vec2(nx, ny); // screen direction of world-north
         painter.line_segment([cc, cc + north * r], Stroke::new(2.0, Color32::from_rgb(230, 80, 80)));
         painter.text(cc + north * (r + 6.0), egui::Align2::CENTER_CENTER, "N",
             egui::FontId::proportional(11.0), Color32::WHITE);

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use egui::{Context, Pos2, Vec2};
 
@@ -17,6 +17,10 @@ use crate::listeners::power_capture::{PowerCapture, PowerCurveSnapshot};
 use crate::listeners::sprint_timer::SprintTimer;
 use crate::listeners::worker::{Command, ListenerHandle};
 use crate::network::{start_receiver, NetworkHandle};
+use crate::minimap::{
+    current_season, decode_and_cache_season, load_map_color_image, map_cache_path,
+    season_display_name, Season,
+};
 use crate::packet::ForzaPacket;
 use crate::telemetry::TelemetryState;
 
@@ -40,43 +44,7 @@ pub(crate) fn global_bindings(
         .collect()
 }
 
-// ── Season detection ──────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Season {
-    Spring,
-    Summer,
-    Autumn,
-    Winter,
-}
-
-pub fn current_season() -> Season {
-    // Spring started 2026-06-12 14:30:00 UTC (7:30 AM PDT). Unix: 1749738600.
-    // Cycle repeats weekly: Spring → Summer → Autumn → Winter.
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let secs = now - 1_749_738_600_i64;
-    if secs < 0 {
-        return Season::Spring;
-    }
-    match (secs / 604_800) % 4 {
-        0 => Season::Spring,
-        1 => Season::Summer,
-        2 => Season::Autumn,
-        _ => Season::Winter,
-    }
-}
-
-fn season_map_bytes(season: Season) -> &'static [u8] {
-    match season {
-        Season::Spring => include_bytes!("../assets/maps/spring.jpg"),
-        Season::Summer => include_bytes!("../assets/maps/summer.jpg"),
-        Season::Autumn => include_bytes!("../assets/maps/autumn.jpg"),
-        Season::Winter => include_bytes!("../assets/maps/winter.jpg"),
-    }
-}
+// ── Minimap map loading ───────────────────────────────────────────
 
 /// Message type sent from the map-loading background thread to the main thread.
 pub enum MapLoadMessage {
@@ -88,95 +56,11 @@ pub enum MapLoadMessage {
     Done(Option<(egui::ColorImage, [u32; 2])>),
 }
 
-fn season_display_name(season: Season) -> &'static str {
-    match season {
-        Season::Spring => "Spring",
-        Season::Summer => "Summer",
-        Season::Autumn => "Autumn",
-        Season::Winter => "Winter",
-    }
-}
-
-fn map_cache_path(season: Season, quality_pct: u32) -> std::path::PathBuf {
-    crate::config::app_data_dir()
-        .join("map_cache")
-        .join(format!(
-            "{}_q{}.bin",
-            season_display_name(season).to_lowercase(),
-            quality_pct
-        ))
-}
-
-fn try_load_map_cache(path: &std::path::Path) -> Option<(egui::ColorImage, [u32; 2])> {
-    let data = std::fs::read(path).ok()?;
-    if data.len() < 16 {
-        return None;
-    }
-    let orig_w = u32::from_le_bytes(data[0..4].try_into().ok()?);
-    let orig_h = u32::from_le_bytes(data[4..8].try_into().ok()?);
-    let w = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
-    let h = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
-    if data.len() != 16 + w * h * 4 {
-        return None;
-    }
-    let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &data[16..]);
-    Some((color_image, [orig_w, orig_h]))
-}
-
-fn write_map_cache(path: &std::path::Path, orig: [u32; 2], scaled: [u32; 2], rgba: &[u8]) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let mut buf = Vec::with_capacity(16 + rgba.len());
-    buf.extend_from_slice(&orig[0].to_le_bytes());
-    buf.extend_from_slice(&orig[1].to_le_bytes());
-    buf.extend_from_slice(&scaled[0].to_le_bytes());
-    buf.extend_from_slice(&scaled[1].to_le_bytes());
-    buf.extend_from_slice(rgba);
-    let _ = std::fs::write(path, buf);
-}
-
-/// Decodes the JPEG for `season` and writes the binary cache file.
-/// No-ops if the cache already exists. Does NOT return the image data.
-fn decode_and_cache_season(season: Season, quality: f32) {
-    let quality_pct = quality.round() as u32;
-    let cache_file = map_cache_path(season, quality_pct);
-    if cache_file.exists() {
-        return;
-    }
-    let bytes = season_map_bytes(season);
-    let Ok(img) = image::load_from_memory(bytes) else {
-        return;
-    };
-    let orig_size = [img.width(), img.height()];
-    let rgba = if quality >= 99.9 {
-        img.into_rgba8()
-    } else {
-        let nw = ((orig_size[0] as f32 * quality / 100.0) as u32).max(1);
-        let nh = ((orig_size[1] as f32 * quality / 100.0) as u32).max(1);
-        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
-            .into_rgba8()
-    };
-    let (w, h) = rgba.dimensions();
-    write_map_cache(&cache_file, orig_size, [w, h], rgba.as_raw());
-}
-
-/// Loads the current season's map. Always reads from cache (building it first if needed).
-fn load_map_color_image(season: Season, quality: f32) -> Option<(egui::ColorImage, [u32; 2])> {
-    decode_and_cache_season(season, quality);
-    try_load_map_cache(&map_cache_path(season, quality.round() as u32))
-}
-
 /// Background thread entry point. Builds any missing caches in parallel across all 4 seasons,
 /// sending a `CacheBuilt` message for each completion, then loads the current season's image
 /// from cache and sends `Done`.
 fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoadMessage>) {
-    let all_seasons = [
-        Season::Spring,
-        Season::Summer,
-        Season::Autumn,
-        Season::Winter,
-    ];
+    let all_seasons = crate::minimap::ALL_SEASONS;
     let quality_pct = quality.round() as u32;
 
     let to_build: Vec<Season> = all_seasons
@@ -216,28 +100,6 @@ fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoa
 
     let result = load_map_color_image(current_season, quality);
     let _ = tx.send(MapLoadMessage::Done(result));
-}
-
-// ── Minimap helpers ───────────────────────────────────────────────
-
-/// Returns the yaw angle the minimap should orient to.
-/// If `use_movement_dir` and the car is moving, derives heading from velocity vector.
-fn minimap_target_yaw(pkt: &crate::packet::ForzaPacket, use_movement_dir: bool) -> f32 {
-    if use_movement_dir && pkt.speed > 1.0 {
-        pkt.yaw + f32::atan2(pkt.velocity_x, pkt.velocity_z)
-    } else {
-        pkt.yaw
-    }
-}
-
-/// Linearly interpolates between two angles, taking the shortest arc.
-fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    let mut diff = (b - a).rem_euclid(TAU);
-    if diff > PI {
-        diff -= TAU;
-    }
-    a + diff * t
 }
 
 // ── Session stats ──────────────────────────────────────────────────
@@ -1371,7 +1233,7 @@ impl eframe::App for ForzaApp {
                         self.minimap_cached_car_x = pkt.position_x;
                         self.minimap_cached_car_z = pkt.position_z;
                         self.minimap_cached_yaw =
-                            minimap_target_yaw(pkt, self.config.minimap_use_movement_dir);
+                            crate::minimap::target_yaw(pkt, self.config.minimap_use_movement_dir);
                         self.minimap_cached_raw_yaw = pkt.yaw;
                     }
                 }
@@ -1386,12 +1248,12 @@ impl eframe::App for ForzaApp {
             .as_ref()
             .map(|p| p.speed * 3.6)
             .unwrap_or(0.0);
-        let minimap_stopped = if speed_kmh >= 5.0 {
+        let minimap_stopped = if speed_kmh >= crate::minimap::STOPPED_KMH {
             self.minimap_stopped_at = None;
             false
         } else {
             let stopped_at = self.minimap_stopped_at.get_or_insert_with(Instant::now);
-            stopped_at.elapsed().as_secs_f32() >= 1.5
+            stopped_at.elapsed().as_secs_f32() >= crate::minimap::STOPPED_SECS
         };
 
         // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame
@@ -1404,7 +1266,7 @@ impl eframe::App for ForzaApp {
                     if stopped_north {
                         0.0
                     } else {
-                        minimap_target_yaw(pkt, self.config.minimap_use_movement_dir)
+                        crate::minimap::target_yaw(pkt, self.config.minimap_use_movement_dir)
                     }
                 } else {
                     self.minimap_smoothed_yaw
@@ -1415,9 +1277,8 @@ impl eframe::App for ForzaApp {
 
             // Ease-to-north always animates (that's the whole point); otherwise honour the setting.
             if self.config.minimap_smooth_rotation || stopped_north {
-                let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-                let lerp_t = (6.0 * dt).min(1.0);
-                self.minimap_smoothed_yaw = lerp_angle(self.minimap_smoothed_yaw, target, lerp_t);
+                let dt = ctx.input(|i| i.unstable_dt);
+                self.minimap_smoothed_yaw = crate::minimap::ease_yaw(self.minimap_smoothed_yaw, target, dt);
             } else {
                 self.minimap_smoothed_yaw = self.minimap_cached_yaw;
             }
@@ -1425,14 +1286,13 @@ impl eframe::App for ForzaApp {
 
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
         {
-            let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-            let lerp_t = (3.0 * dt).min(1.0);
+            let dt = ctx.input(|i| i.unstable_dt);
             if minimap_stopped {
-                self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
-                    + self.config.minimap_zoom_stopped_m * lerp_t;
-            } else if speed_kmh >= 5.0 {
-                self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
-                    + self.config.minimap_zoom_driving_m * lerp_t;
+                self.minimap_current_zoom = crate::minimap::ease_zoom(
+                    self.minimap_current_zoom, self.config.minimap_zoom_stopped_m, dt);
+            } else if speed_kmh >= crate::minimap::STOPPED_KMH {
+                self.minimap_current_zoom = crate::minimap::ease_zoom(
+                    self.minimap_current_zoom, self.config.minimap_zoom_driving_m, dt);
             }
             // else: under 5 km/h but not yet 1.5 s — hold the current zoom.
         }
@@ -2284,9 +2144,10 @@ impl eframe::App for ForzaApp {
                                         });
                                         ui.add_space(4.0);
                                         if ui.button(tr("Reset to defaults")).clicked() {
-                                            self.config.minimap_px_per_m = 0.3722;
-                                            self.config.minimap_world_origin_x = -12540.0;
-                                            self.config.minimap_world_origin_z = 10738.0;
+                                            let d = crate::minimap::MapCalibration::DEFAULT;
+                                            self.config.minimap_px_per_m = d.px_per_m;
+                                            self.config.minimap_world_origin_x = d.origin_x;
+                                            self.config.minimap_world_origin_z = d.origin_z;
                                         }
                                     });
                                     }
