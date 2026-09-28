@@ -185,21 +185,17 @@ visible = enabled && !hud_hidden && (!focus_only || game_focused)
   (`listeners/hud.rs:hud_paused`):
 
   ```
-  is_race_on == 0 || (!electric && current_engine_rpm <= 0) || yaw == pitch == roll == 0.0
-  electric = num_cylinders == 0
+  is_race_on == 0 || engine_max_rpm <= 0 || yaw == pitch == roll == 0.0
   ```
 
   The same fact drives `paused_since`, `HudSnapshot::paused`, the drift/race classifier's
   pause handling and the drift window stop. HUD only; the gearbox and backfire keep their
   own `is_race_on` rules.
-  - *Why 0 rpm:* FH6 reads 0 rpm in menus / pause (user-confirmed).
-  - *Why the EV exemption:* an electric car reads 0 rpm at a standstill, so the rpm rule
-    would hide the HUD whenever an EV stops. `num_cylinders == 0` is the app's existing EV
-    test (the Dashboard Engine widget's "Electric" caption).
+  - *Why max rpm 0, not current rpm:* FH6 sends 0 max rpm while paused or in menus, while the
+    current rpm is legitimately 0 for an EV at a standstill (user-confirmed).
   - *Why zero orientation:* loading screens send yaw/pitch/roll all exactly 0
     (user-observed), while the pause menu keeps the car's real rotation. A driven car is
-    never exactly 0 on all three axes, so an exact compare has no false positives; it also
-    covers an EV on a loading screen, which the rpm rule no longer does.
+    never exactly 0 on all three axes, so an exact compare has no false positives.
 - **No packets for 2 s** → hidden (same 2 s as the rest of the app's "connected").
 - **Focus-only** (optional, `overlay.focus_only`): the checkbox lives in **Setup → Window
   Detection** ("Only when game window is focused"), not on the Overlay tab (D5), because it

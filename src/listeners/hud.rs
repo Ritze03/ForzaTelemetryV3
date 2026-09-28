@@ -159,18 +159,15 @@ impl DriftWindow {
 
 // ── Visibility target ────────────────────────────────────────────────────────
 
-/// The HUD's one "paused" fact: FH6 pause/menu (`is_race_on == 0`), a non-electric engine
-/// reading 0 rpm, or yaw/pitch/roll all exactly 0 (loading screen).
-/// Why the rpm: FH6 reads 0 rpm in menus / pause (user-confirmed), so it counts as paused even
-/// when the flag says otherwise — but an electric car (`num_cylinders == 0`, the same test the
-/// Dashboard's Engine widget uses for its "Electric" caption) reads 0 rpm at a standstill, so
-/// it's exempt. Why the orientation: loading screens send 0/0/0 (user-observed; the pause menu
-/// keeps the real rotation), and a real car is never exactly level on all three axes.
+/// The HUD's one "paused" fact: race off, max rpm 0 (menus), or 0/0/0 orientation (loading
+/// screens). Why max rpm, not current rpm: FH6 sends `engine_max_rpm == 0` while paused or in
+/// menus, while the current rpm is legitimately 0 for an EV at a standstill (user-confirmed).
+/// Why the orientation: loading screens send 0/0/0 (user-observed; the pause menu keeps the
+/// real rotation), and a real car is never exactly level on all three axes.
 /// HUD only; gearbox and backfire keep their rules.
 pub fn hud_paused(pkt: &ForzaPacket) -> bool {
-    let electric = pkt.num_cylinders == 0;
     let zero_orientation = pkt.yaw == 0.0 && pkt.pitch == 0.0 && pkt.roll == 0.0;
-    pkt.is_race_on == 0 || (!electric && pkt.current_engine_rpm <= 0.0) || zero_orientation
+    pkt.is_race_on == 0 || pkt.engine_max_rpm <= 0.0 || zero_orientation
 }
 
 /// Paused this long (s) → hidden. Short enough to clear the screen promptly on the pause
@@ -588,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_rpm_counts_as_paused() {
+    fn zero_max_rpm_counts_as_paused() {
         let cfg = Arc::new(OverlayConfig::default());
         let app = AppConfig::default();
         let live = VisFacts { enabled: true, ..Default::default() };
@@ -596,6 +593,7 @@ mod tests {
         let mut p = ForzaPacket {
             is_race_on: 1,
             current_engine_rpm: 2500.0,
+            engine_max_rpm: 7500.0,
             num_cylinders: 8,
             yaw: 1.2,
             pitch: 0.01,
@@ -603,25 +601,26 @@ mod tests {
         };
         tr.on_packet(&p, &cfg, 1.0);
         assert!(!tr.snapshot(live, &cfg, &app, 0.0, 1.0).paused);
-        // Race on, engine at 0 rpm (menus): paused, hidden once the 0.3 s delay has passed.
-        p.current_engine_rpm = 0.0;
+        // Race on, max rpm 0 (menus): paused, hidden once the 0.3 s delay has passed.
+        p.engine_max_rpm = 0.0;
         tr.on_packet(&p, &cfg, 2.0);
         let s = tr.snapshot(live, &cfg, &app, 0.0, 2.1);
         assert!(s.paused && s.visible, "not hidden before 300 ms");
         tr.on_packet(&p, &cfg, 2.35);
         assert!(!tr.snapshot(live, &cfg, &app, 0.0, 2.4).visible, "hidden after 300 ms");
-        // Revs back: shown on the very next packet.
-        p.current_engine_rpm = 900.0;
+        // Max rpm back: shown on the very next packet.
+        p.engine_max_rpm = 7500.0;
         tr.on_packet(&p, &cfg, 2.5);
         let s = tr.snapshot(live, &cfg, &app, 0.0, 2.5);
         assert!(!s.paused && s.visible);
     }
 
     #[test]
-    fn hud_paused_ev_exemption_and_zero_orientation() {
+    fn hud_paused_zero_max_rpm_and_zero_orientation() {
         let driving = ForzaPacket {
             is_race_on: 1,
             current_engine_rpm: 3000.0,
+            engine_max_rpm: 8000.0,
             num_cylinders: 6,
             yaw: -2.1,
             pitch: 0.02,
@@ -629,11 +628,11 @@ mod tests {
             ..Default::default()
         };
         assert!(!hud_paused(&driving), "normal driving packet");
-        let ice_idle = ForzaPacket { current_engine_rpm: 0.0, ..driving.clone() };
-        assert!(hud_paused(&ice_idle), "ICE at 0 rpm is paused");
-        let ev_stand = ForzaPacket { num_cylinders: 0, ..ice_idle.clone() };
-        assert!(!hud_paused(&ev_stand), "EV at 0 rpm with real orientation is not paused");
+        let ev_stand = ForzaPacket { num_cylinders: 0, current_engine_rpm: 0.0, ..driving.clone() };
+        assert!(!hud_paused(&ev_stand), "EV at 0 rpm (standstill) with max rpm and real orientation is not paused");
         for p in [&driving, &ev_stand] {
+            let menu = ForzaPacket { engine_max_rpm: 0.0, ..(*p).clone() };
+            assert!(hud_paused(&menu), "max rpm 0 is paused");
             let loading = ForzaPacket { yaw: 0.0, pitch: 0.0, roll: 0.0, ..(*p).clone() };
             assert!(hud_paused(&loading), "0/0/0 orientation is paused");
         }
@@ -661,7 +660,7 @@ mod tests {
         let cfg = Arc::new(OverlayConfig::default());
         let live = VisFacts { enabled: true, ..Default::default() };
         let mut tr = HudTracker::new();
-        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, gear: 3, num_cylinders: 4, yaw: 0.3, ..Default::default() };
+        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, engine_max_rpm: 8000.0, gear: 3, num_cylinders: 4, yaw: 0.3, ..Default::default() };
         tr.on_packet(&p, &cfg, 1.0);
         let mut app = AppConfig { dsg_enabled: false, ..Default::default() };
         assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.0).auto_gear, None);
@@ -682,7 +681,7 @@ mod tests {
         let app = AppConfig::default();
         let live = VisFacts { enabled: true, ..Default::default() };
         let mut tr = HudTracker::new();
-        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, num_cylinders: 4, yaw: 0.3, ..Default::default() };
+        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, engine_max_rpm: 8000.0, num_cylinders: 4, yaw: 0.3, ..Default::default() };
         // Score jumps of 100 every 0.1 s: drift evidence, Drift after the hysteresis.
         let mut t = 0.0_f64;
         for i in 0..240_u32 {
