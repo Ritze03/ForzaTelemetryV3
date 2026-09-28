@@ -17,6 +17,10 @@ gear-ratio table.
   loaded, and moving in a straight line, it extrapolates that gear's
   speed-at-full-redline and keeps a rolling median of the last 10 samples — so a
   bad sample self-corrects instead of locking in.
+- **The redline detection and engagement run with the box switched off too**
+  (`worker.rs` tracks `dynamic_max_rpm` unconditionally; `DsgListener::update`
+  sets `engaged` before its `dsg_enabled` gate). The in-game HUD reuses them:
+  its shift cue is this box's Shift RPM on the detected redline. See [[overlay]].
 - **Reset calibration** — two separate buttons (Automatic Gearbox tab, each
   always shown but disabled until it has something to clear):
   - **Clear RPM calibration** wipes the detected redline and engagement; the

@@ -4,9 +4,9 @@
 //! `#[path]` there). Run: `cargo test render_spec_states -- --ignored --nocapture`.
 //!
 //! Each widget state is a tile of (w + 20) × (h + 20) design px, the widget at (10, 10), on
-//! the mockup's snow-white state background, at 1× and 3×. Plus one 1920 × 1080 composite of
-//! the default layout on a grey backdrop. Time is pinned (`NOW`), so flash phases, fades and
-//! chips are deterministic.
+//! the mockup's snow-white state background, at 1× and 3×. Plus 1920 × 1080 composites of
+//! the default layout on a grey backdrop (and variants, one with custom margin/gap). Time is
+//! pinned (`NOW`), so flash phases, fades and chips are deterministic.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -423,8 +423,11 @@ fn render_spec_states() -> Result<(), String> {
     let halo = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, cluster_style: ClusterStyle::Halo, ..Default::default() }), ..composite.clone() };
     let drifting = HudSnapshot { mode: HudMode::Drift, drift: drift_state(58_687.0, Some((4039.0, 1.2)), Some(0.2), true).drift, ..composite.clone() };
     let drift_total = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, drift_style: DriftStyle::Total, ..Default::default() }), ..drifting.clone() };
+    // Custom spacing: margin 100, gap 30, the cluster stacked on the map (bottom-left).
+    let spaced_cfg = OverlayConfig { fade: false, margin_px: 100.0, gap_px: 30.0, cluster_cell: crate::config::HudCell::BottomLeft, ..Default::default() };
+    let spaced = HudSnapshot { cfg: Arc::new(spaced_cfg), ..composite.clone() };
     r.map.set(summer.clone(), orig, Season::Summer);
-    for (name, snap) in [("composite_1080p", composite), ("composite_halo_1080p", halo), ("composite_drift_1080p", drifting), ("composite_drift_total_1080p", drift_total)] {
+    for (name, snap) in [("composite_1080p", composite), ("composite_halo_1080p", halo), ("composite_drift_1080p", drifting), ("composite_drift_total_1080p", drift_total), ("composite_spacing_1080p", spaced)] {
         r.hud = crate::hud::Hud::default();
         r.frame_at([1920, 1080], Some(&snap), false, NOW, SCREEN_BG.to_normalized_gamma_f32());
         let img = r.painter.read_screen_rgba([1920, 1080]);
@@ -450,6 +453,23 @@ fn render_spec_states() -> Result<(), String> {
             // Outside every widget: untouched backdrop.
             if px(&img, 960, 540) != sbg {
                 failures.push(format!("{name}: screen centre not backdrop: {:?}", px(&img, 960, 540)));
+            }
+        }
+        if name == "composite_spacing_1080p" {
+            let sbg = [128, 138, 150];
+            let splate = over([9, 13, 21], 0.68, sbg);
+            // Map at (100, 844); D1a 30 px above it at (100, 768); R1′ at (100, 100).
+            for (what, (x, y), want) in [
+                ("D1a plate", (100 + 178, 768 + 23), splate),
+                ("R1 plate", (100 + 192, 100 + 23), splate),
+                ("gap D1a/map", (100 + 92, 814 + 15), sbg),
+                ("left of margin", (90, 900), sbg),
+            ] {
+                let got = px(&img, x, y);
+                println!("  {name} {what} @({x},{y}): got {got:?}, want {want:?}");
+                if !got.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 4) {
+                    failures.push(format!("{name} {what}: got {got:?}, want {want:?}"));
+                }
             }
         }
         written.push(save(&img, name)?);

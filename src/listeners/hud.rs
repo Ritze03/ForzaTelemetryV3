@@ -56,8 +56,8 @@ pub struct ModeClassifier {
 }
 
 impl ModeClassifier {
-    /// Feed one packet. `is_race_on == false` (paused) keeps the mode and restarts the
-    /// window, so the pause itself is never measured.
+    /// Feed one packet. `is_race_on == false` ([`hud_paused`]) keeps the mode and restarts
+    /// the window, so the pause itself is never measured.
     pub fn update(&mut self, current_lap: f32, timestamp_ms: u32, is_race_on: bool) -> HudMode {
         if !is_race_on {
             self.restart_window(None);
@@ -159,6 +159,13 @@ impl DriftWindow {
 
 // ── Visibility target ────────────────────────────────────────────────────────
 
+/// The HUD's one "paused" fact: FH6 pause/menu (`is_race_on == 0`) or an engine reading
+/// 0 rpm. Why the rpm: FH6 reads 0 rpm in menus / pause (user-confirmed), so it counts as
+/// paused even when the flag says otherwise. HUD only; gearbox and backfire keep their rules.
+pub fn hud_paused(pkt: &ForzaPacket) -> bool {
+    pkt.is_race_on == 0 || pkt.current_engine_rpm <= 0.0
+}
+
 /// Paused this long (s) → hidden. Short enough to clear the screen promptly on the pause
 /// menu, long enough to ride out a one-packet `is_race_on` blip (research §6).
 pub const PAUSE_HIDE_SECS: f64 = 0.3;
@@ -218,7 +225,7 @@ impl HudTracker {
 
     /// Feed one packet received at `now`.
     pub fn on_packet(&mut self, pkt: &ForzaPacket, cfg: &OverlayConfig, now: f64) {
-        let running = pkt.is_race_on != 0;
+        let running = !hud_paused(pkt);
         if self.have_pkt {
             let prev = &self.pkt;
             if pkt.car_ordinal != prev.car_ordinal {
@@ -276,26 +283,30 @@ impl HudTracker {
 
     /// Build the snapshot for `now`. `facts` needs only the gates the tracker doesn't own
     /// (`enabled`, `hud_hidden`, `focus_only`, `game_focused`); packet timing is filled in.
+    /// `calibrated_max_rpm` is the gearbox's detected redline for this car, 0 while none
+    /// (see [`cue_rpms`]).
     pub fn snapshot(
         &self,
         mut facts: VisFacts,
         cfg: &Arc<OverlayConfig>,
         app: &AppConfig,
+        calibrated_max_rpm: f32,
         now: f64,
     ) -> HudSnapshot {
         facts.last_packet_at = self.last_packet_at;
         facts.paused_since = self.events.paused_since;
-        let max = self.pkt.engine_max_rpm;
+        let (redline_rpm, shift_rpm) =
+            cue_rpms(calibrated_max_rpm, self.pkt.engine_max_rpm, cfg, app.dsg_shift_rpm_pct);
         let drifting = self.mode == HudMode::Drift;
         HudSnapshot {
             pkt: self.pkt.clone(),
             built_at: now,
             visible: visible_target(&facts, now),
             connected: self.last_packet_at.is_some_and(|t| now - t < NO_PACKET_HIDE_SECS),
-            paused: self.have_pkt && self.pkt.is_race_on == 0,
+            paused: self.have_pkt && hud_paused(&self.pkt),
             hud_hidden: facts.hud_hidden,
-            redline_rpm: cfg.redline_frac * max,
-            shift_rpm: cfg.shift_frac * max,
+            redline_rpm,
+            shift_rpm,
             mode: self.mode,
             lap_delta: self.lap_delta,
             drift: DriftInfo {
@@ -322,6 +333,21 @@ impl HudTracker {
                 origin_z: app.minimap_world_origin_z,
             },
         }
+    }
+}
+
+/// `(redline_rpm, shift_rpm)` for the cluster. With a gearbox calibration (`calibrated >
+/// 0`, the observed rev limiter the DSG shifts against) the shift cue is exactly the DSG's
+/// full-throttle upshift point, `calibrated × dsg_shift_rpm_pct` (Gearbox → Shift RPM), and
+/// the redline starts at `redline_frac × calibrated`. Without one both fall back to the
+/// game's `engine_max_rpm`, the cue at `shift_frac` of it.
+/// Why the split fallback: `engine_max_rpm` is the tacho's end, usually above the real
+/// limiter, so 98 % of it may never be reached; `shift_frac` (default 93 %) keeps a cue.
+pub fn cue_rpms(calibrated: f32, engine_max: f32, cfg: &OverlayConfig, dsg_shift_pct: f32) -> (f32, f32) {
+    if calibrated > 0.0 {
+        (cfg.redline_frac * calibrated, calibrated * dsg_shift_pct / 100.0)
+    } else {
+        (cfg.redline_frac * engine_max, cfg.shift_frac * engine_max)
     }
 }
 
@@ -519,6 +545,7 @@ mod tests {
         let mut tr = HudTracker::new();
         let mut p = ForzaPacket {
             is_race_on: 1,
+            current_engine_rpm: 3000.0,
             engine_max_rpm: 8000.0,
             race_position: 5,
             gear: 3,
@@ -531,21 +558,60 @@ mod tests {
         p.timestamp_ms = 16;
         tr.on_packet(&p, &cfg, 1.016);
         let live = VisFacts { enabled: true, ..Default::default() };
-        let s = tr.snapshot(live, &cfg, &app, 1.02);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, 1.02);
         assert!(s.visible && s.connected && !s.paused);
         assert_eq!(s.events.place_change, Some(PlaceChange { at: 1.016, gained: true }));
         assert_eq!(s.events.gear_changed_at, Some(1.016));
         assert_eq!(s.events.lap_completed_at, Some(1.016));
         assert!((s.redline_rpm - 6800.0).abs() < 0.1 && (s.shift_rpm - 7440.0).abs() < 0.1);
+        // With a gearbox calibration: redline from it, cue = the DSG's 98 % upshift point.
+        let s = tr.snapshot(live, &cfg, &app, 7000.0, 1.02);
+        assert!((s.redline_rpm - 5950.0).abs() < 0.1 && (s.shift_rpm - 6860.0).abs() < 0.1);
 
         p.is_race_on = 0;
         tr.on_packet(&p, &cfg, 2.0);
-        let s = tr.snapshot(live, &cfg, &app, 2.1);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, 2.1);
         assert!(s.paused && s.visible, "not hidden before 300 ms");
-        let s = tr.snapshot(live, &cfg, &app, 2.4);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, 2.4);
         assert!(!s.visible, "hidden after 300 ms paused");
-        let s = tr.snapshot(live, &cfg, &app, 4.1);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, 4.1);
         assert!(!s.connected, "no packet for 2 s");
+    }
+
+    #[test]
+    fn zero_rpm_counts_as_paused() {
+        let cfg = Arc::new(OverlayConfig::default());
+        let app = AppConfig::default();
+        let live = VisFacts { enabled: true, ..Default::default() };
+        let mut tr = HudTracker::new();
+        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 2500.0, ..Default::default() };
+        tr.on_packet(&p, &cfg, 1.0);
+        assert!(!tr.snapshot(live, &cfg, &app, 0.0, 1.0).paused);
+        // Race on, engine at 0 rpm (menus): paused, hidden once the 0.3 s delay has passed.
+        p.current_engine_rpm = 0.0;
+        tr.on_packet(&p, &cfg, 2.0);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, 2.1);
+        assert!(s.paused && s.visible, "not hidden before 300 ms");
+        tr.on_packet(&p, &cfg, 2.35);
+        assert!(!tr.snapshot(live, &cfg, &app, 0.0, 2.4).visible, "hidden after 300 ms");
+        // Revs back: shown on the very next packet.
+        p.current_engine_rpm = 900.0;
+        tr.on_packet(&p, &cfg, 2.5);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, 2.5);
+        assert!(!s.paused && s.visible);
+    }
+
+    #[test]
+    fn cue_rpms_calibrated_vs_fallback() {
+        let cfg = OverlayConfig { redline_frac: 0.8, shift_frac: 0.9, ..Default::default() };
+        // No calibration: fractions of the game's max rpm.
+        let (red, shift) = cue_rpms(0.0, 8000.0, &cfg, 98.0);
+        assert!((red - 6400.0).abs() < 0.1 && (shift - 7200.0).abs() < 0.1);
+        // Calibrated: redline fraction of it, cue at the gearbox's shift %, shift_frac unused.
+        let (red, shift) = cue_rpms(7500.0, 8000.0, &cfg, 96.0);
+        assert!((red - 6000.0).abs() < 0.1 && (shift - 7200.0).abs() < 0.1);
+        // Neither known: no cue (the cluster treats 0 as off).
+        assert_eq!(cue_rpms(0.0, 0.0, &cfg, 98.0), (0.0, 0.0));
     }
 
     #[test]
@@ -555,19 +621,19 @@ mod tests {
         let cfg = Arc::new(OverlayConfig::default());
         let live = VisFacts { enabled: true, ..Default::default() };
         let mut tr = HudTracker::new();
-        let mut p = ForzaPacket { is_race_on: 1, gear: 3, ..Default::default() };
+        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, gear: 3, ..Default::default() };
         tr.on_packet(&p, &cfg, 1.0);
         let mut app = AppConfig { dsg_enabled: false, ..Default::default() };
-        assert_eq!(tr.snapshot(live, &cfg, &app, 1.0).auto_gear, None);
+        assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.0).auto_gear, None);
         app.dsg_enabled = true;
         app.dsg_gearbox_mode = GearboxMode::Street;
         app.dsg_auto_race_mode = true;
-        assert_eq!(tr.snapshot(live, &cfg, &app, 1.0).auto_gear, Some(DriveMode::Street));
+        assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.0).auto_gear, Some(DriveMode::Street));
         p.race_position = 2;
         tr.on_packet(&p, &cfg, 1.1);
-        assert_eq!(tr.snapshot(live, &cfg, &app, 1.1).auto_gear, Some(DriveMode::Race));
+        assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.1).auto_gear, Some(DriveMode::Race));
         app.dsg_auto_race_mode = false;
-        assert_eq!(tr.snapshot(live, &cfg, &app, 1.1).auto_gear, Some(DriveMode::Street));
+        assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.1).auto_gear, Some(DriveMode::Street));
     }
 
     #[test]
@@ -576,7 +642,7 @@ mod tests {
         let app = AppConfig::default();
         let live = VisFacts { enabled: true, ..Default::default() };
         let mut tr = HudTracker::new();
-        let mut p = ForzaPacket { is_race_on: 1, ..Default::default() };
+        let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, ..Default::default() };
         // Score jumps of 100 every 0.1 s: drift evidence, Drift after the hysteresis.
         let mut t = 0.0_f64;
         for i in 0..240_u32 {
@@ -585,7 +651,7 @@ mod tests {
             p.current_lap = (i / 6) as f32 * 100.0;
             tr.on_packet(&p, &cfg, t);
         }
-        let s = tr.snapshot(live, &cfg, &app, t);
+        let s = tr.snapshot(live, &cfg, &app, 0.0, t);
         assert_eq!(s.mode, HudMode::Drift);
         let rise = s.drift.last_rise_at.unwrap_or(-1.0);
         assert!(t - rise < 0.1, "last rise {rise} at {t}");
@@ -595,7 +661,7 @@ mod tests {
             p.timestamp_ms = (t * 1000.0).round() as u32;
             tr.on_packet(&p, &cfg, t);
         }
-        assert_eq!(tr.snapshot(live, &cfg, &app, 5.0).drift.last_rise_at, Some(rise));
+        assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 5.0).drift.last_rise_at, Some(rise));
         // Race mode never reports one (a lap timer rises every packet).
         let mut race = HudTracker::new();
         for i in 0..60_u32 {
@@ -604,6 +670,6 @@ mod tests {
             p.current_lap = t as f32;
             race.on_packet(&p, &cfg, t);
         }
-        assert_eq!(race.snapshot(live, &cfg, &app, 1.0).drift.last_rise_at, None);
+        assert_eq!(race.snapshot(live, &cfg, &app, 0.0, 1.0).drift.last_rise_at, None);
     }
 }

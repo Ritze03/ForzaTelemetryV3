@@ -331,15 +331,21 @@ pub struct OverlayConfig {
     pub minimap_cell: HudCell,
     /// The race block's slot; the drift counter takes its place while drifting.
     pub race_cell: HudCell,
+    /// Distance from the screen edges, 1080p design px (scaled like the modules).
+    pub margin_px: f32,
+    /// Space between modules stacked in one cell, 1080p design px (scaled like the modules).
+    pub gap_px: f32,
     // ── Drive cluster ──
     pub cluster_style: ClusterStyle,
     /// D13: show live engine RPM (digits only) instead of the static "KM/H" unit label.
     pub rpm_label: bool,
     pub shift_flash: bool,
     pub gear_pulse: bool,
-    /// Redline starts at this fraction of `engine_max_rpm` (D21, default 0.85).
+    /// Redline starts at this fraction of the gearbox's calibrated max rpm, or of
+    /// `engine_max_rpm` before one exists (D21, default 0.85).
     pub redline_frac: f32,
-    /// Shift cue at this fraction of `engine_max_rpm` (D21, default 0.93).
+    /// Shift cue at this fraction of `engine_max_rpm`, used only until the gearbox's rpm
+    /// calibration exists; then the cue is the gearbox's own Shift RPM (D21, default 0.93).
     pub shift_frac: f32,
     /// Refresh the speed number only every [`crate::hud::SPEED_HOLD_SECS`] (gear, rev bar
     /// and rpm label stay live).
@@ -376,6 +382,8 @@ impl OverlayConfig {
         self.cluster_cell = Self::DEFAULT_CLUSTER_CELL;
         self.minimap_cell = Self::DEFAULT_MINIMAP_CELL;
         self.race_cell = Self::DEFAULT_RACE_CELL;
+        self.margin_px = crate::hud::layout::MARGIN;
+        self.gap_px = crate::hud::layout::GAP;
     }
 }
 
@@ -403,6 +411,8 @@ impl Default for OverlayConfig {
             gear_pulse: true,
             redline_frac: 0.85,
             shift_frac: 0.93,
+            margin_px: crate::hud::layout::MARGIN,
+            gap_px: crate::hud::layout::GAP,
             speed_hold: false,
             compass: true,
             // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.

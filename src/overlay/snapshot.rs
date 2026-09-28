@@ -53,7 +53,8 @@ pub struct HudEvents {
     pub lap_completed_at: Option<f64>,
     /// Last gear change (gear-change pulse).
     pub gear_changed_at: Option<f64>,
-    /// Start of the current pause (`is_race_on == 0`); `None` while running.
+    /// Start of the current pause (`is_race_on == 0` or 0 rpm, `listeners::hud::hud_paused`);
+    /// `None` while running.
     pub paused_since: Option<f64>,
 }
 
@@ -129,13 +130,15 @@ pub struct HudSnapshot {
     pub visible: bool,
     /// A packet arrived within the last 2 s.
     pub connected: bool,
-    /// The latest packet has `is_race_on == 0` (raw, no 300 ms delay).
+    /// The latest packet is paused (`is_race_on == 0` or 0 rpm; raw, no 300 ms delay).
     pub paused: bool,
     /// Hide HUD hotkey state (raw; already folded into `visible`).
     pub hud_hidden: bool,
-    /// `redline_frac × engine_max_rpm`.
+    /// `redline_frac ×` the gearbox's calibrated max rpm (`engine_max_rpm` before one
+    /// exists). See `listeners::hud::cue_rpms`.
     pub redline_rpm: f32,
-    /// `shift_frac × engine_max_rpm`.
+    /// The gearbox's full-throttle upshift rpm (`dsg_shift_rpm_pct ×` calibrated max rpm);
+    /// `shift_frac × engine_max_rpm` before a calibration exists.
     pub shift_rpm: f32,
     /// Race block or drift counter.
     pub mode: HudMode,

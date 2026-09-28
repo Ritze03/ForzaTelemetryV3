@@ -508,7 +508,10 @@ fn run(ctx: Ctx) {
                 game_focused: focus.focused(),
                 ..Default::default()
             };
-            let snap = hud.snapshot(facts, &hud_cfg, &cfg, now);
+            // The gearbox's redline counts once the DSG itself trusts it: after the first
+            // manual upshift (or a restored profile). Runs with the DSG switched off too.
+            let calibrated = if dsg.engaged { dynamic_max_rpm } else { 0.0 };
+            let snap = hud.snapshot(facts, &hud_cfg, &cfg, calibrated, now);
             if got_packet || hud_force || snap.visible != hud_visible {
                 hud_visible = snap.visible;
                 hud_force = false;

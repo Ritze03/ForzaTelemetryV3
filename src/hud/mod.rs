@@ -141,7 +141,7 @@ impl Hud {
         let s = screen.height() / 1080.0 * cfg.scale.max(0.05);
         let drift = snap.mode == HudMode::Drift;
         let items = modules(snap);
-        let rects = layout::layout(screen.size(), s, &items);
+        let rects = layout::layout(screen.size(), s, cfg.margin_px, cfg.gap_px, &items);
 
         for ((module, _, _), rect) in items.iter().zip(rects) {
             let xf = Xf { o: screen.min + rect.min.to_vec2(), s, a: self.fade };

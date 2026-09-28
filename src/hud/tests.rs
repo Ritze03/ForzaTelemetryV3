@@ -175,7 +175,7 @@ fn free_roam_hides_race_block_and_closes_the_gap() {
     s.pkt.race_position = 0;
     let items = super::modules(&s);
     assert_eq!(items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![Module::Map]);
-    assert_eq!(layout(vec2(1920.0, 1080.0), 1.0, &items)[0].min, pos2(44.0, 44.0));
+    assert_eq!(layout(vec2(1920.0, 1080.0), 1.0, 44.0, 12.0, &items)[0].min, pos2(44.0, 44.0));
     // The drift counter doesn't depend on the race position.
     s.mode = HudMode::Drift;
     s.drift.score = 120.0;

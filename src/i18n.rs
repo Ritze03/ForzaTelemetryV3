@@ -826,6 +826,10 @@ fn de(s: &str) -> Option<&'static str> {
             => "Ziehe ein Modul auf eine Zelle. Oder wähle eines aus und klicke dann eine Zelle an oder nutze die Pfeiltasten.",
         "Modules in one cell stack from the screen edge inward: Minimap, then Drive cluster, then Race / Drift."
             => "Module in einer Zelle stapeln sich vom Bildschirmrand nach innen: Minikarte, dann Fahranzeige, dann Rennen / Drift.",
+        "Edge margin" => "Randabstand",
+        "Module spacing" => "Modulabstand",
+        "In pixels at 1080p. Both scale with the resolution and the HUD scale."
+            => "In Pixeln bei 1080p. Beide skalieren mit der Auflösung und der HUD-Skalierung.",
         "Reset layout" => "Layout zurücksetzen",
         "Drive Cluster" => "Fahranzeige",
         "D1a Pill" => "D1a Pill",
@@ -836,7 +840,11 @@ fn de(s: &str) -> Option<&'static str> {
         "Shift flash" => "Schaltblitz",
         "Gear-change pulse" => "Puls beim Gangwechsel",
         "Redline at (max rpm)" => "Roter Bereich ab (max. Drehzahl)",
-        "Shift cue at (max rpm)" => "Schaltsignal ab (max. Drehzahl)",
+        "The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Reset RPM Calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\"."
+            => "Das Schaltsignal ist der Schaltpunkt des Getriebes (Getriebe → Schaltdrehzahl), berechnet aus der max. Drehzahl, die das Getriebe für jedes Auto kalibriert. Das funktioniert auch bei ausgeschaltetem Automatikgetriebe. Neu kalibrieren: Hotkey „Drehzahl-Kalibrierung zurücksetzen“ (Setup → Hotkey) oder Getriebe → „Drehzahl-Kalibrierung löschen“.",
+        "Shift cue before calibration" => "Schaltsignal vor der Kalibrierung",
+        "Until the first full pull and manual upshift in a car, both use the game's max rpm and this fallback."
+            => "Bis zum ersten Ausdrehen mit manuellem Hochschalten in einem Auto nutzen beide die max. Drehzahl des Spiels und diesen Ersatzwert.",
         "Compass" => "Kompass",
         "Zoom when stopped" => "Zoom im Stand",
         "Zoom when driving" => "Zoom während der Fahrt",

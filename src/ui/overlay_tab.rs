@@ -352,7 +352,9 @@ const GRID_GAP: f32 = 4.0;
 /// Chip rects inside one grid cell, placed by the HUD's own stacking code
 /// (`hud::layout::layout`) so the grid shows exactly what the overlay will do. Scaled so the
 /// HUD's 12 px gap becomes [`CHIP_GAP`]; the surface is grown by `trim` on every side so its
-/// (scaled) 44 px edge margin lands at [`CELL_PAD`] inside the cell.
+/// (scaled) 44 px edge margin lands at [`CELL_PAD`] inside the cell. Always the default
+/// margin/gap, not the user's: the grid shows which cell and stacking order, and a 0 gap
+/// would divide by zero here.
 fn chip_rects(cell_rect: Rect, cell: HudCell, chips: &[(Module, Vec2)]) -> Vec<Rect> {
     use crate::hud::layout::{layout, GAP, MARGIN};
     let s = CHIP_GAP / GAP;
@@ -360,7 +362,7 @@ fn chip_rects(cell_rect: Rect, cell: HudCell, chips: &[(Module, Vec2)]) -> Vec<R
     let screen = cell_rect.size() + Vec2::splat(2.0 * trim);
     let items: Vec<_> = chips.iter().map(|&(m, size)| (m, cell, size / s)).collect();
     let shift = cell_rect.min.to_vec2() - Vec2::splat(trim);
-    layout(screen, s, &items).into_iter().map(|r| r.translate(shift)).collect()
+    layout(screen, s, MARGIN, GAP, &items).into_iter().map(|r| r.translate(shift)).collect()
 }
 
 fn dashed_rect(p: &Painter, r: Rect, stroke: Stroke) {
@@ -418,6 +420,9 @@ fn layout(ui: &mut Ui, app: &mut ForzaApp) {
         layout_grid(ui, o, &mut sel);
         hint(ui, tr("Drag a module onto a cell. Or select one, then click a cell or use the arrow keys."));
         hint(ui, tr("Modules in one cell stack from the screen edge inward: Minimap, then Drive cluster, then Race / Drift."));
+        theme::slider_row(ui, tr("Edge margin"), &mut o.margin_px, 0.0..=200.0, 1.0, 0, " px");
+        theme::slider_row(ui, tr("Module spacing"), &mut o.gap_px, 0.0..=60.0, 1.0, 0, " px");
+        hint(ui, tr("In pixels at 1080p. Both scale with the resolution and the HUD scale."));
         if ui.add(theme::secondary_button(tr("Reset layout"))).clicked() {
             o.reset_layout();
             sel = None;
@@ -577,7 +582,9 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
         theme::checkbox_row(ui, &mut o.shift_flash, tr("Shift flash"));
         theme::checkbox_row(ui, &mut o.gear_pulse, tr("Gear-change pulse"));
         pct_row(ui, tr("Redline at (max rpm)"), &mut o.redline_frac, 50.0, 100.0, 0.5);
-        pct_row(ui, tr("Shift cue at (max rpm)"), &mut o.shift_frac, 50.0, 100.0, 0.5);
+        hint(ui, tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Reset RPM Calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\"."));
+        pct_row(ui, tr("Shift cue before calibration"), &mut o.shift_frac, 50.0, 100.0, 0.5);
+        hint(ui, tr("Until the first full pull and manual upshift in a car, both use the game's max rpm and this fallback."));
     });
 }
 

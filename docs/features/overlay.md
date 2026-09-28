@@ -49,8 +49,24 @@ RPM, gear and speed in one super-compact widget (D9), in two styles:
 
 Options (Drive Cluster card): style; **Show engine RPM instead of KM/H label** (D13: the
 small unit text is replaced by live rpm digits, the speed value stays); **Update speed only
-every 0.5 s** (`speed_hold`); shift flash; gear-change pulse; redline at / shift cue at, as
-fractions of `engine_max_rpm` (defaults 0.85 / 0.93, D21).
+every 0.5 s** (`speed_hold`); shift flash; gear-change pulse; **Redline at** (`redline_frac`,
+default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21).
+
+- **Shift cue and redline come from the gearbox's RPM calibration** (`listeners/hud.rs:cue_rpms`,
+  fed from `worker.rs`). The calibrated value is `dynamic_max_rpm`: the highest rpm seen while
+  the engine makes power without handbrake or tyre slip, per car (i.e. the real rev limiter).
+  It is counted once `DsgListener::engaged` (first manual upshift, or a restored per-car
+  profile), the same moment the DSG starts trusting it. With it: **shift cue =
+  `dynamic_max_rpm × dsg_shift_rpm_pct`** (Gearbox → Shift RPM, default 98 %, the DSG's own
+  full-throttle "redline upshift" point) and **redline = `redline_frac × dynamic_max_rpm`**.
+  Without it (new car, after Reset RPM Calibration / Clear RPM calibration): redline =
+  `redline_frac × engine_max_rpm`, cue = `shift_frac × engine_max_rpm`. *Why:* the user asked
+  for the gearbox's reliable max-rpm calibration to drive the cue. It runs whether the
+  automatic gearbox is on or off (the max-rpm tracking and the `engaged` detection sit before
+  the DSG's `dsg_enabled` gate), so manual drivers get it too. *Why keep `shift_frac` as a
+  fallback instead of `dsg_shift_rpm_pct × engine_max_rpm`:* `engine_max_rpm` is the tacho's
+  end, usually above the real limiter, so 98 % of it may never be reached and there'd be no
+  cue at all before calibration.
 
 - **Drive-mode letter.** While the Automatic Gearbox is switched on, a forward gear is
   prefixed with its drive mode: **D** Street, **S** Sport, **R** Race (e.g. "D4"), drawn a
@@ -164,8 +180,12 @@ visible = enabled && !hud_hidden && (!focus_only || game_focused)
           && a packet within 2 s && not paused for ≥ 0.3 s
 ```
 
-- **Pause:** hides once `is_race_on == 0` has lasted 0.3 s (rides out one-packet blips,
-  still clears the screen promptly on the pause menu). Shows immediately again.
+- **Pause:** hides once the HUD's pause fact (`listeners/hud.rs:hud_paused`: `is_race_on == 0`
+  **or engine rpm 0**) has lasted 0.3 s (rides out one-packet blips, still clears the screen
+  promptly on the pause menu). Shows immediately again. The same fact drives
+  `paused_since`, `HudSnapshot::paused`, the drift/race classifier's pause handling and the
+  drift window stop. *Why 0 rpm:* FH6 reads 0 rpm in menus / pause (user-confirmed). HUD
+  only; the gearbox and backfire keep their own `is_race_on` rules.
 - **No packets for 2 s** → hidden (same 2 s as the rest of the app's "connected").
 - **Focus-only** (optional, `overlay.focus_only`): the checkbox lives in **Setup → Window
   Detection** ("Only when game window is focused"), not on the Overlay tab (D5), because it
@@ -229,9 +249,12 @@ the screen edge inward (`hud/layout.rs`):
 - middle row: the whole stack centred on the screen's vertical middle, map lowest, growing
   upward (the tab mockup's `column-reverse; justify-content:center`).
 
-Horizontal alignment follows the column. **Margin 44 px, gap 12 px** at 1080p, scaled with
-the HUD. The 44 px margin shifts the defaults a few px from the mockup's hand-placed
-positions (accepted).
+Horizontal alignment follows the column. **Edge margin** (`margin_px`, default 44, 0–200)
+and **module spacing** (`gap_px`, default 12, 0–60) are user settings in 1080p design px,
+scaled with the surface height and the HUD scale like the modules themselves (*Why:* a layout
+then keeps its proportions across resolutions and scale). The defaults are the former consts
+`hud::layout::MARGIN` / `GAP`, so old configs look the same. The 44 px margin shifts the
+defaults a few px from the mockup's hand-placed positions (accepted).
 
 ## The Overlay tab (`src/ui/overlay_tab.rs`)
 
@@ -253,8 +276,10 @@ push apply every change to the running HUD, so there's no Apply button.
   cell / use the arrow keys; **Reset layout**. The selection drops after a cell-click move,
   on a press outside the grid, on Esc and on a tab switch (`clear_layout_selection`), so
   stray arrow keys can't move a chip while you're elsewhere; arrow-key moves keep it so you
-  can keep stepping. Chip stacking in the grid reuses
-  `hud::layout::layout`. The drag-and-drop is hand-rolled because egui's `dnd_drop_zone`
+  can keep stepping. Under the grid: **Edge margin** and **Module spacing** sliders (px at
+  1080p); Reset layout resets them too. Chip stacking in the grid reuses
+  `hud::layout::layout`, always with the default margin/gap (the grid shows cell and stacking
+  order, not spacing; a 0 gap would break its scale trick). The drag-and-drop is hand-rolled because egui's `dnd_drop_zone`
   sizes to its content.
 - **Drive Cluster / Minimap / Race Block / Drift Counter:** a module on/off toggle plus the
   options listed under Widgets. No style thumbnails (D24).
