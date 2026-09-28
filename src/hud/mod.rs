@@ -17,7 +17,7 @@ pub mod race;
 
 use egui::{Painter, Rect};
 
-use crate::config::{ClusterStyle, HudCell};
+use crate::config::{ClusterStyle, DriftStyle, HudCell};
 use crate::overlay::snapshot::{HudMode, HudSnapshot};
 use layout::Module;
 use prims::Xf;
@@ -90,10 +90,35 @@ pub struct Hud {
     last_now: Option<f64>,
     /// X1′'s displayed total (counts up toward the score).
     shown_score: Option<f32>,
+    /// Position + Gain's displayed "+N" and the `at` of the window it belongs to.
+    shown_gain: Option<(Option<f64>, f32)>,
+    /// With `speed_hold`: the speed on screen and when it was taken.
+    held_speed: Option<(f64, i64)>,
     map_anim: minimap::MapAnim,
 }
 
+/// With `OverlayConfig::speed_hold`, the cluster's speed number refreshes at most this often (s).
+pub const SPEED_HOLD_SECS: f64 = 0.5;
+
 impl Hud {
+    /// The cluster speed to show. With `speed_hold` the last shown value holds for
+    /// [`SPEED_HOLD_SECS`], then the next frame takes the live one. why no `animating`: the
+    /// packet stream redraws at 60 Hz anyway, so a due refresh just waits for the next packet.
+    fn speed(&mut self, snap: &HudSnapshot, now: f64) -> i64 {
+        let live = cluster::speed(snap);
+        if !snap.cfg.speed_hold {
+            self.held_speed = None;
+            return live;
+        }
+        match self.held_speed {
+            Some((t, v)) if (0.0..SPEED_HOLD_SECS).contains(&(now - t)) => v,
+            _ => {
+                self.held_speed = Some((now, live));
+                live
+            }
+        }
+    }
+
     /// Draw the whole HUD on `screen`. Returns true while anything still animates (fade,
     /// shift flash, pulse, place layer, lap hold, chip, count-up, drift bar, map easing);
     /// false once settled, and false after the fade-out finished (the surface can go).
@@ -122,16 +147,33 @@ impl Hud {
             let xf = Xf { o: screen.min + rect.min.to_vec2(), s, a: self.fade };
             animating |= match module {
                 Module::Map => minimap::draw(p, &xf, snap, now, &mut self.map_anim, map, teammates),
-                Module::Cluster => match cfg.cluster_style {
-                    ClusterStyle::Pill => cluster::draw_pill(p, &xf, snap, now),
-                    ClusterStyle::Halo => cluster::draw_halo(p, &xf, snap, now),
-                },
-                Module::Race if drift => {
-                    let total = snap.drift.score.max(0.0);
-                    let shown = self.shown_score.map_or(total, |v| anim::count_up(v, total, dt));
-                    self.shown_score = Some(shown);
-                    drift::draw(p, &xf, snap, now, shown) | (shown != total)
+                Module::Cluster => {
+                    let speed = self.speed(snap, now);
+                    match cfg.cluster_style {
+                        ClusterStyle::Pill => cluster::draw_pill(p, &xf, snap, now, speed),
+                        ClusterStyle::Halo => cluster::draw_halo(p, &xf, snap, now, speed),
+                    }
                 }
+                Module::Race if drift => match cfg.drift_style {
+                    DriftStyle::Total => {
+                        let total = snap.drift.score.max(0.0);
+                        let shown = self.shown_score.map_or(total, |v| anim::count_up(v, total, dt));
+                        self.shown_score = Some(shown);
+                        drift::draw(p, &xf, snap, now, shown) | (shown != total)
+                    }
+                    DriftStyle::PositionGain => {
+                        // A newly closed window (different `at`) restarts the count from 0; the
+                        // value then holds until the next one. The first frame snaps, like Total.
+                        let (at, target) = (snap.drift.chip.map(|c| c.at), drift::gain_target(snap));
+                        let shown = match self.shown_gain {
+                            Some((prev, v)) if prev == at => anim::count_up(v, target, dt),
+                            Some(_) => anim::count_up(0.0, target, dt),
+                            None => target,
+                        };
+                        self.shown_gain = Some((at, shown));
+                        drift::draw_position_gain(p, &xf, snap, now, shown) | (shown != target)
+                    }
+                },
                 Module::Race => race::draw(p, &xf, snap, now),
             };
         }

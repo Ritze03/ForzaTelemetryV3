@@ -121,10 +121,15 @@ fn draw_gear(p: &Painter, xf: &Xf, g: &GearSpec, cl: &Cl, shadow: bool, color: C
     prims::draw_run(p, xf, &run, pos2(x0 + w - run.width, base.y), num.shadow, color);
 }
 
-fn derive(snap: &HudSnapshot, now: f64) -> Cl {
+/// The live speed in the display unit (km/h or mph), rounded.
+pub fn speed(snap: &HudSnapshot) -> i64 {
+    (snap.pkt.speed.max(0.0) * if snap.use_mph { 2.237 } else { 3.6 }).round() as i64
+}
+
+/// `speed` is the number to show: [`speed`], or the held one with `speed_hold`.
+fn derive(snap: &HudSnapshot, now: f64, speed: i64) -> Cl {
     let (p, cfg) = (&snap.pkt, &*snap.cfg);
     let (mode, gear) = gear_label(p.gear, snap.auto_gear);
-    let speed = (p.speed.max(0.0) * if snap.use_mph { 2.237 } else { 3.6 }).round() as i64;
     let rpm = p.current_engine_rpm.max(0.0);
     let (label, label_is_rpm) = if cfg.rpm_label {
         (((rpm / 10.0).round() as i64 * 10).to_string(), true)
@@ -195,8 +200,8 @@ const UNIT_PILL: TextStyle = TextStyle { family: W800, size: 12.0, tracking: 12.
 const RPM_PILL: TextStyle = TextStyle { family: W800, size: 12.0, tracking: 0.0, cells: Cells::Fixed(6.0), shadow: false };
 
 /// D1a, 184 × 46. Returns true while animating.
-pub fn draw_pill(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64) -> bool {
-    let cl = derive(snap, now);
+pub fn draw_pill(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, speed: i64) -> bool {
+    let cl = derive(snap, now, speed);
     prims::rounded(p, xf, [0.0, 0.0, 184.0, 46.0], [23.0; 4], col::plate(snap.cfg.plate_opacity));
 
     // Gear cell: circle r 19 at (23, 23). Flash fills blue; else the pulse fills ink (dark
@@ -261,8 +266,8 @@ pub fn ring_span(i: usize) -> [f32; 2] {
 }
 
 /// D3a′, Ø 112. Returns true while animating.
-pub fn draw_halo(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64) -> bool {
-    let cl = derive(snap, now);
+pub fn draw_halo(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, speed: i64) -> bool {
+    let cl = derive(snap, now, speed);
     p.circle_filled(xf.p(56.0, 56.0), xf.l(55.0), xf.c(col::disc(snap.cfg.plate_opacity)));
     // Rim 1.5 px; the shift flash turns it 3 px blue, else the pulse 3 px ink.
     let (rim_w, rim) = if cl.flash {

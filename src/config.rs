@@ -272,6 +272,17 @@ pub enum ClusterStyle {
     Halo,
 }
 
+/// Drift counter look (task 25).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum DriftStyle {
+    /// Race position in the cap (D15 backdrop), the last window's "+N" counting up on the
+    /// right. why: FH6's own drift score UI can't be hidden, so a second total is redundant.
+    #[default]
+    PositionGain,
+    /// X1′: "+N" chip in the cap, the event total on the right.
+    Total,
+}
+
 /// How the overlay picks its monitor (D18).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum MonitorMethod {
@@ -330,6 +341,9 @@ pub struct OverlayConfig {
     pub redline_frac: f32,
     /// Shift cue at this fraction of `engine_max_rpm` (D21, default 0.93).
     pub shift_frac: f32,
+    /// Refresh the speed number only every [`crate::hud::SPEED_HOLD_SECS`] (gear, rev bar
+    /// and rpm label stay live).
+    pub speed_hold: bool,
     // ── Minimap ──
     /// D12 compass on the HUD map.
     pub compass: bool,
@@ -343,6 +357,7 @@ pub struct OverlayConfig {
     /// D15 green/red backdrop on a place gained/lost.
     pub place_colour: bool,
     // ── Drift counter ──
+    pub drift_style: DriftStyle,
     /// Length of one "+N" gain window, seconds (mockup slider 1–10).
     pub drift_chip_secs: f32,
     /// Show the window's progress bar.
@@ -388,6 +403,7 @@ impl Default for OverlayConfig {
             gear_pulse: true,
             redline_frac: 0.85,
             shift_frac: 0.93,
+            speed_hold: false,
             compass: true,
             // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
             zoom_stopped_m: 3000.0,
@@ -395,6 +411,7 @@ impl Default for OverlayConfig {
             coop_teammates: true,
             lap_delta: true,
             place_colour: true,
+            drift_style: DriftStyle::PositionGain,
             drift_chip_secs: 5.0,
             drift_bar: true,
         }
@@ -1565,6 +1582,8 @@ mod tests {
             redline_frac: 0.8,
             zoom_driving_m: 400.0,
             coop_teammates: false,
+            speed_hold: true,
+            drift_style: DriftStyle::Total,
             drift_chip_secs: 3.0,
             ..Default::default()
         }
@@ -1614,6 +1633,13 @@ mod tests {
         // A partial overlay object (older build, fewer fields) fills the rest.
         let o: OverlayConfig = serde_json::from_str(r#"{ "enabled": true }"#).unwrap();
         assert_eq!(o, OverlayConfig { enabled: true, ..Default::default() });
+        // Task 25 fields missing (pre-0.3 overlay object): the new drift style, speed live.
+        let o: OverlayConfig = serde_json::from_str(r#"{ "enabled": true, "drift_bar": false, "rpm_label": true }"#).unwrap();
+        assert_eq!(o.drift_style, DriftStyle::PositionGain);
+        assert!(!o.speed_hold);
+        assert!(!o.drift_bar && o.rpm_label);
+        let o: OverlayConfig = serde_json::from_str(r#"{ "drift_style": "Total", "speed_hold": true }"#).unwrap();
+        assert_eq!((o.drift_style, o.speed_hold), (DriftStyle::Total, true));
         // An old hotkeys object without `unbound`/HideHud gets H injected on load.
         let mut hk: HotkeyConfig =
             serde_json::from_str(r#"{ "bindings": { "ToggleGearbox": { "mods": { "ctrl": false, "alt": false, "shift": false, "sup": false }, "key": "G" } } }"#)

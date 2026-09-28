@@ -810,8 +810,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Read only while Forza is the active window. Otherwise the HUD stays where it was."
             => "Wird nur gelesen, solange Forza das aktive Fenster ist. Sonst bleibt das HUD, wo es war.",
         "error" => "Fehler",
-        "No monitor name in the output" => "Kein Monitorname in der Ausgabe",
-        "Linux only" => "Nur Linux",
         "the first monitor" => "dem ersten Monitor",
         "Monitor detection runs on Linux only." => "Die Monitor-Erkennung läuft nur unter Linux.",
         "Detection is off while the overlay is disabled." => "Die Erkennung ist aus, solange das Overlay deaktiviert ist.",
@@ -848,7 +846,13 @@ fn de(s: &str) -> Option<&'static str> {
             => "Grün, wenn du einen Platz gewinnst, rot, wenn du einen verlierst.",
         "Swaps to the drift counter by itself when drifting is detected. Placed as Race / Drift in Layout."
             => "Wechselt von selbst zum Driftzähler, sobald Driften erkannt wird. Im Layout als Rennen / Drift platziert.",
+        "Update speed only every 0.5 s" => "Geschwindigkeit nur alle 0,5 s aktualisieren",
+        "Calmer to read. Gear and revs stay live." => "Ruhiger abzulesen. Gang und Drehzahl bleiben live.",
         "Drift Counter" => "Driftzähler",
+        "Position + Gain" => "Position + Punkte",
+        "Total score" => "Gesamtpunkte",
+        "Position + Gain shows your place and the points of the last interval, counting up. Total shows the event score, which Forza also shows itself."
+            => "Position + Punkte zeigt deinen Platz und die hochzählenden Punkte des letzten Intervalls. Gesamtpunkte zeigt die Event-Punktzahl, die Forza auch selbst anzeigt.",
         "Gain chip interval" => "Intervall des Punkte-Chips",
         "Progress bar" => "Fortschrittsbalken",
         "Replaces the race block automatically while you drift, in the same spot."

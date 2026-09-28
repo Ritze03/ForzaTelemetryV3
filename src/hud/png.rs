@@ -16,7 +16,7 @@ use egui_glow::glow::{self, HasContext};
 
 use super::super::gl::Headless;
 use super::{paint, Renderer};
-use crate::config::{ClusterStyle, OverlayConfig};
+use crate::config::{ClusterStyle, DriftStyle, OverlayConfig};
 use crate::hud::minimap::{MapAnim, MapTex, Teammate};
 use crate::hud::prims::Xf;
 use crate::hud::{cluster, drift, minimap, race};
@@ -76,7 +76,7 @@ fn race_state(pos: u8, lap0: u16, cur: f32) -> HudSnapshot {
 }
 
 fn drift_state(score: f32, chip: Option<(f32, f64)>, cycle: Option<f64>, scoring: bool) -> HudSnapshot {
-    let mut s = base(OverlayConfig::default());
+    let mut s = base(OverlayConfig { drift_style: DriftStyle::Total, ..Default::default() });
     s.mode = HudMode::Drift;
     s.drift = DriftInfo {
         score,
@@ -87,6 +87,16 @@ fn drift_state(score: f32, chip: Option<(f32, f64)>, cycle: Option<f64>, scoring
         last_rise_at: Some(if scoring { NOW - 0.1 } else { NOW - 5.0 }),
     };
     s
+}
+
+/// A Position + Gain state: `pos`, the last window's gain (`None` = none closed yet) and the
+/// `shown` count-up value, plus an optional place change 1 s ago (`Some(gained)`).
+fn pg_state(pos: u8, gain: Option<f32>, shown: f32, scoring: bool, place: Option<bool>) -> (HudSnapshot, f32) {
+    let mut s = drift_state(58_687.0, gain.map(|g| (g, 1.2)), Some(0.45), scoring);
+    s.cfg = Arc::new(OverlayConfig::default());
+    s.pkt.race_position = pos;
+    s.events.place_change = place.map(|gained| PlaceChange { at: NOW - 1.0, gained });
+    (s, shown)
 }
 
 /// A procedural stand-in map (the real one takes 2 s to load): fields, a road grid, a
@@ -248,6 +258,17 @@ fn render_spec_states() -> Result<(), String> {
         // The spec's "Not scoring": grey dot, the bar still cycling (0.8).
         ("idle", drift_state(58_687.0, None, Some(0.8), false)),
     ];
+    // Position + Gain (the default style): (snapshot, shown count-up value).
+    let pgs = [
+        ("running", pg_state(3, Some(4039.0), 4039.0, true, None)),
+        ("gained", pg_state(2, Some(4039.0), 4039.0, true, Some(true))),
+        ("lost", pg_state(4, Some(1250.0), 1250.0, true, Some(false))),
+        ("counting", pg_state(3, Some(12_345.0), 5210.6, true, None)),
+        // A window that scored nothing: dimmed "+0", grey dot.
+        ("not_scoring", pg_state(3, Some(0.0), 0.0, false, None)),
+        // Widest realistic gain: shrinks to stay clear of the dot.
+        ("wide", pg_state(12, Some(123_456.0), 123_456.0, true, None)),
+    ];
 
     let mut compass_off = base(OverlayConfig { compass: false, ..Default::default() });
     compass_off.pkt.speed = 20.0;
@@ -271,9 +292,9 @@ fn render_spec_states() -> Result<(), String> {
             for (style, size) in [("d1a", cluster::PILL_SIZE), ("d3a", cluster::HALO_SIZE)] {
                 let img = tile(&mut r, size, s, |p, xf| {
                     if style == "d1a" {
-                        cluster::draw_pill(p, xf, snap, NOW);
+                        cluster::draw_pill(p, xf, snap, NOW, cluster::speed(snap));
                     } else {
-                        cluster::draw_halo(p, xf, snap, NOW);
+                        cluster::draw_halo(p, xf, snap, NOW, cluster::speed(snap));
                     }
                 });
                 let id = format!("{style}_{name}_{sfx}");
@@ -345,6 +366,27 @@ fn render_spec_states() -> Result<(), String> {
             }
             written.push(save(&img, &id)?);
         }
+        for (name, (snap, shown)) in &pgs {
+            let img = tile(&mut r, drift::SIZE, s, |p, xf| {
+                drift::draw_position_gain(p, xf, snap, NOW, *shown);
+            });
+            let id = format!("x1pg_{name}_{sfx}");
+            if s == 1.0 {
+                let cap = over([58, 66, 82], 0.95, plate);
+                let want = match *name {
+                    "gained" => [0x2E, 0x9E, 0x48],
+                    "lost" => [0xD8, 0x32, 0x2B],
+                    _ => cap,
+                };
+                check(&mut failures, &img, &id, (8, 23), want, "cap");
+                let dot = if *name == "not_scoring" { over([255; 3], 0.22, plate) } else { [0xFF, 0xB0, 0x2E] };
+                check(&mut failures, &img, &id, (72, 20), dot, "dot");
+                check(&mut failures, &img, &id, (70, 39), [0xFF, 0xB0, 0x2E], "bar fill");
+                check(&mut failures, &img, &id, (180, 39), over([255; 3], 0.16, plate), "bar track");
+                check(&mut failures, &img, &id, (192, 23), plate, "plate");
+            }
+            written.push(save(&img, &id)?);
+        }
         for (name, snap, map, mates) in &maps {
             let img = tile(&mut r, minimap::SIZE, s, |p, xf| {
                 minimap::draw(p, xf, snap, NOW, &mut MapAnim::default(), Some(*map), mates);
@@ -380,8 +422,9 @@ fn render_spec_states() -> Result<(), String> {
     composite.lap_delta = Some(-0.42);
     let halo = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, cluster_style: ClusterStyle::Halo, ..Default::default() }), ..composite.clone() };
     let drifting = HudSnapshot { mode: HudMode::Drift, drift: drift_state(58_687.0, Some((4039.0, 1.2)), Some(0.2), true).drift, ..composite.clone() };
+    let drift_total = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, drift_style: DriftStyle::Total, ..Default::default() }), ..drifting.clone() };
     r.map.set(summer.clone(), orig, Season::Summer);
-    for (name, snap) in [("composite_1080p", composite), ("composite_halo_1080p", halo), ("composite_drift_1080p", drifting)] {
+    for (name, snap) in [("composite_1080p", composite), ("composite_halo_1080p", halo), ("composite_drift_1080p", drifting), ("composite_drift_total_1080p", drift_total)] {
         r.hud = crate::hud::Hud::default();
         r.frame_at([1920, 1080], Some(&snap), false, NOW, SCREEN_BG.to_normalized_gamma_f32());
         let img = r.painter.read_screen_rgba([1920, 1080]);

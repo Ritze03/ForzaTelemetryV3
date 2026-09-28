@@ -6,7 +6,7 @@ use std::sync::Arc;
 use egui::{pos2, vec2, Id, LayerId, Order, Rect};
 
 use super::{fonts, Hud};
-use crate::config::OverlayConfig;
+use crate::config::{DriftStyle, OverlayConfig};
 use crate::overlay::snapshot::{DriftChip, DriftInfo, HudMode, HudSnapshot, PlaceChange};
 
 fn ctx() -> egui::Context {
@@ -119,7 +119,7 @@ fn shift_flash_and_pulse_animate_only_while_active() {
 #[test]
 fn drift_count_up_chip_and_bar() {
     let (ctx, mut hud) = (ctx(), Hud::default());
-    let mut s = snap(OverlayConfig { fade: false, drift_bar: false, ..Default::default() });
+    let mut s = snap(OverlayConfig { fade: false, drift_bar: false, drift_style: DriftStyle::Total, ..Default::default() });
     s.mode = HudMode::Drift;
     s.drift = DriftInfo { score: 1000.0, interval: 5.0, ..Default::default() };
     // First frame snaps to the score: nothing to count.
@@ -139,7 +139,7 @@ fn drift_count_up_chip_and_bar() {
     s.drift.chip = Some(DriftChip { gain: 0.0, at: 20.0 });
     assert!(!frame(&ctx, &mut hud, &s, 20.5));
     // The window bar animates while a window runs.
-    s.cfg = Arc::new(OverlayConfig { fade: false, drift_bar: true, ..Default::default() });
+    s.cfg = Arc::new(OverlayConfig { fade: false, drift_bar: true, drift_style: DriftStyle::Total, ..Default::default() });
     s.drift.window_start = Some(20.0);
     assert!(frame(&ctx, &mut hud, &s, 21.0));
 }
@@ -213,4 +213,113 @@ fn drift_dot_lit_only_while_scoring_and_settles() {
     assert!(frame(&ctx, &mut hud, &s, 10.5));
     assert!(!scoring(&s, 10.0 + DRIFT_ACTIVE_SECS));
     settle(&ctx, &mut hud, &s, 10.5 + 1.0 / 60.0, DRIFT_ACTIVE_SECS + 0.1);
+}
+
+fn shown_gain(hud: &Hud) -> f32 {
+    hud.shown_gain.map_or(-1.0, |g| g.1)
+}
+
+#[test]
+fn position_gain_counts_up_from_zero_then_holds() {
+    let (ctx, mut hud) = (ctx(), Hud::default());
+    let cfg = OverlayConfig { fade: false, drift_bar: false, ..Default::default() };
+    assert_eq!(cfg.drift_style, DriftStyle::PositionGain, "the default style");
+    let mut s = snap(cfg);
+    s.mode = HudMode::Drift;
+    s.pkt.race_position = 3;
+    s.drift = DriftInfo { score: 1000.0, interval: 5.0, ..Default::default() };
+    // No window closed yet: "+0", settled.
+    assert!(!frame(&ctx, &mut hud, &s, 1.0));
+    assert_eq!(shown_gain(&hud), 0.0);
+    // A window closes with +4,039: counts up from 0 and settles on it exactly.
+    s.drift.chip = Some(DriftChip { gain: 4039.4, at: 2.0 });
+    assert!(frame(&ctx, &mut hud, &s, 2.016));
+    let g = shown_gain(&hud);
+    assert!(g > 0.0 && g < 4039.0, "{g}");
+    let t = settle(&ctx, &mut hud, &s, 2.032, 3.0);
+    assert_eq!(shown_gain(&hud), 4039.0);
+    // Holds (no redraw needed) until the next window closes, however long that takes.
+    assert!(!frame(&ctx, &mut hud, &s, t + 4.0));
+    assert_eq!(shown_gain(&hud), 4039.0);
+    // The next window restarts the count from 0, even for a smaller gain.
+    s.drift.chip = Some(DriftChip { gain: 1200.0, at: 10.0 });
+    assert!(frame(&ctx, &mut hud, &s, 10.016));
+    assert!(shown_gain(&hud) < 1200.0);
+    settle(&ctx, &mut hud, &s, 10.032, 3.0);
+    assert_eq!(shown_gain(&hud), 1200.0);
+    // A window with no gain: "+0" at once, nothing to count.
+    s.drift.chip = Some(DriftChip { gain: 0.0, at: 15.0 });
+    assert!(!frame(&ctx, &mut hud, &s, 15.016));
+    assert_eq!(shown_gain(&hud), 0.0);
+    // Total style leaves the gain state alone and counts the score instead.
+    s.cfg = Arc::new(OverlayConfig { fade: false, drift_bar: false, drift_style: DriftStyle::Total, ..Default::default() });
+    frame(&ctx, &mut hud, &s, 16.0);
+    assert_eq!(hud.shown_score, Some(1000.0));
+}
+
+/// Every filled path's colour in one pass (the cap layers are convex polygons).
+fn fills(ctx: &egui::Context, hud: &mut Hud, snap: &HudSnapshot, now: f64) -> Vec<egui::Color32> {
+    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0))), ..Default::default() };
+    let out = ctx.run(raw, |ctx| {
+        let p = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
+        hud.draw(&p, ctx.content_rect(), snap, now, None, &[]);
+    });
+    out.shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(ps) => Some(ps.fill),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn position_gain_cap_gets_the_place_change_layer() {
+    use super::col;
+    let (ctx, mut hud) = (ctx(), Hud::default());
+    let mut s = snap(OverlayConfig { fade: false, drift_bar: false, ..Default::default() });
+    s.mode = HudMode::Drift;
+    s.pkt.race_position = 2;
+    s.drift = DriftInfo { score: 1000.0, interval: 5.0, ..Default::default() };
+    s.events.place_change = Some(PlaceChange { at: 100.0, gained: true });
+    assert!(fills(&ctx, &mut hud, &s, 101.0).contains(&col::GAIN));
+    assert!(frame(&ctx, &mut hud, &s, 102.9), "animates through the 3 s curve");
+    assert!(!frame(&ctx, &mut hud, &s, 103.1));
+    assert!(!fills(&ctx, &mut hud, &s, 103.2).contains(&col::GAIN));
+    s.events.place_change = Some(PlaceChange { at: 200.0, gained: false });
+    assert!(fills(&ctx, &mut hud, &s, 201.0).contains(&col::LOSS));
+    // The Race Block's colour switch governs it here too.
+    s.cfg = Arc::new(OverlayConfig { fade: false, drift_bar: false, place_colour: false, ..Default::default() });
+    assert!(!fills(&ctx, &mut hud, &s, 201.0).contains(&col::LOSS));
+}
+
+#[test]
+fn speed_hold_refreshes_at_most_every_half_second() {
+    let (ctx, mut hud) = (ctx(), Hud::default());
+    let mut s = snap(OverlayConfig { fade: false, speed_hold: true, ..Default::default() });
+    s.pkt.speed = 100.0 / 3.6;
+    assert!(!frame(&ctx, &mut hud, &s, 1.0));
+    assert_eq!(hud.held_speed, Some((1.0, 100)));
+    // Packets keep changing the speed at 60 Hz; the shown number holds for 0.5 s and the
+    // hold never keeps the frame loop alive by itself.
+    let mut t = 1.0;
+    for kmh in 101..=129 {
+        t += 1.0 / 60.0;
+        s.pkt.speed = kmh as f32 / 3.6;
+        assert!(!frame(&ctx, &mut hud, &s, t), "at {t}");
+        assert_eq!(hud.held_speed.map(|h| h.1), Some(100), "at {t}");
+    }
+    // The first frame at ≥ 0.5 s takes the latest value and restarts the hold.
+    s.pkt.speed = 130.0 / 3.6;
+    assert!(!frame(&ctx, &mut hud, &s, 1.5));
+    assert_eq!(hud.held_speed, Some((1.5, 130)));
+    s.pkt.speed = 131.0 / 3.6;
+    frame(&ctx, &mut hud, &s, 1.6);
+    assert_eq!(hud.speed(&s, 1.6), 130);
+    assert_eq!(hud.speed(&s, 2.0), 131);
+    // Off: always live, nothing held.
+    s.cfg = Arc::new(OverlayConfig { fade: false, ..Default::default() });
+    s.pkt.speed = 140.0 / 3.6;
+    assert_eq!(hud.speed(&s, 2.01), 140);
+    assert_eq!(hud.held_speed, None);
 }

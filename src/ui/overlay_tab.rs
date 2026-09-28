@@ -7,7 +7,7 @@
 use egui::{pos2, vec2, Color32, CursorIcon, FontId, Id, Painter, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use crate::app::{ForzaApp, OverlayStatus};
-use crate::config::{ClusterStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig};
+use crate::config::{ClusterStyle, DriftStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig};
 use crate::focus::MonitorStatus;
 use crate::hud::layout::Module;
 use crate::i18n::tr;
@@ -549,6 +549,8 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
         };
         theme::checkbox_row(ui, &mut o.rpm_label, rpm_label);
         hint(ui, tr("The speed stays. Only the unit text changes."));
+        theme::checkbox_row(ui, &mut o.speed_hold, tr("Update speed only every 0.5 s"));
+        hint(ui, tr("Calmer to read. Gear and revs stay live."));
         theme::checkbox_row(ui, &mut o.shift_flash, tr("Shift flash"));
         theme::checkbox_row(ui, &mut o.gear_pulse, tr("Gear-change pulse"));
         pct_row(ui, tr("Redline at (max rpm)"), &mut o.redline_frac, 50.0, 100.0, 0.5);
@@ -580,6 +582,11 @@ fn race(ui: &mut Ui, app: &mut ForzaApp) {
 fn drift(ui: &mut Ui, app: &mut ForzaApp) {
     module_card(ui, app, tr("Drift Counter"), |o| &mut o.drift_on, None, |ui, app| {
         let o = &mut app.config.overlay;
+        control_row(ui, tr("Style"), |ui| {
+            theme::styled_radio(ui, &mut o.drift_style, DriftStyle::PositionGain, tr("Position + Gain"));
+            theme::styled_radio(ui, &mut o.drift_style, DriftStyle::Total, tr("Total score"));
+        });
+        hint(ui, tr("Position + Gain shows your place and the points of the last interval, counting up. Total shows the event score, which Forza also shows itself."));
         theme::slider_row(ui, tr("Gain chip interval"), &mut o.drift_chip_secs, 1.0..=10.0, 1.0, 0, " s");
         let bar = format!("{} ({:.0} s)", tr("Progress bar"), o.drift_chip_secs);
         theme::checkbox_row(ui, &mut o.drift_bar, bar);
