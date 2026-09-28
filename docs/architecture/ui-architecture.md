@@ -10,8 +10,9 @@ covers the architecture that makes those rules possible.
 ## Tab structure & dispatch
 
 `Tab` (`src/app.rs`) is a plain `PartialEq, Clone, Copy` enum: `Dashboard, Overlay,
-Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog` (`Overlay` →
-`ui::overlay_tab::show`, see [[overlay]]; `Settings` is labelled **Setup**). The line
+Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog, Debug` (`Overlay` →
+`ui::overlay_tab::show`, see [[overlay]]; `Debug` → `ui::debug_tab::show`, the rightmost
+tab, see [[debug]]; `Settings` is labelled **Setup**). The line
 numbers below predate the Overlay tab and have drifted; search by symbol. There is no
 `Tab::ALL` array or `impl Tab` — instead the top tab bar and the dispatch match each
 enumerate the variants by hand, so adding a tab means touching both by name.
@@ -20,14 +21,14 @@ enumerate the variants by hand, so adding a tab means touching both by name.
   matches `self.current_tab` and calls one function per tab (`src/app.rs:2267-2276`):
   `crate::ui::dashboard::show`, `ui::backfire::show_backfire`, `ui::gearbox::show_gearbox`,
   `ui::power_curve::show`, `ui::engine_swaps::show`, `ui::coop::show`, `ui::settings::show`,
-  `ui::changelog::show`. Every tab body lives in its own module under `src/ui/`
+  `ui::changelog::show`, `ui::debug_tab::show`. Every tab body lives in its own module under `src/ui/`
   (`src/ui/mod.rs` just declares them: `backfire`, `changelog`, `coop`, `dashboard`,
-  `engine_swaps`, `gearbox`, `power_curve`, `settings`) — one module per tab, each
+  `debug_tab`, `engine_swaps`, `gearbox`, `overlay_tab`, `power_curve`, `settings`) — one module per tab, each
   exposing a `show(ui, app: &mut ForzaApp)`-shaped entry point that owns everything
   drawn in that tab.
 - **Tab bar** — drawn inline (no dedicated function) in the top panel
   (`src/app.rs:1355-1435`). Two hand-written arrays, `left` (Dashboard/PowerCurve/Coop/
-  Backfire/Gearbox/EngineSwaps, `src/app.rs:1362-1369`) and `right` (Settings/Changelog,
+  Backfire/Gearbox/EngineSwaps, `src/app.rs:1362-1369`) and `right` (Debug/Settings/Changelog — right-to-left, so Debug is rightmost,
   `src/app.rs:1370-1373`), pair each `Tab` with an icon glyph from `icons.rs` and feed
   the shared `tab_button` helper (`src/app.rs:370-423`) once per entry, under whichever
   `TopBarStyle` (`Legacy | Simple | Modern`) is active. `tab_title(tab: Tab)`

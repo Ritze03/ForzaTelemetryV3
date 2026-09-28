@@ -763,6 +763,8 @@ fn de(s: &str) -> Option<&'static str> {
         "LAST LAP" => "LETZTE RUNDE",
         "DRIFT" => "DRIFT",
         "Overlay" => "Overlay",
+        "Raw Telemetry" => "Rohdaten",
+        "No telemetry yet" => "Noch keine Telemetrie",
         "HUD Overlay" => "HUD-Overlay",
         "Hide HUD" => "HUD ausblenden",
         "The overlay needs a Wayland session (WAYLAND_DISPLAY is not set)."

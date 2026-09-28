@@ -238,6 +238,7 @@ pub enum Tab {
     Coop,
     Settings,
     Changelog,
+    Debug,
 }
 
 /// Which page the mini-settings popup shows. `General` is a global page not tied
@@ -320,6 +321,7 @@ fn tab_title(tab: Tab) -> &'static str {
         Tab::EngineSwaps => "Engine Swaps",
         Tab::Settings => "Setup",
         Tab::Changelog => "What's New",
+        Tab::Debug => "Debug",
     }
 }
 
@@ -331,9 +333,9 @@ const PILL_FONT: f32 = 12.5;
 /// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
 /// so the tabs only shift once, uniformly, when the bar itself gets narrow.
 fn max_pill_width(ui: &egui::Ui) -> f32 {
-    const TABS: [Tab; 9] = [
+    const TABS: [Tab; 10] = [
         Tab::Dashboard, Tab::Overlay, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
-        Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog,
+        Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog, Tab::Debug,
     ];
     TABS.iter()
         .map(|&t| {
@@ -1591,11 +1593,12 @@ impl eframe::App for ForzaApp {
                     (Tab::EngineSwaps, icons::ENGINE,     "Engine Swaps"),
                 ];
                 let right = [
+                    (Tab::Debug,     icons::BUG,      "Debug"),
                     (Tab::Settings,  icons::COG,      "Setup"),
                     (Tab::Changelog, icons::BULLHORN, "What's New"),
                 ];
-                // right_to_left adds items right→left, so Setup ends up rightmost and
-                // What's New lands to its left.
+                // right_to_left adds items right→left, so Debug ends up rightmost (last),
+                // then Setup, then What's New to its left.
                 ui.horizontal(|ui| {
                     ui.set_min_height(30.0);
                     match style {
@@ -2483,6 +2486,7 @@ impl eframe::App for ForzaApp {
             Tab::Coop => crate::ui::coop::show(ui, self),
             Tab::Settings => crate::ui::settings::show(ui, self),
             Tab::Changelog => crate::ui::changelog::show(ui, self),
+            Tab::Debug => crate::ui::debug_tab::show(ui, self),
         });
 
         // Hand the listener thread this frame's config plus the two focus facts only egui
