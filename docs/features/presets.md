@@ -52,6 +52,9 @@ of `KeyGroup { section, name, keys }`:
 - **Dashboard** → *Layout* (`LAYOUT_KEYS`) / *Mini-settings* (`MINISETTINGS_KEYS`)
 - **Settings** → *Network* / *Display* / *Hotkeys & Input* / *Co-Op*
 - **Tuning** → *Backfire* / *Automatic Gearbox* / *Acceleration Tests*
+- **Overlay** → *HUD Overlay* (`OVERLAY_KEYS` = the single `overlay` key, every Overlay-tab
+  setting). Appended last so existing index-based selection vectors don't shift. The Hide
+  HUD binding travels with *Hotkeys & Input* (`hotkeys`), not here.
 
 Every serialized `AppConfig` key is in **exactly one** group or the `EXPORT_EXCLUDE`
 list (`active_profile`). The `key_groups_partition_all_keys` test enforces this — add a

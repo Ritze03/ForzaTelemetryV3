@@ -1,18 +1,42 @@
 # Hotkeys
 
-Rebindable keyboard shortcuts, configured in **Settings → Hotkeys**. Two scopes,
-one rebind UI. Full design + rationale: [[hotkeys-design]] (`docs/features/hotkeys-design.md`).
+Rebindable keyboard shortcuts, configured in **Setup → Hotkey** (the tab is `Tab::Settings`,
+labelled Setup). Two scopes, one rebind UI. Full design + rationale: [[hotkeys-design]]
+(`docs/features/hotkeys-design.md`).
 
 ## Two scopes
 
 - **Global (while in-game)** — fire while the *game* holds focus (or our app does).
   Defaults: `G` = toggle Automatic Gearbox, `F` = reset RPM calibration, `B` =
-  toggle Backfire. Routed through the capture backend + focus gate.
+  toggle Backfire, `H` = **Hide HUD** (toggle the in-game overlay, see [[overlay]]). Routed
+  through the capture backend + focus gate.
 - **In-app** — fire only while our telemetry window is focused. Defaults: `Ctrl+S` =
   mini-settings, `Ctrl+E` = dashboard edit. Handled via egui input (`ctx.input`), so they
   are inherently UI-only. Rebindable because the combo is read from config.
 
 A binding's *scope* is fixed per action (`HotkeyAction::scope`), not user-chosen.
+
+**Hide HUD** is special in two ways: its state (`hud_hidden`) is runtime-only on the listener
+thread, never config, and it does nothing while the overlay is disabled (details and *why* in
+[[overlay]]). Its binding is the one `hotkeys.bindings[HideHud]`, editable both here and in
+the Overlay tab's General card (D28).
+
+## Rebinding and unbinding
+
+Click a binding's button → "Press a key…". Every rebind button (Setup → Hotkey and the
+Overlay tab's Hide HUD row) arms `app.rebinding`; the key is taken by one shared
+`ForzaApp::capture_rebind`, which runs **before** the tabs are drawn:
+
+- **Esc** cancels; **Backspace** clears the binding ("Not set", shown faint); any other
+  bindable key binds with the held Ctrl/Alt/Shift.
+- While a capture is armed the key doesn't also fire an in-app hotkey.
+- Unbinding goes through `HotkeyConfig::unbind`, which removes the binding **and** records
+  the action in `hotkeys.unbound`, so `inject_missing_hotkeys` doesn't restore the default on
+  the next load. `HotkeyConfig::bind` clears that mark. Always edit through `bind` /
+  `unbind`, never `bindings.insert` directly.
+- *Why one capture in `app.rs`:* two tabs edit the same binding, and a per-tab capture would
+  duplicate the Esc/Backspace logic (the old Setup-only capture inserted directly and would
+  have skipped the unbound bookkeeping).
 
 ## Capture backend (`src/hotkeys.rs`)
 
@@ -43,7 +67,9 @@ backend immediately — never stored, sent, or logged.
 ## Focus detection (`src/focus.rs`)
 
 One `FocusDetector` + one poll thread (at the configured Hz) caches "is the game focused?"
-in an `AtomicBool`, read by both the hotkey gate and the input gate.
+in an `AtomicBool`, read by the hotkey gate, the input gate and the overlay's
+**Only when game window is focused** option. The detector also runs whenever the overlay is
+enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 
 - **Methods:** Hyprland (`hyprctl activewindow`), X11 (`xdotool`/`xprop`), GNOME (`gdbus`
   → the **Window Calls** Shell extension's `List()`, since GNOME on Wayland has no built-in

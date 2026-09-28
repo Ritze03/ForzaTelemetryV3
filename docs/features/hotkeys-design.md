@@ -101,6 +101,9 @@ enum HotkeyAction {
     ToggleBackfire,  // Global   — flips config.backfire_enabled
     MiniSettings,    // AppFocused — flips page_settings_open
     DashboardEdit,   // AppFocused — flips config.dashboard_edit_mode (Dashboard tab only)
+    // (also ResetCalibration, Global, F)
+    HideHud,         // Global, H — toggles the listener's runtime hud_hidden (not config);
+                     // ignored while the overlay is disabled. See features/overlay.md
 }
 
 enum HotkeyScope { Global, AppFocused }   // returned by HotkeyAction::scope(); decides the path
@@ -125,6 +128,9 @@ struct HotkeyConfig {
     #[serde(default)] game_match: String,            // substring, default "Forza"; Detect fills it
     #[serde(default)] input_focus_gate: bool,        // gate synthetic input on focus; default OFF
     #[serde(default)] focus_poll_hz: f32,            // shared poll rate, default 4.0, range 1–20
+    #[serde(default)] unbound: Vec<HotkeyAction>,     // deliberately cleared ("Not set"); stops
+                                                     // inject_missing_hotkeys re-adding the default.
+                                                     // Edit via HotkeyConfig::bind / unbind only
 }
 ```
 
@@ -174,8 +180,11 @@ a human hotkey tap, so a non-issue.
 
 One `FocusDetector` + **one poll thread** at `focus_poll_hz`, caching "is the game focused?"
 in an `Arc<AtomicBool>` (plus an `AtomicU8` status for the light). Two consumers read the
-same cached bool. The thread only runs when a consumer needs it (input gate on, or
-`gate_mode == WindowFocus`).
+same cached bool. The thread only runs when a consumer needs it (input gate on,
+`gate_mode == WindowFocus`, or the HUD overlay enabled — its focus-only option and its
+monitor detection need a real answer, and an idle detector fails open). The same thread
+also runs the overlay's monitor detection, acting only on a *confirmed* focused game, never
+the fail-open answer (see `docs/features/overlay.md`).
 
 **Methods** — each returns the active window's identifier string; `game_match` (substring,
 case-insensitive) decides the match:
@@ -246,6 +255,9 @@ today's behaviour; opt-in).
   "Press a key…", captures the next non-modifier key + held modifiers from **egui input**
   (the app is focused during rebind, so no backend involved), Esc cancels. Simple conflict
   warning if two bindings collide.
+  - *Update (overlay work):* **Backspace clears** a binding ("Not set"). The capture for
+    every rebind button (Setup → Hotkey and the Overlay tab's Hide HUD row) is one
+    `ForzaApp::capture_rebind` in `app.rs`, run before the tabs; see [[hotkeys]].
 - **Detection settings:**
   - `Gate mode` dropdown: Telemetry-live / Window-focus.
   - When Window-focus (Linux): `Method` dropdown (Hyprland / X11 / GNOME / Custom). For GNOME,

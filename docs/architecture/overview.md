@@ -4,7 +4,7 @@ The first doc to read to understand and navigate ForzaTelemetryV3. It maps the
 threads, the packet-to-pixel data flow, the per-frame loop, and every source file.
 Deep dives live in sibling docs — this one links out rather than duplicating them:
 [[networking]], [[state-and-config]], [[ui-architecture]], and per-feature docs
-like [[coop]], [[minimap]], [[gearbox]], [[power-curve]].
+like [[coop]], [[minimap]], [[gearbox]], [[power-curve]], [[overlay]].
 
 ## Big picture
 
@@ -14,11 +14,12 @@ telemetry** — a fixed 324-byte packet at the game's frame rate — parses each
 folds it into state held on one big struct (`app.rs:ForzaApp`), lets event-driven
 listeners react (backfire, auto-gearbox, timers, power capture), and redraws a tabbed
 dashboard. `ForzaApp` *is* the application: it owns config, telemetry, listeners, and
-all derived/session state, and it implements `eframe::App`.
+all derived/session state, and it implements `eframe::App`. On Linux/Wayland an optional
+**in-game HUD overlay** draws over the game from its own thread (see [[overlay]]).
 
 ## Threading model
 
-Three long-lived threads plus a few short-lived helpers. Packets cross UDP → listener → UI
+Three long-lived threads (four with the HUD overlay on) plus a few short-lived helpers. Packets cross UDP → listener → UI
 through two **`mpsc` channels**; the listener↔UI *state* exchange is the mailbox pair
 described below.
 
@@ -45,11 +46,20 @@ described below.
   *forwarded* packets. Everything else — stats, the three read-only listeners, Co-Op's
   incoming side (jitter buffers, roster, minimap), widgets — still happens here,
   single-threaded. Co-Op's *outgoing* relay runs on the listener thread (see [[coop]]).
-- **Short-lived background threads** — the seasonal minimap image decode
-  (`app.rs:map_load_thread`, results returned over its own `mpsc` channel of
-  `MapLoadMessage`), and Co-Op's WebSocket relay + cloudflared tunnel
+- **Overlay thread** (Linux, only while `overlay.enabled`) — `overlay/wayland.rs:run`: its own
+  Wayland connection, calloop loop, layer-shell surface, glutin EGL context, `egui::Context`
+  and `egui_glow` painter. Draws the HUD from the listener's `HudSnapshot` mailbox, one frame
+  per packet. Owned by `overlay::OverlayHandle`, held in `app.rs:OverlayRuntime`. **Why its
+  own thread:** like the listener, it must keep working while the game covers the main
+  window. Helpers: `overlay-start` (runs the blocking `OverlayHandle::spawn`, up to 5 s),
+  `overlay-drop` (drop = shutdown + join, kept off the UI thread), `hud-map` (loads the
+  season map for the HUD minimap). See [[overlay]].
+- **Short-lived background threads** — the Dashboard's seasonal minimap image decode
+  (`app.rs:map_load_thread` → `minimap.rs:load_map_color_image`, results returned over its
+  own `mpsc` channel of `MapLoadMessage`), and Co-Op's WebSocket relay + cloudflared tunnel
   (`coop.rs`, see [[coop]]). Synthetic keypress emission (`input.rs:InputSender`) also
-  runs on its own worker thread, as does the focus poll (`focus.rs`).
+  runs on its own worker thread, as does the focus poll (`focus.rs`), which also runs the
+  overlay's monitor detection and sends `OverlayCmd::SetOutput` to the overlay thread.
 
 ### Listener ↔ UI: two mailboxes
 
@@ -61,7 +71,8 @@ call, disk IO or drawing, and neither side ever holds both.
 | listener → UI | `worker.rs:ListenerView` (`DsgView`, `BackfireView`, `dynamic_max_rpm`, the two enable flags + `toggle_gen`) | listener `lock`s once per loop and overwrites it from its local copy | UI `try_lock`s once a frame in `app.rs:sync_listener_view`, clones into `app.dsg` / `app.backfire` / `app.dynamic_max_rpm`, drops the guard |
 | UI → listener | `worker.rs:ToListener` (`AppConfig` + `our_focused` / `wants_text`, which only egui knows) | UI `try_lock`s at the end of every frame (`ListenerHandle::push`) | listener `try_lock`s once per loop and takes it |
 | listener → UI packets | `worker.rs:PacketQueue` = `Arc<Mutex<VecDeque<ForzaPacket>>>`, capped at `worker::UI_BACKLOG_CAP` (200) | listener locks, `push_back`, `pop_front` when over cap, unlocks | UI locks, `std::mem::take`s the deque, unlocks, *then* iterates (`ListenerHandle::take_packets`) |
-| UI → listener (one-shot) | `worker.rs:Command` — `ClearRpmCalibration`, `ClearGearMap`, `Shutdown` | UI, over an `mpsc` channel (never blocks, never dropped) | listener drains it once per loop |
+| UI → listener (one-shot) | `worker.rs:Command` — `ClearRpmCalibration`, `ClearGearMap`, `SetHudSink`, `Shutdown` | UI, over an `mpsc` channel (never blocks, never dropped) | listener drains it once per loop |
+| listener → overlay | `overlay/snapshot.rs:HudSnapshot` in a `SnapshotSlot` (`Arc<Mutex<Option<…>>>`, latest wins) plus a calloop wake ping, via `HudSink` | listener `lock`s and overwrites on every packet and on any visibility-target change | overlay thread `try_lock`s and clones on each wake, keeping its previous copy on a miss |
 
 *Why a capped deque rather than a channel for the packets:* an `mpsc` channel is unbounded,
 so it would grow by ~71 MB/hour while the window is hidden and nobody drains it; a
@@ -118,6 +129,8 @@ listeners/worker.rs:run()          (runs whether or not we're being drawn)
       ├─ dsg.update(&pkt, …)        → synthetic E/Q
       ├─ coop.push_local(&coop::outgoing(..)) → relay to peers (coop.rs; paused class/PI
       │    carried over). Here because the UI loop stops while the game covers the window
+      ├─ hud.on_packet → hud.snapshot → HudSink::publish + wake   (listeners/hud.rs; only
+      │    while the overlay is attached) ──► overlay thread draws one HUD frame
       ├─ publishes ListenerView into the listener→UI mailbox
       ▼  push_back into the capped packet mailbox (oldest dropped)
 ─────────── Arc<Mutex<VecDeque<ForzaPacket>>> ───────────
@@ -169,14 +182,18 @@ which several stats and the Co-Op relay respect.
 2. `sync_listener_view()` — `try_lock` the listener→UI mailbox and copy it into
    `self.dsg` / `self.backfire` / `self.dynamic_max_rpm`; adopt the Backfire/Gearbox enable
    flags if a hotkey toggled them. On a lock miss, last frame's copy stands.
+   Then `sync_overlay()` — push the focus/monitor-detection params and start/stop/collect the
+   HUD overlay thread to follow `overlay.enabled` (see [[overlay]]).
 3. `drain_packets()` — `take_packets()` from the listener's capped mailbox in one lock, then
    process them unlocked (see above).
 4. `coop.tick()` — advance Co-Op jitter buffers; `update_minimap_trails()`.
 5. Poll the minimap image channel; handle season change; throttle/smooth the minimap
    camera (position cache, eased yaw, zoom).
 6. Hotkeys — only the app-focused actions (Ctrl+S mini-settings, Ctrl+E dashboard edit),
-   matched from config against egui input; F11 fullscreen (Windows) stays hardcoded. The
-   global actions (G gearbox, B backfire, F reset-RPM) and the synthetic-input focus gate
+   matched from config against egui input; F11 fullscreen (Windows) stays hardcoded. First,
+   `capture_rebind` takes the key while a rebind button is armed (Esc / Backspace / bind),
+   so it never also fires a hotkey. The
+   global actions (G gearbox, B backfire, F reset-RPM, H hide HUD) and the synthetic-input focus gate
    live on the listener thread instead — they have to work while this loop isn't running.
    Rebindable in Settings → Hotkeys. See [[hotkeys]].
 7. Chrome panels — top **tab bar** (`TopBottomPanel::top`, three styles via
@@ -216,7 +233,7 @@ might produce.
 | File | What it does |
 | --- | --- |
 | `main.rs` | Entry point: `eframe::run_native`, viewport size, constructs `ForzaApp`. |
-| `app.rs` | `ForzaApp` (all app + session state), the `eframe::App` update loop, `drain_packets`, `sync_listener_view`, tab bar, status bar, mini-settings popup, minimap camera logic, season detection. The hub everything hangs off. |
+| `app.rs` | `ForzaApp` (all app + session state), the `eframe::App` update loop, `drain_packets`, `sync_listener_view`, tab bar, status bar, mini-settings popup, minimap camera logic and season-change handling, the HUD overlay's start/stop (`sync_overlay`, `OverlayStatus`) and `capture_rebind`. The hub everything hangs off. |
 | `network.rs` | UDP receive thread + `NetworkHandle` (stop flag, `Drop`-based shutdown). See [[networking]]. |
 | `packet.rs` | 324-byte FH6 packet: `ForzaPacket` struct, `from_bytes`/`to_bytes`, helpers (`is_paused`, `power_ps`, `car_class_str`, …). See [[forza-fh6-packet-format]]. |
 | `telemetry.rs` | `TelemetryState`: latest packet, connection flag, packets-per-second. |
@@ -229,16 +246,43 @@ might produce.
 | `input.rs` | `InputSender` — synthetic keypresses (drives backfire/gearbox into the game) on a worker thread; the shared "synthetic echo" window; optional focus gate (suppress emission when the game isn't focused). |
 | `keymap.rs` | `HotKey`/`Mods`/`HotkeyBinding` — serde-stable key identity with egui/evdev/VK mapping tables. See [[hotkeys]]. |
 | `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel, whose `Receiver` `new()` hands to the listener thread. See [[hotkeys]]. |
-| `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/GNOME/Custom/Windows); reused by the hotkey gate and the input gate. See [[hotkeys]]. |
-| `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. See [[coop]]. |
+| `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/GNOME/Custom/Windows); reused by the hotkey gate, the input gate and the overlay's focus-only option. Also runs the overlay's **monitor detection** (`monitor_tick`, `query_monitor`, `parse_hyprland_monitor`), only while the game is focused. See [[hotkeys]], [[overlay]]. |
+| `minimap.rs` | Season detection (`current_season`), the on-disk map cache (`load_map_color_image`, atomic write), the overlay's 4096² mipmapped copy (`overlay_map_image`), and the world↔UV / heading-up maths (`MapCalibration`, `MapView`, easing). Shared by the Dashboard map and the HUD minimap. See [[minimap]]. |
+| `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. `CoopReader` is the cross-thread handle (the listener sends through it, the overlay reads teammates through it). See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
+
+### `src/overlay/` (in-game HUD runtime; Linux/Wayland only, except `snapshot.rs`) — see [[overlay]]
+
+| File | What it does |
+| --- | --- |
+| `mod.rs` | `OverlayHandle` (spawn / send / waker / slot / `is_dead`; drop = shutdown + join), `OverlayCmd`, `DisabledReason` + the pure `capability` probe, the `FORZA_OVERLAY_TEST` dev pattern (`spawn_dev_test`). |
+| `wayland.rs` | The overlay thread: calloop loop, sctk layer surface on `Layer::Overlay` (empty input region), surface create/destroy following `snapshot.visible`, output selection, frame-callback pacing (`next_wake`). |
+| `gl.rs` | glutin EGL: `Gl` (display + context, current surfaceless between surfaces) and `Headless` (for the PNG harness); the teardown order. |
+| `render.rs` | `Renderer`: the overlay's own `egui::Context` + `egui_glow::Painter`, one frame per call, the map texture, co-op teammates; the dev test pattern. |
+| `snapshot.rs` | `HudSnapshot`, `SnapshotSlot`, `HudSink`, `hud_clock()`. Platform-neutral, since the listener compiles everywhere. |
+
+### `src/hud/` (pure HUD draw code, driven by `overlay/render.rs`) — see [[overlay]]
+
+| File | What it does |
+| --- | --- |
+| `mod.rs` | `Hud` (global fade, count-ups, speed hold, map easing) and `Hud::draw`; `modules()` decides which slots show; HUD colours (`col`). |
+| `cluster.rs` | Drive cluster: D1a Pill and D3a′ Halo; gear label with the drive-mode letter. |
+| `minimap.rs` | M2′ minimap, `MapLoader` (`hud-map` thread), co-op teammate markers. |
+| `race.rs` | R1′ race block; the position cap shared with the drift counter. |
+| `drift.rs` | X1′ drift counter, Position + Gain and Total styles. |
+| `layout.rs` | The 3×3 slot layout and stacking (`MARGIN` 44, `GAP` 12). |
+| `anim.rs` | Time-based curves: fade, pulse, place change, lap hold, chip, count-up. |
+| `prims.rs` / `fonts.rs` | Drawing primitives in design px (fixed digit cells, outlined text); the baked Big Shoulders fonts. |
+| `png.rs` / `tests.rs` | Offscreen PNG harness (compiled as `overlay::render::png`) and unit tests. |
 
 ### `src/listeners/` (event-driven, fire inside `drain_packets`)
 
 | File | What it does |
 | --- | --- |
-| `mod.rs` | Re-exports the five listener modules plus `worker`. |
-| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, and the global hotkeys; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener` / `PacketQueue`) + `Command` channel + `ListenerHandle`. |
+| `mod.rs` | Declares the five listener modules plus `worker`, `hud` and `lap_trace`. |
+| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, the global hotkeys (incl. the Hide HUD toggle, `hud_hidden`), the co-op send, and the HUD snapshot publishing; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener` / `PacketQueue`) + `Command` channel + `ListenerHandle` (`set_hud_sink`). |
+| `hud.rs` | HUD data on the listener thread: `HudTracker` (packet → `HudSnapshot`), the race/drift `ModeClassifier`, the drift gain `DriftWindow`, `visible_target`. See [[overlay]]. |
+| `lap_trace.rs` | Best-lap trace keyed by distance → the HUD's live lap delta. |
 | `backfire.rs` | Synthetic anti-lag / throttle-blip; echo-window bookkeeping. See [[backfire]]. |
 | `dsg.rs` | DSG-style auto-shifter with per-car calibration. See [[gearbox]]. |
 | `perf_test.rs` | Configurable accel/decel timers. |
@@ -251,12 +295,13 @@ might produce.
 | --- | --- |
 | `mod.rs` | Declares the compiled tab modules. |
 | `dashboard.rs` | The draggable/resizable widget grid (largest UI file). See [[dashboard]]. |
+| `overlay_tab.rs` | Overlay tab: the HUD overlay's settings page (General, Monitor Detection, drag-and-drop 3×3 Layout, per-module cards). See [[overlay]]. |
 | `backfire.rs` | Backfire tab controls (`show_backfire`). |
 | `gearbox.rs` | Automatic Gearbox tab (`show_gearbox`). |
 | `power_curve.rs` | Power Curve tab (live RPM vs power/torque, boost). |
 | `engine_swaps.rs` | Engine Swaps reference table from `engines.csv`. |
 | `coop.rs` | Co-Op host/join tab. |
-| `settings.rs` | Settings tab (port, units, language, FPS, presets, connection). |
+| `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Window Detection). See [[settings]]. |
 | `changelog.rs` | "What's New" viewer — parses root `CHANGELOG.md`, category filters. |
 | `acceleration.rs` | **ORPHANED** — not in `ui/mod.rs`, not compiled. |
 | `deceleration.rs` | **ORPHANED** — not in `ui/mod.rs`, not compiled. |
@@ -290,3 +335,16 @@ might produce.
 - **Theme colours / control layout** → `theme.rs` and [[ui-architecture]] /
   the styling guide.
 - **Frame timing / FPS** → the FPS limiter at the end of `app.rs:update`.
+- **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
+- **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`
+  timings); check it with the PNG harness `cargo test render_spec_states -- --ignored`.
+  See [[overlay]].
+- **HUD overlay: new data on the HUD** → a field on `overlay/snapshot.rs:HudSnapshot`, filled
+  in `listeners/hud.rs:HudTracker::snapshot` (listener thread), drawn in `hud/`.
+- **HUD overlay: a setting** → `config.rs:OverlayConfig` (+ its default) and a control in
+  `ui/overlay_tab.rs`; it reaches the HUD through the config push, no extra wiring.
+- **HUD overlay: when it shows/hides** → `listeners/hud.rs:visible_target` (the target) and
+  `overlay/wayland.rs:follow_snapshot` / `maybe_render` (the surface lifecycle).
+- **HUD overlay: race vs drift detection** → `listeners/hud.rs:ModeClassifier`.
+- **HUD overlay: start/stop, status, which monitor** → `app.rs:sync_overlay` /
+  `sync_overlay_thread` / `attach_overlay`; `focus.rs:monitor_tick`.

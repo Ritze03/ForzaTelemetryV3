@@ -8,13 +8,37 @@ transform calibrated to the game's coordinate space. It's one of the standard
 ## Map image & seasons
 
 FH6's overworld map skin rotates weekly (Spring → Summer → Autumn → Winter,
-`current_season()` in `src/app.rs`, keyed off a fixed epoch). The app loads and
-colour-caches the matching map image for the detected season in a background
-thread (`map_load_thread`), at a configurable **Image quality** (20–100%, lower
-= faster load/less memory); **Reload Map** re-fetches, **Rebuild Map Cache**
-clears the on-disk cache (`app_data_dir()/map_cache`) first. The season is
-re-checked continuously, so the image swaps automatically when the in-game
-season changes.
+`current_season()` in `src/minimap.rs`, a wall-clock rotation keyed off a fixed epoch,
+not read from packets). The app loads and colour-caches the matching map image for the
+detected season in a background thread (`app.rs:map_load_thread`), at a configurable
+**Image quality** (20–100%, lower = faster load/less memory); **Reload Map** re-fetches,
+**Rebuild Map Cache** clears the on-disk cache (`app_data_dir()/map_cache`, including the
+HUD overlay's copy) first. The season is re-checked continuously, so the image swaps
+automatically when the in-game season changes.
+
+## Shared code (`src/minimap.rs`)
+
+The season logic, the image loading/cache and the map maths live in `src/minimap.rs`,
+shared by this widget and the in-game HUD overlay's minimap ([[overlay]]). Nothing in it
+takes `&ForzaApp`, so the overlay thread can call it.
+
+- **Cache:** `load_map_color_image(season, quality)` decodes the 8192² JPEG once, writes
+  `map_cache/<season>_q<quality>.bin`, and reads that file afterwards. The write is
+  **atomic** (unique temp file, then rename). *Why:* the Dashboard loader and the overlay's
+  `hud-map` thread can build or read the same file at once, and a reader must never see a
+  partial file.
+- **Maths:** `MapCalibration` (world ↔ UV in original-image pixels), `MapView` (heading-up
+  offsets, UV per mesh vertex, compass direction, arrow angle), `target_yaw` /
+  `ease_yaw` / `ease_zoom`, and the stopped rule (`STOPPED_KMH` 5, `STOPPED_SECS` 1.5).
+  The Dashboard camera in `app.rs` uses these too.
+- **The overlay's copy:** `overlay_map_image(season)` is the **q50 (4096²)** cache file,
+  uploaded with `OVERLAY_MAP_TEXTURE_OPTIONS`: linear filtering with **trilinear mipmaps**
+  (egui_glow builds the chain on upload) and **ClampToEdge**. *Why mipmaps:* the HUD map is
+  heavily minified and rotates, which shimmers without them. The Dashboard map has no
+  mipmaps (it aliases; out of scope so far) and its texture wraps with MirroredRepeat
+  (visible when **Mirror map at edges** lets UVs past the edge); the HUD map doesn't mirror.
+  Switch `OVERLAY_MAP_TEXTURE_OPTIONS.wrap_mode` if it ever should. The q50 file is shared with a Dashboard set
+  to 50 % quality. The overlay keeps no RAM copy: it uploads, then drops the image.
 
 ## Calibration
 
@@ -25,7 +49,12 @@ World coordinates map to image pixels via three tunable constants under
 - `minimap_world_origin_x` / `minimap_world_origin_z` — world X/Z at pixel (0,0).
 
 These default to values derived from in-game reference points; **Reset to
-defaults** restores them if the car dot drifts off the map after tuning.
+defaults** restores them if the car dot drifts off the map after tuning. The HUD overlay's
+minimap uses the same three config values (carried in its snapshot).
+
+**Known duplicate:** the default numbers (0.3722, −12540, 10738) exist twice, as
+`MapCalibration::DEFAULT` in `src/minimap.rs` and in `AppConfig::default()` in
+`src/config.rs`. Change both together.
 
 ## Orientation: north-up vs heading-up
 

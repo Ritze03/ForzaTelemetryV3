@@ -39,6 +39,22 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
    diamond in your colour, showing each player's distance to it) — handy for "meet here".
    Right-click clears it.
 
+## On the in-game HUD overlay
+
+With **Show co-op teammates** on (Overlay tab → Minimap, default on), teammates also appear on
+the HUD overlay's minimap ([[overlay]]) as arrows in their identity colour with their name,
+while they're inside the map pill. Paused teammates are skipped there (their packet sits at
+the world origin; the last-known spot is UI-side state). No trails, waypoints or edge markers
+on the HUD.
+
+- The overlay thread reads them through a `CoopReader` (`OverlayOptions::coop`), not through
+  the HUD snapshot and not through the UI thread.
+- **Why the overlay advances the jitter buffers itself:** `CoopReader::remote_players` calls
+  the same `tick` the UI runs each frame before reading. The UI's `coop.tick()` stops while
+  the game covers the window, which is exactly when the HUD is on screen, so without this the
+  teammates would freeze. The advance is time-based (`now − buffer_ms`), so two callers
+  (UI and overlay) are harmless.
+
 ## Options
 
 - **Packet Buffer Size (ms)** — jitter buffer that delays remote players slightly for smoother pacing.

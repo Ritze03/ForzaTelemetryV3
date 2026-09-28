@@ -9,8 +9,10 @@ covers the architecture that makes those rules possible.
 
 ## Tab structure & dispatch
 
-`Tab` (`src/app.rs:345-355`) is a plain `PartialEq, Clone, Copy` enum: `Dashboard,
-Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog`. There is no
+`Tab` (`src/app.rs`) is a plain `PartialEq, Clone, Copy` enum: `Dashboard, Overlay,
+Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog` (`Overlay` →
+`ui::overlay_tab::show`, see [[overlay]]; `Settings` is labelled **Setup**). The line
+numbers below predate the Overlay tab and have drifted; search by symbol. There is no
 `Tab::ALL` array or `impl Tab` — instead the top tab bar and the dispatch match each
 enumerate the variants by hand, so adding a tab means touching both by name.
 

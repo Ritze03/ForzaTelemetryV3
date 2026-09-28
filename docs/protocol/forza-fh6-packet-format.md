@@ -158,3 +158,30 @@ S8  NormalizedAIBrakeDifference  // -127 to 127
 - FH6 does **not** include `TireWear` or `TrackOrdinal` (present in FM "Dash" format).
 - FH6 supports localhost (127.0.0.1) natively — no loopback workaround needed.
 - Configure in-game: **SETTINGS > HUD AND GAMEPLAY > Data Out**.
+
+## Lap fields: times in races, scores in drift events
+
+The official doc describes `BestLap` / `LastLap` / `CurrentLap` as lap times in seconds. In
+FH6 they are overloaded (reported by the user, confirmed in-game):
+
+| Field | In a race | In a drift event |
+| --- | --- | --- |
+| `CurrentLap` | current lap time, s | **live drift score** (points) |
+| `BestLap` | best lap time, s | **event high score** (points) |
+| `LapNumber` | current lap, **0-based** (the HUD displays `+1`; D21 assumption) | — |
+| `RacePosition` | 1…n; **0 in free roam** | the drift event's standing (the HUD's Position + Gain shows it) |
+
+There is no separate drift-score field, and no flag saying which meaning applies. The app
+tells them apart by **how `CurrentLap` moves** (`listeners/hud.rs:ModeClassifier`):
+
+- As a **timer** it rises at the packet clock's rate: Δ`CurrentLap` ≈ Δ`TimestampMS` / 1000.
+- As a **score** it stays flat between drifts, then rises much faster or jumps.
+- Judged over 0.5 s windows: rate within 1 ± 0.15 → race evidence, any other rise → drift
+  evidence, a **flat window → no evidence** (a frozen timer, a results screen or free roam's
+  0 also sit still). Switch to Drift after 3 agreeing windows, back to Race after 2. Gaps over
+  0.25 s and drops (lap wrap, reset) restart the window.
+
+After a drift event ends, `CurrentLap` and `BestLap` drop to 0 in free roam. Anything that
+treats `CurrentLap` as a time must ignore it while drifting: the HUD's lap-delta trace
+resets in drift mode. (The Dashboard's Race widget doesn't classify, so in a drift event it
+shows the score formatted as a lap time.) See [[overlay]] for how the HUD uses both meanings.

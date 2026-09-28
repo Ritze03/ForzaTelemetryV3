@@ -20,6 +20,7 @@ The navigation reference — read these to move around the source efficiently.
 
 - [Dashboard](features/dashboard.md) — the draggable widget grid, Edit Mode, and every available widget.
 - [Minimap](features/minimap.md) — seasonal map rendering, north-up/heading-up, trails, waypoints.
+- [In-game HUD Overlay](features/overlay.md) — the click-through wlr-layer-shell HUD over FH6 (Linux/Wayland): widgets, race/drift detection, visibility, monitor detection, the Overlay tab, and the overlay thread's architecture.
 - [Co-Op](features/coop.md) — shared telemetry over a cloudflared tunnel; remote players on the map.
 - [Backfire](features/backfire.md) — synthetic anti-lag / throttle-blip.
 - [Automatic Gearbox](features/gearbox.md) — DSG-style auto-shifter with per-car calibration.
