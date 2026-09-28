@@ -159,10 +159,12 @@ fn init(
         _ => Err(String::new()),
     };
     capability(display.as_deref(), layer_shell.is_some(), gpu.as_ref().err().map(String::as_str))?;
-    let (Some(Wl { conn, globals, mut queue }), Some(layer_shell), Ok((renderer, gl))) = (wl, layer_shell, gpu) else {
+    let (Some(Wl { conn, globals, mut queue }), Some(layer_shell), Ok(gpu)) = (wl, layer_shell, gpu) else {
         return Err(DisabledReason::Wayland("startup probe mismatch".into())); // unreachable
     };
 
+    // `gpu` stays one tuple until moved into `state`: a tuple drops its fields in order, so an
+    // early `?` below still drops the painter (renderer) before Gl terminates EGL.
     let err = |e: &dyn std::fmt::Display| DisabledReason::Wayland(e.to_string());
     let event_loop = EventLoop::<Overlay>::try_new().map_err(|e| err(&e))?;
     let handle = event_loop.handle();
@@ -175,8 +177,8 @@ fn init(
         qh,
         handle: handle.clone(),
         live: None,
-        renderer,
-        gl: Some(gl),
+        renderer: gpu.0,
+        gl: Some(gpu.1),
         slot,
         latest: None,
         visible: false,
@@ -300,19 +302,24 @@ impl Overlay {
                 let wake = next_wake(animating, self.last_ping.map(|t| t.elapsed()));
                 self.arm_anim_timer(wake);
             }
-            Err(e) if self.egl_failures + 1 >= MAX_EGL_FAILURES => {
-                // Lost context / GPU reset: stop the thread; the handle reports is_dead().
-                eprintln!("overlay: {e}; {MAX_EGL_FAILURES} EGL failures in a row, shutting the overlay down");
-                self.exit = true;
-            }
-            Err(e) => {
-                // Usually EGL_BAD_SURFACE / BAD_NATIVE_WINDOW: rebuild the surface.
-                self.egl_failures += 1;
-                eprintln!("overlay: {e}; recreating the surface");
-                self.destroy_surface();
-                self.ensure_surface(None);
-            }
+            Err(e) => self.egl_failed(&e),
         }
+    }
+
+    /// Count an EGL failure (swap, or surface creation on configure). Below the cap, rebuild the
+    /// surface so the next configure retries; at the cap, stop the thread (`is_dead()`).
+    fn egl_failed(&mut self, e: &dyn std::fmt::Display) {
+        self.egl_failures += 1;
+        if self.egl_failures >= MAX_EGL_FAILURES {
+            // Lost context / GPU reset: stop the thread; the handle reports is_dead().
+            eprintln!("overlay: {e}; {MAX_EGL_FAILURES} EGL failures in a row, shutting the overlay down");
+            self.exit = true;
+            return;
+        }
+        // Usually EGL_BAD_SURFACE / BAD_NATIVE_WINDOW: rebuild the surface.
+        eprintln!("overlay: {e}; recreating the surface");
+        self.destroy_surface();
+        self.ensure_surface(None);
     }
 
     /// Replace any pending animation timer with one firing after `after` (`None`: cancel).
@@ -392,11 +399,7 @@ impl LayerShellHandler for Overlay {
             Some(egl) => gl.resize(egl, w, h),
             None => match gl.create_surface(layer.wl_surface(), w, h) {
                 Ok(egl) => live.egl = Some(egl),
-                Err(e) => {
-                    eprintln!("overlay: {e}");
-                    self.destroy_surface();
-                    return;
-                }
+                Err(e) => return self.egl_failed(&e),
             },
         }
         self.dirty = true;
