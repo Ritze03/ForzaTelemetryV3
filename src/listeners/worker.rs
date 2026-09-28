@@ -26,6 +26,11 @@
 //! - **commands** ([`Command`]) go down an `mpsc` channel, which never blocks the sender and
 //!   never drops a one-shot the user asked for (a calibration reset, shutdown).
 //!
+//! - **listener → overlay** (optional, attached with [`ListenerHandle::set_hud_sink`]): a
+//!   [`HudSnapshot`](crate::overlay::snapshot::HudSnapshot) written latest-wins into the
+//!   overlay's slot plus a wake ping — on every packet (D17: one redraw per packet) and
+//!   whenever the visibility target changes without one (pause/timeout/focus/Hide HUD).
+//!
 //! Why so loose: the UI may show a one-frame-stale value, which is fine because nothing in
 //! it is critical, while the loop that actually drives the game is never affected by the UI.
 
@@ -44,9 +49,13 @@ use crate::focus::FocusDetector;
 use crate::input::InputSender;
 use crate::listeners::backfire::{BackfireListener, BackfireView};
 use crate::listeners::dsg::{DsgListener, DsgView};
+use crate::listeners::hud::{HudTracker, VisFacts};
+use crate::overlay::snapshot::{hud_clock, HudSink};
 use crate::packet::ForzaPacket;
 
-/// Loop cadence when no packet arrives — also the worst-case shutdown latency.
+/// Loop cadence when no packet arrives — also the worst-case shutdown latency, and the
+/// granularity at which the HUD notices a lost stream (hidden 2.0–2.2 s after the last
+/// packet) or a focus change while no packets arrive.
 const IDLE_POLL: Duration = Duration::from_millis(200);
 /// No packet for this long ⇒ telemetry isn't live (the `TelemetryLive` hotkey gate).
 const STALE_AFTER: Duration = Duration::from_secs(2);
@@ -84,6 +93,11 @@ pub struct ListenerView {
     /// Bumped on every hotkey toggle. The UI adopts the two flags whenever it sees a new
     /// generation, and echoes the generation back in [`ToListener::ack_gen`].
     pub toggle_gen: u64,
+    /// Hide HUD hotkey state (D16). Listener-owned runtime state, not config: nothing the
+    /// UI pushes can overwrite it, so it needs no `toggle_gen` protection, and it resets to
+    /// shown on restart.
+    #[allow(dead_code)] // pending: shown by the Overlay tab
+    pub hud_hidden: bool,
 }
 
 /// What the UI hands the thread each frame.
@@ -102,11 +116,15 @@ struct ToListener {
 }
 
 /// One-shot requests from the UI. Sent over a channel so none is ever lost.
+#[allow(dead_code)] // SetHudSink pending: attached by the overlay app wiring
 pub enum Command {
     /// Clear the detected redline + engagement; keeps the per-gear speed map.
     ClearRpmCalibration,
     /// Clear the per-gear speed map; keeps the detected redline.
     ClearGearMap,
+    /// Attach (`Some`) or detach (`None`) the HUD overlay's mailbox. With none attached the
+    /// listener builds no snapshots.
+    SetHudSink(Option<HudSink>),
     /// Flush the per-car calibrations and end the loop.
     Shutdown,
 }
@@ -171,6 +189,12 @@ impl ListenerHandle {
 
     pub fn send(&self, cmd: Command) {
         let _ = self.cmd_tx.send(cmd);
+    }
+
+    /// Attach the overlay (`Some`) or detach it (`None`); see [`Command::SetHudSink`].
+    #[allow(dead_code)] // pending: overlay app wiring
+    pub fn set_hud_sink(&self, sink: Option<HudSink>) {
+        self.send(Command::SetHudSink(sink));
     }
 
     /// Ask the thread to flush calibrations and stop, then wait for it (≤ `IDLE_POLL`).
@@ -270,6 +294,14 @@ fn run(ctx: Ctx) {
     let mut pps_count = 0_u32;
     let mut pps_since = Instant::now();
     let mut last_packet: Option<Instant> = None;
+    // HUD overlay: per-packet derived state, the attached mailbox, the Hide HUD toggle, and
+    // the last published visibility (a change without a packet still has to be published).
+    let mut hud = HudTracker::new();
+    let mut hud_sink: Option<HudSink> = None;
+    let mut hud_hidden = false;
+    let mut hud_visible = false;
+    let mut hud_force = false;
+    let mut hud_cfg = Arc::new(cfg.overlay.clone());
 
     loop {
         // ── UI → listener: config + focus facts ────────────────────────────
@@ -280,7 +312,13 @@ fn run(ctx: Ctx) {
                 our_focused = msg.our_focused;
                 wants_text = msg.wants_text;
                 last_push = Some(Instant::now());
+                if msg.cfg.overlay.enabled && !cfg.overlay.enabled {
+                    hud.reset(); // no stale "previous packet" from before it was off
+                }
                 cfg = msg.cfg;
+                if *hud_cfg != cfg.overlay {
+                    hud_cfg = Arc::new(cfg.overlay.clone());
+                }
                 if stale_toggles {
                     cfg.dsg_enabled = dsg_on;
                     cfg.backfire_enabled = bf_on;
@@ -300,6 +338,10 @@ fn run(ctx: Ctx) {
                 Command::ClearGearMap => {
                     dsg.reset_calibration();
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
+                }
+                Command::SetHudSink(sink) => {
+                    hud_sink = sink;
+                    hud_force = true; // the new sink gets a snapshot right away
                 }
                 Command::Shutdown => stop = true,
             }
@@ -339,7 +381,8 @@ fn run(ctx: Ctx) {
                     dynamic_max_rpm = 0.0;
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
-                _ => {}
+                HotkeyAction::HideHud => hud_hidden = !hud_hidden,
+                HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => {}
             }
         }
 
@@ -351,8 +394,15 @@ fn run(ctx: Ctx) {
         );
 
         // ── One packet. The only blocking call, and no lock is held across it. ──
+        let mut got_packet = false;
         match udp.recv_timeout(IDLE_POLL) {
             Ok(pkt) => {
+                got_packet = true;
+                // Tracked whenever the overlay is enabled, attached or not, so a lap
+                // started before the overlay came up still has its trace.
+                if cfg.overlay.enabled {
+                    hud.on_packet(&pkt, &cfg.overlay, hud_clock());
+                }
                 last_packet = Some(Instant::now());
                 pps_count += 1;
                 let elapsed = pps_since.elapsed().as_secs_f32();
@@ -431,6 +481,24 @@ fn run(ctx: Ctx) {
             Err(RecvTimeoutError::Disconnected) => break, // app dropped its sender
         }
 
+        // ── listener → overlay: every packet, plus any visibility change without one. ──
+        if let Some(sink) = &hud_sink {
+            let now = hud_clock();
+            let facts = VisFacts {
+                enabled: cfg.overlay.enabled,
+                hud_hidden,
+                focus_only: cfg.overlay.focus_only,
+                game_focused: focus.focused(),
+                ..Default::default()
+            };
+            let snap = hud.snapshot(facts, &hud_cfg, &cfg, now);
+            if got_packet || hud_force || snap.visible != hud_visible {
+                hud_visible = snap.visible;
+                hud_force = false;
+                sink.publish(snap);
+            }
+        }
+
         // ── listener → UI: overwrite the mailbox from our local copy, then unlock. ──
         // A plain `lock` is fine: the UI only ever holds this for a clone, so the longest
         // possible wait is a memcpy — never a draw, a packet or disk IO.
@@ -442,6 +510,7 @@ fn run(ctx: Ctx) {
                 dsg_enabled: cfg.dsg_enabled,
                 backfire_enabled: cfg.backfire_enabled,
                 toggle_gen,
+                hud_hidden,
             };
         }
     }

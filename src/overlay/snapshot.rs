@@ -1,21 +1,159 @@
-//! What the overlay thread draws from: the listener thread overwrites the latest
-//! `HudSnapshot` in a [`SnapshotSlot`] (latest wins) and then pings the overlay awake.
-// TODO(I4): derived values (redline/shift rpm, race/drift classifier, drift window gain,
-// event timestamps) and the listener-side publishing.
+//! What the overlay thread draws from. The listener thread (`listeners/worker.rs`, via
+//! `listeners/hud.rs`) builds a [`HudSnapshot`] per packet, overwrites it in a
+//! [`SnapshotSlot`] (latest wins) and calls [`HudSink::wake`].
+//!
+//! Platform-neutral on purpose: the listener compiles on Windows too, so nothing here may
+//! name the Linux-only overlay types. `app.rs` wraps `OverlayHandle::{slot, waker}` into a
+//! [`HudSink`] and hands it to `ListenerHandle::set_hud_sink`.
+//!
+//! **Clock.** Every time in here is seconds on [`hud_clock`], one process-wide monotonic
+//! clock (an `Instant` epoch taken on first use). The renderer compares event times with
+//! `hud_clock()` for "now"; tests and the PNG harness can pin `now` to any value.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
+use crate::config::OverlayConfig;
 use crate::packet::ForzaPacket;
 
+/// Seconds since the first call in this process. Monotonic; shared by the listener (event
+/// stamps) and the overlay (animation "now").
+pub fn hud_clock() -> f64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+/// Which block fills the race/drift slot (D25/D27), detected from how `current_lap` behaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HudMode {
+    /// `current_lap` is a lap timer → race block (R1′).
+    #[default]
+    Race,
+    /// `current_lap` is a drift score → drift counter (X1′).
+    Drift,
+}
+
+/// A race-position change (D15 backdrop, 3 s on the HUD side).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaceChange {
+    /// When it happened, [`hud_clock`] seconds.
+    pub at: f64,
+    /// True = moved up (green), false = dropped back (red).
+    pub gained: bool,
+}
+
+/// Latest time each animated event happened, [`hud_clock`] seconds. `None` = not seen since
+/// the overlay was enabled. The HUD decides how long each one animates.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HudEvents {
+    /// Last race-position change (both old and new position non-zero).
+    pub place_change: Option<PlaceChange>,
+    /// Last lap completion (`lap_number` stepped up by one). The finished lap's time is
+    /// `pkt.last_lap`; D21 holds it for 4 s.
+    pub lap_completed_at: Option<f64>,
+    /// Last gear change (gear-change pulse).
+    pub gear_changed_at: Option<f64>,
+    /// Start of the current pause (`is_race_on == 0`); `None` while running.
+    pub paused_since: Option<f64>,
+}
+
+/// One finished drift gain window: the "+N" chip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriftChip {
+    /// Score gained over the window. Never negative (a score reset restarts the window);
+    /// may be 0 — the HUD decides whether a "+0" chip shows.
+    pub gain: f32,
+    /// When the window closed, [`hud_clock`] seconds.
+    pub at: f64,
+}
+
+/// Drift counter data (D10/D27). Meaningful while [`HudSnapshot::mode`] is `Drift`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DriftInfo {
+    /// Live drift score (`pkt.current_lap` read as a score).
+    pub score: f32,
+    /// Event high score (`pkt.best_lap` read as a score).
+    pub best: f32,
+    /// Start of the running gain window, [`hud_clock`] seconds; `None` while not drifting
+    /// or paused. Progress bar = `(now − window_start) / interval`.
+    pub window_start: Option<f64>,
+    /// Window length, seconds (`OverlayConfig::drift_chip_secs`).
+    pub interval: f32,
+    /// The most recently closed window.
+    pub chip: Option<DriftChip>,
+}
+
+/// World → map-image transform from the app config (the Dashboard map's calibration):
+/// `px = (x − origin_x) · px_per_m`, `py = (origin_z − z) · px_per_m`. The season image is
+/// time-based (`app::current_season`), so the overlay picks it itself.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MinimapCalib {
+    pub px_per_m: f32,
+    pub origin_x: f32,
+    pub origin_z: f32,
+}
+
+/// Everything the HUD draws from. Cheap to clone (the packet is ~200 B, the config an Arc).
 #[derive(Debug, Clone, Default)]
 pub struct HudSnapshot {
+    /// The latest packet (kept after packets stop, for the fade-out). Note `lap_number` is
+    /// 0-based: the HUD displays `lap_number + 1` (D21).
     pub pkt: ForzaPacket,
-    /// False after a while without packets.
+    /// [`hud_clock`] when this snapshot was built.
+    pub built_at: f64,
+    /// **Target** visibility: overlay enabled, Hide HUD off, not paused for ≥ 300 ms,
+    /// a packet within 2 s, and — with `focus_only` — the game focused. The overlay
+    /// shows/hides (with its fade) to follow it.
+    pub visible: bool,
+    /// A packet arrived within the last 2 s.
     pub connected: bool,
-    /// `is_race_on == 0`.
+    /// The latest packet has `is_race_on == 0` (raw, no 300 ms delay).
     pub paused: bool,
+    /// Hide HUD hotkey state (raw; already folded into `visible`).
+    pub hud_hidden: bool,
+    /// `redline_frac × engine_max_rpm`.
+    pub redline_rpm: f32,
+    /// `shift_frac × engine_max_rpm`.
+    pub shift_rpm: f32,
+    /// Race block or drift counter.
+    pub mode: HudMode,
+    /// Current lap time minus the best lap's time at the same distance into the lap
+    /// (negative = ahead). `None` without a best lap, past the best lap's distance, or in
+    /// drift mode.
+    pub lap_delta: Option<f32>,
+    pub drift: DriftInfo,
+    pub events: HudEvents,
+    /// The overlay settings (styles, cells, scale, module toggles, …).
+    pub cfg: Arc<OverlayConfig>,
+    /// `AppConfig::use_mph` — speed unit for the cluster.
+    pub use_mph: bool,
+    pub minimap: MinimapCalib,
 }
 
 /// Latest-wins mailbox. Writer `lock`s and overwrites; the overlay `try_lock`s and clones,
 /// keeping its previous copy on a miss (same pattern as the listener ↔ UI mailboxes).
 pub type SnapshotSlot = Arc<Mutex<Option<HudSnapshot>>>;
+
+/// Where the listener publishes: the overlay's slot plus a wake callback. Built by `app.rs`
+/// from `OverlayHandle::{slot, waker}` (e.g. `HudSink::new(h.slot(), move || w.wake())`)
+/// so the listener never names the Linux-only `Waker`.
+pub struct HudSink {
+    pub slot: SnapshotSlot,
+    /// Wakes the overlay to draw one frame. Must be cheap and non-blocking.
+    pub wake: Box<dyn Fn() + Send>,
+}
+
+impl HudSink {
+    pub fn new(slot: SnapshotSlot, wake: impl Fn() + Send + 'static) -> Self {
+        Self { slot, wake: Box::new(wake) }
+    }
+
+    /// Overwrite the slot (latest wins), then wake the overlay. The lock is held only for
+    /// the move.
+    pub fn publish(&self, snap: HudSnapshot) {
+        if let Ok(mut s) = self.slot.lock() {
+            *s = Some(snap);
+        }
+        (self.wake)();
+    }
+}

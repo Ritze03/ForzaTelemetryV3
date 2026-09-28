@@ -77,6 +77,9 @@ pub enum HotkeyAction {
     ResetCalibration,
     MiniSettings,
     DashboardEdit,
+    /// Toggle the HUD overlay's visibility (D16). Runtime-only state on the listener
+    /// thread (`ListenerView::hud_hidden`), never saved.
+    HideHud,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,6 +94,7 @@ impl HotkeyAction {
         HotkeyAction::ToggleGearbox,
         HotkeyAction::ResetCalibration,
         HotkeyAction::ToggleBackfire,
+        HotkeyAction::HideHud,
         HotkeyAction::MiniSettings,
         HotkeyAction::DashboardEdit,
     ];
@@ -98,7 +102,8 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleGearbox
             | HotkeyAction::ToggleBackfire
-            | HotkeyAction::ResetCalibration => HotkeyScope::Global,
+            | HotkeyAction::ResetCalibration
+            | HotkeyAction::HideHud => HotkeyScope::Global,
             HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => HotkeyScope::AppFocused,
         }
     }
@@ -110,6 +115,7 @@ impl HotkeyAction {
             HotkeyAction::ResetCalibration => "Reset RPM Calibration",
             HotkeyAction::MiniSettings => "Open mini-settings",
             HotkeyAction::DashboardEdit => "Toggle dashboard edit",
+            HotkeyAction::HideHud => "Hide HUD",
         }
     }
 }
@@ -148,6 +154,29 @@ pub struct HotkeyConfig {
     pub input_focus_gate: bool,
     #[serde(default = "default_poll_hz")]
     pub focus_poll_hz: f32,
+    /// Actions the user deliberately unbound ("Not set", D28). An action is bound iff it
+    /// has an entry in `bindings` — that map is authoritative; this list only stops
+    /// [`inject_missing_hotkeys`] from re-adding the default on the next load. Edit both
+    /// together through [`HotkeyConfig::bind`] / [`HotkeyConfig::unbind`].
+    #[serde(default)]
+    pub unbound: Vec<HotkeyAction>,
+}
+
+#[allow(dead_code)] // pending: wired up by the overlay app wiring / Overlay tab
+impl HotkeyConfig {
+    /// Bind `action` to `binding` (clears a previous unbind).
+    pub fn bind(&mut self, action: HotkeyAction, binding: crate::keymap::HotkeyBinding) {
+        self.unbound.retain(|a| *a != action);
+        self.bindings.insert(action, binding);
+    }
+
+    /// Unbind `action` ("Not set"); it stays unbound across restarts.
+    pub fn unbind(&mut self, action: HotkeyAction) {
+        self.bindings.remove(&action);
+        if !self.unbound.contains(&action) {
+            self.unbound.push(action);
+        }
+    }
 }
 
 fn default_game_match() -> String { "Forza".to_string() }
@@ -158,6 +187,9 @@ fn default_poll_hz() -> f32 { 4.0 }
 pub fn inject_missing_hotkeys(hk: &mut HotkeyConfig) {
     let defaults = default_bindings();
     for action in HotkeyAction::ALL.iter().copied() {
+        if hk.unbound.contains(&action) {
+            continue;
+        }
         hk.bindings.entry(action).or_insert_with(|| defaults[&action]);
     }
 }
@@ -170,6 +202,7 @@ fn default_bindings() -> HashMap<HotkeyAction, crate::keymap::HotkeyBinding> {
     m.insert(HotkeyAction::ResetCalibration, HotkeyBinding { mods: Mods::default(), key: HotKey::F });
     m.insert(HotkeyAction::MiniSettings, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::S });
     m.insert(HotkeyAction::DashboardEdit, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::E });
+    m.insert(HotkeyAction::HideHud, HotkeyBinding { mods: Mods::default(), key: HotKey::H });
     m
 }
 
@@ -183,6 +216,188 @@ impl Default for HotkeyConfig {
             game_match: default_game_match(),
             input_focus_gate: false,
             focus_poll_hz: default_poll_hz(),
+            unbound: Vec::new(),
+        }
+    }
+}
+
+// ── HUD overlay ──────────────────────────────────────────────────────────────
+
+/// One slot of the HUD's 3×3 screen grid (D19/D26), row-major. Slots are relative to the
+/// screen edges, so a layout survives a resolution change. Modules sharing a slot stack
+/// vertically from the screen edge inward in the order Minimap → cluster → race/drift
+/// (D22; middle row stacks bottom-up, D28).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HudCell {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    Center,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+#[allow(dead_code)] // pending: wired up by the overlay app wiring / Overlay tab
+impl HudCell {
+    /// All nine slots, row-major (index = `row * 3 + col`).
+    pub const ALL: [HudCell; 9] = [
+        HudCell::TopLeft, HudCell::TopCenter, HudCell::TopRight,
+        HudCell::MiddleLeft, HudCell::Center, HudCell::MiddleRight,
+        HudCell::BottomLeft, HudCell::BottomCenter, HudCell::BottomRight,
+    ];
+    /// 0 = top, 1 = middle, 2 = bottom.
+    pub fn row(self) -> usize {
+        self as usize / 3
+    }
+    /// 0 = left, 1 = centre, 2 = right.
+    pub fn col(self) -> usize {
+        self as usize % 3
+    }
+    /// `None` when `row` or `col` is outside 0..3.
+    pub fn from_row_col(row: usize, col: usize) -> Option<Self> {
+        (row < 3 && col < 3).then(|| Self::ALL[row * 3 + col])
+    }
+}
+
+/// Drive-cluster look (D11/D14).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ClusterStyle {
+    /// D1a: pill with a level rev bar.
+    #[default]
+    Pill,
+    /// D3a′: thick 24-sector ring on a 260° arc.
+    Halo,
+}
+
+/// How the overlay picks its monitor (D18).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum MonitorMethod {
+    /// Built-in: `hyprctl activeworkspace` → `… on monitor <NAME>:`.
+    #[default]
+    Hyprland,
+    /// [`OverlayConfig::monitor_cmd`] prints a monitor name.
+    Custom,
+    /// Always [`OverlayConfig::monitor_fixed`].
+    Fixed,
+}
+
+/// Every HUD overlay setting (Overlay tab, D24–D28). One `AppConfig` key (`overlay`), so it
+/// travels with profiles/presets as a unit; `#[serde(default)]` fills any field an older
+/// config lacks. The Hide HUD binding is **not** here: it is `hotkeys.bindings[HideHud]`,
+/// the one field both the Overlay page and Setup → Hotkey edit (D28). The focus-only flag
+/// is here even though its checkbox sits in Setup → Window Detection (D5).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct OverlayConfig {
+    // ── General ──
+    /// Master switch. Off = the listener does no HUD work at all.
+    pub enabled: bool,
+    /// Global HUD scale, 1.0 = 100 % (mockup slider 50–200 %).
+    pub scale: f32,
+    /// Plate (background) opacity, 0.0–1.0.
+    pub plate_opacity: f32,
+    /// Fade on show/hide (our own fade, D17); off = hard cut. Duration is a HUD const.
+    pub fade: bool,
+    /// D5 "Show overlay only when game window is focused". Needs the focus detector
+    /// enabled (`FocusParams::enabled`); an idle detector reports focused=true.
+    pub focus_only: bool,
+    // ── Monitor detection (D18) ──
+    pub monitor_method: MonitorMethod,
+    /// Command for [`MonitorMethod::Custom`]; prints a monitor name (e.g. "DP-1").
+    pub monitor_cmd: String,
+    /// Output name for [`MonitorMethod::Fixed`]; empty = the first output.
+    pub monitor_fixed: String,
+    // ── Modules on/off ──
+    pub cluster_on: bool,
+    pub minimap_on: bool,
+    pub race_on: bool,
+    pub drift_on: bool,
+    // ── Layout (D19/D26): one slot per module; race and drift share `race_cell` (D25/D27) ──
+    pub cluster_cell: HudCell,
+    pub minimap_cell: HudCell,
+    /// The race block's slot; the drift counter takes its place while drifting.
+    pub race_cell: HudCell,
+    // ── Drive cluster ──
+    pub cluster_style: ClusterStyle,
+    /// D13: show live engine RPM (digits only) instead of the static "KM/H" unit label.
+    pub rpm_label: bool,
+    pub shift_flash: bool,
+    pub gear_pulse: bool,
+    /// Redline starts at this fraction of `engine_max_rpm` (D21, default 0.85).
+    pub redline_frac: f32,
+    /// Shift cue at this fraction of `engine_max_rpm` (D21, default 0.93).
+    pub shift_frac: f32,
+    // ── Minimap ──
+    /// D12 compass on the HUD map.
+    pub compass: bool,
+    /// Metres from centre to edge while stopped (independent of the Dashboard map's).
+    pub zoom_stopped_m: f32,
+    /// Metres from centre to edge while driving.
+    pub zoom_driving_m: f32,
+    pub coop_teammates: bool,
+    // ── Race block ──
+    pub lap_delta: bool,
+    /// D15 green/red backdrop on a place gained/lost.
+    pub place_colour: bool,
+    // ── Drift counter ──
+    /// Length of one "+N" gain window, seconds (mockup slider 1–10).
+    pub drift_chip_secs: f32,
+    /// Show the window's progress bar.
+    pub drift_bar: bool,
+}
+
+impl OverlayConfig {
+    // Default slots (the tab mockup's): map bottom-left, cluster bottom-centre,
+    // race/drift top-left.
+    pub const DEFAULT_CLUSTER_CELL: HudCell = HudCell::BottomCenter;
+    pub const DEFAULT_MINIMAP_CELL: HudCell = HudCell::BottomLeft;
+    pub const DEFAULT_RACE_CELL: HudCell = HudCell::TopLeft;
+
+    /// Layout card's Reset: put every module back in its default slot.
+    #[allow(dead_code)] // pending: Overlay tab
+    pub fn reset_layout(&mut self) {
+        self.cluster_cell = Self::DEFAULT_CLUSTER_CELL;
+        self.minimap_cell = Self::DEFAULT_MINIMAP_CELL;
+        self.race_cell = Self::DEFAULT_RACE_CELL;
+    }
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scale: 1.0,
+            plate_opacity: 0.68,
+            fade: true,
+            focus_only: false,
+            monitor_method: MonitorMethod::Hyprland,
+            monitor_cmd: String::new(),
+            monitor_fixed: String::new(),
+            cluster_on: true,
+            minimap_on: true,
+            race_on: true,
+            drift_on: true,
+            cluster_cell: Self::DEFAULT_CLUSTER_CELL,
+            minimap_cell: Self::DEFAULT_MINIMAP_CELL,
+            race_cell: Self::DEFAULT_RACE_CELL,
+            cluster_style: ClusterStyle::Pill,
+            rpm_label: false,
+            shift_flash: true,
+            gear_pulse: true,
+            redline_frac: 0.85,
+            shift_frac: 0.93,
+            compass: true,
+            // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
+            zoom_stopped_m: 3000.0,
+            zoom_driving_m: 1500.0,
+            coop_teammates: true,
+            lap_delta: true,
+            place_colour: true,
+            drift_chip_secs: 5.0,
+            drift_bar: true,
         }
     }
 }
@@ -506,6 +721,9 @@ pub struct AppConfig {
     pub coop_list_speed: bool,
     pub coop_list_gear: bool,
     pub coop_list_class: bool,
+    // HUD overlay (Overlay tab); absent in older configs → defaults.
+    #[serde(default)]
+    pub overlay: OverlayConfig,
 }
 
 impl Default for AppConfig {
@@ -626,6 +844,7 @@ impl Default for AppConfig {
             coop_list_speed: true,
             coop_list_gear: true,
             coop_list_class: false,
+            overlay: OverlayConfig::default(),
         }
     }
 }
@@ -770,6 +989,9 @@ const ACCEL_KEYS: &[&str] = &[
     "accel_start_kmh", "accel_end_kmh", "decel_start_kmh", "decel_end_kmh", "decel_dynamic_mode",
 ];
 
+/// HUD overlay: every Overlay-tab setting lives under the one `overlay` key.
+const OVERLAY_KEYS: &[&str] = &["overlay"];
+
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
 const EXPORT_EXCLUDE: &[&str] = &["active_profile"];
@@ -792,6 +1014,8 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
     KeyGroup { section: "Tuning",    name: "Backfire",         keys: BACKFIRE_KEYS },
     KeyGroup { section: "Tuning",    name: "Automatic Gearbox", keys: DSG_KEYS },
     KeyGroup { section: "Tuning",    name: "Acceleration Tests", keys: ACCEL_KEYS },
+    // Appended last so existing group indices (UI selection vectors) don't shift.
+    KeyGroup { section: "Overlay",   name: "HUD Overlay",      keys: OVERLAY_KEYS },
 ];
 
 /// Keys belonging to the groups selected by index into KEY_GROUPS.
@@ -1313,6 +1537,103 @@ mod tests {
             let want_cols = want["grid_cols"].as_u64().unwrap() as usize;
             assert_eq!(cfg.grid_cols, want_cols, "{name} did not apply (invalid value rejected?)");
         }
+    }
+
+    /// A non-default overlay config (every group touched) for the round-trip tests.
+    fn custom_overlay() -> OverlayConfig {
+        OverlayConfig {
+            enabled: true,
+            scale: 1.25,
+            focus_only: true,
+            monitor_method: MonitorMethod::Custom,
+            monitor_cmd: "echo DP-2".into(),
+            monitor_fixed: "HDMI-A-1".into(),
+            drift_on: false,
+            cluster_cell: HudCell::TopRight,
+            race_cell: HudCell::MiddleLeft,
+            cluster_style: ClusterStyle::Halo,
+            rpm_label: true,
+            redline_frac: 0.8,
+            zoom_driving_m: 400.0,
+            coop_teammates: false,
+            drift_chip_secs: 3.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn overlay_config_and_hide_hud_binding_roundtrip_and_travel_with_profiles() {
+        use crate::keymap::{HotKey, HotkeyBinding, Mods};
+        let mut src = AppConfig { overlay: custom_overlay(), ..Default::default() };
+        src.hotkeys.bind(
+            HotkeyAction::HideHud,
+            HotkeyBinding { mods: Mods { alt: true, ..Default::default() }, key: HotKey::J },
+        );
+
+        // serde round-trip.
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&src).unwrap()).unwrap();
+        assert_eq!(back.overlay, src.overlay);
+        assert_eq!(back.hotkeys, src.hotkeys);
+
+        // A profile snapshot is a full config applied as a preset (`load_profile`).
+        let mut dst = AppConfig::default();
+        apply_preset(&mut dst, &serde_json::to_string_pretty(&src).unwrap());
+        assert_eq!(dst.overlay, src.overlay);
+        assert_eq!(dst.hotkeys.bindings[&HotkeyAction::HideHud].key, HotKey::J);
+
+        // Selective export/import: the Overlay group carries exactly the overlay.
+        let gi = KEY_GROUPS.iter().position(|g| g.keys == OVERLAY_KEYS).expect("overlay group");
+        let mut sel = vec![false; KEY_GROUPS.len()];
+        sel[gi] = true;
+        let json = export_selected(&src, &sel);
+        let mut dst = AppConfig::default();
+        assert!(import_selected(&mut dst, &json, &sel));
+        assert_eq!(dst.overlay, src.overlay);
+        assert_eq!(dst.grid_cols, AppConfig::default().grid_cols, "only the overlay applied");
+        assert!(groups_present(&json)[gi]);
+    }
+
+    #[test]
+    fn old_config_without_overlay_key_deserializes() {
+        // Straight serde (no merge): the `overlay` key missing entirely.
+        let serde_json::Value::Object(mut m) = serde_json::to_value(AppConfig::default()).unwrap()
+        else { panic!() };
+        m.remove("overlay");
+        let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("parse");
+        assert_eq!(cfg.overlay, OverlayConfig::default());
+        assert!(!cfg.overlay.enabled, "overlay is off by default");
+        // A partial overlay object (older build, fewer fields) fills the rest.
+        let o: OverlayConfig = serde_json::from_str(r#"{ "enabled": true }"#).unwrap();
+        assert_eq!(o, OverlayConfig { enabled: true, ..Default::default() });
+        // An old hotkeys object without `unbound`/HideHud gets H injected on load.
+        let mut hk: HotkeyConfig =
+            serde_json::from_str(r#"{ "bindings": { "ToggleGearbox": { "mods": { "ctrl": false, "alt": false, "shift": false, "sup": false }, "key": "G" } } }"#)
+                .unwrap();
+        inject_missing_hotkeys(&mut hk);
+        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::H);
+    }
+
+    #[test]
+    fn hide_hud_defaults_to_global_h_and_unbinding_survives_reload() {
+        let mut hk = HotkeyConfig::default();
+        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::H);
+        assert_eq!(HotkeyAction::HideHud.scope(), HotkeyScope::Global);
+        hk.unbind(HotkeyAction::HideHud);
+        let mut back: HotkeyConfig = serde_json::from_str(&serde_json::to_string(&hk).unwrap()).unwrap();
+        inject_missing_hotkeys(&mut back);
+        assert!(!back.bindings.contains_key(&HotkeyAction::HideHud), "unbind re-injected");
+        // Rebinding clears the unbind.
+        back.bind(HotkeyAction::HideHud, HotkeyConfig::default().bindings[&HotkeyAction::HideHud]);
+        assert!(back.unbound.is_empty());
+    }
+
+    #[test]
+    fn hud_cell_row_col_roundtrip() {
+        for (i, c) in HudCell::ALL.iter().copied().enumerate() {
+            assert_eq!((c.row(), c.col()), (i / 3, i % 3));
+            assert_eq!(HudCell::from_row_col(c.row(), c.col()), Some(c));
+        }
+        assert_eq!(HudCell::from_row_col(3, 0), None);
     }
 
     #[test]
