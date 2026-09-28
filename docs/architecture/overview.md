@@ -228,7 +228,7 @@ might produce.
 | `input.rs` | `InputSender` — synthetic keypresses (drives backfire/gearbox into the game) on a worker thread; the shared "synthetic echo" window; optional focus gate (suppress emission when the game isn't focused). |
 | `keymap.rs` | `HotKey`/`Mods`/`HotkeyBinding` — serde-stable key identity with egui/evdev/VK mapping tables. See [[hotkeys]]. |
 | `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel, whose `Receiver` `new()` hands to the listener thread. See [[hotkeys]]. |
-| `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/Custom/Windows); reused by the hotkey gate and the input gate. See [[hotkeys]]. |
+| `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/GNOME/Custom/Windows); reused by the hotkey gate and the input gate. See [[hotkeys]]. |
 | `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
 

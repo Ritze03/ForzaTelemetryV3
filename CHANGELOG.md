@@ -4,10 +4,12 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
-## [0.2.3] – 2026-09-23
+## [0.2.4] – 2026-09-28
 
 ### Added
 - **GNOME window detection**: Settings → Window Detection has a new "GNOME (Window Calls extension)" method, so "only when the game is focused" works on GNOME too. It needs the free Window Calls GNOME Shell extension (extensions.gnome.org/extension/4724); the Test button shows the active window, or why detection failed (e.g. the extension isn't installed).
+
+## [0.2.3] – 2026-09-23
 
 ### Fixed
 - **Backfire & Automatic Gearbox keep working while the window is hidden**: both now run on their own background thread instead of inside the window's redraw loop, so pops and shifts continue when the app is minimized or completely covered by the game — previously they stopped the moment the window stopped being drawn. The **G** / **B** / **Reset RPM Calibration** hotkeys work while hidden too, and the toggle state is shown correctly when you come back. Bringing the window back no longer replays the telemetry that piled up while it was hidden.
