@@ -309,6 +309,13 @@ impl HudTracker {
             events: self.events,
             cfg: cfg.clone(),
             use_mph: app.use_mph,
+            // "Active" = the user's DSG switch (G hotkey). Not `DsgListener::engaged`: that
+            // lives on the worker and only means "has seen the first manual upshift", which the
+            // user can't see; the switch is what they toggle and expect confirmed. In a race
+            // = race_position != 0, as dsg.rs uses it.
+            auto_gear: app
+                .dsg_enabled
+                .then(|| app.dsg_effective_mode(self.pkt.race_position != 0).into()),
             minimap: MinimapCalib {
                 px_per_m: app.minimap_px_per_m,
                 origin_x: app.minimap_world_origin_x,
@@ -539,6 +546,28 @@ mod tests {
         assert!(!s.visible, "hidden after 300 ms paused");
         let s = tr.snapshot(live, &cfg, &app, 4.1);
         assert!(!s.connected, "no packet for 2 s");
+    }
+
+    #[test]
+    fn snapshot_auto_gear_follows_dsg_switch_and_race_mode() {
+        use crate::config::GearboxMode;
+        use crate::overlay::snapshot::DriveMode;
+        let cfg = Arc::new(OverlayConfig::default());
+        let live = VisFacts { enabled: true, ..Default::default() };
+        let mut tr = HudTracker::new();
+        let mut p = ForzaPacket { is_race_on: 1, gear: 3, ..Default::default() };
+        tr.on_packet(&p, &cfg, 1.0);
+        let mut app = AppConfig { dsg_enabled: false, ..Default::default() };
+        assert_eq!(tr.snapshot(live, &cfg, &app, 1.0).auto_gear, None);
+        app.dsg_enabled = true;
+        app.dsg_gearbox_mode = GearboxMode::Street;
+        app.dsg_auto_race_mode = true;
+        assert_eq!(tr.snapshot(live, &cfg, &app, 1.0).auto_gear, Some(DriveMode::Street));
+        p.race_position = 2;
+        tr.on_packet(&p, &cfg, 1.1);
+        assert_eq!(tr.snapshot(live, &cfg, &app, 1.1).auto_gear, Some(DriveMode::Race));
+        app.dsg_auto_race_mode = false;
+        assert_eq!(tr.snapshot(live, &cfg, &app, 1.1).auto_gear, Some(DriveMode::Street));
     }
 
     #[test]

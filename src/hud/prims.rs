@@ -213,6 +213,13 @@ pub fn layout(p: &Painter, s: f32, text: &str, st: &TextStyle) -> Run {
     Run { pieces, width: x }
 }
 
+/// Widest of `chars` in style `st` at scale `s`, screen px (a fixed cell for a letter that
+/// varies, like the drive-mode letter).
+pub fn widest(p: &Painter, s: f32, st: &TextStyle, chars: &str) -> f32 {
+    let font = FontId::new(st.size * s, egui::FontFamily::Name(st.family.into()));
+    p.fonts_mut(|f| chars.chars().map(|c| f.glyph_width(&font, c)).fold(0.0, f32::max))
+}
+
 /// Draw `text` with its baseline at design `(x, y)`, anchored per `anchor`. Returns the run's
 /// width in design px (for placing what follows it).
 #[allow(clippy::too_many_arguments)]

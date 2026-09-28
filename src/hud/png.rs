@@ -21,7 +21,7 @@ use crate::hud::minimap::{MapAnim, MapTex, Teammate};
 use crate::hud::prims::Xf;
 use crate::hud::{cluster, drift, minimap, race};
 use crate::minimap::{MapCalibration, Season, OVERLAY_MAP_TEXTURE_OPTIONS};
-use crate::overlay::snapshot::{DriftChip, DriftInfo, HudMode, HudSnapshot, PlaceChange};
+use crate::overlay::snapshot::{DriftChip, DriftInfo, DriveMode, HudMode, HudSnapshot, PlaceChange};
 
 /// Pinned clock; `.05` into a 100 ms flash period = the flash's "on" phase.
 const NOW: f64 = 1000.05;
@@ -56,6 +56,13 @@ fn cluster_state(cfg: OverlayConfig, frac: f32, gear: u8, kmh: f32) -> HudSnapsh
     s.pkt.current_engine_rpm = frac * 8000.0;
     s.pkt.gear = gear;
     s.pkt.speed = kmh / 3.6;
+    s
+}
+
+/// A cruise-rpm cluster state with the auto gearbox on in `mode`.
+fn auto_state(mode: DriveMode, gear: u8) -> HudSnapshot {
+    let mut s = cluster_state(OverlayConfig::default(), 0.52, gear, 142.0);
+    s.auto_gear = Some(mode);
     s
 }
 
@@ -152,6 +159,26 @@ fn check(failures: &mut Vec<String>, img: &ColorImage, name: &str, (x, y): (usiz
     }
 }
 
+/// Bounding box `[x0, y0, x1, y1]` (widget design px, 1×) of near-white pixels within
+/// radius `r` of `c`: the gear glyph's ink.
+fn ink_box(img: &ColorImage, c: (f32, f32), r: f32) -> Option<[f32; 4]> {
+    let mut b: Option<[f32; 4]> = None;
+    for y in 0..img.size[1] {
+        for x in 0..img.size[0] {
+            let (dx, dy) = (x as f32 + 0.5 - 10.0 - c.0, y as f32 + 0.5 - 10.0 - c.1);
+            if dx * dx + dy * dy > r * r || px(img, x, y).iter().any(|&v| v < 200) {
+                continue;
+            }
+            let (fx, fy) = (x as f32 - 10.0, y as f32 - 10.0);
+            b = Some(match b {
+                None => [fx, fy, fx + 1.0, fy + 1.0],
+                Some([x0, y0, x1, y1]) => [x0.min(fx), y0.min(fy), x1.max(fx + 1.0), y1.max(fy + 1.0)],
+            });
+        }
+    }
+    b
+}
+
 /// `c` at alpha `a` over opaque `bg`, gamma space (how egui_glow and CSS blend).
 fn over(c: [u8; 3], a: f32, bg: [u8; 3]) -> [u8; 3] {
     [0, 1, 2].map(|i| (c[i] as f32 * a + bg[i] as f32 * (1.0 - a)).round() as u8)
@@ -194,6 +221,11 @@ fn render_spec_states() -> Result<(), String> {
         ("shift", cluster_state(OverlayConfig::default(), 0.95, 3, 184.0)),
         ("pulse", pulse),
         ("rpm_label", cluster_state(rpm_cfg, 0.52, 4, 142.0)),
+        ("auto_street", auto_state(DriveMode::Street, 4)),
+        ("auto_sport", auto_state(DriveMode::Sport, 3)),
+        ("auto_race", auto_state(DriveMode::Race, 5)),
+        ("auto_ten", auto_state(DriveMode::Street, 10)),
+        ("auto_reverse", auto_state(DriveMode::Race, 0)),
     ];
 
     let mut gained = race_state(2, 2, 47.910);
@@ -249,13 +281,23 @@ fn render_spec_states() -> Result<(), String> {
                     let cell = over([255; 3], 0.13, plate);
                     check(&mut failures, &img, &id, (178, 23), plate, "plate");
                     check(&mut failures, &img, &id, (54, 38), if *name == "shift" { [0x5B, 0x8B, 0xF0] } else { [245, 247, 251] }, "rev seg 0 lit");
-                    check(&mut failures, &img, &id, (129, 38), if *name == "cruise" || *name == "pulse" || *name == "rpm_label" { over([255; 3], 0.15, plate) } else if *name == "shift" { [0x5B, 0x8B, 0xF0] } else { [245, 247, 251] }, "rev seg 10");
+                    check(&mut failures, &img, &id, (129, 38), if *name == "cruise" || *name == "pulse" || *name == "rpm_label" || name.starts_with("auto") { over([255; 3], 0.15, plate) } else if *name == "shift" { [0x5B, 0x8B, 0xF0] } else { [245, 247, 251] }, "rev seg 10");
                     let gear = match *name {
                         "shift" => [0x3C, 0x6B, 0xDE],
                         "pulse" => [245, 247, 251],
                         _ => cell,
                     };
                     check(&mut failures, &img, &id, (23, 7), gear, "gear cell");
+                    // User: the gear sat too high. Its ink (near-white, inside the cell) is now
+                    // centred at y 24, a px below the cell centre; allow ±1 for AA and glyphs.
+                    if *name != "pulse" {
+                        match ink_box(&img, (23.0, 23.0), 18.0) {
+                            Some([_, top, _, bot]) if (23.0..=25.0).contains(&((top + bot) / 2.0)) => {
+                                println!("  {id} gear ink y {top}–{bot}: ok");
+                            }
+                            other => failures.push(format!("{id}: gear ink box {other:?} not centred on y 24")),
+                        }
+                    }
                     if *name == "redline" {
                         check(&mut failures, &img, &id, (23, 5), [255, 67, 56], "redline ring");
                     }

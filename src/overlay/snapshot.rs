@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use crate::config::OverlayConfig;
+use crate::config::{GearboxMode, OverlayConfig};
 use crate::packet::ForzaPacket;
 
 /// Seconds since the first call in this process. Monotonic; shared by the listener (event
@@ -86,6 +86,25 @@ pub struct DriftInfo {
     pub last_rise_at: Option<f64>,
 }
 
+/// The auto gearbox's drive mode, for the gear letter. Mirrors [`GearboxMode`], which isn't
+/// `Debug` (and lives in the shared config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriveMode {
+    Street,
+    Sport,
+    Race,
+}
+
+impl From<GearboxMode> for DriveMode {
+    fn from(m: GearboxMode) -> Self {
+        match m {
+            GearboxMode::Street => Self::Street,
+            GearboxMode::Sport => Self::Sport,
+            GearboxMode::Race => Self::Race,
+        }
+    }
+}
+
 /// World → map-image transform from the app config (the Dashboard map's calibration):
 /// `px = (x − origin_x) · px_per_m`, `py = (origin_z − z) · px_per_m`. The season image is
 /// time-based (`app::current_season`), so the overlay picks it itself.
@@ -130,6 +149,10 @@ pub struct HudSnapshot {
     pub cfg: Arc<OverlayConfig>,
     /// `AppConfig::use_mph` — speed unit for the cluster.
     pub use_mph: bool,
+    /// `Some(mode)` while the auto gearbox (DSG) is switched on: the cluster prefixes the
+    /// forward gear with D/S/R. The mode is the one in effect (Race when auto-switched in a
+    /// race).
+    pub auto_gear: Option<DriveMode>,
     pub minimap: MinimapCalib,
 }
 
