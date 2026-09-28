@@ -16,6 +16,21 @@ detected season in a background thread (`app.rs:map_load_thread`), at a configur
 HUD overlay's copy) first. The season is re-checked continuously, so the image swaps
 automatically when the in-game season changes.
 
+## Map image source
+
+The four bundled season maps (`assets/maps/{spring,summer,autumn,winter}.jpg`, 8192²,
+embedded via `include_bytes!` in `src/minimap.rs`) are the hi-res seasonal FH6 maps
+published by Reddit user **Le0_X8**:
+<https://www.reddit.com/r/ForzaHorizon/comments/1td6qzb/8096x_hires_seasonal_maps_of_fh6_from_the_early/>
+
+The credit is shown in the app: **Setup** tab → **Repository / Credits** category
+(`repo_card` in `src/ui/settings.rs`), as the link "Le0_X8 — seasonal map images" under
+"Credits".
+
+**Why it matters:** if the images are replaced, re-cropped, or used to derive other data
+(e.g. road extraction), keep that credit (or update it to the new source) — the maps are
+someone else's work.
+
 ## Shared code (`src/minimap.rs`)
 
 The season logic, the image loading/cache and the map maths live in `src/minimap.rs`,
