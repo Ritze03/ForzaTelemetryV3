@@ -136,6 +136,8 @@ pub enum FocusMethod {
     Hyprland,
     X11,
     Custom,
+    /// GNOME Shell via the "Window Calls" extension (gdbus). Appended: keep serde names stable.
+    Gnome,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -1447,6 +1449,16 @@ mod tests {
         assert_eq!(cfg.coop_name, "Player");
         assert_eq!(cfg.coop_hue, 205.0);
         assert!(cfg.coop_last_code.is_empty());
+    }
+
+    #[test]
+    fn focus_method_serde_names_are_stable() {
+        // Saved configs store these names; reordering/renaming would break old files.
+        for (name, m) in [("Hyprland", FocusMethod::Hyprland), ("X11", FocusMethod::X11),
+                          ("Custom", FocusMethod::Custom), ("Gnome", FocusMethod::Gnome)] {
+            assert_eq!(serde_json::from_str::<FocusMethod>(&format!("\"{name}\"")).unwrap(), m);
+            assert_eq!(serde_json::to_string(&m).unwrap(), format!("\"{name}\""));
+        }
     }
 
     #[test]

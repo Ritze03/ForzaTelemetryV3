@@ -32,8 +32,9 @@ other apps.
 
 - **Consuming** the key (blocking it from the game). We *observe* only — the game still
   receives the key. Users pick keys the game doesn't use for driving (G, B are safe).
-- Perfect focus detection on every Wayland compositor. We ship Hyprland + X11 + a Custom
-  command escape hatch; others fall back to the Custom option or the telemetry-live gate.
+- Perfect focus detection on every Wayland compositor. We ship Hyprland + X11 + GNOME (via
+  the Window Calls extension) + a Custom command escape hatch; others fall back to the
+  Custom option or the telemetry-live gate.
 - Hot-plugged keyboards mid-session on Linux (enumerated at startup only).
 - `F10` map-orientation hotkey — **removed** (the mini-settings checkbox remains).
 - `F11` fullscreen — stays hardcoded (Windows-only, not requested for rebinding).
@@ -75,7 +76,8 @@ We sidestep both:
                                    │ cached "game focused?" AtomicBool
                        ┌───────────┴────────────┐
                        │  FocusDetector poll     │  (src/focus.rs)
-                       │  Hyprland / X11 / Custom │  polled at N Hz
+                       │  Hyprland / X11 /       │  polled at N Hz
+                       │  GNOME / Custom         │
                        │  Windows: GetForeground │
                        └───────────┬────────────┘
                                    │ same cached bool
@@ -111,7 +113,8 @@ enum HotKey { A, B, /* … */ Key0, /* … */ F1, /* … */ Space, Esc, /* … *
 struct HotkeyBinding { ctrl: bool, alt: bool, shift: bool, sup: bool, key: HotKey }
 
 enum GateMode { TelemetryLive, WindowFocus }        // global-hotkey gating
-enum FocusMethod { Hyprland, X11, Custom }           // how WindowFocus reads active window
+enum FocusMethod { Hyprland, X11, Custom, Gnome }    // how WindowFocus reads active window;
+                                                     // append only: serde names are stored
                                                      // (Windows ignores: uses GetForegroundWindow)
 
 struct HotkeyConfig {
@@ -178,6 +181,25 @@ same cached bool. The thread only runs when a consumer needs it (input gate on, 
 case-insensitive) decides the match:
 - **Hyprland:** `hyprctl activewindow -j`, read `class`/`title`.
 - **X11:** `xprop -root _NET_ACTIVE_WINDOW` → window id → `xprop -id … WM_CLASS`/`_NET_WM_NAME`.
+- **GNOME:** `gdbus call --session --timeout 1 --dest org.gnome.Shell --object-path
+  /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.List`, run
+  directly (no shell). Needs the **Window Calls** extension
+  (`window-calls@domandoman.xyz`, extensions.gnome.org/extension/4724). `List()` returns a
+  JSON array of windows; the one with `focus: true` yields `"{wm_class} {wm_class_instance}
+  {title}"` (FH6 under Proton is probably `steam_app_<appid>` / "Forza Horizon 6", unverified).
+  No focused window (e.g. the overview) → `""` = not focused, not an error. gdbus failures
+  (not GNOME: `ServiceUnknown`; extension missing/disabled: `UnknownMethod` / no such object)
+  are errors carrying gdbus's stderr, so they fail open and the Settings **Test** preview
+  shows the reason. Parsed by the pure `parse_gnome_list`.
+  - *Why the extension:* GNOME on Wayland has no built-in focused-window API; `Shell.Eval`
+    has been restricted since GNOME 41, and xdotool/wmctrl only see XWayland windows.
+  - *Why not `gdbus … | sed … | jq`:* gdbus prints a GVariant `(s)` tuple, `('[…]',)`, but
+    as soon as any window title contains `'` GLib switches to `"` delimiters and escapes
+    every inner `"` as `\"` (and doubles backslashes), which breaks a sed strip. We strip
+    the tuple, unescape the GVariant string properly, then parse with `serde_json`.
+  - *Why gdbus, not `busctl --json`:* gdbus ships with GLib, so it is always present on
+    GNOME; busctl would add a systemd dependency. Use `List` only: the extension's
+    `Details`/`GetTitle` throw on a bad id (upstream typo).
 - **Custom:** run `custom_cmd`; its stdout is the active-window identifier. Escape hatch for
   GameScope, unusual compositors, etc.
 - **Windows:** `GetForegroundWindow` → `GetWindowTextW` (no method dropdown; used always).
@@ -226,8 +248,9 @@ today's behaviour; opt-in).
   warning if two bindings collide.
 - **Detection settings:**
   - `Gate mode` dropdown: Telemetry-live / Window-focus.
-  - When Window-focus (Linux): `Method` dropdown (Hyprland / X11 / Custom); for Custom, a
-    command text field with a **live preview** — "Active window: X — matches ✓/✗" — refreshed
+  - When Window-focus (Linux): `Method` dropdown (Hyprland / X11 / GNOME / Custom). For GNOME,
+    a hint naming the Window Calls extension plus an "Active window" **Test** button showing
+    the query result (or gdbus's error). For Custom, a command text field with a **live preview** — "Active window: X — matches ✓/✗" — refreshed
     on a "Test" click and while the page is open (at the poll rate).
   - `Game match` text field (default "Forza") + **Detect** button: 3-second countdown, then
     one active-window query auto-fills the field (handles GameScope/opaque titles).
