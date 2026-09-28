@@ -203,6 +203,7 @@ impl MapCalibration {
     }
 
     /// Texture UV → world (x, z) metres. Inverse of `world_to_uv`.
+    #[allow(dead_code)] // only the round-trip test uses it today
     pub fn uv_to_world(&self, u: f32, v: f32, orig_size: [u32; 2]) -> [f32; 2] {
         [
             self.origin_x + u * orig_size[0] as f32 / self.px_per_m,

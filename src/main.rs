@@ -6,7 +6,7 @@ mod coop;
 mod engines;
 mod focus;
 mod hotkeys;
-#[allow(dead_code)] // filled in by the overlay plan's I6
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // drawn only by the Linux overlay
 mod hud;
 mod i18n;
 mod iconcache;
@@ -15,7 +15,6 @@ mod input;
 mod keymap;
 mod labels;
 mod listeners;
-#[allow(dead_code)] // pending: the overlay_map_* / uv_to_world items are used by the HUD minimap (I6)
 mod minimap;
 mod network;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay runtime is Linux-only

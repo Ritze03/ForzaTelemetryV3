@@ -17,7 +17,7 @@ pub mod race;
 
 use egui::{Painter, Rect};
 
-use crate::config::ClusterStyle;
+use crate::config::{ClusterStyle, HudCell};
 use crate::overlay::snapshot::{HudMode, HudSnapshot};
 use layout::Module;
 use prims::Xf;
@@ -114,21 +114,7 @@ impl Hud {
 
         let s = screen.height() / 1080.0 * cfg.scale.max(0.05);
         let drift = snap.mode == HudMode::Drift;
-        let mut items = Vec::with_capacity(3);
-        if cfg.minimap_on {
-            items.push((Module::Map, cfg.minimap_cell, minimap::SIZE));
-        }
-        if cfg.cluster_on {
-            let size = match cfg.cluster_style {
-                ClusterStyle::Pill => cluster::PILL_SIZE,
-                ClusterStyle::Halo => cluster::HALO_SIZE,
-            };
-            items.push((Module::Cluster, cfg.cluster_cell, size));
-        }
-        // Race and drift share the slot (D25/D27): the drift counter takes it while drifting.
-        if (drift && cfg.drift_on) || (!drift && cfg.race_on) {
-            items.push((Module::Race, cfg.race_cell, race::SIZE));
-        }
+        let items = modules(snap);
         let rects = layout::layout(screen.size(), s, &items);
 
         for ((module, _, _), rect) in items.iter().zip(rects) {
@@ -153,6 +139,33 @@ impl Hud {
         }
         animating
     }
+}
+
+/// The enabled modules with their cells and design sizes, in the layout's input form.
+pub fn modules(snap: &HudSnapshot) -> Vec<(Module, HudCell, egui::Vec2)> {
+    let cfg = &*snap.cfg;
+    let mut items = Vec::with_capacity(3);
+    if cfg.minimap_on {
+        items.push((Module::Map, cfg.minimap_cell, minimap::SIZE));
+    }
+    if cfg.cluster_on {
+        let size = match cfg.cluster_style {
+            ClusterStyle::Pill => cluster::PILL_SIZE,
+            ClusterStyle::Halo => cluster::HALO_SIZE,
+        };
+        items.push((Module::Cluster, cfg.cluster_cell, size));
+    }
+    // Race and drift share the slot (D25/D27): the drift counter takes it while drifting.
+    // why: race_position 0 = free roam, no race to show (a stock HUD shows nothing there);
+    // the slot counts as empty so stacked modules close the gap.
+    let slot = match snap.mode {
+        HudMode::Drift => cfg.drift_on.then_some(drift::SIZE),
+        HudMode::Race => (cfg.race_on && snap.pkt.race_position != 0).then_some(race::SIZE),
+    };
+    if let Some(size) = slot {
+        items.push((Module::Race, cfg.race_cell, size));
+    }
+    items
 }
 
 #[cfg(test)]

@@ -142,6 +142,7 @@ impl MapAnim {
 /// A co-op teammate on the map (not wired yet: the positions live UI-side and need their
 /// own path to the overlay thread). The seam `draw` takes today, always called empty.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // pending: co-op teammates on the HUD map
 pub struct Teammate {
     pub x: f32,
     pub z: f32,

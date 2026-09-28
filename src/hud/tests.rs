@@ -160,3 +160,23 @@ fn map_zoom_eases_out_when_stopped_then_settles() {
     settle(&ctx, &mut hud, &s, 2.6 + 1.0 / 60.0, 10.0);
     assert!((hud.map_anim.zoom().unwrap_or_default() - s.cfg.zoom_stopped_m).abs() <= 0.5);
 }
+
+#[test]
+fn free_roam_hides_race_block_and_closes_the_gap() {
+    use super::layout::{layout, Module};
+    use crate::config::HudCell;
+    // Map and race stacked in the top-left cell.
+    let cfg = OverlayConfig { race_cell: HudCell::TopLeft, minimap_cell: HudCell::TopLeft, cluster_on: false, ..Default::default() };
+    let mut s = snap(cfg);
+    s.pkt.race_position = 3;
+    let items = super::modules(&s);
+    assert_eq!(items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![Module::Map, Module::Race]);
+    // Free roam (position 0): the race slot is empty, the map alone at the edge.
+    s.pkt.race_position = 0;
+    let items = super::modules(&s);
+    assert_eq!(items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![Module::Map]);
+    assert_eq!(layout(vec2(1920.0, 1080.0), 1.0, &items)[0].min, pos2(44.0, 44.0));
+    // The drift counter doesn't depend on the race position.
+    s.mode = HudMode::Drift;
+    assert!(super::modules(&s).iter().any(|i| i.0 == Module::Race));
+}
