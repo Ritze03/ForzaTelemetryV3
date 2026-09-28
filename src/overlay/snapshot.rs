@@ -53,7 +53,8 @@ pub struct HudEvents {
     pub lap_completed_at: Option<f64>,
     /// Last gear change (gear-change pulse).
     pub gear_changed_at: Option<f64>,
-    /// Start of the current pause (`is_race_on == 0` or 0 rpm, `listeners::hud::hud_paused`);
+    /// Start of the current pause (`listeners::hud::hud_paused`: race off, a non-electric
+    /// engine at 0 rpm, or 0/0/0 orientation on a loading screen);
     /// `None` while running.
     pub paused_since: Option<f64>,
 }
@@ -130,7 +131,8 @@ pub struct HudSnapshot {
     pub visible: bool,
     /// A packet arrived within the last 2 s.
     pub connected: bool,
-    /// The latest packet is paused (`is_race_on == 0` or 0 rpm; raw, no 300 ms delay).
+    /// The latest packet is paused (`listeners::hud::hud_paused`: race off, a non-electric
+    /// engine at 0 rpm, or 0/0/0 orientation; raw, no 300 ms delay).
     pub paused: bool,
     /// Hide HUD hotkey state (raw; already folded into `visible`).
     pub hud_hidden: bool,

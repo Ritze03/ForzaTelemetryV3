@@ -17,7 +17,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Edge margin and module spacing**: two new sliders in the Overlay tab's Layout card set the HUD's distance from the screen edges and the space between modules stacked in one cell. Reset layout puts them back to the defaults.
 - **Clear a hotkey**: press **Backspace** while rebinding to leave it **Not set**; Esc still cancels.
 - **GNOME window detection**: Settings → Window Detection has a new "GNOME (Window Calls extension)" method, so "only when the game is focused" works on GNOME too. It needs the free Window Calls GNOME Shell extension (extensions.gnome.org/extension/4724); the Test button shows the active window, or why detection failed (e.g. the extension isn't installed).
-- **Debug tab**: a new last tab (bug icon) that lists every raw value in the latest telemetry packet, updating live, with a **Copy** button to paste them into a bug report.
+- **Debug tab**: a new tab next to Setup (bug icon) that lists every raw value in the latest telemetry packet, updating live, with a **Copy** button to paste them into a bug report.
 - **Window Detection card**: Setup's **Input** card is now called **Window Detection** and has a new *Only when game window is focused* option that hides the in-game HUD while another window is in front. Its status light now shows amber (not red) while the game window simply isn't focused.
 
 ### Fixed

@@ -1593,12 +1593,12 @@ impl eframe::App for ForzaApp {
                     (Tab::EngineSwaps, icons::ENGINE,     "Engine Swaps"),
                 ];
                 let right = [
-                    (Tab::Debug,     icons::BUG,      "Debug"),
                     (Tab::Settings,  icons::COG,      "Setup"),
+                    (Tab::Debug,     icons::BUG,      "Debug"),
                     (Tab::Changelog, icons::BULLHORN, "What's New"),
                 ];
-                // right_to_left adds items right→left, so Debug ends up rightmost (last),
-                // then Setup, then What's New to its left.
+                // right_to_left adds items right→left, so Setup stays rightmost (where
+                // users expect it), Debug sits just left of it, then What's New.
                 ui.horizontal(|ui| {
                     ui.set_min_height(30.0);
                     match style {

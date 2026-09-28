@@ -11,8 +11,8 @@ covers the architecture that makes those rules possible.
 
 `Tab` (`src/app.rs`) is a plain `PartialEq, Clone, Copy` enum: `Dashboard, Overlay,
 Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog, Debug` (`Overlay` →
-`ui::overlay_tab::show`, see [[overlay]]; `Debug` → `ui::debug_tab::show`, the rightmost
-tab, see [[debug]]; `Settings` is labelled **Setup**). The line
+`ui::overlay_tab::show`, see [[overlay]]; `Debug` → `ui::debug_tab::show`, just left
+of Setup, see [[debug]]; `Settings` is labelled **Setup**). The line
 numbers below predate the Overlay tab and have drifted; search by symbol. There is no
 `Tab::ALL` array or `impl Tab` — instead the top tab bar and the dispatch match each
 enumerate the variants by hand, so adding a tab means touching both by name.
@@ -28,7 +28,8 @@ enumerate the variants by hand, so adding a tab means touching both by name.
   drawn in that tab.
 - **Tab bar** — drawn inline (no dedicated function) in the top panel
   (`src/app.rs:1355-1435`). Two hand-written arrays, `left` (Dashboard/PowerCurve/Coop/
-  Backfire/Gearbox/EngineSwaps, `src/app.rs:1362-1369`) and `right` (Debug/Settings/Changelog — right-to-left, so Debug is rightmost,
+  Backfire/Gearbox/EngineSwaps, `src/app.rs:1362-1369`) and `right` (Settings/Debug/Changelog — laid out right-to-left, so the bar reads
+  "What's New | Debug | Setup" with Setup kept at the far-right edge,
   `src/app.rs:1370-1373`), pair each `Tab` with an icon glyph from `icons.rs` and feed
   the shared `tab_button` helper (`src/app.rs:370-423`) once per entry, under whichever
   `TopBarStyle` (`Legacy | Simple | Modern`) is active. `tab_title(tab: Tab)`

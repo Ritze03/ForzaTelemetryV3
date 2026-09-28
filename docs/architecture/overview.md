@@ -303,7 +303,7 @@ might produce.
 | `coop.rs` | Co-Op host/join tab. |
 | `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Window Detection). See [[settings]]. |
 | `changelog.rs` | "What's New" viewer — parses root `CHANGELOG.md`, category filters. |
-| `debug_tab.rs` | Debug tab (last tab): every field of `telemetry.latest` as a raw name → value grid, parsed from `{:#?}` so it can't drift; Copy button. See [[debug]]. |
+| `debug_tab.rs` | Debug tab (just left of Setup): every field of `telemetry.latest` as a raw name → value grid, parsed from `{:#?}` so it can't drift; Copy button. See [[debug]]. |
 | `acceleration.rs` | **ORPHANED** — not in `ui/mod.rs`, not compiled. |
 | `deceleration.rs` | **ORPHANED** — not in `ui/mod.rs`, not compiled. |
 
