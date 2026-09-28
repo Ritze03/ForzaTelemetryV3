@@ -20,6 +20,8 @@ mod wayland;
 
 use std::fmt;
 
+use crate::i18n::tr;
+
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
@@ -39,13 +41,13 @@ pub enum DisabledReason {
 impl fmt::Display for DisabledReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoWayland => write!(f, "The overlay needs a Wayland session (WAYLAND_DISPLAY is not set)."),
-            Self::Wayland(e) => write!(f, "Couldn't connect to the Wayland compositor: {e}"),
-            Self::NoLayerShell => write!(
-                f,
-                "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay works on Hyprland, Sway and KDE Plasma."
-            ),
-            Self::Egl(e) => write!(f, "Couldn't set up OpenGL (EGL) for the overlay: {e}"),
+            // The fixed text is translated; the `{e}` detail stays as the system reported it.
+            Self::NoWayland => f.write_str(tr("The overlay needs a Wayland session (WAYLAND_DISPLAY is not set).")),
+            Self::Wayland(e) => write!(f, "{} {e}", tr("Couldn't connect to the Wayland compositor:")),
+            Self::NoLayerShell => f.write_str(tr(
+                "Your compositor doesn't support wlr-layer-shell (e.g. GNOME). The overlay works on Hyprland, Sway and KDE Plasma.",
+            )),
+            Self::Egl(e) => write!(f, "{} {e}", tr("Couldn't set up OpenGL (EGL) for the overlay:")),
         }
     }
 }

@@ -98,7 +98,6 @@ pub struct ListenerView {
     /// Hide HUD hotkey state (D16). Listener-owned runtime state, not config: nothing the
     /// UI pushes can overwrite it, so it needs no `toggle_gen` protection, and it resets to
     /// shown on restart.
-    #[allow(dead_code)] // pending: read by the phase-C Overlay tab (the HUD gets it via HudSnapshot)
     pub hud_hidden: bool,
 }
 

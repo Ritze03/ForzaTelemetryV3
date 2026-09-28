@@ -230,6 +230,7 @@ pub struct DashboardResizeState {
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tab {
     Dashboard,
+    Overlay,
     Backfire,
     Gearbox,
     PowerCurve,
@@ -311,6 +312,7 @@ fn tab_button(
 fn tab_title(tab: Tab) -> &'static str {
     match tab {
         Tab::Dashboard => "Dashboard",
+        Tab::Overlay => "Overlay",
         Tab::PowerCurve => "Power Curve",
         Tab::Coop => "Co-Op",
         Tab::Backfire => "Backfire",
@@ -329,8 +331,8 @@ const PILL_FONT: f32 = 12.5;
 /// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
 /// so the tabs only shift once, uniformly, when the bar itself gets narrow.
 fn max_pill_width(ui: &egui::Ui) -> f32 {
-    const TABS: [Tab; 8] = [
-        Tab::Dashboard, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
+    const TABS: [Tab; 9] = [
+        Tab::Dashboard, Tab::Overlay, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
         Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog,
     ];
     TABS.iter()
@@ -445,8 +447,11 @@ pub struct ForzaApp {
     input: InputSender,
     pub hotkeys: HotkeyListener,
     pub focus: Arc<FocusDetector>,
-    /// Settings-tab rebind state: the action currently capturing a new key.
+    /// Hotkey rebind state (Setup → Hotkey, Overlay → Hide HUD): the action capturing a new
+    /// key. The key itself is taken by [`ForzaApp::capture_rebind`].
     pub rebinding: Option<crate::config::HotkeyAction>,
+    /// Hide HUD hotkey state, copied from `ListenerView::hud_hidden` (Overlay tab hint).
+    pub hud_hidden: bool,
     /// Detect-button countdown deadline (active-window auto-fill).
     pub detect_until: Option<std::time::Instant>,
     /// Last Custom-preview / Detect result for the settings page.
@@ -745,6 +750,7 @@ impl ForzaApp {
             hotkeys,
             focus,
             rebinding: None,
+            hud_hidden: false,
             detect_until: None,
             focus_preview: String::new(),
             power_capture: PowerCapture::new(),
@@ -887,9 +893,41 @@ impl ForzaApp {
         self.overlay.focus_params = Some(p);
     }
 
-    #[allow(dead_code)] // pending: Overlay tab status (I9)
     pub fn overlay_status(&self) -> &OverlayStatus {
         &self.overlay.status
+    }
+
+    /// Hotkey capture while `rebinding` is armed, for every rebind button (Setup → Hotkey and
+    /// the Overlay tab's Hide HUD row): Esc cancels, Backspace unbinds ("Not set", D28), any
+    /// other bindable key binds with the modifiers held. Runs before the tabs are drawn, so a
+    /// tab's own capture code never sees the key. Returns true while a capture is armed, so
+    /// the key doesn't also fire an in-app hotkey.
+    fn capture_rebind(&mut self, ctx: &Context) -> bool {
+        use crate::keymap::{HotKey, HotkeyBinding, Mods};
+        let Some(action) = self.rebinding else { return false };
+        let pressed = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, m)) = pressed else { return true };
+        match key {
+            egui::Key::Escape => {}
+            egui::Key::Backspace => {
+                self.config.hotkeys.unbind(action);
+                self.sync_hotkeys();
+            }
+            k => {
+                // Not a bindable key (e.g. a lone modifier arrives as none): keep waiting.
+                let Some(hk) = HotKey::from_egui(k) else { return true };
+                let mods = Mods { ctrl: m.ctrl, alt: m.alt, shift: m.shift, sup: false };
+                self.config.hotkeys.bind(action, HotkeyBinding { mods, key: hk });
+                self.sync_hotkeys();
+            }
+        }
+        self.rebinding = None;
+        true
     }
 
     /// Once a frame: keep the focus detector's overlay inputs current (the Overlay tab and
@@ -1009,6 +1047,7 @@ impl ForzaApp {
         self.dsg = view.dsg;
         self.backfire = view.backfire;
         self.dynamic_max_rpm = view.dynamic_max_rpm;
+        self.hud_hidden = view.hud_hidden;
         if view.toggle_gen != self.last_toggle_gen {
             self.last_toggle_gen = view.toggle_gen;
             self.config.dsg_enabled = view.dsg_enabled;
@@ -1456,7 +1495,8 @@ impl eframe::App for ForzaApp {
         // ── Hotkeys ────────────────────────────────────────────────
         // App-focused actions: matched from config against egui input (only
         // delivered while our window is focused → inherently UI-only).
-        {
+        let capturing = self.capture_rebind(ctx);
+        if !capturing {
             use crate::config::{HotkeyAction, HotkeyScope};
             let m = ctx.input(|i| i.modifiers);
             for action in HotkeyAction::ALL.iter().copied() {
@@ -1500,6 +1540,7 @@ impl eframe::App for ForzaApp {
                 let style = self.config.top_bar_style;
                 let left = [
                     (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
+                    (Tab::Overlay,     icons::OVERLAY,    "Overlay"),
                     (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
                     (Tab::Coop,        icons::USERS,      "Co-Op"),
                     (Tab::Backfire,    icons::BOLT,       "Backfire"),
@@ -2391,6 +2432,7 @@ impl eframe::App for ForzaApp {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.current_tab {
             Tab::Dashboard => crate::ui::dashboard::show(ui, self),
+            Tab::Overlay => crate::ui::overlay_tab::show(ui, self),
             Tab::Backfire => crate::ui::backfire::show_backfire(ui, self),
             Tab::Gearbox => crate::ui::gearbox::show_gearbox(ui, self),
             Tab::PowerCurve => crate::ui::power_curve::show(ui, self),
