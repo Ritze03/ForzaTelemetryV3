@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use egui_glow::glow;
 use glutin::api::egl::{config::Config, context::PossiblyCurrentContext, display::Display, surface::Surface};
-use glutin::config::{ColorBufferType, ConfigTemplateBuilder, GlConfig};
+use glutin::config::{ColorBufferType, ConfigSurfaceTypes, ConfigTemplateBuilder, GlConfig};
 use glutin::context::{ContextAttributesBuilder, PossiblyCurrentGlContext};
 use glutin::display::GlDisplay;
 use glutin::surface::{GlSurface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
@@ -42,7 +42,7 @@ impl Gl {
         // last field, so the wl_display outlives the EGLDisplay's teardown in `Drop` (and the
         // error path below terminates before `conn` can go).
         let display = unsafe { Display::new(raw) }.map_err(|e| format!("EGL display: {e}"))?;
-        match Self::init(&display) {
+        match Self::init(&display, ConfigSurfaceTypes::WINDOW) {
             Ok((glow, context, config)) => Ok(Self {
                 glow: Arc::new(glow),
                 context: ManuallyDrop::new(context),
@@ -58,9 +58,14 @@ impl Gl {
         }
     }
 
-    fn init(display: &Display) -> Result<(glow::Context, PossiblyCurrentContext, Config), String> {
-
-        let template = ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(true).build();
+    /// `surfaces`: what the config must support (`WINDOW` for the overlay; nothing for the
+    /// headless harness, which renders into an FBO).
+    fn init(display: &Display, surfaces: ConfigSurfaceTypes) -> Result<(glow::Context, PossiblyCurrentContext, Config), String> {
+        let template = ConfigTemplateBuilder::new()
+            .with_alpha_size(8)
+            .with_transparency(true)
+            .with_surface_type(surfaces)
+            .build();
         // SAFETY: plain config query on a valid display.
         let configs = unsafe { display.find_configs(template) }.map_err(|e| format!("EGL configs: {e}"))?;
         // Filtered by hand: `with_transparency` only asks for alpha != 0, and on a 10-bit output
@@ -143,6 +148,57 @@ impl Drop for Gl {
         // SAFETY: every surface and the context from this display are gone, and no other
         // library uses this EGLDisplay (it wraps our private wl_display). `config` still holds
         // a display handle, but dropping it after terminate only releases an Arc.
+        unsafe { display.terminate() };
+    }
+}
+
+/// Headless EGL for the offscreen PNG harness: a GPU device display (`EGL_EXT_device_*`,
+/// no Wayland, no window) with the overlay's context setup, current surfaceless. Render into
+/// an FBO; `Drop` tears down in `Gl`'s order.
+#[cfg(test)]
+pub struct Headless {
+    pub glow: Arc<glow::Context>,
+    context: ManuallyDrop<PossiblyCurrentContext>,
+    display: ManuallyDrop<Display>,
+}
+
+#[cfg(test)]
+impl Headless {
+    pub fn new() -> Result<Self, String> {
+        use glutin::api::egl::device::Device;
+        let mut last = String::from("no EGL device");
+        let devices = Device::query_devices().map_err(|e| format!("EGL device query: {e}"))?;
+        for device in devices {
+            // SAFETY: no native display handle; the device outlives the EGL library.
+            let display = match unsafe { Display::with_device(&device, None) } {
+                Ok(d) => d,
+                Err(e) => {
+                    last = format!("EGL device display: {e}");
+                    continue;
+                }
+            };
+            match Gl::init(&display, ConfigSurfaceTypes::empty()) {
+                Ok((glow, context, _)) => {
+                    return Ok(Self { glow: Arc::new(glow), context: ManuallyDrop::new(context), display: ManuallyDrop::new(display) })
+                }
+                Err(e) => {
+                    last = e;
+                    // SAFETY: nothing created from this display survived `init`'s failure.
+                    unsafe { display.terminate() };
+                }
+            }
+        }
+        Err(last)
+    }
+}
+
+#[cfg(test)]
+impl Drop for Headless {
+    fn drop(&mut self) {
+        // SAFETY: as `Gl::drop`: each field taken once; the caller dropped the painter first.
+        let (context, display) = unsafe { (ManuallyDrop::take(&mut self.context), ManuallyDrop::take(&mut self.display)) };
+        drop(context.make_not_current());
+        // SAFETY: the context from this display is gone.
         unsafe { display.terminate() };
     }
 }
