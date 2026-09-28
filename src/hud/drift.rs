@@ -17,6 +17,12 @@ pub const SIZE: egui::Vec2 = super::race::SIZE;
 
 const LABEL: TextStyle = TextStyle { family: W800, size: 11.0, tracking: 11.0 * 0.14, cells: Cells::Off, shadow: false };
 const GAIN: TextStyle = TextStyle { family: W800, size: 16.0, tracking: 0.0, cells: Cells::Widest, shadow: false };
+/// The live dot is amber this long (s) after the score last rose. why: the mockup lights it
+/// while points are being scored (`driftRate > 0`); packets only show the score stepping,
+/// with flat stretches between steps mid-drift, so a short hold keeps it from flickering.
+/// Gone grey means "not scoring" (the spec's figure). A guess until checked on real packets.
+pub const DRIFT_ACTIVE_SECS: f64 = 1.0;
+
 /// The gain text drops to 14 px above 7 characters so "+12,345" still fits the cap.
 const GAIN_SMALL: TextStyle = TextStyle { size: 14.0, ..GAIN };
 const TOTAL: TextStyle = TextStyle { family: W800, size: 30.0, tracking: 0.0, cells: Cells::Widest, shadow: true };
@@ -40,7 +46,10 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, shown: f32) -> b
     };
 
     // Normal cap (fades out while the gain shows): live dot, "DRIFT".
-    let drifting = d.window_start.is_some();
+    // The bar keeps cycling while not scoring (the spec's "Not scoring" figure has it at 0.8).
+    let drifting = scoring(snap, now);
+    // Redraw until the dot goes grey: that edge has no other trigger when the bar is off.
+    animating |= drifting;
     let norm = xf.fade(1.0 - a);
     if norm.a > 0.0 {
         p.circle_filled(norm.p(32.0, 15.0), norm.l(4.0), norm.c(if drifting { col::AMBER } else { col::DOT }));
@@ -70,4 +79,9 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, shown: f32) -> b
         }
     }
     animating
+}
+
+/// The score rose within the last [`DRIFT_ACTIVE_SECS`].
+pub fn scoring(snap: &HudSnapshot, now: f64) -> bool {
+    snap.drift.last_rise_at.is_some_and(|t| (0.0..DRIFT_ACTIVE_SECS).contains(&(now - t)))
 }

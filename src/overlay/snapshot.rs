@@ -81,6 +81,9 @@ pub struct DriftInfo {
     pub interval: f32,
     /// The most recently closed window.
     pub chip: Option<DriftChip>,
+    /// [`hud_clock`] time of the last score increase; `None` before the first. X1′'s live
+    /// dot is amber while this is recent (`hud::drift::DRIFT_ACTIVE_SECS`).
+    pub last_rise_at: Option<f64>,
 }
 
 /// World → map-image transform from the app config (the Dashboard map's calibration):

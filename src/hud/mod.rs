@@ -156,8 +156,12 @@ pub fn modules(snap: &HudSnapshot) -> Vec<(Module, HudCell, egui::Vec2)> {
     // Race and drift share the slot (D25/D27): the drift counter takes it while drifting.
     // why: race_position 0 = free roam, no race to show (a stock HUD shows nothing there);
     // the slot counts as empty so stacked modules close the gap.
+    // why: score 0 and best 0 = no drift event (free roam after one: `current_lap` drops to
+    // 0, and the classifier stays in Drift since flat windows are no evidence), so X1′
+    // would sit on "0" forever; the same free-roam rule as R1′'s position 0.
+    let has_drift = snap.drift.score != 0.0 || snap.drift.best != 0.0;
     let slot = match snap.mode {
-        HudMode::Drift => cfg.drift_on.then_some(drift::SIZE),
+        HudMode::Drift => (cfg.drift_on && has_drift).then_some(drift::SIZE),
         HudMode::Race => (cfg.race_on && snap.pkt.race_position != 0).then_some(race::SIZE),
     };
     if let Some(size) = slot {

@@ -178,5 +178,39 @@ fn free_roam_hides_race_block_and_closes_the_gap() {
     assert_eq!(layout(vec2(1920.0, 1080.0), 1.0, &items)[0].min, pos2(44.0, 44.0));
     // The drift counter doesn't depend on the race position.
     s.mode = HudMode::Drift;
+    s.drift.score = 120.0;
     assert!(super::modules(&s).iter().any(|i| i.0 == Module::Race));
+}
+
+#[test]
+fn drift_mode_without_drift_data_hides_the_slot() {
+    use super::layout::Module;
+    let mut s = snap(OverlayConfig::default());
+    s.mode = HudMode::Drift;
+    let has_slot = |s: &HudSnapshot| super::modules(s).iter().any(|i| i.0 == Module::Race);
+    // Free roam after a drift event: still Drift mode, but score and best are 0.
+    assert!(!has_slot(&s));
+    // A live score or just an event high score (score reset to 0 at the start) shows it.
+    s.drift.score = 50.0;
+    assert!(has_slot(&s));
+    s.drift = DriftInfo { best: 61_200.0, ..Default::default() };
+    assert!(has_slot(&s));
+}
+
+#[test]
+fn drift_dot_lit_only_while_scoring_and_settles() {
+    use super::drift::{scoring, DRIFT_ACTIVE_SECS};
+    let (ctx, mut hud) = (ctx(), Hud::default());
+    let mut s = snap(OverlayConfig { fade: false, drift_bar: false, ..Default::default() });
+    s.mode = HudMode::Drift;
+    s.drift = DriftInfo { score: 1000.0, interval: 5.0, window_start: Some(9.0), ..Default::default() };
+    // Windows run the whole time, but no rise yet: grey, and nothing animates.
+    assert!(!scoring(&s, 10.0));
+    assert!(!frame(&ctx, &mut hud, &s, 10.0));
+    // A rise lights it and keeps the frame loop going until it goes grey, then settles.
+    s.drift.last_rise_at = Some(10.0);
+    assert!(scoring(&s, 10.5));
+    assert!(frame(&ctx, &mut hud, &s, 10.5));
+    assert!(!scoring(&s, 10.0 + DRIFT_ACTIVE_SECS));
+    settle(&ctx, &mut hud, &s, 10.5 + 1.0 / 60.0, DRIFT_ACTIVE_SECS + 0.1);
 }

@@ -203,6 +203,8 @@ pub struct HudTracker {
     /// `pkt` is a real packet (not the default).
     have_pkt: bool,
     last_packet_at: Option<f64>,
+    /// When the drift score last rose (X1′'s live dot).
+    last_rise_at: Option<f64>,
 }
 
 impl HudTracker {
@@ -257,6 +259,9 @@ impl HudTracker {
                 self.lap.reset();
                 self.lap_delta = None;
                 if running {
+                    if self.have_pkt && pkt.current_lap > self.pkt.current_lap {
+                        self.last_rise_at = Some(now);
+                    }
                     self.drift.update(pkt.current_lap, now, cfg.drift_chip_secs);
                 } else {
                     self.drift.stop();
@@ -299,6 +304,7 @@ impl HudTracker {
                 window_start: self.drift.window_start(),
                 interval: cfg.drift_chip_secs,
                 chip: self.drift.chip(),
+                last_rise_at: if drifting { self.last_rise_at } else { None },
             },
             events: self.events,
             cfg: cfg.clone(),
@@ -533,5 +539,42 @@ mod tests {
         assert!(!s.visible, "hidden after 300 ms paused");
         let s = tr.snapshot(live, &cfg, &app, 4.1);
         assert!(!s.connected, "no packet for 2 s");
+    }
+
+    #[test]
+    fn tracker_records_last_score_rise_only_in_drift() {
+        let cfg = Arc::new(OverlayConfig::default());
+        let app = AppConfig::default();
+        let live = VisFacts { enabled: true, ..Default::default() };
+        let mut tr = HudTracker::new();
+        let mut p = ForzaPacket { is_race_on: 1, ..Default::default() };
+        // Score jumps of 100 every 0.1 s: drift evidence, Drift after the hysteresis.
+        let mut t = 0.0_f64;
+        for i in 0..240_u32 {
+            t = f64::from(i) / 60.0;
+            p.timestamp_ms = (t * 1000.0).round() as u32;
+            p.current_lap = (i / 6) as f32 * 100.0;
+            tr.on_packet(&p, &cfg, t);
+        }
+        let s = tr.snapshot(live, &cfg, &app, t);
+        assert_eq!(s.mode, HudMode::Drift);
+        let rise = s.drift.last_rise_at.unwrap_or(-1.0);
+        assert!(t - rise < 0.1, "last rise {rise} at {t}");
+        // Flat score: the rise time stays put (the dot goes grey on the HUD side).
+        for i in 240..300_u32 {
+            let t = f64::from(i) / 60.0;
+            p.timestamp_ms = (t * 1000.0).round() as u32;
+            tr.on_packet(&p, &cfg, t);
+        }
+        assert_eq!(tr.snapshot(live, &cfg, &app, 5.0).drift.last_rise_at, Some(rise));
+        // Race mode never reports one (a lap timer rises every packet).
+        let mut race = HudTracker::new();
+        for i in 0..60_u32 {
+            let t = f64::from(i) / 60.0;
+            p.timestamp_ms = (t * 1000.0).round() as u32;
+            p.current_lap = t as f32;
+            race.on_packet(&p, &cfg, t);
+        }
+        assert_eq!(race.snapshot(live, &cfg, &app, 1.0).drift.last_rise_at, None);
     }
 }

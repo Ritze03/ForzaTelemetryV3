@@ -98,7 +98,7 @@ pub struct ListenerView {
     /// Hide HUD hotkey state (D16). Listener-owned runtime state, not config: nothing the
     /// UI pushes can overwrite it, so it needs no `toggle_gen` protection, and it resets to
     /// shown on restart.
-    #[allow(dead_code)] // pending: shown by the Overlay tab
+    #[allow(dead_code)] // pending: read by the phase-C Overlay tab (the HUD gets it via HudSnapshot)
     pub hud_hidden: bool,
 }
 
@@ -118,7 +118,6 @@ struct ToListener {
 }
 
 /// One-shot requests from the UI. Sent over a channel so none is ever lost.
-#[allow(dead_code)] // SetHudSink pending: attached by the overlay app wiring
 pub enum Command {
     /// Clear the detected redline + engagement; keeps the per-gear speed map.
     ClearRpmCalibration,
@@ -194,7 +193,6 @@ impl ListenerHandle {
     }
 
     /// Attach the overlay (`Some`) or detach it (`None`); see [`Command::SetHudSink`].
-    #[allow(dead_code)] // pending: overlay app wiring
     pub fn set_hud_sink(&self, sink: Option<HudSink>) {
         self.send(Command::SetHudSink(sink));
     }
@@ -322,6 +320,9 @@ fn run(ctx: Ctx) {
                 last_push = Some(Instant::now());
                 if msg.cfg.overlay.enabled && !cfg.overlay.enabled {
                     hud.reset(); // no stale "previous packet" from before it was off
+                    // why: enabling should show the HUD; a hidden state left over from
+                    // before would make it look broken.
+                    hud_hidden = false;
                 }
                 cfg = msg.cfg;
                 if *hud_cfg != cfg.overlay {
@@ -389,7 +390,10 @@ fn run(ctx: Ctx) {
                     dynamic_max_rpm = 0.0;
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
-                HotkeyAction::HideHud => hud_hidden = !hud_hidden,
+                // why: ignored while the overlay is off. The key may double as a game key
+                // (H = FH6's horn), and an invisible flip would leave the next enable blank.
+                HotkeyAction::HideHud if cfg.overlay.enabled => hud_hidden = !hud_hidden,
+                HotkeyAction::HideHud => {}
                 HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => {}
             }
         }

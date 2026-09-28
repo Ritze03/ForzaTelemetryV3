@@ -68,7 +68,7 @@ fn race_state(pos: u8, lap0: u16, cur: f32) -> HudSnapshot {
     s
 }
 
-fn drift_state(score: f32, chip: Option<(f32, f64)>, cycle: Option<f64>) -> HudSnapshot {
+fn drift_state(score: f32, chip: Option<(f32, f64)>, cycle: Option<f64>, scoring: bool) -> HudSnapshot {
     let mut s = base(OverlayConfig::default());
     s.mode = HudMode::Drift;
     s.drift = DriftInfo {
@@ -77,6 +77,7 @@ fn drift_state(score: f32, chip: Option<(f32, f64)>, cycle: Option<f64>) -> HudS
         window_start: cycle.map(|c| NOW - c * 5.0),
         interval: 5.0,
         chip: chip.map(|(gain, age)| DriftChip { gain, at: NOW - age }),
+        last_rise_at: Some(if scoring { NOW - 0.1 } else { NOW - 5.0 }),
     };
     s
 }
@@ -210,9 +211,10 @@ fn render_spec_states() -> Result<(), String> {
     let races = [("running", race_state(3, 2, 41.273)), ("gained", gained), ("lost", lost), ("lap_hold", hold), ("delta_ahead", ahead), ("delta_behind", behind)];
 
     let drifts = [
-        ("counting", drift_state(54_648.0, None, Some(0.45))),
-        ("chip", drift_state(58_687.0, Some((4039.0, 1.2)), Some(0.2))),
-        ("idle", drift_state(58_687.0, None, None)),
+        ("counting", drift_state(54_648.0, None, Some(0.45), true)),
+        ("chip", drift_state(58_687.0, Some((4039.0, 1.2)), Some(0.2), true)),
+        // The spec's "Not scoring": grey dot, the bar still cycling (0.8).
+        ("idle", drift_state(58_687.0, None, Some(0.8), false)),
     ];
 
     let mut compass_off = base(OverlayConfig { compass: false, ..Default::default() });
@@ -289,7 +291,12 @@ fn render_spec_states() -> Result<(), String> {
             if s == 1.0 {
                 let cap = over([58, 66, 82], 0.95, plate);
                 check(&mut failures, &img, &id, (8, 23), if *name == "chip" { [0xFF, 0xB0, 0x2E] } else { cap }, "cap");
-                if *name == "counting" {
+                match *name {
+                    "counting" => check(&mut failures, &img, &id, (32, 15), [0xFF, 0xB0, 0x2E], "dot"),
+                    "idle" => check(&mut failures, &img, &id, (32, 15), over([255; 3], 0.22, cap), "dot"),
+                    _ => {}
+                }
+                if *name != "chip" {
                     check(&mut failures, &img, &id, (70, 39), [0xFF, 0xB0, 0x2E], "bar fill");
                     check(&mut failures, &img, &id, (180, 39), over([255; 3], 0.16, plate), "bar track");
                 }
@@ -330,7 +337,7 @@ fn render_spec_states() -> Result<(), String> {
     composite.pkt.speed = 142.0 / 3.6;
     composite.lap_delta = Some(-0.42);
     let halo = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, cluster_style: ClusterStyle::Halo, ..Default::default() }), ..composite.clone() };
-    let drifting = HudSnapshot { mode: HudMode::Drift, drift: drift_state(58_687.0, Some((4039.0, 1.2)), Some(0.2)).drift, ..composite.clone() };
+    let drifting = HudSnapshot { mode: HudMode::Drift, drift: drift_state(58_687.0, Some((4039.0, 1.2)), Some(0.2), true).drift, ..composite.clone() };
     r.map.set(summer.clone(), orig, Season::Summer);
     for (name, snap) in [("composite_1080p", composite), ("composite_halo_1080p", halo), ("composite_drift_1080p", drifting)] {
         r.hud = crate::hud::Hud::default();
