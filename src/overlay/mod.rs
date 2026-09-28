@@ -8,6 +8,7 @@
 //! into [`OverlayHandle::slot`] and calls [`Waker::wake`]; each wake draws one frame
 //! (D17), paced by the compositor's frame callbacks.
 
+#[allow(dead_code)] // pending: most snapshot fields are read by the HUD renderer (I6)
 pub mod snapshot;
 
 #[cfg(target_os = "linux")]
@@ -74,6 +75,7 @@ pub enum OverlayCmd {
     /// Create the surface on the target output (no-op if already shown).
     Show,
     /// Destroy the surface (not just hide it: see `wayland.rs`).
+    #[allow(dead_code)] // the test pattern's counterpart to Show; nothing sends it yet
     Hide,
     /// Target output by name (e.g. "DP-1"); `None` = the first output. A shown surface
     /// moves by being recreated on the new output.
@@ -113,6 +115,17 @@ mod linux {
         }
     }
 
+    /// Cloneable command sender for threads other than the handle's owner (the focus
+    /// thread's monitor detection sends `SetOutput`). Never blocks.
+    #[derive(Clone)]
+    pub struct OverlaySender(channel::Sender<OverlayCmd>);
+
+    impl OverlaySender {
+        pub fn send(&self, cmd: OverlayCmd) {
+            let _ = self.0.send(cmd); // a dead thread is reported by is_dead()
+        }
+    }
+
     /// Owns the overlay thread. Dropping it shuts the thread down and joins it.
     pub struct OverlayHandle {
         cmds: channel::Sender<OverlayCmd>,
@@ -124,7 +137,8 @@ mod linux {
     }
 
     impl OverlayHandle {
-        /// Start the overlay thread (hidden until [`OverlayCmd::Show`]). Blocks until the
+        /// Start the overlay thread, hidden. The HUD then shows/hides by following
+        /// `HudSnapshot::visible`; the test pattern by [`OverlayCmd::Show`]/`Hide`. Blocks until the
         /// thread has connected and set up EGL, so the caller learns right away whether the
         /// overlay is usable.
         pub fn spawn(opts: OverlayOptions) -> Result<Self, DisabledReason> {
@@ -155,6 +169,10 @@ mod linux {
             let _ = self.cmds.send(cmd); // a dead thread is reported by is_dead()
         }
 
+        pub fn sender(&self) -> OverlaySender {
+            OverlaySender(self.cmds.clone())
+        }
+
         pub fn waker(&self) -> Waker {
             self.waker.clone()
         }
@@ -182,12 +200,18 @@ mod linux {
         }
     }
 
-    /// Dev switch (phase A): `FORZA_OVERLAY_TEST=1` shows the static test pattern on the
+    /// `FORZA_OVERLAY_TEST` asks for the dev test pattern ([`spawn_dev_test`]), which then
+    /// owns the overlay.
+    pub fn dev_test_requested() -> bool {
+        matches!(std::env::var("FORZA_OVERLAY_TEST").as_deref(), Ok("1" | "2"))
+    }
+
+    /// Dev switch (phase A):`FORZA_OVERLAY_TEST=1` shows the static test pattern on the
     /// output named by `FORZA_OVERLAY_OUTPUT` (default: the first output). `=2` also wakes
     /// the overlay at ~60 Hz, like packets would (D17), so the frame counter in the pattern
     /// runs and game frametimes can be checked under a redrawing overlay. Keep the returned
-    /// handle alive for as long as the pattern should stay up. I7 replaces this with the
-    /// real spawn.
+    /// handle alive for as long as the pattern should stay up. While it is set the app
+    /// doesn't start the real HUD overlay ([`dev_test_requested`]), so two never fight.
     pub fn spawn_dev_test() -> Option<OverlayHandle> {
         let live = match std::env::var("FORZA_OVERLAY_TEST").as_deref() {
             Ok("1") => false,

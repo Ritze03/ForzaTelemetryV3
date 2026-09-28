@@ -1,5 +1,9 @@
 //! The overlay thread: its own Wayland connection, a calloop loop, one full-output
 //! `Layer::Overlay` surface that exists only while shown, and frame-callback pacing.
+//!
+//! Visibility: the HUD follows `HudSnapshot::visible` (create on visible, keep drawing the
+//! renderer's fade-out on hidden, destroy once it ends); the dev test pattern follows
+//! `OverlayCmd::Show`/`Hide`.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -76,6 +80,8 @@ pub(super) struct Overlay {
     gl: Option<Gl>,
     slot: SnapshotSlot,
     latest: Option<HudSnapshot>,
+    /// A surface is wanted. Test pattern: set by `Show`/`Hide`. HUD: set by a visible
+    /// snapshot, cleared once the fade-out has finished (see [`Overlay::follow_snapshot`]).
     visible: bool,
     /// Output name to show on; `None` = the first output.
     target: Option<String>,
@@ -209,6 +215,7 @@ fn init(
                 s.handle.remove(t); // packets are driving frames again
             }
             s.dirty = true;
+            s.follow_snapshot();
             s.maybe_render();
         })
         .map_err(|e| err(&e.error))?;
@@ -280,15 +287,45 @@ impl Overlay {
         self.frame_pending = false;
     }
 
+    /// Take the listener's latest snapshot, if the slot is free (else keep the previous one).
+    fn refresh_snapshot(&mut self) {
+        if let Ok(slot) = self.slot.try_lock() {
+            self.latest.clone_from(&slot);
+        }
+    }
+
+    /// The listener's visibility target (HUD mode; no snapshot yet = hidden).
+    fn target_visible(&self) -> bool {
+        self.latest.as_ref().is_some_and(|s| s.visible)
+    }
+
+    /// HUD mode, on each wake: the surface follows `snapshot.visible`. Visible → create the
+    /// surface if missing (the renderer fades it in). Hidden → keep the surface and keep
+    /// drawing the renderer's fade-out; [`Self::maybe_render`] destroys it once a frame
+    /// reports the fade done. Hidden with no surface → nothing to fade. The test pattern
+    /// ignores snapshots and follows Show/Hide.
+    // ponytail: a compositor that keeps sending `closed` gets a new surface on every visible
+    // wake (~60 Hz); none of the target compositors do that. Add a backoff if one does.
+    fn follow_snapshot(&mut self) {
+        if self.test_pattern {
+            return;
+        }
+        self.refresh_snapshot();
+        if self.target_visible() {
+            self.visible = true;
+            self.ensure_surface(None);
+        } else if self.live.is_none() {
+            self.visible = false;
+        }
+    }
+
     fn maybe_render(&mut self) {
         if self.exit || self.frame_pending || !self.dirty {
             return;
         }
+        self.refresh_snapshot();
         let (Some(live), Some(gl)) = (&self.live, &self.gl) else { return };
         let Some(egl) = &live.egl else { return };
-        if let Ok(slot) = self.slot.try_lock() {
-            self.latest.clone_from(&slot);
-        }
         let result = gl.make_current(egl).map(|()| {
             let wl = live.layer.wl_surface();
             wl.frame(&self.qh, wl.clone()); // before the swap, which commits
@@ -299,6 +336,14 @@ impl Overlay {
                 self.frame_pending = true;
                 self.dirty = false;
                 self.egl_failures = 0;
+                if !self.test_pattern && !animating && !self.target_visible() {
+                    // Fade-out finished: a hidden HUD has no surface at all, since a mapped
+                    // overlay layer costs direct scanout/tearing (and, observed, VRR).
+                    self.visible = false;
+                    self.arm_anim_timer(None);
+                    self.destroy_surface();
+                    return;
+                }
                 let wake = next_wake(animating, self.last_ping.map(|t| t.elapsed()));
                 self.arm_anim_timer(wake);
             }
@@ -378,7 +423,8 @@ impl OutputHandler for Overlay {
 
 impl LayerShellHandler for Overlay {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        // Compositor withdrew it; wait for the next Show / output change rather than fight it.
+        // Compositor withdrew it; wait for the next Show / visible snapshot / output change
+        // rather than fight it.
         if self.live.as_ref().is_some_and(|l| &l.layer == layer) {
             self.destroy_surface();
         }

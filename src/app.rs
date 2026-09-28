@@ -7,7 +7,8 @@ use egui::{Context, Pos2, Vec2};
 
 use crate::config::{AppConfig, SpeedDeltaMode};
 use crate::engines::{load_engines, EngineRecord};
-use crate::focus::{FocusDetector, FocusParams};
+use crate::focus::{FocusDetector, FocusParams, MonitorParams};
+use crate::overlay::DisabledReason;
 use crate::hotkeys::HotkeyListener;
 use crate::input::InputSender;
 use crate::listeners::backfire::BackfireView;
@@ -575,6 +576,68 @@ pub struct ForzaApp {
     /// Last `ListenerView::toggle_gen` this UI has adopted — see `worker.rs`.
     last_toggle_gen: u64,
     _network: NetworkHandle,
+    overlay: OverlayRuntime,
+}
+
+/// HUD overlay state for the Overlay tab (I9). Linux-only; elsewhere always `Off`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub enum OverlayStatus {
+    /// `overlay.enabled` is off (or the `FORZA_OVERLAY_TEST` dev pattern owns the overlay).
+    #[default]
+    Off,
+    /// Waiting for the overlay thread to connect and set up EGL (≤ 5 s).
+    Starting,
+    Running,
+    /// Couldn't start; the reason is user-facing. Retried when the overlay is re-enabled.
+    Disabled(DisabledReason),
+    /// Was running, then its thread exited (connection lost, repeated EGL failures). Also
+    /// retried by re-enabling.
+    Stopped,
+}
+
+/// The app's end of the overlay (see [`ForzaApp::sync_overlay`]).
+#[derive(Default)]
+struct OverlayRuntime {
+    status: OverlayStatus,
+    /// Focus-detector params last pushed; the overlay settings are part of them.
+    focus_params: Option<FocusParams>,
+    /// `overlay.enabled` as last acted on (false while the dev pattern runs).
+    #[cfg(target_os = "linux")]
+    wanted: bool,
+    #[cfg(target_os = "linux")]
+    handle: Option<crate::overlay::OverlayHandle>,
+    /// Result of an in-flight `OverlayHandle::spawn` on its helper thread.
+    #[cfg(target_os = "linux")]
+    pending: Option<Receiver<Result<crate::overlay::OverlayHandle, DisabledReason>>>,
+}
+
+/// Drop (= shut down + join) the overlay off the UI thread: the join waits for its current
+/// frame, which must not stall ours. If the thread can't spawn, the handle drops here.
+#[cfg(target_os = "linux")]
+fn drop_overlay_async(h: crate::overlay::OverlayHandle) {
+    let _ = std::thread::Builder::new().name("overlay-drop".into()).spawn(move || drop(h));
+}
+
+/// The focus detector's params. It runs for the hotkey/input gates, and whenever the
+/// overlay is on: its `focus_only` (D5) and its monitor detection (D18) need a real
+/// answer, and an idle detector fails open (always "focused").
+fn focus_params(cfg: &AppConfig) -> FocusParams {
+    let o = &cfg.overlay;
+    FocusParams {
+        method: cfg.hotkeys.focus_method,
+        custom_cmd: cfg.hotkeys.custom_cmd.clone(),
+        game_match: cfg.hotkeys.game_match.clone(),
+        poll_hz: cfg.hotkeys.focus_poll_hz,
+        enabled: cfg.hotkeys.input_focus_gate
+            || cfg.hotkeys.gate_mode == crate::config::GateMode::WindowFocus
+            || o.enabled,
+        monitor: (cfg!(target_os = "linux") && o.enabled).then(|| MonitorParams {
+            method: o.monitor_method,
+            cmd: o.monitor_cmd.clone(),
+            fixed: o.monitor_fixed.clone(),
+        }),
+    }
 }
 
 /// Speed Trace window length, in accepted-sample ("active") seconds.
@@ -650,14 +713,7 @@ impl ForzaApp {
 
         // Hotkeys: shared "input allowed" flag, focus detector, capture backend.
         let input_allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let focus = Arc::new(FocusDetector::new(FocusParams {
-            method: config.hotkeys.focus_method,
-            custom_cmd: config.hotkeys.custom_cmd.clone(),
-            game_match: config.hotkeys.game_match.clone(),
-            poll_hz: config.hotkeys.focus_poll_hz,
-            enabled: config.hotkeys.input_focus_gate
-                || config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
-        }));
+        let focus = Arc::new(FocusDetector::new(focus_params(&config)));
         let (hotkeys, hotkey_rx) = HotkeyListener::new(global_bindings(&config));
         let mut input = InputSender::new();
         input.set_focus_gate(input_allowed.clone());
@@ -769,6 +825,7 @@ impl ForzaApp {
             listener,
             last_toggle_gen: 0,
             _network: network,
+            overlay: OverlayRuntime::default(),
         }
     }
 
@@ -826,14 +883,112 @@ impl ForzaApp {
     /// after any hotkey/detection setting changes.
     pub fn sync_hotkeys(&mut self) {
         self.hotkeys.set_bindings(global_bindings(&self.config));
-        self.focus.set_params(FocusParams {
-            method: self.config.hotkeys.focus_method,
-            custom_cmd: self.config.hotkeys.custom_cmd.clone(),
-            game_match: self.config.hotkeys.game_match.clone(),
-            poll_hz: self.config.hotkeys.focus_poll_hz,
-            enabled: self.config.hotkeys.input_focus_gate
-                || self.config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
+        let p = focus_params(&self.config);
+        self.focus.set_params(p.clone());
+        self.overlay.focus_params = Some(p);
+    }
+
+    #[allow(dead_code)] // pending: Overlay tab status (I9)
+    pub fn overlay_status(&self) -> &OverlayStatus {
+        &self.overlay.status
+    }
+
+    /// Once a frame: keep the focus detector's overlay inputs current (the Overlay tab and
+    /// profile loads edit them without calling `sync_hotkeys`), then start/stop the overlay
+    /// thread to follow `overlay.enabled`.
+    fn sync_overlay(&mut self) {
+        let p = focus_params(&self.config);
+        if self.overlay.focus_params.as_ref() != Some(&p) {
+            self.focus.set_params(p.clone());
+            self.overlay.focus_params = Some(p);
+        }
+        #[cfg(target_os = "linux")]
+        self.sync_overlay_thread();
+    }
+
+    /// Start on enable, stop on disable, collect the spawn result, notice a dead thread.
+    /// Failures aren't retried until the next off → on, so a missing layer-shell costs one
+    /// probe, not one per frame.
+    #[cfg(target_os = "linux")]
+    fn sync_overlay_thread(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        // The dev test pattern (main.rs) owns the overlay while it's requested.
+        let want = self.config.overlay.enabled && !crate::overlay::dev_test_requested();
+        if want != self.overlay.wanted {
+            self.overlay.wanted = want;
+            if !want {
+                self.detach_overlay();
+                self.overlay.status = OverlayStatus::Off;
+            } else if self.overlay.pending.is_some() {
+                self.overlay.status = OverlayStatus::Starting; // re-enabled mid-start: reuse it
+            } else if self.overlay.handle.is_none() {
+                self.start_overlay();
+            }
+        }
+        if let Some(rx) = &self.overlay.pending {
+            let result = match rx.try_recv() {
+                Ok(r) => r,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    Err(DisabledReason::Wayland("overlay thread didn't start".into()))
+                }
+            };
+            self.overlay.pending = None;
+            match (want, result) {
+                (true, Ok(h)) => self.attach_overlay(h),
+                (true, Err(reason)) => self.overlay.status = OverlayStatus::Disabled(reason),
+                (false, Ok(h)) => drop_overlay_async(h), // disabled while starting
+                (false, Err(_)) => {}
+            }
+        }
+        if self.overlay.handle.as_ref().is_some_and(|h| h.is_dead()) {
+            self.detach_overlay();
+            self.overlay.status = OverlayStatus::Stopped;
+        }
+    }
+
+    /// `OverlayHandle::spawn` blocks for up to 5 s waiting for the compositor, so it runs on
+    /// a helper thread and [`Self::sync_overlay_thread`] polls the result.
+    #[cfg(target_os = "linux")]
+    fn start_overlay(&mut self) {
+        let opts = crate::overlay::OverlayOptions { output: self.focus.monitor_output(), test_pattern: false };
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("overlay-start".into()).spawn(move || {
+            // A dropped receiver (app closing) drops the handle here, which shuts it down.
+            let _ = tx.send(crate::overlay::OverlayHandle::spawn(opts));
         });
+        self.overlay.status = match spawned {
+            Ok(_) => {
+                self.overlay.pending = Some(rx);
+                OverlayStatus::Starting
+            }
+            Err(e) => OverlayStatus::Disabled(DisabledReason::Wayland(e.to_string())),
+        };
+    }
+
+    /// Feed the running overlay: snapshots + wakes from the listener thread, output changes
+    /// from the focus thread's monitor detection (which re-sends the current output to a
+    /// new sink on its next tick).
+    #[cfg(target_os = "linux")]
+    fn attach_overlay(&mut self, h: crate::overlay::OverlayHandle) {
+        let waker = h.waker();
+        self.listener.set_hud_sink(Some(crate::overlay::snapshot::HudSink::new(h.slot(), move || waker.wake())));
+        let sender = h.sender();
+        self.focus.set_output_sink(Some(Box::new(move |name| {
+            sender.send(crate::overlay::OverlayCmd::SetOutput(name))
+        })));
+        self.overlay.handle = Some(h);
+        self.overlay.status = OverlayStatus::Running;
+    }
+
+    /// Unhook the feeds first, so nothing targets the overlay as it shuts down, then drop it.
+    #[cfg(target_os = "linux")]
+    fn detach_overlay(&mut self) {
+        if let Some(h) = self.overlay.handle.take() {
+            self.listener.set_hud_sink(None);
+            self.focus.set_output_sink(None);
+            drop_overlay_async(h);
+        }
     }
 
     /// Copy the listener thread's published state into our local copy, if it's free right
@@ -1148,6 +1303,7 @@ impl eframe::App for ForzaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.config.language);
         self.sync_listener_view();
+        self.sync_overlay();
         self.drain_packets();
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
@@ -2281,6 +2437,12 @@ impl eframe::App for ForzaApp {
         self.config.save();
         // The listener thread owns the per-car calibrations — let it flush them and stop.
         self.listener.shutdown();
+        // Blocking this time: the join tears the layer surface down cleanly before exit.
+        #[cfg(target_os = "linux")]
+        if let Some(h) = self.overlay.handle.take() {
+            self.focus.set_output_sink(None);
+            drop(h);
+        }
     }
 }
 

@@ -15,10 +15,10 @@ mod input;
 mod keymap;
 mod labels;
 mod listeners;
-#[allow(dead_code)] // filled in by the overlay plan's I5
+#[allow(dead_code)] // pending: the overlay_map_* / uv_to_world items are used by the HUD minimap (I6)
 mod minimap;
 mod network;
-#[allow(dead_code)] // most of the API is wired up by the overlay plan's I4/I7
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay runtime is Linux-only
 mod overlay;
 mod packet;
 mod telemetry;
