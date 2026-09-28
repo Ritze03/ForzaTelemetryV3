@@ -840,9 +840,11 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
             };
             control_row(ui, tr(action.label()), |ui| {
                 let h = ui.spacing().interact_size.y;
-                if ui.add_sized([ui.available_width(), h], egui::Button::new(text)).clicked() {
+                let resp = ui.add_sized([ui.available_width(), h], egui::Button::new(text));
+                if resp.clicked() {
                     app.rebinding = if capturing { None } else { Some(action) };
                 }
+                app.track_rebind_button(action, &resp);
             });
             if capturing {
                 hint(ui, tr("Esc cancels. Backspace clears the binding."));
@@ -873,10 +875,13 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     // The method / title rows matter whenever anything consults the detector, not only
-    // for hotkey gating.
+    // for hotkey gating. The enabled overlay counts too: its monitor detection needs the
+    // detector to match the game window, so a user stuck on "Game window not focused"
+    // must be able to reach the title / method.
     let uses_focus = app.config.hotkeys.gate_mode == GateMode::WindowFocus
         || app.config.hotkeys.input_focus_gate
-        || app.config.overlay.focus_only;
+        || app.config.overlay.focus_only
+        || app.config.overlay.enabled;
     if uses_focus {
         #[cfg(target_os = "linux")]
         {

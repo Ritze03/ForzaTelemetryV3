@@ -105,7 +105,10 @@ fn module_card(
 
 fn general(ui: &mut Ui, app: &mut ForzaApp) {
     theme::card(ui, tr("General"), |ui| {
-        theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay"));
+        // The overlay is Linux only (wlr-layer-shell): greyed out elsewhere.
+        ui.add_enabled_ui(cfg!(target_os = "linux"), |ui| {
+            theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay"));
+        });
         overlay_status_line(ui, app);
         hide_hud_row(ui, app);
         let o = &mut app.config.overlay;
@@ -147,16 +150,17 @@ fn hide_hud_row(ui: &mut Ui, app: &mut ForzaApp) {
         (false, Some(b)) => RichText::new(b.label()),
         (false, None) => RichText::new(tr("Not set")).color(theme::FAINT),
     };
-    let clicked = control_row(ui, tr(action.label()), |ui| {
+    let resp = control_row(ui, tr(action.label()), |ui| {
         let mut btn = egui::Button::new(text);
         if capturing {
             btn = btn.stroke(Stroke::new(1.0, theme::ACCENT));
         }
-        ui.add_sized([ui.available_width(), ui.spacing().interact_size.y], btn).clicked()
+        ui.add_sized([ui.available_width(), ui.spacing().interact_size.y], btn)
     });
-    if clicked {
+    if resp.clicked() {
         app.rebinding = if capturing { None } else { Some(action) };
     }
+    app.track_rebind_button(action, &resp);
     if capturing {
         hint(ui, tr("Esc cancels. Backspace clears the binding."));
     } else if let Some(b) = binding {
@@ -397,10 +401,19 @@ fn paint_chip(p: &Painter, r: Rect, m: Module, on: bool, selected: bool, hovered
     );
 }
 
+/// egui temp-data key of the layout grid's selected chip.
+const LAYOUT_SEL_KEY: &str = "overlay_layout_sel";
+
+/// Drop the layout grid's chip selection (on a tab switch, so stray arrow keys can't move a
+/// chip after you come back).
+pub fn clear_layout_selection(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<Option<Module>>(Id::new(LAYOUT_SEL_KEY)));
+}
+
 fn layout(ui: &mut Ui, app: &mut ForzaApp) {
     theme::card(ui, tr("Layout"), |ui| {
         let o = &mut app.config.overlay;
-        let sel_id = Id::new("overlay_layout_sel");
+        let sel_id = Id::new(LAYOUT_SEL_KEY);
         let mut sel: Option<Module> = ui.data(|d| d.get_temp(sel_id)).flatten();
         layout_grid(ui, o, &mut sel);
         hint(ui, tr("Drag a module onto a cell. Or select one, then click a cell or use the arrow keys."));
@@ -430,6 +443,15 @@ fn layout_grid(ui: &mut Ui, o: &mut OverlayConfig, sel: &mut Option<Module>) {
     let dragged = MODULES.into_iter().find(|&m| ui.ctx().is_being_dragged(chip_id(m)));
     let mut move_to: Option<(Module, HudCell)> = None;
 
+    // A press outside the grid drops the selection, so arrow keys meant for something else
+    // on the page can't move a chip.
+    let pressed_outside = ui.input(|i| {
+        i.pointer.primary_pressed() && i.pointer.interact_pos().is_some_and(|p| !grid.contains(p))
+    });
+    if pressed_outside {
+        *sel = None;
+    }
+
     ui.painter().rect(grid, 6.0, theme::FIELD, Stroke::new(1.0, theme::BTNBD), egui::StrokeKind::Inside);
 
     // Cells first, so the chips drawn after them sit on top for hover and clicks.
@@ -438,6 +460,7 @@ fn layout_grid(ui: &mut Ui, o: &mut OverlayConfig, sel: &mut Option<Module>) {
         let resp = ui.interact(r, Id::new(("overlay_cell", cell as usize)), Sense::click());
         if let (true, Some(m)) = (resp.clicked(), *sel) {
             move_to = Some((m, cell));
+            *sel = None; // placed: the mockup drops the selection
         }
         let target = (dragged.is_some() && pointer.is_some_and(|p| r.contains(p)))
             || (sel.is_some() && resp.hovered());

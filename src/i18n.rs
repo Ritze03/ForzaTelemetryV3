@@ -720,14 +720,14 @@ fn de(s: &str) -> Option<&'static str> {
         "Compact: draws the current value inside a full-width bar, with the peak in parentheses below."
             => "Kompakt: zeichnet den aktuellen Wert in eine Leiste über die volle Breite, den Höchstwert in Klammern darunter.",
         "Adds an \"Electric\" or cylinder-count caption under the values."
-            => "Zeigt „Elektrisch\" oder die Zylinderanzahl unter den Werten an.",
+            => "Zeigt „Elektrisch“ oder die Zylinderanzahl unter den Werten an.",
         "G-Force" => "G-Kraft",
         "Show text" => "Text anzeigen",
         "Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."
             => "Aktuell-/Spitzen-Anzeige neben dem Diagramm. Aus = das Diagramm füllt das ganze Widget.",
         "Show labels" => "Beschriftungen anzeigen",
         "Show the \"Current:\"/\"Peak:\" header rows. Off = only the value rows."
-            => "Zeigt die Kopfzeilen „Aktuell:\"/„Spitze:\". Aus = nur die Wertzeilen.",
+            => "Zeigt die Kopfzeilen „Aktuell:“/„Spitze:“. Aus = nur die Wertzeilen.",
         "Hide widget titles" => "Widget-Titel ausblenden",
         "Hide every widget's title row so the content gets the space."
             => "Blendet die Titelzeile jedes Widgets aus, damit der Inhalt mehr Platz bekommt.",
@@ -785,16 +785,18 @@ fn de(s: &str) -> Option<&'static str> {
         "Esc cancels. Backspace clears the binding." => "Esc bricht ab. Rücktaste entfernt die Belegung.",
         "Also bound to" => "Auch belegt mit",
         "Setup → Hotkey" => "Setup → Hotkey",
+        "Hotkey" => "Hotkey",
+        "Info" => "Info",
         "The HUD is hidden. Press the Hide HUD key again to show it."
-            => "Das HUD ist ausgeblendet. Drücke die „HUD ausblenden\"-Taste erneut, um es zu zeigen.",
+            => "Das HUD ist ausgeblendet. Drücke die „HUD ausblenden“-Taste erneut, um es zu zeigen.",
         "Only when game window is focused" => "Nur wenn das Spielfenster im Fokus ist",
         "Hides the in-game overlay while another window is focused. Uses the detection method above."
-            => "Blendet das In-Game-Overlay aus, solange ein anderes Fenster im Fokus ist. Nutzt die Erkennungsmethode oben.",
+            => "Blendet das Ingame-Overlay aus, solange ein anderes Fenster im Fokus ist. Nutzt die Erkennungsmethode oben.",
         "Scale" => "Skalierung",
         "Plate opacity" => "Hintergrund-Deckkraft",
         "Fade on show / hide" => "Beim Ein-/Ausblenden überblenden",
         "\"Only when game window is focused\" is in Setup → Window Detection. The HUD hides by itself while the game is paused."
-            => "„Nur wenn das Spielfenster im Fokus ist\" findest du unter Setup → Fenster-Erkennung. Während das Spiel pausiert ist, blendet sich das HUD von selbst aus.",
+            => "„Nur wenn das Spielfenster im Fokus ist“ findest du unter Setup → Fenster-Erkennung. Während das Spiel pausiert ist, blendet sich das HUD von selbst aus.",
         "Monitor Detection" => "Monitor-Erkennung",
         "Method" => "Methode",
         "Hyprland (built in)" => "Hyprland (integriert)",

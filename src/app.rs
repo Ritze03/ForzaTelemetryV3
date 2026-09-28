@@ -450,6 +450,12 @@ pub struct ForzaApp {
     /// Hotkey rebind state (Setup → Hotkey, Overlay → Hide HUD): the action capturing a new
     /// key. The key itself is taken by [`ForzaApp::capture_rebind`].
     pub rebinding: Option<crate::config::HotkeyAction>,
+    /// The armed rebind button's id and rect, refreshed by [`ForzaApp::track_rebind_button`]
+    /// each frame it's drawn: a press anywhere else cancels the capture (the tab mockup).
+    rebind_button: Option<(egui::Id, egui::Rect)>,
+    /// The tab shown last frame; a tab switch drops the rebind capture and the Overlay
+    /// layout selection so neither acts on keys pressed elsewhere.
+    last_tab: Tab,
     /// Hide HUD hotkey state, copied from `ListenerView::hud_hidden` (Overlay tab hint).
     pub hud_hidden: bool,
     /// Detect-button countdown deadline (active-window auto-fill).
@@ -750,6 +756,8 @@ impl ForzaApp {
             hotkeys,
             focus,
             rebinding: None,
+            rebind_button: None,
+            last_tab: Tab::Dashboard,
             hud_hidden: false,
             detect_until: None,
             focus_preview: String::new(),
@@ -902,9 +910,27 @@ impl ForzaApp {
     /// other bindable key binds with the modifiers held. Runs before the tabs are drawn, so a
     /// tab's own capture code never sees the key. Returns true while a capture is armed, so
     /// the key doesn't also fire an in-app hotkey.
+    ///
+    /// The capture disarms (without binding) on a primary press anywhere but the armed button,
+    /// and whenever another widget holds keyboard focus (a text field) — so a key meant for
+    /// something else never rebinds silently. Tab switches disarm it in `update`. A key that
+    /// ends the capture (bind / Backspace / Esc) is consumed, so it doesn't also act elsewhere.
     fn capture_rebind(&mut self, ctx: &Context) -> bool {
         use crate::keymap::{HotKey, HotkeyBinding, Mods};
         let Some(action) = self.rebinding else { return false };
+        let button = self.rebind_button;
+        let pressed_elsewhere = ctx.input(|i| {
+            i.pointer.primary_pressed()
+                && !matches!((button, i.pointer.interact_pos()), (Some((_, r)), Some(p)) if r.contains(p))
+        });
+        // `wants_keyboard_input`, except the armed button itself (it may hold keyboard focus
+        // when armed via Tab + Enter).
+        let other_focus = ctx.memory(|m| m.focused()).is_some_and(|f| Some(f) != button.map(|(id, _)| id));
+        if pressed_elsewhere || other_focus {
+            self.rebinding = None;
+            self.rebind_button = None;
+            return false;
+        }
         let pressed = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
@@ -926,8 +952,20 @@ impl ForzaApp {
                 self.sync_hotkeys();
             }
         }
+        ctx.input_mut(|i| {
+            i.events.retain(|e| !matches!(e, egui::Event::Key { key: k, pressed: true, .. } if *k == key))
+        });
         self.rebinding = None;
+        self.rebind_button = None;
         true
+    }
+
+    /// Called by a rebind button right after it's drawn (and its click handled): while its
+    /// action is the armed one, remember where it is for [`Self::capture_rebind`].
+    pub fn track_rebind_button(&mut self, action: crate::config::HotkeyAction, resp: &egui::Response) {
+        if self.rebinding == Some(action) {
+            self.rebind_button = Some((resp.id, resp.rect));
+        }
     }
 
     /// Once a frame: keep the focus detector's overlay inputs current (the Overlay tab and
@@ -1495,6 +1533,11 @@ impl eframe::App for ForzaApp {
         // ── Hotkeys ────────────────────────────────────────────────
         // App-focused actions: matched from config against egui input (only
         // delivered while our window is focused → inherently UI-only).
+        if self.current_tab != self.last_tab {
+            self.last_tab = self.current_tab;
+            self.rebinding = None;
+            crate::ui::overlay_tab::clear_layout_selection(ctx);
+        }
         let capturing = self.capture_rebind(ctx);
         if !capturing {
             use crate::config::{HotkeyAction, HotkeyScope};
@@ -2450,7 +2493,9 @@ impl eframe::App for ForzaApp {
             &self.config,
             self.last_toggle_gen,
             ctx.input(|i| i.focused),
-            ctx.wants_keyboard_input(),
+            // A rebind capture counts as text input: the key being bound mustn't also fire
+            // its current global action (G toggling the gearbox, H hiding the HUD).
+            ctx.wants_keyboard_input() || self.rebinding.is_some(),
         );
 
         // FPS limiter

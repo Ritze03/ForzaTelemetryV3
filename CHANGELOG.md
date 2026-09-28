@@ -7,7 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.3.0] – 2026-09-28
 
 ### Added
-- **In-game HUD overlay (Linux/Wayland)**: a compact HUD drawn right over Forza Horizon 6, replacing the stock one with the telemetry you pick — an RPM / gear / speed cluster in two styles (Pill or Halo), a minimap with a compass and your co-op teammates, your race position with lap time and a lap delta (hidden in free roam), and a drift counter. It switches between the race block and the drift counter by itself when it detects a drift event. Clicks and keys go straight through to the game, it hides when you pause, and it follows the game to whichever monitor it's on. Works on Hyprland, Sway and KDE Plasma; not on GNOME or X11, which the Overlay tab tells you.
+- **In-game HUD overlay (Linux/Wayland)**: a compact HUD drawn right over Forza Horizon 6, replacing the stock one with the telemetry you pick — an RPM / gear / speed cluster in two styles (Pill or Halo), a minimap with a compass and your co-op teammates, your race position with lap time and a lap delta (hidden in free roam), and a drift counter. It switches between the race block and the drift counter by itself when it detects a drift event. Clicks and keys go straight through to the game, it hides when you pause, and it follows the game to whichever monitor it's on. Tested on Hyprland; should work on other compositors with wlr-layer-shell such as Sway and KDE Plasma. Not on GNOME or X11, which the Overlay tab tells you.
 - **Overlay tab**: a new tab after Dashboard to set up the HUD — turn it on, drag the Minimap, Drive cluster and Race / Drift modules onto a 3×3 screen grid (modules in the same cell stack from the screen edge inward), and set scale, plate opacity, fade and per-module options. Monitor detection is Hyprland (built in), a custom command or a fixed monitor, with a live status line. Changes apply to the running HUD straight away, and the overlay settings travel with your profiles.
 - **Hide HUD hotkey**: press **H** (rebindable, on the Overlay tab or in Setup → Hotkey) to hide or show the in-game HUD.
 - **Drive mode on the gear**: while the Automatic Gearbox is on, the HUD shows its mode in front of the gear — **D** (Street), **S** (Sport) or **R** (Race), e.g. "D4". Reverse and neutral stay a plain R and N.
@@ -15,7 +15,6 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Calmer speed readout**: a Drive Cluster option, *Update speed only every 0.5 s*, holds the speed number between updates while gear and revs stay live.
 - **Clear a hotkey**: press **Backspace** while rebinding to leave it **Not set**; Esc still cancels.
 - **GNOME window detection**: Settings → Window Detection has a new "GNOME (Window Calls extension)" method, so "only when the game is focused" works on GNOME too. It needs the free Window Calls GNOME Shell extension (extensions.gnome.org/extension/4724); the Test button shows the active window, or why detection failed (e.g. the extension isn't installed).
-
 - **Window Detection card**: Setup's **Input** card is now called **Window Detection** and has a new *Only when game window is focused* option that hides the in-game HUD while another window is in front. Its status light now shows amber (not red) while the game window simply isn't focused.
 
 ### Fixed

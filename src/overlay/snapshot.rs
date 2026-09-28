@@ -107,7 +107,7 @@ impl From<GearboxMode> for DriveMode {
 
 /// World → map-image transform from the app config (the Dashboard map's calibration):
 /// `px = (x − origin_x) · px_per_m`, `py = (origin_z − z) · px_per_m`. The season image is
-/// time-based (`app::current_season`), so the overlay picks it itself.
+/// time-based (`crate::minimap::current_season`), so the overlay picks it itself.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MinimapCalib {
     pub px_per_m: f32,

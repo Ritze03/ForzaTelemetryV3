@@ -936,6 +936,9 @@ fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) {
     if let Ok(new_cfg) = serde_json::from_value::<AppConfig>(base) {
         *cfg = new_cfg;
         inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
+        // A preset/profile replaces the whole `hotkeys` object; an older one lacks newer
+        // actions (e.g. Hide HUD), so fill them like `load()` does (respects `unbound`).
+        inject_missing_hotkeys(&mut cfg.hotkeys);
     }
 }
 
@@ -1660,6 +1663,23 @@ mod tests {
         // Rebinding clears the unbind.
         back.bind(HotkeyAction::HideHud, HotkeyConfig::default().bindings[&HotkeyAction::HideHud]);
         assert!(back.unbound.is_empty());
+    }
+
+    #[test]
+    fn preset_with_old_hotkeys_gets_hide_hud_injected_unless_unbound() {
+        let g = r#"{ "mods": { "ctrl": false, "alt": false, "shift": false, "sup": false }, "key": "G" }"#;
+        // Older profile: hotkeys without HideHud and without `unbound`.
+        let mut cfg = AppConfig::default();
+        apply_preset(&mut cfg, &format!(r#"{{ "hotkeys": {{ "bindings": {{ "ToggleGearbox": {g} }} }} }}"#));
+        assert_eq!(cfg.hotkeys.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::H);
+        // A profile that deliberately unbound HideHud keeps it unbound.
+        let mut cfg = AppConfig::default();
+        apply_preset(
+            &mut cfg,
+            &format!(r#"{{ "hotkeys": {{ "bindings": {{ "ToggleGearbox": {g} }}, "unbound": ["HideHud"] }} }}"#),
+        );
+        assert!(!cfg.hotkeys.bindings.contains_key(&HotkeyAction::HideHud));
+        assert_eq!(cfg.hotkeys.unbound, vec![HotkeyAction::HideHud]);
     }
 
     #[test]
