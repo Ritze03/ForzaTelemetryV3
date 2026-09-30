@@ -1783,7 +1783,7 @@ impl eframe::App for ForzaApp {
                             }
                         } else {
                             let c = if connecting { crate::theme::WARN } else { crate::theme::GOOD };
-                            let resp = ui.colored_label(c, format!(" {}  {}", icons::USERS, n));
+                            let resp = ui.colored_label(c, format!("{}  {}", icons::USERS, n));
                             if resp.hovered() {
                                 show_center_tooltip(ui, resp.rect, full);
                             }
