@@ -638,6 +638,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Le0_X8 — seasonal map images" => "Le0_X8 — saisonale Kartenbilder",
         "Geist font — Vercel (OFL)" => "Geist-Schrift — Vercel (OFL)",
         "Nerd Fonts — Ryan L McIntyre (MIT)" => "Nerd Fonts — Ryan L McIntyre (MIT)",
+        "Trystero — Dan Motzenbecker (MIT), P2P co-op design" => "Trystero — Dan Motzenbecker (MIT), P2P-Koop-Design",
         "Font licences: assets/fonts/" => "Schrift-Lizenzen: assets/fonts/",
         "Save Settings" => "Einstellungen speichern",
         "Settings are also auto-saved on exit." =>
