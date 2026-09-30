@@ -2,6 +2,7 @@
 name = "forza-telemetry"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.91"
 
 [[bin]]
 name = "forza-telemetry"
@@ -18,6 +19,19 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 dirs = "5"
 tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 uuid = { version = "1", features = ["v4"] }
+# Co-Op "Trystero" transport (src/coop/): serverless WebRTC mesh, signalled over public Nostr
+# relays. No tokio anywhere: webrtc runs on smol. webrtc 0.21 needs rustc >= 1.91.
+webrtc = { version = "0.21", default-features = false, features = ["runtime-smol", "crypto-ring"] }
+smol = "2"
+async-trait = "0.1"
+bytes = "1"
+k256 = { version = "0.14", default-features = false, features = ["schnorr", "std"] }
+sha1 = "0.11"
+sha2 = "0.11"
+aes-gcm = "0.11"
+getrandom = "0.4"
+base64 = "0.22"
+async-channel = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
 # HUD overlay (src/overlay/): wlr-layer-shell surface + EGL + egui_glow. All already built by
