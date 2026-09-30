@@ -44,6 +44,11 @@ const CONNECT_TTL: Duration = Duration::from_secs(30);
 /// Non-trickle: how long to wait for ICE gathering to finish before sending what we have
 /// (an unreachable STUN server must not stall the handshake).
 const GATHER_MAX: Duration = Duration::from_secs(8);
+/// Per-channel cap on bytes buffered for sending; see `Link::new`.
+const SEND_BUFFER_LIMIT: usize = 16 * 1024;
+/// Frames queued between `Inner::broadcast` and the channel writer (~1 s of telemetry at 60 Hz;
+/// beyond that `broadcast`'s `try_send` drops, so a stalled writer can't add latency).
+const OUT_QUEUE: usize = 64;
 /// A `Disconnected` connection may still recover; give it this long before giving up.
 const DISCONNECT_GRACE: Duration = Duration::from_secs(12);
 
@@ -126,9 +131,11 @@ impl Link {
             .with_runtime(Arc::new(SmolRuntime))
             .with_handler(Arc::new(Handler { gather: gt, dc: dt, state: st }))
             .with_udp_addrs(vec![udp])
-            // A stalled peer must not grow our memory: past 1 MiB `send` blocks, the writer
-            // stops draining, and the bounded outgoing queue then drops telemetry frames.
-            .with_data_channel_send_buffer_limit(1 << 20)
+            // Latency cap: the channel is reliable + ordered, so anything buffered is delivered
+            // late, not dropped. Past ~16 KiB (~48 telemetry frames, under a second at 60 Hz)
+            // the writer drops telemetry frames (`try_send`, see `run_channel`) instead of
+            // queueing seconds of stale data behind a slow link (also bounds memory).
+            .with_data_channel_send_buffer_limit(SEND_BUFFER_LIMIT)
             .build()
             .await
             .map_err(es)?;
@@ -209,7 +216,7 @@ pub async fn run_channel(
         Timer::after(Duration::from_millis(50)).await;
     }
 
-    let (tx, rx) = mpsc::sync_channel::<Message>(256);
+    let (tx, rx) = mpsc::sync_channel::<Message>(OUT_QUEUE);
     if !on_open(tx) {
         return ChanEnd::Rejected;
     }
@@ -232,7 +239,12 @@ pub async fn run_channel(
             loop {
                 let sent = match rx.try_recv() {
                     Ok(Message::Text(t)) => dc.send_text(&t).await,
-                    Ok(Message::Binary(b)) => dc.send(BytesMut::from(&b[..])).await,
+                    // Telemetry is disposable: over the buffer limit, drop the frame rather
+                    // than block (Control frames below still wait their turn).
+                    Ok(Message::Binary(b)) => match dc.try_send(BytesMut::from(&b[..])).await {
+                        Err(webrtc::error::Error::ErrSendBufferFull) => Ok(()),
+                        r => r,
+                    },
                     Ok(_) => Ok(()),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
@@ -362,7 +374,10 @@ async fn link_task(
             o
         }
     };
+    // A link that was replaced (glare) or stopped while its verdict was being decided is not a
+    // failure worth reporting, whatever the verdict says.
     match out {
+        _ if kill.is_closed() => {}
         Outcome::Killed => {}
         Outcome::Closed => sess.link_ended(&peer, gen, false),
         Outcome::Failed { nat } => sess.link_ended(&peer, gen, nat),
