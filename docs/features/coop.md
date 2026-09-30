@@ -1,7 +1,13 @@
-# Co-Op — shared telemetry over cloudflared quick tunnels
+# Co-Op — shared telemetry (Cloudflare tunnel or Trystero P2P)
 
 Players share live telemetry and see each other on the Dashboard minimap. No login,
-no port-forwarding: one player **Hosts**, others **Join** with a short word-code.
+no port-forwarding. Two transports, chosen with the `[Cloudflare | Trystero]` pill control at
+the top of the Session card (`theme::segmented`, locked while a session is live; config
+`coop_transport`, default Cloudflare):
+
+- **Cloudflare** — one player **Hosts**, others **Join** with a short word-code (below).
+- **Trystero** — everyone joins the same **Room ID**; direct peer-to-peer mesh (see
+  [Trystero transport](#trystero-transport)).
 
 ## How it works
 
@@ -39,6 +45,58 @@ no port-forwarding: one player **Hosts**, others **Join** with a short word-code
    diamond in your colour, showing each player's distance to it) — handy for "meet here".
    Right-click clears it.
 
+## Trystero transport
+
+Pick **Trystero**, type a **Room ID** (or press **Generate**: lowercase Crockford base32 3x4,
+e.g. `k7f2-9qzm-x4pd`) and press **Join Room**; everyone using the same ID ends up in one
+session. While connected the card shows "Room" + ID with Copy. The ID is persisted as
+`coop_room`. Hint shown: "Anyone with this ID can join. Treat it like a password."
+**Auto-connect on startup** (`coop_autoconnect`, Trystero only) rejoins the last room at launch
+(`ForzaApp::new` in `app.rs`, right after `CoopState::new`). **Why Trystero only:** Cloudflare
+slugs are random per host session, so auto-rejoin would nearly always fail.
+`coop_transport`, `coop_room`, `coop_autoconnect` are in `COOP_KEYS` (profile export).
+
+Code: `src/coop.rs` (`start_trystero`, `generate_room_id`), `src/coop/{nostr,rtc,mesh}.rs`.
+
+- **Model follows [Trystero](https://github.com/dmotz/trystero)** (JS lib): peers meet through
+  a shared room ID on public **Nostr relays**, then connect directly over **WebRTC data
+  channels**. **Not wire-compatible** with JS Trystero clients. Why: its data-plane framing is a
+  moving target and co-op is app-to-app; topics, event kinds and event format follow Trystero so
+  interop stays possible later. appId `ForzaTelemetryV3`.
+- **Signaling (`nostr.rs`)**: topic = SHA-1 digest rendered byte-wise base36 of
+  `Trystero@ForzaTelemetryV3@<room>` (root) and that + `@<selfId>` (per peer); event kind =
+  (sum of UTF-16 units % 10000) + 20000 (ephemeral range, relays don't store). Events are NIP-01,
+  BIP-340 schnorr-signed (`k256`) with a per-session key. Peers announce `{peerId, nonce}` to the
+  root topic at 0.2/0.5/1.3/5.3 s, then every ~30 s; offers/answers go to the target's topic.
+  SDP is AES-GCM encrypted with key SHA-256(`:ForzaTelemetryV3:<room>`) (12-byte IV) — the room
+  ID is effectively the secret, and this hides IPs from relay operators. Glare (both offer): the
+  lower selfId keeps its offer. De-dup by (peerId, offerId). Non-trickle ICE.
+- **Relays**: 6 hard-coded (nos.lol, nostr.mad-social.net, nostr.purpura.cloud,
+  nostr.stakey.net, relay.mappingbitcoin.com, offchain.pub). Why hard-coded: both peers must
+  share the list. One std thread per relay (reuses `connect_ws`); rate-limited -> backoff;
+  blocked/restricted/auth-required/pow -> relay retired.
+- **WebRTC (`rtc.rs`)**: webrtc-rs 0.21 with `runtime-smol` + `crypto-ring`, on one dedicated
+  thread (smol `LocalExecutor`). Why no tokio: the app is std-threads; keeps the build light and
+  needs no C toolchain. STUN: Google (stun, stun1) and Cloudflare. ICE gathering capped at 8 s;
+  offer/answer timeout 57 s; channel must open within 30 s else the NAT error; 12 s grace on
+  Disconnected; max 24 peers.
+- **Topology: full mesh**, not a host star. Why: Trystero is a mesh; no host election/failover.
+  Each peer sends its own telemetry to every peer (~20 KB/s per link). All Trystero peers use
+  `Role::Client` (no new Role variant). Why: the UI matches exhaustively on `Role`, and a mesh has
+  no host, so "Joined" is truthful. `inner.clients` is keyed by the remote's Nostr peer id; a new
+  additive `Control::Peer {id,name,hue}` sent on channel open binds the player UUID to the channel
+  — binary frames are attributed to the bound id and the 16-byte prefix is ignored (anti-spoof).
+  Old Cloudflare peers ignore the message. Roster = self + connected peers.
+- **Status/errors**: "Connecting to relays…", "Waiting for players…", "Negotiating…",
+  "{n} player(s)", "Reconnecting…", "Stopped"; errors "No relay reachable" and "Couldn't reach a
+  player directly (NAT). Try the Cloudflare option."
+- Threads are detached with a per-session stop flag; `stop()` never blocks the UI.
+- **Limitation**: two peers both behind symmetric NAT/CGNAT can't connect (no free TURN);
+  use Cloudflare as the fallback. **Untested against live relays / real NAT so far** — only unit,
+  in-process loopback and fake-relay tests.
+- **Toolchain**: `rust-toolchain.toml` pins 1.96.1 and Cargo.toml has `rust-version = "1.91"`.
+  Why: webrtc 0.21 -> rtc-mdns needs Rust >= 1.91.
+
 ## On the in-game HUD overlay
 
 With **Show co-op teammates** on (Overlay tab → Minimap, default on), teammates also appear on
@@ -56,6 +114,8 @@ on the HUD.
   (UI and overlay) are harmless.
 
 ## Options
+
+(Cloudflare transport unless noted.)
 
 - **Packet Buffer Size (ms)** — jitter buffer that delays remote players slightly for smoother pacing.
   0 = lowest latency; raise it if other cars stutter.

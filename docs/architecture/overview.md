@@ -251,7 +251,7 @@ might produce.
 | `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel, whose `Receiver` `new()` hands to the listener thread. See [[hotkeys]]. |
 | `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/GNOME/Custom/Windows); reused by the hotkey gate, the input gate and the overlay's focus-only option. Also runs the overlay's **monitor detection** (`monitor_tick`, `query_monitor`, `parse_hyprland_monitor`), only while the game is focused. See [[hotkeys]], [[overlay]]. |
 | `minimap.rs` | Season detection (`current_season`), the on-disk map cache (`load_map_color_image`, atomic write), the overlay's 4096² mipmapped copy (`overlay_map_image`), and the world↔UV / heading-up maths (`MapCalibration`, `MapView`, easing). Shared by the Dashboard map and the HUD minimap. See [[minimap]]. |
-| `coop.rs` | `CoopState` — WebSocket relay over a cloudflared quick tunnel; roster, remote players. `CoopReader` is the cross-thread handle (the listener sends through it, the overlay reads teammates through it). See [[coop]]. |
+| `coop.rs` (+ `coop/{nostr,rtc,mesh}.rs`) | `CoopState` — WebSocket relay over a cloudflared quick tunnel, or a Trystero-style P2P WebRTC mesh signalled over Nostr relays (`start_trystero`); roster, remote players. `CoopReader` is the cross-thread handle (the listener sends through it, the overlay reads teammates through it). See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
 
 ### `src/overlay/` (in-game HUD runtime; Linux only, except `snapshot.rs`) — see [[overlay]]
@@ -304,7 +304,7 @@ might produce.
 | `gearbox.rs` | Automatic Gearbox tab (`show_gearbox`). |
 | `power_curve.rs` | Power Curve tab (live RPM vs power/torque, boost). |
 | `engine_swaps.rs` | Engine Swaps reference table from `engines.csv`. |
-| `coop.rs` | Co-Op host/join tab. |
+| `coop.rs` | Co-Op tab: transport selector, Cloudflare host/join, Trystero room ID. |
 | `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Window Detection). See [[settings]]. |
 | `changelog.rs` | "What's New" viewer — parses root `CHANGELOG.md`, category filters. |
 | `debug_tab.rs` | Debug tab (just left of Setup): every field of `telemetry.latest` as a raw name → value grid, parsed from `{:#?}` so it can't drift; Copy button. See [[debug]]. |

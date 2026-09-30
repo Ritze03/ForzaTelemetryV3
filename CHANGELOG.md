@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.4.0] – 2026-09-30
+
+### Added
+- **Co-Op: Trystero connection**: a new `Cloudflare | Trystero` switch at the top of the Co-Op session card. Trystero connects players directly peer-to-peer through a shared Room ID (with a Generate button) — no tunnel and no host needed. The last room ID is remembered, and an *Auto-connect on startup* option rejoins it when the app launches. Not yet tested over real networks; if two players can't reach each other (strict NAT), use the Cloudflare option.
+
 ## [0.3.0] – 2026-09-28
 
 ### Added

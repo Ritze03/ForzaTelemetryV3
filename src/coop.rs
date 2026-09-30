@@ -554,7 +554,6 @@ impl CoopState {
     /// shared Room ID over public Nostr relays, then talk over WebRTC data channels. Every
     /// peer is equal (no host). Non-blocking: spawns the relay + WebRTC threads and returns
     /// (it runs from `ForzaApp::new` for auto-connect). Never touches port/tunnel/lan_url.
-    #[allow(dead_code)] // called by the Co-Op tab / app auto-connect (UI side of this feature)
     pub fn start_trystero(&mut self, room: &str, name: &str, hue: f32, buffer_ms: u32) {
         self.stop();
         self.stop = Arc::new(AtomicBool::new(false));
@@ -576,7 +575,6 @@ impl CoopState {
 /// A fresh shareable Room ID such as `k7f2-9qzm-x4pd`: three groups of four lowercase
 /// Crockford-base32 characters (~60 bits, so the ID doubles as the room's encryption secret and
 /// can't be guessed; no `i l o u`, so it survives being read out loud).
-#[allow(dead_code)] // called by the Co-Op tab (UI side of this feature)
 pub fn generate_room_id() -> String {
     const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
     let mut bytes = [0u8; 12];
