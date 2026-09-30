@@ -41,12 +41,14 @@ the top of the Session card (`theme::segmented`, locked while a session is live;
 5. Optional dashboard widgets (drag them in via Edit Mode): **Co-Op Players** — a live
    speed-bar leaderboard of everyone in the session. The status bar also shows your role
    and the player count from any tab — yellow (`WARN`) while the session is connecting
-   (Trystero: no relay reached yet, or any peer link mid-handshake, so a 2nd player joining
-   flips it yellow until they're fully connected; Cloudflare: host tunnel not ready / client
-   socket not open or reconnecting), green once everyone is connected (`CoopState::is_connecting`,
+   (Trystero: only while the Co-Op page shows "Negotiating…", i.e. a peer link is
+   mid-handshake and the player count is still <=1; "Connecting to relays…", "Reconnecting…",
+   "Waiting for players…" and "N player(s)" are all green. Cloudflare: host tunnel not ready /
+   client socket not open or reconnecting), green otherwise (`CoopState::is_connecting`,
    a `connecting` flag in `Inner`). With *Status bar: show text labels* off it shrinks to the
    players icon + count, and the hover tooltip spells out role · count · status.
-   *Why:* colour carries the state so icon-only mode stays readable.
+   *Why:* colour carries the state so icon-only mode stays readable. For Trystero, yellow
+   means the co-op page is actually negotiating, not the background relay/handshake churn.
    *Limitation:* a Cloudflare **host** has no handshake phase for a newly joining client, so
    its indicator is green as soon as the tunnel is up (or the LAN-only fallback is).
 6. **Waypoints**: left-click the minimap to drop a shared waypoint everyone sees (a

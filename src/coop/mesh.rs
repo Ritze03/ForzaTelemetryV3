@@ -483,9 +483,9 @@ impl Session {
         let all_failed = st.relays.iter().all(|r| r.failed || r.retired);
         let pending = st.slots.values().filter(|s| s.phase != Phase::Live).count();
         let players = g.roster.len();
-        // Yellow in the status bar: a link is mid-handshake, or we haven't reached a relay yet
-        // (with teammates already live a dropped relay doesn't matter — the mesh keeps running).
-        g.connecting = pending > 0 || (up == 0 && players <= 1);
+        // Yellow in the status bar exactly while the Co-Op page says "Negotiating…" (a link is
+        // mid-handshake and no teammate is established yet); every other status is green.
+        g.connecting = players <= 1 && pending > 0;
         g.status = if players > 1 {
             format!("{players} player(s)")
         } else if pending > 0 {
@@ -515,7 +515,7 @@ pub fn initial_role_state(g: &mut Inner, room: &str, name: &str, hue: f32) {
     g.my_hue = hue;
     g.words = Some(room.to_string());
     g.status = "Connecting to relays…".into();
-    g.connecting = true;
+    g.connecting = false;
     g.error = None;
     g.roster = vec![PlayerInfo { id: g.my_id.clone(), name: name.to_string(), hue }];
 }
@@ -649,14 +649,21 @@ mod tests {
         add("p2", Phase::Live, 6);
         sess.refresh();
         assert_eq!(lock(&inner).error, None);
-        // Connecting predicate: relays never came up → connecting; once up and only Live
-        // links → not; any non-Live slot (a peer joining) → connecting again.
-        assert!(lock(&inner).connecting);
+        // Connecting predicate: yellow only while "Negotiating…" (non-Live slot, <=1 player).
+        // `add` only touches slots, so the roster stays at just us here.
+        lock(&sess.st).slots.clear();
+        sess.refresh();
+        assert!(!lock(&inner).connecting); // relays not up yet: "Connecting to relays…"
         sess.relay_up(0);
-        assert!(!lock(&inner).connecting);
+        assert!(!lock(&inner).connecting); // only Live links / none: green
         add("p4", Phase::Answering("o".into()), 8);
         sess.refresh();
-        assert!(lock(&inner).connecting);
+        assert!(lock(&inner).connecting); // a peer is negotiating
+        // Once a player count is established (roster > 1) it goes green despite the pending slot.
+        lock(&inner).roster.push(PlayerInfo { id: "x".into(), name: "X".into(), hue: 0.0 });
+        sess.refresh();
+        assert!(!lock(&inner).connecting);
+        lock(&inner).roster.truncate(1);
         lock(&sess.st).slots.remove("p4");
         sess.refresh();
         assert!(!lock(&inner).connecting);
