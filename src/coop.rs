@@ -22,6 +22,12 @@ use uuid::Uuid;
 
 use crate::packet::ForzaPacket;
 
+// Trystero transport: serverless P2P mesh, signalled over public Nostr relays. See
+// docs/features/coop.md (transport section) and the module docs of each file.
+mod mesh;
+mod nostr;
+mod rtc;
+
 /// Local port the host's WS server listens on (and cloudflared points at).
 pub const DEFAULT_COOP_PORT: u16 = 7071;
 const WIRE_LEN: usize = 324; // one FH6 packet
@@ -57,6 +63,9 @@ enum Control {
     /// show at once. Either direction; the host re-broadcasts with the setter's id.
     /// (Option — not NaN — so it survives JSON, which has no NaN.)
     Waypoint { id: String, pos: Option<[f32; 2]>, hue: f32 },
+    /// Mesh (Trystero) only: sent by each side when its data channel opens and again when
+    /// its identity changes. Binds the channel to that player id + name/colour.
+    Peer { id: String, name: String, hue: f32 },
 }
 
 /// Per-remote jitter buffer: timestamped packets awaiting playback.
@@ -120,6 +129,42 @@ struct Inner {
     /// cloudflared download in flight: (bytes so far, total if known). `None` when
     /// not downloading; drives the progress indicator in the Co-Op tab.
     download: Option<(u64, Option<u64>)>,
+    /// Trystero mesh mode: every peer is equal, `clients` holds one queue per open data
+    /// channel (keyed by that peer's signalling id) and all sends go through `broadcast`.
+    /// Reset in `stop()`. `role` is `Client` while active (the UI matches exhaustively on it).
+    mesh: bool,
+    /// Our own display identity (mesh: re-sent to peers on open and on change).
+    my_name: String,
+    my_hue: f32,
+    /// Mesh: signalling peer id (channel key) → the player UUID that channel announced.
+    mesh_bound: HashMap<String, String>,
+}
+
+impl Inner {
+    fn new(name: &str, hue: f32, buffer_ms: u32) -> Self {
+        let id = Uuid::new_v4();
+        Inner {
+            role: Role::Off,
+            my_id: id.to_string(),
+            my_id_bytes: *id.as_bytes(),
+            roster: Vec::new(),
+            remote: HashMap::new(),
+            clients: Vec::new(),
+            client_out: None,
+            status: String::new(),
+            error: None,
+            words: None,
+            lan_url: None,
+            buffer_ms,
+            waypoints: HashMap::new(),
+            tunnel: None,
+            download: None,
+            mesh: false,
+            my_name: name.to_string(),
+            my_hue: hue,
+            mesh_bound: HashMap::new(),
+        }
+    }
 }
 
 /// Advance every jitter buffer to `now - buffer_ms`. Time-based, so calling it from more
@@ -163,6 +208,7 @@ fn push_local(inner: &Mutex<Inner>, pkt: &ForzaPacket) {
     let msg = Message::Binary(frame);
     match inner.role {
         Role::Host => inner.broadcast(msg, None),
+        Role::Client if inner.mesh => inner.broadcast(msg, None),
         Role::Client => {
             if let Some(tx) = &inner.client_out {
                 let _ = tx.try_send(msg);
@@ -251,26 +297,8 @@ pub struct CoopState {
 
 impl CoopState {
     pub fn new(name: &str, hue: f32, buffer_ms: u32) -> Self {
-        let id = Uuid::new_v4();
-        let inner = Inner {
-            role: Role::Off,
-            my_id: id.to_string(),
-            my_id_bytes: *id.as_bytes(),
-            roster: Vec::new(),
-            remote: HashMap::new(),
-            clients: Vec::new(),
-            client_out: None,
-            status: String::new(),
-            error: None,
-            words: None,
-            lan_url: None,
-            buffer_ms,
-            waypoints: HashMap::new(),
-            tunnel: None,
-            download: None,
-            // seed identity even while Off so the UI preview is stable
-        };
-        let _ = (name, hue);
+        // Identity is seeded even while Off so the UI preview is stable.
+        let inner = Inner::new(name, hue, buffer_ms);
         Self {
             inner: Arc::new(Mutex::new(inner)),
             stop: Arc::new(AtomicBool::new(false)),
@@ -339,6 +367,7 @@ impl CoopState {
         );
         match inner.role {
             Role::Host => inner.broadcast(msg, None),
+            Role::Client if inner.mesh => inner.broadcast(msg, None),
             Role::Client => {
                 if let Some(tx) = &inner.client_out {
                     let _ = tx.try_send(msg);
@@ -352,7 +381,18 @@ impl CoopState {
     pub fn update_identity(&self, name: &str, hue: f32) {
         let mut inner = self.inner.lock().unwrap();
         let my_id = inner.my_id.clone();
+        inner.my_name = name.to_string();
+        inner.my_hue = hue;
         match inner.role {
+            Role::Client if inner.mesh => {
+                // Mesh: our roster entry is local; tell every peer directly.
+                if let Some(p) = inner.roster.iter_mut().find(|p| p.id == my_id) {
+                    p.name = name.to_string();
+                    p.hue = hue;
+                }
+                let msg = mesh::peer_msg(&inner);
+                inner.broadcast(msg, None);
+            }
             Role::Host => {
                 if let Some(p) = inner.roster.iter_mut().find(|p| p.id == my_id) {
                     p.name = name.to_string();
@@ -395,6 +435,8 @@ impl CoopState {
         }
         inner.download = None;
         inner.role = Role::Off;
+        inner.mesh = false;
+        inner.mesh_bound.clear();
         inner.clients.clear();
         inner.client_out = None;
         inner.remote.clear();
@@ -505,6 +547,48 @@ impl CoopState {
         let name = name.to_string();
         std::thread::spawn(move || client_loop(url, name, hue, inner, stop));
     }
+}
+
+impl CoopState {
+    /// Join (or create) a Trystero mesh room: serverless P2P, peers find each other by the
+    /// shared Room ID over public Nostr relays, then talk over WebRTC data channels. Every
+    /// peer is equal (no host). Non-blocking: spawns the relay + WebRTC threads and returns
+    /// (it runs from `ForzaApp::new` for auto-connect). Never touches port/tunnel/lan_url.
+    #[allow(dead_code)] // called by the Co-Op tab / app auto-connect (UI side of this feature)
+    pub fn start_trystero(&mut self, room: &str, name: &str, hue: f32, buffer_ms: u32) {
+        self.stop();
+        self.stop = Arc::new(AtomicBool::new(false));
+        let room = room.trim().to_string();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.buffer_ms = buffer_ms;
+            inner.remote.clear();
+            inner.clients.clear();
+            inner.client_out = None;
+            inner.waypoints.clear();
+            inner.mesh_bound.clear();
+            mesh::initial_role_state(&mut inner, &room, name, hue);
+        }
+        mesh::Session::start(self.inner.clone(), self.stop.clone(), &room);
+    }
+}
+
+/// A fresh shareable Room ID such as `k7f2-9qzm-x4pd`: three groups of four lowercase
+/// Crockford-base32 characters (~60 bits, so the ID doubles as the room's encryption secret and
+/// can't be guessed; no `i l o u`, so it survives being read out loud).
+#[allow(dead_code)] // called by the Co-Op tab (UI side of this feature)
+pub fn generate_room_id() -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let mut bytes = [0u8; 12];
+    nostr::fill_random(&mut bytes);
+    let mut out = String::with_capacity(14);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && i % 4 == 0 {
+            out.push('-');
+        }
+        out.push(ALPHABET[(b & 31) as usize] as char);
+    }
+    out
 }
 
 impl Drop for CoopState {
@@ -1236,11 +1320,65 @@ mod tests {
             Control::Waypoint { id: "abc".into(), pos: None, hue: 0.0 },
             Control::Hello { name: "Guest".into(), hue: 30.0 },
             Control::Update { name: "Guest2".into(), hue: 140.0 },
+            Control::Peer { id: "0b7e4c1e-6f0e-4c58-9a51-3d1f2a9b8c77".into(), name: "Zoë".into(), hue: 210.5 },
         ] {
             let s = serde_json::to_string(&c).expect("serialize");
             let back: Control = serde_json::from_str(&s).expect("deserialize");
             // Control isn't PartialEq; compare by re-serialising.
             assert_eq!(serde_json::to_string(&back).unwrap(), s);
         }
+        // The new variant is additive: it has its own tag and old variants still parse.
+        let s = serde_json::to_string(&Control::Peer { id: "i".into(), name: "n".into(), hue: 1.0 }).unwrap();
+        assert_eq!(s, r#"{"t":"Peer","id":"i","name":"n","hue":1.0}"#);
+    }
+
+    #[test]
+    fn room_id_format() {
+        for _ in 0..50 {
+            let id = generate_room_id();
+            let groups: Vec<&str> = id.split('-').collect();
+            assert_eq!(groups.len(), 3, "{id}");
+            for g in groups {
+                assert_eq!(g.len(), 4, "{id}");
+                assert!(g.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()), "{id}");
+            }
+        }
+        assert_ne!(generate_room_id(), generate_room_id());
+    }
+
+    /// Mesh-mode plumbing of the public API on a bare state (no threads, no network).
+    #[test]
+    fn mesh_mode_sends_go_to_every_peer_and_stop_resets() {
+        let mut st = CoopState::new("Me", 10.0, 0);
+        let (tx1, rx1) = mpsc::sync_channel::<Message>(16);
+        let (tx2, rx2) = mpsc::sync_channel::<Message>(16);
+        {
+            let mut i = st.inner.lock().unwrap();
+            mesh::initial_role_state(&mut i, "abcd-efgh-jklm", "Me", 10.0);
+            i.clients.push(("p1".into(), tx1));
+            i.clients.push(("p2".into(), tx2));
+        }
+        assert!(st.role() == Role::Client);
+        assert_eq!(st.words().as_deref(), Some("abcd-efgh-jklm"));
+        assert_eq!(st.lan_url(), None);
+        assert_eq!(st.download(), None);
+        assert_eq!(st.roster().len(), 1);
+
+        st.reader().push_local(&ForzaPacket::default());
+        st.set_waypoint(Some((1.0, 2.0)), 30.0);
+        st.update_identity("Renamed", 99.0);
+        for rx in [&rx1, &rx2] {
+            assert!(matches!(rx.try_recv(), Ok(Message::Binary(b)) if b.len() == ID_LEN + WIRE_LEN));
+            assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Waypoint")));
+            assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Peer") && t.contains("Renamed")));
+        }
+        assert_eq!(st.roster()[0].name, "Renamed");
+        assert_eq!(st.waypoints().len(), 1);
+
+        st.stop();
+        assert!(st.role() == Role::Off);
+        let i = st.inner.lock().unwrap();
+        assert!(!i.mesh && i.clients.is_empty() && i.roster.is_empty() && i.words.is_none());
+        assert!(i.waypoints.is_empty() && i.mesh_bound.is_empty());
     }
 }
