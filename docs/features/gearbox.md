@@ -96,7 +96,8 @@ gearbox icon plus **Active** (green), **Deactivated** (red), or pastel-amber
 **Uncalibrated** while it's enabled but hasn't engaged yet (before your first
 manual upshift). Backfire sits beside it (Active/Deactivated), separated by a
 divider. The **General** mini-settings page has a *Status bar: show text
-labels* toggle to collapse both down to just the icons.
+labels* toggle to collapse both down to just the icons — the same toggle also makes the
+left side (connection status, Co-Op indicator) icon-only; see [[coop]].
 
 Open the **Automatic Gearbox** tab — controls on the left, a live
 visualization on the right.

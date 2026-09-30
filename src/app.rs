@@ -1701,20 +1701,44 @@ impl eframe::App for ForzaApp {
                                 });
                             });
                     };
-                    // LEFT: connection status + pps
-                    // NO_SIGNAL renders wider than its glyph advance, so it needs an
-                    // extra space to match PLUG's visual gap.
-                    let (color, label) = if self.telemetry.is_connected {
-                        (crate::theme::GOOD, format!("{} {}", icons::PLUG, tr("Connected")))
+                    // LEFT: connection status + pps, then the Co-Op indicator.
+                    // With text on: icon + "Connected"/"Disconnected" word; icon-only
+                    // otherwise (PLUG green / NO_SIGNAL red, ink-centred in a fixed box,
+                    // the word moves to a hover tooltip). The pps stays — it's a number.
+                    // Co-Op icon-only: USERS + player count, state carried by colour
+                    // (WARN while connecting, GOOD once everyone is connected).
+                    // Why: colour carries the state so icon-only mode stays readable.
+                    // NO_SIGNAL renders wider than its glyph advance, so the text variant
+                    // needs an extra space to match PLUG's visual gap.
+                    let show_text = self.config.status_bar_show_text;
+                    let (color, icon, word) = if self.telemetry.is_connected {
+                        (crate::theme::GOOD, icons::PLUG, tr("Connected"))
                     } else {
-                        (crate::theme::DANGER, format!("{}  {}", icons::NO_SIGNAL, tr("Disconnected")))
+                        (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
                     };
                     // Connection status + pps are informational, not content to
                     // select/copy — disable text selection on just these two labels.
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(label).color(color))
+                    if show_text {
+                        let sep = if self.telemetry.is_connected { " " } else { "  " };
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("{icon}{sep}{word}")).color(color),
+                            )
                             .selectable(false),
-                    );
+                        );
+                    } else {
+                        let font = egui::FontId::proportional(14.0);
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::hover());
+                        let pos = self
+                            .icon_center_cache
+                            .centered_pos(ui, icon, font.clone(), rect.center());
+                        ui.painter()
+                            .text(pos, egui::Align2::LEFT_TOP, icon, font, color);
+                        if resp.hovered() {
+                            show_center_tooltip(ui, rect, word.to_string());
+                        }
+                    }
                     if self.telemetry.is_connected {
                         // Right-align in a 3-wide field so the label doesn't shift
                         // as the packet rate gains or loses a digit.
@@ -1731,15 +1755,37 @@ impl eframe::App for ForzaApp {
                     let coop_role = self.coop.role();
                     if coop_role != crate::coop::Role::Off {
                         ui.separator();
-                        let (c, verb) = match coop_role {
-                            crate::coop::Role::Host => (crate::theme::ACCENT, tr("Hosting")),
-                            _ => (crate::theme::GOOD, tr("Joined")),
+                        let connecting = self.coop.is_connecting();
+                        let verb = match coop_role {
+                            crate::coop::Role::Host => tr("Hosting"),
+                            _ => tr("Joined"),
                         };
                         let n = self.coop.roster().len();
-                        ui.colored_label(
-                            c,
-                            format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
-                        );
+                        let state = if connecting { tr("Connecting…") } else { tr("Connected") };
+                        let full = format!("{} · {} {} · {}", verb, n, tr("players"), state);
+                        if show_text {
+                            // Hosting keeps its accent colour once up; WARN while connecting.
+                            let c = if connecting {
+                                crate::theme::WARN
+                            } else if coop_role == crate::coop::Role::Host {
+                                crate::theme::ACCENT
+                            } else {
+                                crate::theme::GOOD
+                            };
+                            let resp = ui.colored_label(
+                                c,
+                                format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
+                            );
+                            if resp.hovered() {
+                                show_center_tooltip(ui, resp.rect, full);
+                            }
+                        } else {
+                            let c = if connecting { crate::theme::WARN } else { crate::theme::GOOD };
+                            let resp = ui.colored_label(c, format!("{} {}", icons::USERS, n));
+                            if resp.hovered() {
+                                show_center_tooltip(ui, resp.rect, full);
+                            }
+                        }
                     }
 
                     // CENTER: Backfire + Automatic Gearbox indicators, centered on the
