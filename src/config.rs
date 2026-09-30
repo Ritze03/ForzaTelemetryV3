@@ -17,6 +17,15 @@ pub enum Theme {
     Dark,
 }
 
+/// Which transport the Co-Op tab uses: the Cloudflare quick-tunnel relay (host/join
+/// with a word code) or Trystero (serverless WebRTC rooms keyed by a room ID).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum CoopTransport {
+    #[default]
+    Cloudflare,
+    Trystero,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub enum MaxRpmSource {
     GameProvided,
@@ -739,6 +748,9 @@ pub struct AppConfig {
     pub coop_buffer_ms: u32,  // jitter buffer for remote players (pacing)
     pub coop_port: u16,       // local host port cloudflared points at
     pub coop_last_code: String, // last join code, prefilled next launch
+    pub coop_transport: CoopTransport, // Cloudflare (host/join code) or Trystero (room ID)
+    pub coop_room: String,      // last Trystero room ID
+    pub coop_autoconnect: bool, // rejoin `coop_room` at startup (Trystero only)
     // Co-Op map: tracer fade + on-map player list
     pub coop_trail_fade_secs: f32, // trail fades out over this many seconds
     pub coop_trail_fade_m: f32,    // …and over this distance behind the player
@@ -863,6 +875,9 @@ impl Default for AppConfig {
             coop_buffer_ms: 0,
             coop_port: crate::coop::DEFAULT_COOP_PORT,
             coop_last_code: String::new(),
+            coop_transport: CoopTransport::Cloudflare,
+            coop_room: String::new(),
+            coop_autoconnect: false,
             coop_trail_fade_secs: 10.0,
             coop_trail_fade_m: 500.0,
             coop_map_playerlist: false,
@@ -1013,7 +1028,8 @@ const DISPLAY_KEYS: &[&str] = &[
     "use_mph", "use_fahrenheit", "use_bar", "theme", "top_bar_style",
     "status_bar_show_text", "language", "surface_rumble_max",
 ];
-const COOP_KEYS: &[&str] = &["coop_name", "coop_hue", "coop_buffer_ms", "coop_port", "coop_last_code"];
+const COOP_KEYS: &[&str] = &["coop_name", "coop_hue", "coop_buffer_ms", "coop_port", "coop_last_code",
+    "coop_transport", "coop_room", "coop_autoconnect"];
 const ACCEL_KEYS: &[&str] = &[
     "accel_start_kmh", "accel_end_kmh", "decel_start_kmh", "decel_end_kmh", "decel_dynamic_mode",
 ];
@@ -1419,6 +1435,10 @@ mod tests {
         let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("merge parse");
         assert_eq!(cfg.listen_port, 4321);       // kept from the old config
         assert_eq!(cfg.coop_port, DEFAULT_COOP_PORT_TEST); // filled from default
+        // Trystero fields added later fill from defaults too.
+        assert_eq!(cfg.coop_transport, CoopTransport::Cloudflare);
+        assert!(cfg.coop_room.is_empty());
+        assert!(!cfg.coop_autoconnect);
     }
 
     #[test]

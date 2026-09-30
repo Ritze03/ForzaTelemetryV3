@@ -123,6 +123,55 @@ pub fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
 }
 
+// ---- Segmented control ---------------------------------------------------
+
+/// A pill-shaped segmented control: a fully-rounded dark container holding equal-width
+/// text segments, the selected one a tinted, bordered pill (`SEL` fill, `SELBD` stroke,
+/// `TEXT`), the rest dim text on the container that wash `HOV` on hover. Fills the
+/// available width. Returns true when the selection changed this frame.
+///
+/// Why SEL/SELBD: they are the theme's accent-derived selection tints (the same ones
+/// the page pills and text selection use), so the control follows the accent instead of
+/// hard-coding a green/blue.
+pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str)]) -> bool {
+    const H: f32 = 32.0; // outer height
+    const PAD: f32 = 3.0; // container inner margin
+    let n = options.len().max(1) as f32;
+    let (outer, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), H), egui::Sense::hover());
+    let pill = |r: egui::Rect| CornerRadius::same((r.height() * 0.5) as u8);
+    ui.painter().rect(outer, pill(outer), FIELD, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+
+    let inner = outer.shrink(PAD);
+    let seg_w = inner.width() / n;
+    let mut changed = false;
+    for (i, (value, label)) in options.iter().enumerate() {
+        let seg = egui::Rect::from_min_size(
+            egui::pos2(inner.left() + seg_w * i as f32, inner.top()),
+            egui::vec2(seg_w, inner.height()),
+        );
+        let resp = ui.interact(seg, ui.id().with(("segmented", i)), egui::Sense::click());
+        let selected = *current == *value;
+        let text_col = if selected {
+            ui.painter().rect(seg, pill(seg), SEL, Stroke::new(1.0, SELBD), egui::StrokeKind::Inside);
+            TEXT
+        } else {
+            if resp.hovered() && ui.is_enabled() {
+                ui.painter().rect_filled(seg, pill(seg), HOV);
+            }
+            TEXT_DIM
+        };
+        if ui.is_enabled() {
+            resp.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, *label, FontId::proportional(14.0), text_col);
+        if resp.clicked() && !selected {
+            *current = *value;
+            changed = true;
+        }
+    }
+    changed
+}
+
 // ---- Checkbox & radio ----------------------------------------------------
 
 /// Outline of an unchecked box/circle — light enough to read on the panel.
