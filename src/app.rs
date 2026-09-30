@@ -1754,7 +1754,9 @@ impl eframe::App for ForzaApp {
                     // Co-Op indicator (visible from any tab)
                     let coop_role = self.coop.role();
                     if coop_role != crate::coop::Role::Off {
-                        ui.separator();
+                        if self.config.status_bar_show_text {
+                            ui.separator();
+                        }
                         let connecting = self.coop.is_connecting();
                         let verb = match coop_role {
                             crate::coop::Role::Host => tr("Hosting"),
