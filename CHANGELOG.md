@@ -8,7 +8,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ### Added
 - **Co-Op: Trystero connection**: a new `Trystero | Cloudflare` switch at the top of the Co-Op session card. Trystero connects players directly peer-to-peer through a shared Room ID (with a Generate button) — no tunnel and no host needed. The last room ID is remembered, and an *Auto-connect on startup* option rejoins it when the app launches. Not yet tested over real networks; if two players can't reach each other (strict NAT), use the Cloudflare option. Credited in Settings → Repository / Credits.
-- **Icon-only status bar, left side too**: with *Status bar: show text labels* off, the connection status is now just the plug / no-signal icon (hover for the word) and the Co-Op indicator is just the players icon and the player count. The Co-Op indicator turns yellow while the session is connecting — or while another player is still joining — and green once everyone is connected; hover it for the full role, count and status. The text version gets the same yellow while connecting.
+- **Icon-only status bar, left side too**: with *Status bar: show text labels* off, the connection status is now just the plug / no-signal icon (hover for the word) and the Co-Op indicator is just the players icon and the player count. The Co-Op indicator turns yellow only while the Co-Op page shows "Negotiating…" (Trystero) or the session is connecting (Cloudflare), and green otherwise; hover it for the full role, count and status. The text version gets the same yellow while connecting.
 
 ## [0.3.0] – 2026-09-28
 
