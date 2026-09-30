@@ -1,6 +1,7 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::ForzaApp;
+use crate::config::CoopTransport;
 use crate::coop::Role;
 use crate::i18n::tr;
 
@@ -87,6 +88,27 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     use crate::icons;
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     crate::theme::card(ui, tr("Session"), |ui| {
+        // Transport selector in a small inner frame; locked while a session is live.
+        egui::Frame::new()
+            .fill(crate::theme::WELL)
+            .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+            .corner_radius(8.0)
+            .inner_margin(egui::Margin::same(6))
+            .show(ui, |ui| {
+                ui.add_enabled_ui(role == Role::Off, |ui| {
+                    let mut t = app.config.coop_transport;
+                    let opts = [
+                        (CoopTransport::Cloudflare, tr("Cloudflare")),
+                        (CoopTransport::Trystero, tr("Trystero")),
+                    ];
+                    if crate::theme::segmented(ui, &mut t, &opts) {
+                        app.config.coop_transport = t;
+                        app.config.save();
+                    }
+                });
+            });
+        ui.add_space(4.0);
+
         // Connection status badge (moved here from the top of the tab).
         let (col, txt) = match role {
             Role::Off => (crate::theme::FAINT, tr("Offline")),
@@ -105,6 +127,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
         ui.add_space(4.0);
 
         match role {
+            Role::Off if app.config.coop_transport == CoopTransport::Trystero => trystero_join(ui, app),
             Role::Off => {
                 if ui
                     .add_sized(
@@ -205,10 +228,15 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
             }
             Role::Client => {
                 if let Some(words) = app.coop.words() {
-                    ui.horizontal(|ui| {
-                        ui.label(tr("Connected to"));
-                        ui.label(RichText::new(words).monospace().strong());
-                    });
+                    if app.config.coop_transport == CoopTransport::Trystero {
+                        ui.label(tr("Room"));
+                        share_code(ui, app, &words);
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(tr("Connected to"));
+                            ui.label(RichText::new(words).monospace().strong());
+                        });
+                    }
                 }
                 ui.add_space(8.0);
                 stop_button(ui, app, tr("Leave Session"));
@@ -217,6 +245,56 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     });
 
     roster_panel(ui, app);
+}
+
+/// Trystero "Off" state: room ID + Generate, Join Room, auto-connect. Mirrors the
+/// Cloudflare join flow (name/hue/buffer come from the same config fields).
+fn trystero_join(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::icons;
+    ui.label(tr("Room ID"));
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(crate::theme::secondary_button(tr("Generate"))).clicked() {
+                app.config.coop_room = crate::coop::generate_room_id();
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut app.config.coop_room)
+                    .hint_text(crate::theme::placeholder("k7f2-9qzm-x4pd"))
+                    .desired_width(ui.available_width()),
+            );
+        });
+    });
+    ui.add_space(4.0);
+    let room = app.config.coop_room.trim().to_string();
+    if ui
+        .add_enabled_ui(!room.is_empty(), |ui| {
+            ui.add_sized(
+                [ui.available_width(), 30.0],
+                crate::theme::primary_button(format!("{}  {}", icons::LINK, tr("Join Room"))),
+            )
+        })
+        .inner
+        .clicked()
+    {
+        let (n, h, b) = (
+            app.config.coop_name.clone(),
+            app.config.coop_hue,
+            app.config.coop_buffer_ms,
+        );
+        app.config.coop_room = room.clone();
+        app.config.save();
+        app.coop.start_trystero(&room, &n, h, b);
+    }
+    ui.add_space(4.0);
+    if crate::theme::checkbox_row(ui, &mut app.config.coop_autoconnect, tr("Auto-connect on startup")).changed() {
+        app.config.save();
+    }
+    ui.label(
+        RichText::new(tr("Anyone with this ID can join. Treat it like a password."))
+            .size(11.0)
+            .color(Color32::GRAY),
+    );
 }
 
 fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {

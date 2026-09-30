@@ -730,11 +730,24 @@ impl ForzaApp {
 
         // The listener thread owns Backfire, the gearbox, the per-car calibrations and the
         // global hotkeys, so they all keep running when the window stops being drawn.
-        let coop = crate::coop::CoopState::new(
+        let mut coop = crate::coop::CoopState::new(
             &config.coop_name,
             config.coop_hue,
             config.coop_buffer_ms,
         );
+        // Rejoin the last Trystero room (opt-in; Cloudflare codes are per-session, so
+        // there is nothing to rejoin there).
+        if config.coop_autoconnect
+            && config.coop_transport == crate::config::CoopTransport::Trystero
+            && !config.coop_room.trim().is_empty()
+        {
+            coop.start_trystero(
+                config.coop_room.trim(),
+                &config.coop_name,
+                config.coop_hue,
+                config.coop_buffer_ms,
+            );
+        }
         let listener = crate::listeners::worker::spawn(
             packet_rx,
             hotkey_rx,

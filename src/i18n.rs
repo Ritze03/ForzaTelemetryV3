@@ -681,6 +681,15 @@ fn de(s: &str) -> Option<&'static str> {
         "Same network? Lower latency with" => "Gleiches Netzwerk? Geringere Latenz mit",
         "players" => "Spieler",
         "Host port" => "Host-Port",
+        "Cloudflare" => "Cloudflare",
+        "Trystero" => "Trystero",
+        "Room ID" => "Raum-ID",
+        "Generate" => "Generieren",
+        "Join Room" => "Raum beitreten",
+        "Room" => "Raum",
+        "Auto-connect on startup" => "Beim Start automatisch verbinden",
+        "Anyone with this ID can join. Treat it like a password." =>
+            "Jeder mit dieser ID kann beitreten. Behandle sie wie ein Passwort.",
         "Local port the tunnel points at. Change only if it clashes with another app." =>
             "Lokaler Port, auf den der Tunnel zeigt. Nur ändern, wenn er mit einer anderen App kollidiert.",
 

@@ -221,6 +221,29 @@ For a plain label + control row, mirror `slider_row`'s split: `ui.columns(2, …
 `theme::row_label` in the left half and the control filling the right half via
 `.width(ui.available_width())`.
 
+### Segmented control — `theme::segmented`
+
+For choosing exactly one of a few short, mutually exclusive options (e.g. the Co-Op
+Session card's `Cloudflare | Trystero` transport). Not for long lists (use a combobox)
+or on/off flags (use a checkbox).
+
+```rust
+let mut t = cfg.transport;
+if theme::segmented(ui, &mut t, &[(A, tr("One")), (B, tr("Two"))]) { /* changed */ }
+```
+
+Look: a fully-rounded pill container (`FIELD` fill, `BORDER` stroke, 3px inner margin)
+of equal-width segments. The selected segment is a smaller pill with `SEL` fill, a 1px
+`SELBD` stroke and `TEXT`; unselected segments are `TEXT_DIM` on the container with a
+`HOV` wash and a hand cursor on hover. It fills the available width and returns `true`
+on the frame the selection changes. Wrap it in `ui.add_enabled_ui(..)` to lock it
+(segments then show no hover/cursor). The Co-Op tab additionally sits it in a small
+inner `Frame` (`WELL` fill, `BORDER` stroke, 8px radius) at the top of the card.
+
+Why `SEL`/`SELBD`: they are the theme's accent-derived selection tints (also used by
+page pills and text selection), so the control follows the accent rather than
+hard-coding a colour.
+
 ## Right-bound value preview
 
 The right edge of a row is the **value preview**: a spinner for numbers, or a small
