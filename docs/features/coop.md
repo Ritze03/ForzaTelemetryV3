@@ -1,7 +1,7 @@
 # Co-Op — shared telemetry (Cloudflare tunnel or Trystero P2P)
 
 Players share live telemetry and see each other on the Dashboard minimap. No login,
-no port-forwarding. Two transports, chosen with the `[Cloudflare | Trystero]` pill control at
+no port-forwarding. Two transports, chosen with the `[Trystero | Cloudflare]` pill control at
 the top of the Session card (`theme::segmented`, locked while a session is live; config
 `coop_transport`, default Cloudflare):
 

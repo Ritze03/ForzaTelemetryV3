@@ -98,8 +98,8 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                 ui.add_enabled_ui(role == Role::Off, |ui| {
                     let mut t = app.config.coop_transport;
                     let opts = [
-                        (CoopTransport::Cloudflare, tr("Cloudflare")),
                         (CoopTransport::Trystero, tr("Trystero")),
+                        (CoopTransport::Cloudflare, tr("Cloudflare")),
                     ];
                     if crate::theme::segmented(ui, &mut t, &opts) {
                         app.config.coop_transport = t;
