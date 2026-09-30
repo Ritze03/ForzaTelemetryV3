@@ -1001,5 +1001,9 @@ fn repo_card(ui: &mut Ui) {
         tr("Nerd Fonts — Ryan L McIntyre (MIT)"),
         "https://github.com/ryanoasis/nerd-fonts",
     );
+    ui.hyperlink_to(
+        tr("Trystero — Dan Motzenbecker (MIT), P2P co-op design"),
+        "https://github.com/dmotz/trystero",
+    );
     hint(ui, tr("Font licences: assets/fonts/"));
 }
