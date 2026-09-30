@@ -16,10 +16,13 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
 - **Works:** Wayland compositors with `wlr-layer-shell`. Tested on Hyprland; should work on
   others with it, such as Sway and KDE Plasma (untested). It is
   a surface on the `overlay` layer, which sits above fullscreen games.
-- **Experimental fallback: X11 / XWayland backend** (`overlay/x11.rs`) for GNOME (Mutter has
+- **Fallback: X11 / XWayland backend** (`overlay/x11.rs`) for GNOME (Mutter has
   no layer-shell) and native X11 sessions. **Picked automatically, no setup:** a plain
   `cargo run` tries layer-shell first and falls back to X11 (the layer-shell reason is logged:
-  `overlay: layer-shell unavailable (<reason>); trying X11`). Pending a real GNOME test.
+  `overlay: layer-shell unavailable (<reason>); trying X11`). **Tested on GNOME 50.4** (Nobara 44 /
+  Fedora 44 base, GNOME Wayland + XWayland, AMD RX 9070 XT, Mesa 26.2.3, two 1080p monitors
+  DP-2/DP-3) — works. Still experimental in the remaining gaps: fractional scaling is untested,
+  older Mutter may name outputs `XWAYLAND0…` (see below), and native X11 sessions are untested.
 - **Doesn't:** Windows/macOS. When no backend works the overlay reports a *disabled* reason
   instead of failing, shown in the Overlay tab's status line. On non-Linux builds the tab says
   the overlay is Linux only (Wayland or X11).
