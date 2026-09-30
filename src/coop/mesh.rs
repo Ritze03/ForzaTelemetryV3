@@ -65,8 +65,13 @@ pub fn on_open(inner: &Mutex<Inner>, stop: &AtomicBool, key: &str, tx: SyncSende
 /// A frame arrived on `key`'s channel.
 ///
 /// Anti-spoof: the player id is what *that channel* announced in its `Peer` frame (a channel
-/// can only ever speak for one id, and no two channels may claim the same one); the 16-byte id
-/// prefix inside binary telemetry frames is ignored, exactly like the host does for WS clients.
+/// can only ever speak for one id, and at most one channel holds an id at a time); the 16-byte
+/// id prefix inside binary telemetry frames is ignored, exactly like the host does for WS clients.
+///
+/// Why "latest channel wins" when a second channel claims an already-bound id: a player who
+/// left and rejoined may show up on a new channel before we noticed the old link die, and `Peer`
+/// is sent only once per channel, so rejecting it would leave them invisible to us forever.
+/// The older channel is evicted (its queue is dropped, which ends its pump and closes the link).
 pub fn on_message(inner: &Mutex<Inner>, stop: &AtomicBool, key: &str, msg: Message) {
     let mut g = lock(inner);
     if stop.load(Ordering::Relaxed) || !g.mesh {
@@ -83,13 +88,21 @@ pub fn on_message(inner: &Mutex<Inner>, stop: &AtomicBool, key: &str, msg: Messa
         }
         Message::Text(t) => match serde_json::from_str::<Control>(&t) {
             Ok(Control::Peer { id, name, hue }) => {
-                if Uuid::parse_str(&id).is_err()
-                    || id == g.my_id
-                    || g.mesh_bound.iter().any(|(k, v)| *v == id && k != key)
-                {
+                if Uuid::parse_str(&id).is_err() || id == g.my_id {
                     return;
                 }
                 let name: String = name.chars().take(32).collect();
+                let stale: Vec<String> = g
+                    .mesh_bound
+                    .iter()
+                    .filter(|(k, v)| **v == id && *k != key)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in stale {
+                    g.mesh_bound.remove(&k);
+                    g.clients.retain(|(c, _)| *c != k);
+                    g.waypoints.remove(&id); // the old session's ping is stale
+                }
                 if let Some(old) = g.mesh_bound.insert(key.to_string(), id.clone()) {
                     if old != id {
                         drop_player(&mut g, &old);
@@ -259,7 +272,11 @@ impl Session {
     // -- frames --
 
     pub fn req_frame(&self, sub_id: &str) -> String {
-        nostr::req_frame(sub_id, &[&self.root_topic, &self.self_topic], nostr::now_secs())
+        nostr::req_frame(
+            sub_id,
+            &[&self.root_topic, &self.self_topic],
+            nostr::now_secs().saturating_sub(nostr::SINCE_SLACK_SECS),
+        )
     }
 
     /// A fresh announce (new nonce, so relays don't drop it as a duplicate id).
@@ -475,7 +492,10 @@ impl Session {
         } else {
             "Waiting for players…".into()
         };
-        g.error = if st.nat_failed {
+        // A failed handshake with one player says nothing once another link works (they may
+        // simply have left mid-handshake): only warn about NAT while nobody is connected.
+        let live = st.slots.values().any(|s| s.phase == Phase::Live);
+        g.error = if st.nat_failed && !live {
             Some(NAT_ERROR.into())
         } else if up == 0 && all_failed && players <= 1 {
             Some(NO_RELAY_ERROR.into())
@@ -553,12 +573,12 @@ mod tests {
             assert!(!g.remote.contains_key(&victim.to_string()));
             assert_eq!(g.remote[&a].q.len(), 1);
         }
-        // A second channel can't claim Alice's id, nor ours.
-        on_message(&inner, &stop, "chanB", peer_frame(&a, "Mallory"));
+        // Nobody can claim our own id or a malformed one.
         let my_id = lock(&inner).my_id.clone();
         on_message(&inner, &stop, "chanB", peer_frame(&my_id, "Mallory"));
         on_message(&inner, &stop, "chanB", peer_frame("not-a-uuid", "Mallory"));
         assert_eq!(lock(&inner).roster.len(), 2);
+        assert!(!lock(&inner).mesh_bound.contains_key("chanB"));
 
         // Waypoints are keyed by the channel's bound id, whatever the message says.
         let wp = |pos| {
@@ -574,12 +594,63 @@ mod tests {
         on_message(&inner, &stop, "chanA", peer_frame(&a, "Alice2"));
         assert_eq!(lock(&inner).roster.iter().find(|p| p.id == a).unwrap().name, "Alice2");
 
-        // Channel closes: everything of Alice's goes, and her queue is deregistered.
+        // Latest channel wins: Alice rejoined on chanB before chanA's link was noticed dead.
+        // chanA is evicted (binding + outgoing queue); chanB takes over her roster entry.
+        let (txb, _rxb) = mpsc::sync_channel(8);
+        assert!(on_open(&inner, &stop, "chanB", txb));
+        on_message(&inner, &stop, "chanB", peer_frame(&a, "Alice3"));
+        {
+            let g = lock(&inner);
+            assert_eq!(g.roster.len(), 2, "still self + one Alice");
+            assert_eq!(g.roster.iter().find(|p| p.id == a).unwrap().name, "Alice3");
+            assert_eq!(g.mesh_bound.get("chanB"), Some(&a));
+            assert!(!g.mesh_bound.contains_key("chanA"));
+            assert_eq!(g.clients.len(), 1, "chanA's queue dropped");
+            assert!(!g.waypoints.contains_key(&a), "stale ping cleared");
+        }
+        // Late frames / cleanup from the evicted channel change nothing.
+        on_message(&inner, &stop, "chanA", telemetry_frame(*victim.as_bytes(), 5.0));
         on_gone(&inner, "chanA");
+        assert_eq!(lock(&inner).roster.len(), 2);
+        // The new channel now speaks for her.
+        on_message(&inner, &stop, "chanB", telemetry_frame(*victim.as_bytes(), 44.0));
+        assert_eq!(lock(&inner).remote[&a].q.len(), 2);
+
+        // Channel closes: everything of Alice's goes, and her queue is deregistered.
+        on_gone(&inner, "chanB");
         let g = lock(&inner);
         assert_eq!(g.roster.len(), 1);
         assert!(g.remote.is_empty() && g.waypoints.is_empty() && g.clients.is_empty());
         assert!(g.mesh_bound.is_empty());
+    }
+
+    #[test]
+    fn nat_error_only_when_nobody_is_connected() {
+        const NO_ICE: &[&str] = &[];
+        let inner = mesh_inner("Me");
+        let (sess, _rx) = Session::build(inner.clone(), Arc::new(AtomicBool::new(false)), "r", NO_ICE, "127.0.0.1:0");
+        let slot = |phase, gen| Slot { phase, gen };
+        let add = |k: &str, phase, gen| {
+            lock(&sess.st).slots.insert(k.into(), slot(phase, gen));
+        };
+        // A stale link's failure (already replaced by a newer generation) is ignored.
+        add("p1", Phase::Answering("o".into()), 5);
+        sess.link_ended("p1", 4, true);
+        assert!(!lock(&sess.st).nat_failed);
+        assert_eq!(lock(&inner).error, None);
+        // A real failure with nobody connected shows the NAT hint...
+        sess.link_ended("p1", 5, true);
+        assert_eq!(lock(&inner).error.as_deref(), Some(NAT_ERROR));
+        // ...but not while another player's link is live.
+        add("p2", Phase::Live, 6);
+        sess.refresh();
+        assert_eq!(lock(&inner).error, None);
+        // Opening a link clears the flag for good.
+        lock(&sess.st).slots.clear();
+        add("p3", Phase::Offering("o".into()), 7);
+        let (tx, _r) = mpsc::sync_channel(4);
+        assert!(sess.link_open("p3", 7, tx));
+        assert!(!lock(&sess.st).nat_failed);
     }
 
     #[test]

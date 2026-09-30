@@ -253,21 +253,24 @@ fn trystero_join(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::icons;
     ui.label(tr("Room ID"));
     ui.add_space(2.0);
+    let mut enter = false;
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(crate::theme::secondary_button(tr("Generate"))).clicked() {
                 app.config.coop_room = crate::coop::generate_room_id();
             }
-            ui.add(
+            let resp = ui.add(
                 egui::TextEdit::singleline(&mut app.config.coop_room)
                     .hint_text(crate::theme::placeholder("k7f2-9qzm-x4pd"))
                     .desired_width(ui.available_width()),
             );
+            enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });
     });
     ui.add_space(4.0);
-    let room = app.config.coop_room.trim().to_string();
-    if ui
+    // Same canonical form `start_trystero` uses, so "K7F2-…" and "k7f2-…" are one room.
+    let room = crate::coop::normalize_room(&app.config.coop_room);
+    let clicked = ui
         .add_enabled_ui(!room.is_empty(), |ui| {
             ui.add_sized(
                 [ui.available_width(), 30.0],
@@ -275,8 +278,8 @@ fn trystero_join(ui: &mut Ui, app: &mut ForzaApp) {
             )
         })
         .inner
-        .clicked()
-    {
+        .clicked();
+    if (clicked || enter) && !room.is_empty() {
         let (n, h, b) = (
             app.config.coop_name.clone(),
             app.config.coop_hue,

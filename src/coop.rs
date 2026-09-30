@@ -555,11 +555,27 @@ impl CoopState {
     /// peer is equal (no host). Non-blocking: spawns the relay + WebRTC threads and returns
     /// (it runs from `ForzaApp::new` for auto-connect). Never touches port/tunnel/lan_url.
     pub fn start_trystero(&mut self, room: &str, name: &str, hue: f32, buffer_ms: u32) {
+        if let Some(room) = self.begin_trystero(room, name, hue, buffer_ms) {
+            mesh::Session::start(self.inner.clone(), self.stop.clone(), &room);
+        }
+    }
+
+    /// `start_trystero` minus the threads (so tests can cover the state reset without touching
+    /// the network). Returns the normalised room, or `None` if it's empty.
+    fn begin_trystero(&mut self, room: &str, name: &str, hue: f32, buffer_ms: u32) -> Option<String> {
+        let room = normalize_room(room);
+        if room.is_empty() {
+            return None;
+        }
         self.stop();
         self.stop = Arc::new(AtomicBool::new(false));
-        let room = room.trim().to_string();
         {
             let mut inner = self.inner.lock().unwrap();
+            // A fresh player id per join: a rejoin (new signalling id) must not look like a
+            // second channel claiming our old id to peers that haven't noticed the old link die.
+            let id = Uuid::new_v4();
+            inner.my_id = id.to_string();
+            inner.my_id_bytes = *id.as_bytes();
             inner.buffer_ms = buffer_ms;
             inner.remote.clear();
             inner.clients.clear();
@@ -568,8 +584,15 @@ impl CoopState {
             inner.mesh_bound.clear();
             mesh::initial_role_state(&mut inner, &room, name, hue);
         }
-        mesh::Session::start(self.inner.clone(), self.stop.clone(), &room);
+        Some(room)
     }
+}
+
+/// Canonical form of a typed Room ID: lowercase, no whitespace anywhere, so `K7F2-9QZM-X4PD`,
+/// ` k7f2-9qzm-x4pd ` and a copy-paste with a stray line break all name the same room (the ID
+/// is hashed into the room's topics and encryption key, so any difference is a different room).
+pub fn normalize_room(room: &str) -> String {
+    room.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
 }
 
 /// A fresh shareable Room ID such as `k7f2-9qzm-x4pd`: three groups of four lowercase
@@ -1328,6 +1351,23 @@ mod tests {
         // The new variant is additive: it has its own tag and old variants still parse.
         let s = serde_json::to_string(&Control::Peer { id: "i".into(), name: "n".into(), hue: 1.0 }).unwrap();
         assert_eq!(s, r#"{"t":"Peer","id":"i","name":"n","hue":1.0}"#);
+    }
+
+    #[test]
+    fn room_normalisation() {
+        assert_eq!(normalize_room("  K7F2-9QZM-x4pd\n"), "k7f2-9qzm-x4pd");
+        assert_eq!(normalize_room("k7f2 9qzm\tx4pd"), "k7f29qzmx4pd");
+        assert_eq!(normalize_room(" \t "), "");
+        let id = generate_room_id();
+        assert_eq!(normalize_room(&id), id, "generated IDs are already canonical");
+        let mut st = CoopState::new("Me", 10.0, 0);
+        let before = st.my_id();
+        assert_eq!(st.begin_trystero(" AbC-Def ", "Me", 10.0, 0).as_deref(), Some("abc-def"));
+        assert_eq!(st.words().as_deref(), Some("abc-def"));
+        assert_ne!(st.my_id(), before, "a new join gets a fresh player id");
+        assert_eq!(st.roster()[0].id, st.my_id());
+        assert_eq!(st.begin_trystero("  ", "Me", 10.0, 0), None);
+        st.stop();
     }
 
     #[test]

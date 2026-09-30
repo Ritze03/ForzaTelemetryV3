@@ -6,7 +6,8 @@
 //! a shared Room ID with no server of ours. Only the (encrypted) SDP handshake travels over
 //! them; telemetry then flows peer-to-peer over WebRTC data channels.
 
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,10 +20,11 @@ use k256::schnorr::SigningKey;
 use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use tungstenite::Message;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{HandshakeError, Message, WebSocket};
 
 use super::mesh::Session;
-use super::{connect_ws, set_client_timeout};
+use super::set_client_timeout;
 
 /// Namespaces the topics so we never collide with other Trystero apps on the same relays.
 pub const APP_ID: &str = "ForzaTelemetryV3";
@@ -266,6 +268,53 @@ fn sleep_or_stop(sess: &Session, d: Duration) -> bool {
     sess.stopped()
 }
 
+/// Per-address TCP connect timeout for a relay.
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// TLS + WebSocket handshake: how long a silent relay may stall each read.
+const RELAY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
+/// A write that can't make progress this long (dead peer, full send buffer) fails, so the relay
+/// loop reconnects — and gets to notice a stop request — instead of hanging in `write`.
+const RELAY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Slack on the subscription's `since`: ephemeral events aren't stored, so this only forgives
+/// clock skew between us and a peer (their announce may be stamped a few seconds "early").
+pub const SINCE_SLACK_SECS: u64 = 30;
+
+/// Blocking connect to a relay with every step bounded (unlike the Cloudflare `connect_ws`,
+/// which has no timeouts: a blackholed relay would pin its thread for minutes). Why not reuse
+/// `connect_ws`: its DNS fallback is Cloudflare-specific and its connects are unbounded.
+fn connect_relay(url: &str) -> Option<WebSocket<MaybeTlsStream<TcpStream>>> {
+    let uri: tungstenite::http::Uri = url.parse().ok()?;
+    let host = uri.host()?;
+    let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("ws") { 80 } else { 443 });
+    for addr in (host, port).to_socket_addrs().ok()? {
+        let Ok(tcp) = TcpStream::connect_timeout(&addr, RELAY_CONNECT_TIMEOUT) else { continue };
+        let _ = tcp.set_nodelay(true);
+        let _ = tcp.set_read_timeout(Some(RELAY_HANDSHAKE_TIMEOUT));
+        let _ = tcp.set_write_timeout(Some(RELAY_WRITE_TIMEOUT));
+        match tungstenite::client_tls(url, tcp) {
+            Ok((ws, _)) => return Some(ws),
+            Err(HandshakeError::Failure(_) | HandshakeError::Interrupted(_)) => continue,
+        }
+    }
+    None
+}
+
+/// `connect_relay` on a helper thread, so a stop request is honoured while it (or the DNS
+/// lookup, which can't be bounded) is still pending; the abandoned thread ends on its own.
+fn connect_unless_stopped(sess: &Session, url: &'static str) -> Option<WebSocket<MaybeTlsStream<TcpStream>>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(connect_relay(url));
+    });
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ws) => return ws,
+            Err(RecvTimeoutError::Timeout) if !sess.stopped() => {}
+            Err(_) => return None,
+        }
+    }
+}
+
 /// One relay's lifetime: connect, subscribe, announce, pump frames both ways; on any drop
 /// reconnect with backoff (and re-REQ + re-announce). Returns when the session stops or the
 /// relay is retired.
@@ -276,9 +325,9 @@ pub fn relay_loop(sess: Arc<Session>, idx: usize, url: &'static str, out_rx: Rec
         if sess.stopped() {
             return;
         }
-        let mut ws = match connect_ws(url) {
-            Ok(w) => w,
-            Err(_) => {
+        let mut ws = match connect_unless_stopped(&sess, url) {
+            Some(w) => w,
+            None => {
                 sess.relay_down(idx, true, false);
                 if sleep_or_stop(&sess, backoff) {
                     return;
@@ -310,7 +359,7 @@ pub fn relay_loop(sess: Arc<Session>, idx: usize, url: &'static str, out_rx: Rec
                 let _ = ws.close(None);
                 return;
             }
-            if hold_until.map_or(true, |t| Instant::now() >= t) {
+            if hold_until.is_none_or(|t| Instant::now() >= t) {
                 hold_until = None;
                 let mut wrote = false;
                 while let Ok(f) = out_rx.try_recv() {
