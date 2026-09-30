@@ -224,7 +224,7 @@ For a plain label + control row, mirror `slider_row`'s split: `ui.columns(2, …
 ### Segmented control — `theme::segmented`
 
 For choosing exactly one of a few short, mutually exclusive options (e.g. the Co-Op
-Session card's `Cloudflare | Trystero` transport). Not for long lists (use a combobox)
+Session card's `Trystero | Cloudflare` transport). Not for long lists (use a combobox)
 or on/off flags (use a checkbox).
 
 ```rust
