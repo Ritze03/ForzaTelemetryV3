@@ -483,6 +483,9 @@ impl Session {
         let all_failed = st.relays.iter().all(|r| r.failed || r.retired);
         let pending = st.slots.values().filter(|s| s.phase != Phase::Live).count();
         let players = g.roster.len();
+        // Yellow in the status bar: a link is mid-handshake, or we haven't reached a relay yet
+        // (with teammates already live a dropped relay doesn't matter — the mesh keeps running).
+        g.connecting = pending > 0 || (up == 0 && players <= 1);
         g.status = if players > 1 {
             format!("{players} player(s)")
         } else if pending > 0 {
@@ -512,6 +515,7 @@ pub fn initial_role_state(g: &mut Inner, room: &str, name: &str, hue: f32) {
     g.my_hue = hue;
     g.words = Some(room.to_string());
     g.status = "Connecting to relays…".into();
+    g.connecting = true;
     g.error = None;
     g.roster = vec![PlayerInfo { id: g.my_id.clone(), name: name.to_string(), hue }];
 }
@@ -645,6 +649,17 @@ mod tests {
         add("p2", Phase::Live, 6);
         sess.refresh();
         assert_eq!(lock(&inner).error, None);
+        // Connecting predicate: relays never came up → connecting; once up and only Live
+        // links → not; any non-Live slot (a peer joining) → connecting again.
+        assert!(lock(&inner).connecting);
+        sess.relay_up(0);
+        assert!(!lock(&inner).connecting);
+        add("p4", Phase::Answering("o".into()), 8);
+        sess.refresh();
+        assert!(lock(&inner).connecting);
+        lock(&sess.st).slots.remove("p4");
+        sess.refresh();
+        assert!(!lock(&inner).connecting);
         // Opening a link clears the flag for good.
         lock(&sess.st).slots.clear();
         add("p3", Phase::Offering("o".into()), 7);

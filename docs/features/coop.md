@@ -40,7 +40,15 @@ the top of the Session card (`theme::segmented`, locked while a session is live;
    fading breadcrumb trail in their colour.
 5. Optional dashboard widgets (drag them in via Edit Mode): **Co-Op Players** — a live
    speed-bar leaderboard of everyone in the session. The status bar also shows your role
-   and the player count from any tab.
+   and the player count from any tab — yellow (`WARN`) while the session is connecting
+   (Trystero: no relay reached yet, or any peer link mid-handshake, so a 2nd player joining
+   flips it yellow until they're fully connected; Cloudflare: host tunnel not ready / client
+   socket not open or reconnecting), green once everyone is connected (`CoopState::is_connecting`,
+   a `connecting` flag in `Inner`). With *Status bar: show text labels* off it shrinks to the
+   players icon + count, and the hover tooltip spells out role · count · status.
+   *Why:* colour carries the state so icon-only mode stays readable.
+   *Limitation:* a Cloudflare **host** has no handshake phase for a newly joining client, so
+   its indicator is green as soon as the tunnel is up (or the LAN-only fallback is).
 6. **Waypoints**: left-click the minimap to drop a shared waypoint everyone sees (a
    diamond in your colour, showing each player's distance to it) — handy for "meet here".
    Right-click clears it.

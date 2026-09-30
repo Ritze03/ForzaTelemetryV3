@@ -117,6 +117,10 @@ struct Inner {
     /// Client: outgoing channel to the host.
     client_out: Option<SyncSender<Message>>,
     status: String,
+    /// The session isn't fully up yet (see [`CoopState::is_connecting`]); drives the status
+    /// bar's yellow Co-Op indicator. Mesh: recomputed in `Session::refresh`; Cloudflare: set by
+    /// `start_host` / `start_client` and cleared when the tunnel / socket comes up.
+    connecting: bool,
     error: Option<String>,
     words: Option<String>,
     lan_url: Option<String>,
@@ -152,6 +156,7 @@ impl Inner {
             clients: Vec::new(),
             client_out: None,
             status: String::new(),
+            connecting: false,
             error: None,
             words: None,
             lan_url: None,
@@ -312,6 +317,13 @@ impl CoopState {
     pub fn status(&self) -> String {
         self.inner.lock().unwrap().status.clone()
     }
+    /// True while a running session isn't fully connected: still coming up (Cloudflare host
+    /// tunnel not ready / client socket not open, mesh relays not reached) or, on the mesh, any
+    /// peer link is mid-handshake. Always false while co-op is off. Cheap (one lock).
+    pub fn is_connecting(&self) -> bool {
+        let i = self.inner.lock().unwrap();
+        i.role != Role::Off && i.connecting
+    }
     pub fn error(&self) -> Option<String> {
         self.inner.lock().unwrap().error.clone()
     }
@@ -445,6 +457,7 @@ impl CoopState {
         inner.lan_url = None;
         inner.waypoints.clear();
         inner.status = "Stopped".into();
+        inner.connecting = false;
         inner.error = None;
     }
 
@@ -460,6 +473,7 @@ impl CoopState {
             inner.role = Role::Host;
             inner.buffer_ms = buffer_ms;
             inner.status = "Starting server…".into();
+            inner.connecting = true; // until the tunnel is ready (or fails → LAN only)
             inner.error = None;
             inner.words = None;
             inner.lan_url = local_ip().map(|ip| format!("ws://{ip}:{port}"));
@@ -518,6 +532,7 @@ impl CoopState {
                 Err(e) => {
                     i.error = Some(format!("cloudflared: {e}"));
                     i.status = "Server up (LAN only — no tunnel)".into();
+                    i.connecting = false;
                 }
             }
         });
@@ -534,6 +549,7 @@ impl CoopState {
             inner.role = Role::Client;
             inner.buffer_ms = buffer_ms;
             inner.status = "Connecting…".into();
+            inner.connecting = true;
             inner.error = None;
             inner.words = Some(words.clone());
             inner.remote.clear();
@@ -945,6 +961,7 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
             let mut g = inner.lock().unwrap();
             g.client_out = Some(tx);
             g.status = "Connected".into();
+            g.connecting = false;
             g.error = None;
             g.remote.clear();
         }
@@ -1026,6 +1043,7 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
             g.client_out = None;
             g.remote.clear();
             g.status = "Reconnecting…".into();
+            g.connecting = true;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -1091,6 +1109,7 @@ fn spawn_tunnel(
                     let mut g = inner.lock().unwrap();
                     g.words = Some(words);
                     g.status = "Tunnel ready".into();
+                    g.connecting = false;
                 }
             }
         });

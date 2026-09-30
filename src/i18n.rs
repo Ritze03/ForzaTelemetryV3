@@ -91,6 +91,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Edit Mode" => "Bearbeitungsmodus",
         "Connected" => "Verbunden",
         "Disconnected" => "Getrennt",
+        "Connecting…" => "Verbinde…",
 
         // ── Page-settings tabs / sub-tabs ──────────────────────────────
         "Gearbox" => "Getriebe",
