@@ -163,6 +163,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     });
                 });
                 hint(ui, tr("Avoid ports 5200–5300 (used by the game)."));
+                crate::theme::checkbox_row(ui, &mut app.config.experimental_pause_detection, tr("Experimental pause detection"))
+                    .on_hover_text(tr("Detects the garage and menus by a level, motionless car with the handbrake fully on. May miss a garage view where the car is rotated."));
             });
 
             crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));

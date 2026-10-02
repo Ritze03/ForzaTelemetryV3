@@ -614,6 +614,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Tire temp unit" => "Reifentemperatur-Einheit",
         "Boost / pressure" => "Ladedruck / Druck",
         "FPS limit" => "FPS-Limit",
+        "Experimental pause detection" => "Experimentelle Pausenerkennung",
+        "Detects the garage and menus by a level, motionless car with the handbrake fully on. May miss a garage view where the car is rotated."
+            => "Erkennt Garage und Menüs an einem waagerechten, stillstehenden Auto mit voll angezogener Handbremse. Kann eine Garagenansicht mit gedrehtem Auto übersehen.",
         "Always on top" => "Immer im Vordergrund",
 
         // ── Settings: Hotkeys ──────────────────────────────────────────

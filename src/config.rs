@@ -621,6 +621,8 @@ pub struct AppConfig {
     pub use_bar: bool,
     pub theme: Theme,
     pub always_on_top: bool,
+    /// D29: also treat the garage (level, motionless car, handbrake on) as paused. See `listeners::hud::garage_paused`.
+    pub experimental_pause_detection: bool,
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
     // Alignment
@@ -782,6 +784,7 @@ impl Default for AppConfig {
             use_bar: true,
             theme: Theme::Dark,
             always_on_top: false,
+            experimental_pause_detection: true,
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             speed_align: TextAlign::RightPlaceholder,
@@ -1034,7 +1037,7 @@ const DSG_KEYS: &[&str] = &[
     "dsg_save_calibration", "dsg_ignore_backfire_accel",
 ];
 
-const NETWORK_KEYS: &[&str] = &["listen_port", "fps_limit", "fps_limit_enabled", "always_on_top"];
+const NETWORK_KEYS: &[&str] = &["listen_port", "fps_limit", "fps_limit_enabled", "always_on_top", "experimental_pause_detection"];
 const DISPLAY_KEYS: &[&str] = &[
     "use_mph", "use_fahrenheit", "use_bar", "theme", "top_bar_style",
     "status_bar_show_text", "language", "surface_rumble_max",

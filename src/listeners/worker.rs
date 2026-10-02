@@ -414,7 +414,7 @@ fn run(ctx: Ctx) {
                 // Tracked whenever the overlay is enabled, attached or not, so a lap
                 // started before the overlay came up still has its trace.
                 if cfg.overlay.enabled {
-                    hud.on_packet(&pkt, &cfg.overlay, hud_clock());
+                    hud.on_packet(&pkt, &cfg.overlay, cfg.experimental_pause_detection, hud_clock());
                 }
                 last_packet = Some(Instant::now());
                 pps_count += 1;
