@@ -51,7 +51,7 @@ use crate::focus::FocusDetector;
 use crate::input::InputSender;
 use crate::listeners::backfire::{BackfireListener, BackfireView};
 use crate::listeners::dsg::{DsgListener, DsgView};
-use crate::listeners::hud::{HudTracker, VisFacts};
+use crate::listeners::hud::{hud_paused, HudTracker, VisFacts};
 use crate::listeners::notify::{Event, Notifier};
 use crate::overlay::snapshot::{hud_clock, HudSink};
 use crate::packet::ForzaPacket;
@@ -316,6 +316,8 @@ fn run(ctx: Ctx) {
     // D26 on-HUD messages; `in_race` = race position ≠ 0 on the last race-on packet.
     let mut notifier = Notifier::default();
     let mut in_race = false;
+    // The car on the last packet while the game is running and not paused (Calibration started).
+    let mut driving_car: Option<i32> = None;
     // Co-Op: (class, PI) of the last race-on packet, restored into paused packets.
     let mut coop_car = (-1, 0);
 
@@ -446,8 +448,10 @@ fn run(ctx: Ctx) {
                 if pkt.is_race_on != 0 {
                     in_race = pkt.race_position != 0;
                 }
+                // Same pause rule as the HUD (includes race-on).
+                driving_car = (!hud_paused(&pkt, cfg.experimental_pause_detection) && pkt.car_ordinal != 0)
+                    .then_some(pkt.car_ordinal);
                 if pkt.car_ordinal != 0 && pkt.car_ordinal != last_car_ordinal {
-                    let had_car = last_car_ordinal != 0;
                     last_car_ordinal = pkt.car_ordinal;
                     dsg.reset_calibration();
                     dsg.reset_state();
@@ -463,10 +467,8 @@ fn run(ctx: Ctx) {
                             dynamic_max_rpm = cal.max_rpm;
                         }
                     }
-                    // A new car starts uncalibrated (not announced for the first car seen).
-                    if had_car && !dsg.engaged {
-                        notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
-                    }
+                    // "Calibration started" for an uncalibrated new car comes from the level
+                    // rule in `Notifier::watch` (car change = new episode), not from here.
                 }
 
                 // Dynamic redline: highest RPM seen while the engine is making power,
@@ -525,7 +527,7 @@ fn run(ctx: Ctx) {
         }
 
         // ── D26: queue what changed (hotkeys and UI settings alike). ──
-        notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dynamic_max_rpm, hud_clock());
+        notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dynamic_max_rpm, driving_car, hud_clock());
         hud_force |= notifier.take_new(); // a message must reach the HUD even without a packet
 
         // ── listener → overlay: every packet, plus any visibility change without one. ──

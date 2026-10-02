@@ -59,18 +59,37 @@ pub fn stack_layout(anchor: HudCell, sizes: &[Vec2], area: Vec2, margin: f32, sp
         .collect()
 }
 
-/// Opacity of a notification `age` seconds old: quick fade-in, fade-out at the end of its life.
-pub fn alpha(age: f64) -> f32 {
-    if !(0.0..TTL_SECS).contains(&age) {
+/// Opacity of a pill that started fading in `since_born` seconds ago and was last (re)written
+/// `since_update` seconds ago: quick fade-in from `born`, fade-out at the end of the TTL that
+/// restarts on every write. For a fresh pill both ages are equal.
+pub fn alpha(since_born: f64, since_update: f64) -> f32 {
+    if !(0.0..TTL_SECS).contains(&since_update) || since_born < 0.0 {
         return 0.0;
     }
-    ((age / FADE_IN_SECS).min(1.0).min((TTL_SECS - age) / FADE_OUT_SECS)).clamp(0.0, 1.0) as f32
+    ((since_born / FADE_IN_SECS).min(1.0).min((TTL_SECS - since_update) / FADE_OUT_SECS)).clamp(0.0, 1.0) as f32
 }
 
-/// The notifications to show at `now`: alive ones, newest first, at most [`MAX_VISIBLE`].
+/// [`alpha`] of `n` at `now`.
+pub fn alpha_of(n: &Notification, now: f64) -> f32 {
+    alpha(now - n.born, now - n.created)
+}
+
+/// The fade-in start for a pill rewritten at `now` while it shows `old`: backdated by the
+/// opacity it has right now, so a replacement continues from there instead of jumping.
+pub fn rewritten_born(old: &Notification, now: f64) -> f64 {
+    now - FADE_IN_SECS * alpha_of(old, now) as f64
+}
+
+/// Whether `n` is still on screen at `now` (what a replacement may overwrite).
+pub fn is_live(n: &Notification, now: f64) -> bool {
+    (0.0..TTL_SECS).contains(&(now - n.created))
+}
+
+/// The notifications to show at `now`: alive ones, newest slot first (by id: a replacement
+/// keeps its slot), at most [`MAX_VISIBLE`].
 pub fn live(all: &[Notification], now: f64) -> Vec<&Notification> {
-    let mut v: Vec<&Notification> = all.iter().filter(|n| (0.0..TTL_SECS).contains(&(now - n.created))).collect();
-    v.sort_by(|a, b| b.created.total_cmp(&a.created).then(b.id.cmp(&a.id)));
+    let mut v: Vec<&Notification> = all.iter().filter(|n| is_live(n, now)).collect();
+    v.sort_by(|a, b| b.id.cmp(&a.id));
     v.truncate(MAX_VISIBLE);
     v
 }
@@ -100,7 +119,7 @@ pub fn draw(p: &Painter, screen: Rect, snap: &HudSnapshot, now: f64, fade: f32, 
     let sizes: Vec<Vec2> = runs.iter().map(|r| vec2(34.0 + r.width / s + 18.0, H)).collect();
     let rects = stack_layout(cfg.notif_cell, &sizes, screen.size() / s, cfg.margin_px, SPACING);
     for ((n, run), r) in items.iter().zip(&runs).zip(rects) {
-        let xf = Xf { o: screen.min + r.min.to_vec2() * s, s, a: fade * alpha(now - n.created) };
+        let xf = Xf { o: screen.min + r.min.to_vec2() * s, s, a: fade * alpha_of(n, now) };
         prims::rounded(p, &xf, [0.0, 0.0, r.width(), H], [H / 2.0; 4], col::plate(cfg.plate_opacity));
         prims::rounded(p, &xf, [14.0, H / 2.0 - 5.0, 10.0, 10.0], [5.0; 4], dot(n.kind));
         prims::draw_run(p, &xf, run, xf.p(34.0, 27.0), false, col::INK);
@@ -111,6 +130,7 @@ pub fn draw(p: &Painter, screen: Rect, snap: &HudSnapshot, now: f64, fade: f32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlay::snapshot::NotifGroup;
 
     const AREA: Vec2 = vec2(1920.0, 1080.0);
     const M: f32 = 40.0;
@@ -198,16 +218,50 @@ mod tests {
 
     #[test]
     fn fade_curve_and_live_selection() {
-        assert_eq!(alpha(-0.1), 0.0);
-        assert_eq!(alpha(0.0), 0.0);
-        assert_eq!(alpha(1.0), 1.0);
-        assert!(alpha(TTL_SECS - 0.2) < 1.0 && alpha(TTL_SECS - 0.2) > 0.0);
-        assert_eq!(alpha(TTL_SECS), 0.0);
-        let mk = |id, created| Notification { id, text: String::new(), kind: NotifKind::Info, created };
+        assert_eq!(alpha(-0.1, -0.1), 0.0);
+        assert_eq!(alpha(0.0, 0.0), 0.0);
+        assert_eq!(alpha(1.0, 1.0), 1.0);
+        assert!(alpha(TTL_SECS - 0.2, TTL_SECS - 0.2) < 1.0 && alpha(TTL_SECS - 0.2, TTL_SECS - 0.2) > 0.0);
+        assert_eq!(alpha(TTL_SECS, TTL_SECS), 0.0);
+        let mk = |id, created| Notification {
+            id,
+            group: NotifGroup::Gearbox,
+            text: String::new(),
+            kind: NotifKind::Info,
+            created,
+            born: created,
+        };
         let all: Vec<_> = (0..8).map(|i| mk(i, 10.0 + i as f64 * 0.1)).chain([mk(99, 1.0)]).collect();
         let v = live(&all, 10.8);
         assert_eq!(v.len(), MAX_VISIBLE);
-        assert!(v.windows(2).all(|w| w[0].created >= w[1].created), "newest first");
+        assert!(v.windows(2).all(|w| w[0].id > w[1].id), "newest slot first");
         assert_eq!(v[0].id, 7);
+    }
+
+    #[test]
+    fn a_rewritten_pill_keeps_its_slot_and_does_not_blink() {
+        let mut p = Notification {
+            id: 1,
+            group: NotifGroup::Gearbox,
+            text: String::new(),
+            kind: NotifKind::Info,
+            created: 10.0,
+            born: 10.0,
+        };
+        // Rewritten while fully visible: still fully visible, TTL restarted.
+        let now = 11.0;
+        p.born = rewritten_born(&p, now);
+        p.created = now;
+        assert_eq!(alpha_of(&p, now), 1.0);
+        assert!(is_live(&p, now + TTL_SECS - 0.01));
+        // Rewritten mid fade-out: continues from the current opacity, then rises.
+        let late = now + TTL_SECS - 0.2;
+        let a0 = alpha_of(&p, late);
+        assert!(a0 > 0.0 && a0 < 1.0);
+        let old = p.clone();
+        p.born = rewritten_born(&old, late);
+        p.created = late;
+        assert!((alpha_of(&p, late) - a0).abs() < 1e-3, "no jump");
+        assert_eq!(alpha_of(&p, late + FADE_IN_SECS), 1.0);
     }
 }

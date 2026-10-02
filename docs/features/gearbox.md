@@ -18,11 +18,16 @@ gear-ratio table.
   speed-at-full-redline and keeps a rolling median of the last 10 samples — so a
   bad sample self-corrects instead of locking in.
 - **Calibration messages on the HUD** (when notifications are on): `Calibration
-  started` on a reset or new uncalibrated car, then `Shift at redline` (yellow
-  dot) as soon as gear 1 has gear-map data while still uncalibrated, then
-  `Calibration done: N rpm` once you shift and the box engages. The middle one
-  fires once per cycle and re-arms on a car change, Clear RPM calibration or
-  Clear gear map. See [[overlay]] (Notifications).
+  started` whenever you are driving a car that is not calibrated yet (first car
+  after starting the app and leaving the pause menu, a car change, a Clear RPM
+  calibration), once per uncalibrated episode; then `Shift at redline` (yellow
+  dot) as soon as gear 1 has gear-map data while still uncalibrated; then
+  `Calibration done: N rpm` once you shift and the box engages. The three share
+  one HUD pill, so a later one replaces an earlier one that is still showing
+  instead of stacking. The middle one fires once per cycle and re-arms on a car
+  change, Clear RPM calibration or Clear gear map. Not tied to the gearbox
+  switch (calibration runs with the box off too). See [[overlay]]
+  (Notifications).
 - **The redline detection and engagement run with the box switched off too**
   (`worker.rs` tracks `dynamic_max_rpm` unconditionally; `DsgListener::update`
   sets `engaged` before its `dsg_enabled` gate). The in-game HUD reuses them:
