@@ -69,7 +69,7 @@ Precision: *exact* = world coordinates straight from the file; *approx* = recons
 | Map element / filter types (the game's own ~230) | `UI.zip` → `MapProfiles/MapIncludes/*.xml` | ~230 | n/a | yes (plaintext XML) | **yes** |
 | Map regions (10) with outlines | `trackroutes/map_region_<slug>.nt` (`Arena_NNN` polygon) | 10 | exact outline (0 self-intersections, tile the island, 188 km²) | **10/10 in 24 languages** (slug → name inferred from mascots) | **yes** — [regions](fh6-cars-names-icons.md#map-regions--10--10-with-outlines) |
 | Map icons (the game's own symbols) | `UI/Textures/HiRes/Data_Bound/Horizon_Map.zip` (+ atlas `ForteMapIconSheet`, slot grid in `UI.zip`) | 1014 swatchbins + 6 ext + 54 atlas crops = 1074 PNGs; 45 / 53 POI categories mapped | n/a | type tag → icon from the game's XML | **yes** (BC7) — [icons](fh6-cars-names-icons.md#3-map-icons--the-games-own-symbols) |
-| Car names (`CarOrdinal` → make + model) | `Cars/<MediaName>.zip` (ordinal) + `StringTables/<LANG>.zip` `Data_Car.str` (name) | 671 cars, 24 languages | exact; packet `CarOrdinal` == this id **unverified** | full name incl. make, model-only | **yes** — [cars](fh6-cars-names-icons.md#1-car-names--carordinal--makemodel) |
+| Car names (`CarOrdinal` → make + model) | `Cars/<MediaName>.zip` (ordinal) + `StringTables/<LANG>.zip` `Data_Car.str` (name) | 671 cars, 24 languages | exact; packet `CarOrdinal` == this id **verified live** (4277) | long name (make usually, not always), model-only; make is a heuristic | **yes** — [cars](fh6-cars-names-icons.md#1-car-names--carordinal--makemodel) |
 | Stunt name tables (speed zone / trap, drift zone, danger sign, trailblazer, time/drift attack) | `StringTables/<LANG>.zip` | 30 / 30 / 20 / 20 / 11 / 10 / 2 | names only — **no link to a position** | yes | strings **yes** |
 | String tables (all UI text) | `Stripped/StringTables/<LANG>.zip` | 291 tables (EN), 24 languages | n/a | yes | **yes** |
 | Which speed traps / drift zones are *this week's* Festival Playlist | server data | — | — | — | **no, unobtainable** — [verdict](#6-seasonal--weekly-festival-playlist-verdict) |
@@ -654,7 +654,7 @@ extract_races.py --out DIR [--entity-model ...]               # races.json (169 
 extract_racelines.py --out DIR [--step 5]                     # racelines.json (170 trimmed racing lines + track edges)
 extract_speedsigns.py --out DIR [--roads roads.json] [--variant-map "0=50,1=60,..."]   # speedsigns.json (2141 signs)
 extract_terrain.py --out DIR [--region X0,Z0,X1,Z1] [--coarse]# elevation.npy/.png, surfaces.npy/.png (+ names in surfaces.json)
-extract_cars.py --out DIR [--lang EN,DE|all] [--ordinal N ..] # cars.json (671 ordinals -> media name + full/model name)
+extract_cars.py --out DIR [--lang EN,DE|all] [--ordinal N ..] # cars.json (671 ordinals -> media name + full/model name + make + display)
 extract_names.py --out DIR                                    # names.json (75 landmarks, 24 languages, stunt name tables), regions.json (10 outlines)
 extract_icons.py --out DIR; build_icon_mapping.py DIR         # png/ (1074 icons), icons.json, xml_symbols.json; mapping.json (POI category -> icon)
 roaddist.py / plot_pois.py                                    # validation helpers
@@ -691,7 +691,8 @@ Things the research could not settle — each needs a human, a live game, or a d
 
 | Item | State | How to close it |
 |---|---|---|
-| Packet `CarOrdinal` == `carclips_<ordinal>` id | **unverified** (matches the gamedb `Data_Car.Id` 638/638, never compared with a live packet) | one live check: drive a known car, compare the Debug tab's `CarOrdinal` with `extract_cars.py --ordinal <n>` |
+| ~~Packet `CarOrdinal` == `carclips_<ordinal>` id~~ | **closed — verified live** (4277 → `HON_21_CivicWTA_92`) | — |
+| Car **make** | heuristic only (`extract_cars.py` / `src/gamedata/cars.rs`; known misses `AC_*`, `PG_*`); ModelShort does not always contain it (4277, 2574) | the exact `MakeID` is only in the encrypted gamedb — not an option (D11) |
 | Speed-limit **variant → km/h** | **unknown** (number atlas not in any readable file); guessed order 5/3 < 0 < 1 < 2 < 4 | read the number on one sign per variant in-game ([coordinates](#speed-limit-signs)), then feed `--variant-map` |
 | Speed zone / trailblazer / drift zone **gate `_1` vs `_2`** = start vs end | **not verified** (both gates are emitted) | drive one zone and see which gate starts the timer |
 | `.owt` undecoded node fields (+36 i16 pair, +44 u16[4] tag, +52 flag) | **undecoded** — guesses: curvature-like value, section/surface id | correlate with the race's surface type / corners if a feature needs them |

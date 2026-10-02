@@ -5,6 +5,8 @@ mod config;
 mod coop;
 mod engines;
 mod focus;
+#[allow(dead_code)] // no UI consumer yet (Debug tab "Derived from telemetry" will use it)
+mod gamedata;
 mod hotkeys;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // drawn only by the Linux overlay
 mod hud;
