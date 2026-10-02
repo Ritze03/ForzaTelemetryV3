@@ -6,6 +6,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.4.1] – 2026-10-02
 
+### Fixed
+- **Setup layout**: the Controller card's bind buttons now all line up (the clear button's slot is always reserved, and it shows a proper icon), and the Network card moved above Game Install in the right column.
+
 ### Added
 - **Look around with the right stick**: new option *Rotate with right stick* for the Dashboard map (Mini-Settings → Dashboard → Map) and the HUD minimap (Mini-Settings → Overlay → Minimap), both off by default. While you push the controller's right stick past its deadzone the map turns to the stick's direction (up = unchanged, right = view turned 90° right, down = looking back); on release it eases back. Works in heading-up and north-up, the compass stays correct, and it works independently of any right-stick button bindings.
 - **Controller input**: a new **Controller** card in Setup (below Hotkey). Bind controller buttons to the in-game actions (Toggle Automatic Gearbox, Reset RPM Calibration, Toggle Backfire, Hide HUD): click a row, press the button on your pad (Esc cancels, the x clears). Works with the A/B/X/Y, bumpers, triggers, Back/Start, stick clicks, D-pad and the right stick's four directions. Stick and trigger deadzones are adjustable. Xbox-style pads on Linux (xpad, xone incl. the wireless dongle, xpadneo) and Windows (XInput); pads plugged in later are picked up automatically, and the real pad is read rather than Steam's virtual one so it keeps working while the game is focused. Linux needs the same `input` group access as the hotkeys.

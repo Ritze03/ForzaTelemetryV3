@@ -93,3 +93,7 @@ frame (`Gamepad::set_params`, no-op when unchanged).
 
 Xbox-layout pads only (PlayStation/Switch pads without `BTN_SOUTH`/`ABS_RX` aren't detected as
 such); no guide/share buttons; no rumble; bindings are global-scope actions only.
+
+## Controller card layout
+
+Rows copy the Hotkey card: `control_row` (label | control halves) with a fixed-width bind button (`add_sized`). Each row *always* reserves a square clear button (`icons::TIMES`, a Nerd Font glyph, disabled when unbound) so the bind button's x/width never changes with binding or capture state. *Why:* a clear button that only appeared when bound made the bind buttons shift and differ in width per row.
