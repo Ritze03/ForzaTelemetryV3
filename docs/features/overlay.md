@@ -145,8 +145,29 @@ default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21
 colour plus their name, only while inside the pill. Paused teammates are skipped (their
 packet sits at the world origin). There is no scale bar. Zoom eases between **Zoom when
 driving** / **Zoom when stopped** (100–5000 m, defaults 1500 / 3000, independent of the
-Dashboard map's); stopped = under 5 km/h for 1.5 s, the same rule as the Dashboard. It stays
-heading-up when stopped.
+Dashboard map's); stopped = under 5 km/h for 1.5 s, the same rule as the Dashboard.
+
+**View options (Mini-Settings → Overlay tab).** The HUD minimap is configurable like the
+Dashboard map. *Why:* the user wants the same view options on the HUD that the Dashboard map
+has. They live in `OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys) and are
+edited in the cog-wheel **Mini-Settings**, tab **Overlay** (`src/app.rs`, next to
+Dashboard); compass and the two zooms are also on the Overlay tab's Minimap card (same fields).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `map_north_up` | off | Lock north-up: map fixed, the car arrow turns (`MapView::arrow_angle`). Off = heading-up, arrow fixed apex-up. |
+| `map_north_up_when_stopped` | off | Heading-up only: ease to north once stopped. |
+| `map_smooth_rotation` | on | Ease rotation; off snaps (ease-to-north still eases). |
+| `map_use_movement_dir` | off | Heading-up only: rotate to the velocity direction. |
+| `compass`, `zoom_driving_m`, `zoom_stopped_m` | as before | Already existed. |
+
+Defaults equal the HUD's behaviour before these were settable, so nothing changed until edited
+(`map_use_movement_dir` therefore defaults off, unlike the Dashboard's `minimap_use_movement_dir`).
+The target yaw is `map_target_yaw` in `hud/minimap.rs`. **Not ported:** *Mirror map at edges*
+(the overlay texture is ClampToEdge, shared options; see [[minimap]]), *Render FPS limit* (the
+overlay draws on its own wake/frame pacing), *Image quality / Reload / Rebuild* (the HUD uses
+the fixed q50 cache file), *Advanced calibration* (the HUD already reads the Dashboard's
+calibration; one source of truth), and the F10 north-up hotkey.
 
 - The map is drawn as a triangle-fan mesh with per-vertex UVs from
   `MapView::uv_at_offset` (affine, so UV interpolation is exact), 0.5 px under the frame

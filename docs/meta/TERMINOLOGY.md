@@ -15,3 +15,5 @@ Project-specific vocabulary. When the user uses a term defined here, use the sam
 - **Race block / Drift counter** — the HUD's race position + lap module (R1′) and the drift-score module (X1′) that takes its slot while drifting is detected. Drift counter styles: **Position + Gain** (default) and **Total**.
 - **D1a / D3a′ / M2′ / R1′ / X1′** — the HUD widget names from the design mockup's spec sheet (Pill cluster, Halo cluster, minimap, race block, drift counter).
 - **Category** — a bordered card with a blue uppercase title that groups related controls in a tab (e.g. "SESSION", "RPM Range"). Rendered via `theme::card`. See @docs/ui/STYLING-GUIDE.md.
+- **Minimap** (also "minimap renderer") — the **HUD minimap (M2′)** in the in-game overlay (`src/hud/minimap.rs`). Not the Dashboard's map widget.
+- **Dashboard map** — the Dashboard's Map widget (`show_minimap_widget`, `src/ui/dashboard.rs`; config keys are `minimap_*` for historical reasons). Distinct from the HUD **Minimap**.

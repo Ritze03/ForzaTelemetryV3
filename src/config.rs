@@ -370,6 +370,14 @@ pub struct OverlayConfig {
     pub zoom_stopped_m: f32,
     /// Metres from centre to edge while driving.
     pub zoom_driving_m: f32,
+    /// Lock the HUD map north-up (car arrow turns) instead of heading-up (map turns).
+    pub map_north_up: bool,
+    /// Heading-up only: ease the map to north once the car has been stopped.
+    pub map_north_up_when_stopped: bool,
+    /// Ease the map's rotation instead of snapping it to the heading.
+    pub map_smooth_rotation: bool,
+    /// Heading-up only: rotate to the velocity direction instead of the car's yaw.
+    pub map_use_movement_dir: bool,
     pub coop_teammates: bool,
     // ── Race block ──
     pub lap_delta: bool,
@@ -431,6 +439,11 @@ impl Default for OverlayConfig {
             // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
             zoom_stopped_m: 3000.0,
             zoom_driving_m: 1500.0,
+            // Defaults = the HUD map's behaviour before these were settable.
+            map_north_up: false,
+            map_north_up_when_stopped: false,
+            map_smooth_rotation: true,
+            map_use_movement_dir: false,
             coop_teammates: true,
             lap_delta: true,
             place_colour: true,

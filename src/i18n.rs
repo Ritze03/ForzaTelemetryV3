@@ -227,6 +227,8 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Mini map ───────────────────────────────────────────────────
         "Render FPS limit" => "Render-FPS-Limit",
+        "Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves." => "Nur Fahrtrichtung oben: Die Karte dreht nach dem Anhalten sanft nach Norden und zurück, sobald das Auto losfährt.",
+        "Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)." => "Karte nach der tatsächlichen Fahrtrichtung statt der Fahrzeugausrichtung drehen (unterscheidet sich beim Driften).",
         "Smooth rotation" => "Sanfte Drehung",
         "Use movement direction as rotation" => "Bewegungsrichtung als Drehung verwenden",
         "Mirror map at edges" => "Karte an den Rändern spiegeln",
