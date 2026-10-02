@@ -765,6 +765,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Max RPM" => "Max. U/min",
         "Lock map north-up" => "Karte nach Norden ausrichten",
         "Show compass" => "Kompass anzeigen",
+        "Rotate with right stick" => "Mit rechtem Stick drehen",
         "Show per line" => "Pro Zeile anzeigen",
         "Current values" => "Aktuelle Werte",
         "Max values" => "Maximalwerte",

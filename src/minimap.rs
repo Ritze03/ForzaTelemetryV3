@@ -327,6 +327,26 @@ pub fn ease_yaw(current: f32, target: f32, dt: f32) -> f32 {
     lerp_angle(current, target, lerp_t)
 }
 
+/// "Look-around": the view-yaw offset (radians, added to the map's yaw) for a right-stick
+/// vector (x right, y up, post-deadzone). Stick up = 0 (no change), right = +90° (the map
+/// turns so what is to the right of the view is at the top). `(0, 0)` = no offset.
+/// Angle only, not scaled by deflection: the deadzone already gates it, and scaling the angle
+/// by magnitude would make a half-pushed stick point at the wrong direction.
+pub fn look_offset(stick: (f32, f32)) -> f32 {
+    if stick.0 == 0.0 && stick.1 == 0.0 {
+        0.0
+    } else {
+        f32::atan2(stick.0, stick.1)
+    }
+}
+
+/// One frame of the eased look-around offset: toward the stick's offset while `enabled`, back
+/// to 0 when released or the option is off. Same easing as the map rotation ([`ease_yaw`]).
+pub fn ease_look(current: f32, stick: (f32, f32), enabled: bool, dt: f32) -> f32 {
+    let target = if enabled { look_offset(stick) } else { 0.0 };
+    ease_yaw(current, target, dt)
+}
+
 /// One frame of smooth zoom toward `target_m`. `dt` in seconds.
 pub fn ease_zoom(current_m: f32, target_m: f32, dt: f32) -> f32 {
     let lerp_t = (3.0 * dt.min(0.1)).min(1.0);
@@ -405,6 +425,34 @@ mod tests {
         let cal = MapCalibration::DEFAULT;
         let view = MapView::new(1000.0, 2000.0, 1.3, 1500.0, 164.0);
         assert!(close(view.uv_at_offset(&cal, ORIG, 0.0, 0.0), cal.world_to_uv(1000.0, 2000.0, ORIG), 1e-5));
+    }
+
+    #[test]
+    fn look_offset_follows_stick_angle() {
+        assert_eq!(look_offset((0.0, 0.0)), 0.0);
+        assert_eq!(look_offset((0.0, 0.8)), 0.0); // up = no change
+        assert!((look_offset((0.5, 0.0)) - FRAC_PI_2).abs() < 1e-6); // right
+        assert!((look_offset((-0.5, 0.0)) + FRAC_PI_2).abs() < 1e-6); // left
+        assert!((look_offset((0.0, -1.0)).abs() - std::f32::consts::PI).abs() < 1e-6); // down
+        // Magnitude doesn't matter.
+        assert_eq!(look_offset((0.1, 0.1)), look_offset((0.9, 0.9)));
+    }
+
+    #[test]
+    fn ease_look_returns_to_zero_and_respects_enabled() {
+        let mut off = 0.0;
+        for _ in 0..120 {
+            off = ease_look(off, (1.0, 0.0), true, 1.0 / 60.0);
+        }
+        assert!((off - FRAC_PI_2).abs() < 1e-2, "{off}");
+        // Combined with the base yaw: the view yaw is just the sum.
+        assert!((0.8 + off - (0.8 + FRAC_PI_2)).abs() < 1e-2);
+        for _ in 0..120 {
+            off = ease_look(off, (0.0, 0.0), true, 1.0 / 60.0); // released
+        }
+        assert!(off.abs() < 1e-2, "{off}");
+        // Option off: the stick is ignored.
+        assert_eq!(ease_look(0.0, (1.0, 0.0), false, 0.016), 0.0);
     }
 
     #[test]

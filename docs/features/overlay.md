@@ -159,6 +159,7 @@ Dashboard); compass and the two zooms are also on the Overlay tab's Minimap card
 | `map_north_up_when_stopped` | off | Heading-up only: ease to north once stopped. |
 | `map_smooth_rotation` | on | Ease rotation; off snaps (ease-to-north still eases). |
 | `map_use_movement_dir` | off | Heading-up only: rotate to the velocity direction. |
+| `map_look_stick` | off | Rotate the map by the right stick (look-around, see [[minimap]]). |
 | `compass`, `zoom_driving_m`, `zoom_stopped_m` | as before | Already existed. |
 
 Defaults equal the HUD's behaviour before these were settable, so nothing changed until edited

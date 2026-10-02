@@ -238,7 +238,6 @@ impl Gamepad {
     /// Right stick as `(x, y)`, each -1..1 after the configured radial deadzone, **x right,
     /// y up**. If several pads are connected, the one deflected furthest wins. `(0, 0)` while
     /// the feature is disabled or no pad is connected. Read it from any thread, any time.
-    #[allow(dead_code)] // first reader: the map-rotation task
     pub fn right_stick(&self) -> (f32, f32) {
         let p = self.shared.params.lock().unwrap().clone();
         if !p.enabled { return (0.0, 0.0); }

@@ -105,6 +105,23 @@ auto-zooms in while driving and back out once parked.
 - **Render FPS limit** — throttles how often the car's cached position/yaw are
   refreshed for the minimap, independent of the app's global FPS limit.
 
+## Look-around (right stick)
+
+Option **Rotate with right stick** (`minimap_look_stick`, off; Mini-Settings -> Dashboard -> Map; the
+HUD Minimap has `OverlayConfig::map_look_stick`, see [[overlay]]). While the right stick
+(`Gamepad::right_stick`, post-deadzone, see [[gamepad]]) is deflected, an offset
+`minimap::look_offset((x, y)) = atan2(x, y)` is **added to the map's yaw**: up = 0, right = +90 deg
+(the view turns right), down = 180 deg. Released = 0, and the offset **eases** back/forward with the
+same `ease_yaw` as the rotation (`ease_look`).
+Why: *angle only, not scaled by deflection* - the deadzone already gates it, and scaling the angle
+by magnitude would make a half-pushed stick point at the wrong direction. *Why a separate eased
+offset* (`ForzaApp::minimap_look_off`, `MapAnim::look`) rather than folded into the target yaw:
+it eases even with "Smooth rotation" off, and works with north-up / ease-to-north unchanged.
+The offset is part of the `MapView` yaw, so the compass (`north_dir`), car arrow, trails and
+teammates stay consistent. It is independent of right-stick *button bindings*: a bound direction
+still fires its action and still rotates the map. HUD plumbing: `HudSink::with_stick` stamps
+`HudSnapshot::look_stick` at publish time (the listener thread has no gamepad), so it updates per packet.
+
 ## Co-Op integration
 
 When in a [[coop]] session, the map additionally draws:

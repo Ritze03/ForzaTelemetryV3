@@ -410,6 +410,8 @@ pub struct OverlayConfig {
     pub map_smooth_rotation: bool,
     /// Heading-up only: rotate to the velocity direction instead of the car's yaw.
     pub map_use_movement_dir: bool,
+    /// Look-around: rotate the map by the right stick (`minimap::look_offset`).
+    pub map_look_stick: bool,
     pub coop_teammates: bool,
     // ── Race block ──
     pub lap_delta: bool,
@@ -489,6 +491,7 @@ impl Default for OverlayConfig {
             map_north_up_when_stopped: false,
             map_smooth_rotation: true,
             map_use_movement_dir: false,
+            map_look_stick: false,
             coop_teammates: true,
             lap_delta: true,
             place_colour: true,
@@ -743,6 +746,7 @@ pub struct AppConfig {
     // Mini map rotation options
     pub minimap_smooth_rotation: bool,
     pub minimap_use_movement_dir: bool,
+    pub minimap_look_stick: bool, // rotate the map by the right stick (look-around)
     pub minimap_mirror_edges: bool,
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
     pub minimap_north_up_when_stopped: bool, // in heading-up mode, ease to north when stopped
@@ -895,6 +899,7 @@ impl Default for AppConfig {
             minimap_fps_limit_enabled: true,
             minimap_smooth_rotation: true,
             minimap_use_movement_dir: true,
+            minimap_look_stick: false,
             minimap_mirror_edges: true,
             minimap_north_up: false,
             minimap_north_up_when_stopped: false,
@@ -1077,7 +1082,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "gforce_show_labels", "gforce_show_text", "hide_widget_titles", "high_contrast_icons",
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
-    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
+    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_look_stick", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
     "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",

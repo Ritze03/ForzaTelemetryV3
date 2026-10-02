@@ -100,6 +100,8 @@ pub struct MapAnim {
     last: Option<f64>,
     yaw: Option<f32>,
     zoom: Option<f32>,
+    /// Eased right-stick look-around offset, added to `yaw` when drawing.
+    look: f32,
     slow_since: Option<f64>,
 }
 
@@ -136,11 +138,13 @@ impl MapAnim {
             Some(z) if stopped || kmh >= mm::STOPPED_KMH => mm::ease_zoom(z, target_zoom, dt),
             Some(z) => z,
         };
+        self.look = mm::ease_look(self.look, snap.look_stick, cfg.map_look_stick, dt);
         self.yaw = Some(yaw);
         self.zoom = Some(zoom);
+        let look_left = (self.look - if cfg.map_look_stick { mm::look_offset(snap.look_stick) } else { 0.0 }).abs() > 1e-3;
         let yaw_left = (mm::lerp_angle(yaw, target_yaw, 1.0) - yaw).abs() > 1e-3;
         let zoom_left = (zoom - target_zoom).abs() > 0.5 && (stopped || kmh >= mm::STOPPED_KMH);
-        yaw_left || zoom_left
+        yaw_left || zoom_left || look_left
     }
 }
 
@@ -243,7 +247,7 @@ pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
 /// Draw M2′. Returns true while the view is still easing.
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, teammates: &[Teammate]) -> bool {
     let animating = anim.step(snap, now);
-    let (yaw, zoom) = (anim.yaw.unwrap_or(0.0), anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
+    let (yaw, zoom) = (anim.yaw.unwrap_or(0.0) + anim.look, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
     let (w, h) = (SIZE.x, SIZE.y);
     let centre = xf.p(w / 2.0, h / 2.0);
     let view = MapView::new(snap.pkt.position_x, snap.pkt.position_z, yaw, zoom, xf.l(w.min(h)));
