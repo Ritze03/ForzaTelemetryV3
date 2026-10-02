@@ -44,12 +44,35 @@ mini-settings, since they drive the same `power_curve_*` config fields the dashb
 Power Graph widget reads — one control set, rendered by `power_curve::options_ui`:
 
 - **RPM step size** — bucket width for the boost bar chart, 25–500 RPM (default 100).
-- **Forced induction detection** — when ON, the boost graph is hidden until positive
-  boost pressure (> 0.05 PSI) has actually been captured, so naturally-aspirated cars
-  don't show an empty boost chart. When OFF, the boost graph always shows.
+- **Forced induction detection** — when ON, boost is hidden until real boost
+  (> `FI_BOOST_THRESHOLD_PSI` = 1 PSI) has actually been captured, so naturally-aspirated
+  cars don't show a boost chart. When OFF, boost always shows. Applies to this tab's
+  Boost chart and to the Dashboard's Power Graph boost line and Boost Graph module.
 - **Save Forced Induction State** — (only shown when detection is ON) once boost has
-  been detected for the current car, keeps the boost graph visible even after "Clear
-  live" wipes the data — so clearing between pulls doesn't hide the chart again.
+  been detected for the current car, keeps boost visible even after "Clear live"
+  wipes the data — so clearing between pulls doesn't hide the chart again.
+
+### Forced-induction detection internals
+
+One rule, `boost_visible()` in `src/listeners/power_capture.rs`, used by all three
+boost plots: `!detection || any plotted series has a point > 1 PSI || (save_state &&
+latched)`. The latch is `PowerCapture::fi_detected()` — set by any race-on packet with
+boost > 1 PSI (no throttle/speed requirement), kept across `clear()` ("Clear live",
+brake+handbrake), reset by `on_car_changed()`. It is per *current car* only (a car
+you switch back to must be re-detected). Unit tests in the same file cover NA vacuum,
+turbo spool, clear-vs-car-change and detection OFF.
+
+- **Why 1 PSI:** the packet's `Boost` is manifold pressure relative to atmosphere. An NA
+  engine sits in vacuum (negative) and only reaches ~0 at full throttle; a turbo or
+  supercharger goes several PSI positive under load. The old 0.05 PSI cutoff left no
+  margin for an NA car's near-zero WOT reading.
+- **Why judge the plotted series:** the Dashboard modules plot live data, falling back to
+  the saved reference. Visibility used to also pass if the *saved* reference had boost,
+  so a saved turbo run made an NA car's live vacuum data show. The Power Curve tab plots
+  live and saved together, so it passes both.
+- **Bug fixed (0.4.1):** the Dashboard Power Graph's optional boost line (*Show Boost*)
+  never consulted detection at all, so it was drawn (flat at 0, with a boost axis) for
+  every car.
 - **Boost / pressure unit** (bar vs PSI) is a global unit setting on the main
   [[settings]] page, not per-tab — it also affects other boost readouts in the app.
 
