@@ -684,6 +684,12 @@ fn trace_step(dt_wall: Option<f32>, t_active: f32) -> Option<f32> {
 }
 
 impl ForzaApp {
+    /// The Dashboard map's yaw without the look-around offset: 0 when locked north-up, else the
+    /// (eased) heading-up yaw. The view yaw is this + `minimap_look_off`.
+    pub fn minimap_base_yaw(&self) -> f32 {
+        if self.config.minimap_north_up { 0.0 } else { self.minimap_smoothed_yaw }
+    }
+
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut fonts = egui::FontDefinitions::default();
         // Geist family, copied from the ritz launcher (licences in assets/fonts/):
@@ -1542,7 +1548,10 @@ impl eframe::App for ForzaApp {
         {
             let dt = ctx.input(|i| i.unstable_dt);
             let stick = self.gamepad.right_stick();
-            self.minimap_look_off = crate::minimap::ease_look(self.minimap_look_off, stick, self.config.minimap_look_stick, dt);
+            // Relative to the car's heading (the heading-up yaw), whatever the map's mode.
+            self.minimap_look_off = crate::minimap::ease_look(
+                self.minimap_look_off, stick, self.config.minimap_look_stick,
+                self.minimap_cached_yaw, self.minimap_base_yaw(), dt);
         }
 
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
