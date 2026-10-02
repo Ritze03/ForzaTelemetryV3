@@ -31,6 +31,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fh6common import add_media_args, ci, resolve_media, locators, tzones
 from fh6str import StringTables
+from fh6owt import parse_rvan, positions as owt_positions
 
 ap = argparse.ArgumentParser(description='Extract race start lines/grids from AITracks/Route<N>.nav (RVAN block) -> races.json')
 add_media_args(ap)
@@ -55,39 +56,13 @@ def add(type_, name, x, z, source, y=None, precision='exact', **extra):
 
 # ================================================================================================ route files
 def parse_nav(path):
-    """RVAN block of a Route<N>.nav -> dict(A=start_line xyz, B=finish_line xyz, pts={name: (x,y,z,dx,dy,dz)}, gates=[...])"""
-    b = open(path, 'rb').read()
-    i = b.find(b'RVAN')
-    sz = struct.unpack_from('<I', b, i + 12)[0]
-    blk = b[i + 16:i + 16 + sz]
-    A = struct.unpack_from('<3f', blk, 0); B = struct.unpack_from('<3f', blk, 16)
-    nrect, npts, magic = struct.unpack_from('<3I', blk, 56)
-    assert npts == 14 and magic == 251, (path, npts, magic)
-    toks = re.findall(rb'[A-Za-z_0-9]+', blk[-(14 * 20 + 16):])[-npts:]
-    joined = b'\0'.join(toks) + b'\0'
-    p = blk.rfind(joined) - npts * 48
-    pts = {}
-    for k, tk in enumerate(toks):
-        o = p + k * 48
-        x, y, z = struct.unpack_from('<3f', blk, o); dx, dy, dz = struct.unpack_from('<3f', blk, o + 16)
-        pts[tk.decode()] = (x, y, z, dx, dy, dz)
-    gates = []
-    for k in range(nrect):
-        o = 80 + k * 76
-        if o + 76 > p:
-            break
-        gates.append(struct.unpack_from('<3f', blk, o))
-    return dict(A=A, B=B, pts=pts, gates=gates)
+    return parse_rvan(path)                                      # RVAN block, see fh6owt.py
 
 
 def owt_line(rid):
-    """driven racing line of a route (Route<N>.owt, magic FTWO): nodes of 56 B, first 12 B = x,y,z.  Some files (header word @0x20 == 4)
-    carry 2 extra nodes + 112 B of extra header."""
-    b = open(os.path.join(AIT, f'Route{rid}.owt'), 'rb').read()
-    n = struct.unpack_from('<I', b, 0x24)[0]; h0 = struct.unpack_from('<I', b, 0x20)[0]
-    off = 0x60 + (112 if h0 == 4 else 0); cnt = n - (2 if h0 == 4 else 0)
-    a = np.frombuffer(b, dtype=np.dtype([('p', '<f4', 3), ('r', 'u1', 44)]), offset=off, count=cnt)['p']
-    return a[np.isfinite(a).all(axis=1)]
+    """driven racing line of a route: finite node positions of Route<N>.owt, ALL sections (fh6owt.read_owt; the old reader dropped
+    nodes on the 6 multi-section files)"""
+    return owt_positions(os.path.join(AIT, f'Route{rid}.owt'))
 
 
 def dist_to_line(rid, x, z):

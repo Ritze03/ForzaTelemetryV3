@@ -6,8 +6,8 @@ sections first — everything here is read out of `Tracks/Brio/GeoChunk0.minizip
 the script disagree, trust the script and fix the doc).
 
 Status: research only — nothing in `src/` reads game files yet. The user checked both renders (elevation, surfaces) against the
-in-game world and they look right: **the ids and heights are trusted; only the surface *names* are missing** (see
-[Surface names](#surface-names--status)).
+in-game world and they look right: **the ids and heights are trusted; the surface *names* are ours** — 18 ids confirmed in-game, 4 seen, 32 reasoned
+(see [Surface names](#surface-names-id-table)).
 
 ## What is where
 
@@ -20,7 +20,7 @@ All paths are in-game paths inside GeoChunk0 (lower-case, backslashes; see `Chun
 | `…\autoterrain_x{X}_z{Z}_cluster{N}.i.modelbin` (no `cb`/`ul`) | 56 864 | more cluster models of the same cells | *not examined* |
 | `…\autoterrain_x{X}_z{Z}_square{0..35}.phys` | 28 259 (676 MB) | terrain **collision** mesh, 6×6 squares of ~85 m per cell, 34.7 M triangles, per-triangle material id | **surfaces** |
 | `scene\uberheightfield\autouberlod_x{X}_z{Z}_cluster{N}.i.modelbin` | 486 (26 MB) | coarse whole-island terrain LOD (2048 m cells) | optional coarse elevation (`--coarse`) |
-| `scene\intheightfield\autoterrain_x{X}_z{Z}_summer.mtxmoddxt` (+`_spring` …) | per cell | per-cell megatexture material palette (strings such as `road_cst_asp_smooth_g`, `cst_sand_flat_g`, `alp_snow_lumpy_b`) | looked at for surface names, see below |
+| `scene\intheightfield\autoterrain_x{X}_z{Z}_summer.mtxmoddxt` (+`_spring` …) | per cell | per-cell megatexture material palette (strings such as `road_cst_asp_smooth_g`, `cst_sand_flat_g`, `alp_snow_lumpy_b`) | looked at for surface names — no link to the physics ids, see [Surface names](#surface-names-id-table) |
 | `scene\…\mainmap_/submap_/autoglossf*_x{X}_z{Z}_x<season>x_….pb`, `…\wdepth\wdepth_*_season_N.dds`, `acoustics\*.ace`, `procphys\*.procphys` | — | terrain textures, water depth(?), audio zones, procedural physics | *not examined* |
 
 **Cell addressing.** File names carry `X = round(world_x / 1023)·1023`-style numbers, so the world cell of a `tbheightfield` file is
@@ -92,55 +92,97 @@ than keep it raw. Pixels with no terrain triangle (open sea beyond the island, t
 | then | nMat × 4 × u16 | material table. Row = per-slot `{corner0 id, corner1 id, corner2 id, ?}`; **column 1 is used as the triangle's dominant id** |
 | then | 8 B | tail |
 
-So a triangle's surface id is `M[materialSlot][1]`. Ids are **global** (~350 values in the whole game, **54–56 occur on the terrain**). Sample
+So a triangle's surface id is `M[materialSlot][1]`. Ids are **global** (~350 values in the whole game, **54 occur on the terrain**). Sample
 numbers from a full run: 28 259 files, 34 716 033 triangles, 54 distinct ids by centroid.
 
-`extract_terrain.py` writes `surfaces.npy` (uint16 dominant-by-area id per pixel; default 8 m) plus a colour render with the class
-grouping below.
+`extract_terrain.py` writes `surfaces.npy` (uint16 dominant-by-area id per pixel; default 8 m), `surfaces.json` (extent, ids present with names/status) and a colour render (its
+class grouping is for the preview only; names: the [id table](#surface-names-id-table)).
 
-### Inferred classes (OUR labels, not the game's)
+## Surface names (id table)
 
-Derived from where each id occurs (next to roads, in water, in snow, under forest, palette co-occurrence). The ids are exact; **the
-class names are guesses** — never present them as game names. (`NatalSurfaceTypes.xml` next to the encrypted `surfaceTypes.xml` is
-plaintext but is the old Forza Motorsport/Natal table and unrelated.)
+**The game's own id → name table is encrypted** (`Physics/surfaceTypes.xml`), so every name below is **ours**. Plan decisions D7/D9: the ids are trusted (the user checked the renders),
+the names were found by an in-game survey — the user drove to one flat spot per id (ordered by terrain area; list + map generated from the `extract_terrain.py` output) and said what it is; the survey was
+closed after three batches and every remaining id got a best guess, **marked as reasoned** ("use your best guess, but mark that they are reasoned"). The same table lives in code as
+[`fh6surfaces.py`](../../tools/fh6-extract/fh6surfaces.py) (`SURFACES = {id: (name, status)}`, one comment per entry); `extract_terrain.py` writes it into `surfaces.json`.
 
-| Class (ours) | Material ids |
+| status | meaning |
 |---|---|
-| Asphalt road | 9, 286 (286 ≈ `road_gen_asp_darkrural_g`) |
-| Second road class (urban/dust?) | 8, 10 |
-| Road shoulder / verge (assumed) | 280, 281, 242, 26 |
-| Concrete / pavement | 27 |
-| Snow road | 40 |
-| Water / paddy / flat lake+sea floor | 207 |
-| Sand / seabed / shore | 36, 39, 208, 60, 331 |
-| Snow / alpine rock | 345, 211, 41, 328, 183 |
-| Riverbank stones | 230 |
-| Dirt / farmland / gravel | 7, 56, 19, 279, 43 |
-| Forest floor / vegetation | 31, 20, 340, 336, 339, 23, 46, 53, 342 (342 bamboo), 17, 239 |
-| Grass / lawn | 22, 346 (346 lawn / golf) |
+| **confirmed in-game** (18) | the user stood on this id (✓ or a screenshot) and named it |
+| seen (visual only) (4) | the user saw the spot but it is outside the playable map or not reachable (ids 211, 41, 23, 27) |
+| reasoned (32) | our guess from location (next to roads / coast / snow line / forest), megatexture-palette co-occurrence and neighbouring confirmed ids — **not checked in-game; never show as the game's name** |
 
-Road class from the nav graph (4/5/6/8, see [Roads](fh6-game-files.md#1-roads--openworldbriofreeroambrio_00nav)) does **not** tell the surface.
-Top 10 ids cover 84 % of terrain area, top 15 cover 92 %.
+54 ids occur on the terrain (230.4 km² of triangles in total; the game has ~350 global ids). The top 10 ids cover 84 % of the area, the top 15 cover 92 %; all of the top 10 are confirmed.
 
-### Surface names — status
+| id | Name (ours) | Status | km² | Evidence |
+|---|---|---|---|---|
+| 31 | Forest floor | **confirmed in-game** | 61.82 | forest floor (palette: forest litter / needles) |
+| 22 | Grass | **confirmed in-game** | 37.92 | grass |
+| 207 | Shallow water / puddle | **confirmed in-game** | 36.58 | shallow water / puddle |
+| 20 | Forest floor (brownish) | **confirmed in-game** | 13.73 | forest floor, brownish variant |
+| 345 | Snowy forest floor | **confirmed in-game** | 8.04 | snowy forest floor between trees (NOT alpine rock) |
+| 340 | Dead grass / dry brown ground | **confirmed in-game** | 7.97 | dead grass / dry brown ground (screenshot) |
+| 36 | Seabed (under water) | **confirmed in-game** | 7.53 | water, seabed under the water |
+| 9 | Asphalt | **confirmed in-game** | 7.20 | asphalt, parking area |
+| 230 | Packed gravel / dirt | **confirmed in-game** | 6.45 | packed gravel/dirt beside a puddle, docks/industrial (NOT riverbank stones) |
+| 39 | Seabed / shore | **confirmed in-game** | 6.13 | seabed / shore |
+| 336 | Forest floor | **confirmed in-game** | 4.71 | forest floor |
+| 211 | Snow | seen (visual only) | 3.64 | snow, outside the playable map, visual only |
+| 342 | Bamboo forest floor | **confirmed in-game** | 3.56 | bamboo forest floor |
+| 7 | Gravel / stones | **confirmed in-game** | 3.23 | gravel/stones on an alpine lake shore (NOT a rice field, despite the palette) |
+| 56 | Ploughed field | **confirmed in-game** | 3.11 | ploughed field |
+| 41 | Snow / alpine | seen (visual only) | 3.01 | snow/alpine, outside the playable map, looks right |
+| 339 | Forest floor | **confirmed in-game** | 1.85 | forest floor |
+| 19 | Forest clearing (felled trees) | **confirmed in-game** | 1.57 | forest clearing with felled trees |
+| 8 | Asphalt (elevated deck) | **confirmed in-game** | 1.49 | asphalt on the elevated Tokyo expressway interchange (bridge deck) |
+| 23 | Grass (festival site) | seen (visual only) | 1.26 | festival-site grass, seen but not reachable |
+| 27 | Concrete | seen (visual only) | 1.21 | concrete, industrial area, seen but not reachable |
+| 208 | Sand / shore | reasoned | 0.92 | spot at y 96 m (sea level is ~100); sibling of the confirmed seabed/shore ids 36, 39 |
+| 280 | Dirt track or road verge (weak) | reasoned | 0.89 | lies on roads (0 m from a road); 281 turned out to be a dirt track, so "verge" is doubtful |
+| 279 | Dirt / farm track | reasoned | 0.81 | earlier class guess "dirt / farmland"; no other hint |
+| 46 | Forest floor (steep) | reasoned | 0.80 | earlier class guess "forest"; only on steep ground (no flat patch to visit) |
+| 53 | Forest floor | reasoned | 0.71 | earlier class guess "forest"; small patches |
+| 40 | Snow road | reasoned | 0.56 | on alpine roads; megatexture palette road_alp_snw_flat |
+| 43 | Dirt / gravel | reasoned | 0.49 | earlier class guess "dirt / farmland / gravel"; no other hint |
+| 328 | Snow / alpine rock (weak) | reasoned | 0.49 | earlier class guess "snow", but the spot is at y 121 m (near sea level) - doubtful |
+| 281 | Packed dirt track | **confirmed in-game** | 0.47 | packed dirt track at the junction of a rallycross-style dirt circuit (NOT road verge) |
+| 60 | Sand / shore | reasoned | 0.44 | spot at y 101 m (sea level); sibling of 36, 39, 208 |
+| 183 | Snow / alpine rock | reasoned | 0.40 | earlier class guess "snow / alpine rock"; spot at y 524 m next to a parking area |
+| 331 | Sand / shore | reasoned | 0.27 | spot at y 102 m (sea level); sibling of 36, 39, 208 |
+| 239 | Vegetation / undergrowth (weak) | reasoned | 0.26 | earlier class guess "forest / vegetation"; nothing more specific |
+| 286 | Asphalt (dark rural) | reasoned | 0.19 | on rural roads; megatexture palette road_gen_asp_darkrural_g |
+| 17 | Unknown (vegetation?) | reasoned | 0.17 | next to a bridge landmark; earlier class guess "forest"; no real evidence |
+| 346 | Lawn / golf course grass | reasoned | 0.16 | earlier class guess "lawn / golf"; spot beside a car-parking area |
+| 10 | Asphalt (urban variant) | reasoned | 0.11 | on a job-route road (10 m from it); sibling of confirmed asphalt 8 - assumed asphalt variant |
+| 242 | Road verge / dirt (weak) | reasoned | 0.05 | beside roads; see 280 |
+| 26 | Unknown (road shoulder?) | reasoned | 0.05 | beside a parking area; no real evidence |
+| 199 | Unknown | reasoned | 0.03 | too small to survey, no evidence |
+| 236 | Unknown | reasoned | 0.02 | — |
+| 18 | Unknown | reasoned | 0.02 | — |
+| 107 | Unknown | reasoned | 0.02 | — |
+| 178 | Unknown | reasoned | 0.02 | — |
+| 282 | Unknown | reasoned | 0.01 | — |
+| 29 | Unknown | reasoned | 0.01 | — |
+| 283 | Unknown | reasoned | 0.01 | — |
+| 28 | Unknown | reasoned | 0.01 | — |
+| 32 | Unknown | reasoned | 0.00 | — |
+| 229 | Unknown | reasoned | 0.00 | — |
+| 171 | Unknown | reasoned | 0.00 | — |
+| 293 | Unknown | reasoned | 0.00 | — |
+| 238 | Unknown | reasoned | 0.00 | — |
 
-Plan decision **D7** (see `.claude/teamlead/plan/game-file-parsing.md`): try to read real names from files; otherwise name them by an in-game
-survey with the user.
-
-- **File decode attempt: no id → name mapping in any readable file.** The only table that has it, `Physics/surfaceTypes.xml`, is
-  encrypted. The per-cell megatexture palettes (`.mtxmoddxt`) list visual material layers + splat maps and carry **no link to the physics ids**.
-- Palette *co-occurrence* supports a few guesses (40 snow road, 7 rice field, 56 ploughed field, 342 bamboo/hillside, 230 riverbank, 22 grass,
-  27 concrete, 346 golf course) — still guesses.
-- `Audio/AudioSurfacesInfo.xml` (plaintext) lists ~43 *game* surface names (`Asphalt_Smooth`, `Dirt_Gravel`, `Snow_Compact_Road`, …) — usable
-  as naming **vocabulary** for the survey, not as an id mapping.
-- **Next step (open): in-game survey** — drive to one spot per id (38 ids cover the terrain; list + map were prepared in the session
-  scratchpad, regenerate with `extract_terrain.py`) and have the user confirm what it is. Record the confirmed names here with a
-  "user-confirmed" tag.
+Notes on the surprises (several pre-survey guesses were wrong):
+- **230** is packed gravel/dirt in the docks/industrial area, not "riverbank stones"; **7** is gravel/stones on an alpine lake shore, not a rice field (the palette co-occurrence misled); **345** is snowy forest floor between the trees, not alpine rock.
+- **281** turned out to be a packed dirt track (junction of a rallycross-style circuit), not "road verge" — so the sibling "verge" guesses **280** and **242** are weak and may be dirt-track surfaces too.
+- Nav-graph road class (4/5/6/8, see [Roads](fh6-game-files.md#1-roads--openworldbriofreeroambrio_00nav)) does **not** tell the surface.
+- `Audio/AudioSurfacesInfo.xml` (plaintext) lists ~43 *game* surface names (`Asphalt_Smooth`, `Dirt_Gravel`, `Dirt_Forest`, `Grass_General`, `Snow_Compact_Road`, `Scree`, `Slate`, `Concrete`, …) — **vocabulary only, not id-numbered**: a good target set if the app ever maps ids to the game's terms.
+  `Physics/NatalSurfaceTypes.xml` next to the encrypted file is the old Forza Motorsport/Natal table and unrelated.
+- The megatexture palettes (`.mtxmoddxt`) list visual material layers + splat maps and carry **no link to the physics ids** (D7 file-decode attempt: no id → name mapping in any readable file).
+- `extract_terrain.CLASSES` (12 colour groups) only drives the preview PNG; use `fh6surfaces.py` for names.
 
 ## Rust implementation notes
 
 - Needs: PGZP reader (u32/u64 tables + three codecs), a raw **LZ4 block** decoder (~25 lines, see `lz4b.py`) and `flate2` raw deflate (already
   transitive). No zip crate needed for GeoChunk.
 - Elevation ≈ 1–2 days: parse `burG` Mesh/IndB/VerB, rasterise, **bake once to a cache file** (don't redo it every start; it is minutes of work).
-- Surfaces: moderate–high — needs the `.phys` decode and a decision on names (above).
+- Surfaces: moderate–high — needs the `.phys` decode; names: a `confirmed`/`seen`/`reasoned` flag per id lets the UI hedge (show reasoned names with a "?" or not at all).
 - Cache location: the app data dir, never the repo (the data is Playground Games IP; see the licensing section of the main doc).
