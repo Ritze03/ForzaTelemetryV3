@@ -60,7 +60,7 @@ now lives on the Co-Op tab under the Session card; see [[coop]].
 ## Hotkey & Window Detection
 
 The **Hotkey** card lists every binding in two groups (Global / In-app), including **Hide
-HUD** (default H, the same binding the Overlay tab edits). Click a button and press a key;
+HUD** (default J, the same binding the Overlay tab edits). Click a button and press a key;
 **Esc** cancels, **Backspace** clears it to a faint **Not set**. Details in [[hotkeys]].
 
 The **Input Permissions** category (Linux only, below Window Detection) shows status dots for

@@ -292,6 +292,7 @@ mod tests {
     fn cfg() -> AppConfig {
         let mut c = AppConfig::default();
         c.overlay.enabled = true;
+        c.overlay.notif_gearbox_mode = true; // off by default; these tests exercise the event
         c.dsg_enabled = false;
         c.backfire_enabled = false;
         c.dsg_auto_race_mode = true;

@@ -78,6 +78,27 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
    active profile if none exists, so `profiles/` is never empty. CRUD +
    switch/export/import live in `config.rs`; see [[profiles]].
 
+## Defaults: where they live, and what a fresh install gets
+
+A missing key always resolves to the code default, in exactly one place per kind:
+`AppConfig::default()` for top-level keys (`load()` merges them in), struct-level
+`#[serde(default)]` + `Default` for `OverlayConfig` / `GamepadConfig` / `HotkeyConfig` (a
+partial nested object fills per field), `default_bindings()` for keyboard hotkeys
+(`inject_missing_hotkeys` fills missing actions, skipping `HotkeyConfig::unbound`). A fresh
+install additionally starts from the bundled `assets/default-config.json` (older "getting
+started" snapshot, no overlay/gamepad/hotkeys keys), so features added since that snapshot take
+their defaults from the code.
+
+**Tuned defaults (0.4.1).** The settings added in this release (the whole Overlay tab,
+gamepad, backfire duration limit, look-around stick, Trystero co-op transport, the Hide HUD /
+Clear gear map keys) default to the user's own values rather than neutral ones. *Why:* the
+user asked that their current setup be what an unconfigured install gets. Per-machine and
+personal values are deliberately **not** copied: `fh6_install_dir`, `input_perm_dont_remind`
+(also in `EXPORT_EXCLUDE`), the overlay's monitor settings, window-detection settings
+(`hotkeys.gate_mode`, `focus_method`, `game_match`, ...), co-op identity (name, colour, room,
+last code), window geometry, port, profile selection. The per-feature docs list each value
+([[overlay]], [[hotkeys]], [[gamepad]], [[backfire]], [[coop]]).
+
 ## The migration pattern (renaming/removing a config field or enum value)
 
 This is the sharp edge: because `load()` merges onto raw JSON and only migrates known

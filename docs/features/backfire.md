@@ -67,8 +67,8 @@ Open the **Backfire** tab:
   RPM** are shown as % of the car's max RPM (with a live "Range: X – Y RPM"
   readout below); when off, they are absolute RPM values. **RPM interval** sets
   the minimum RPM drop between two pops.
-  **Limit max. duration** (off by default) adds a slider + spinner (100-5000 ms,
-  default 1000) below it.
+  **Limit max. duration** (on by default) adds a slider + spinner (100-5000 ms,
+  default 1500) below it.
 - **Key Press** — **Dynamic key press duration** toggle with a **Time-based
   / Packet-based** mode dropdown; when off, a fixed **Key press duration**
   slider (ms) appears instead.

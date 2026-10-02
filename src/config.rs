@@ -216,7 +216,7 @@ pub fn inject_missing_hotkeys(hk: &mut HotkeyConfig) {
         if hk.unbound.contains(&action) {
             continue;
         }
-        // Actions without a default key (Clear gear map) simply stay "Not set".
+        // An action without a default key would simply stay "Not set".
         if let Some(d) = defaults.get(&action) {
             hk.bindings.entry(action).or_insert(*d);
         }
@@ -231,7 +231,9 @@ fn default_bindings() -> HashMap<HotkeyAction, crate::keymap::HotkeyBinding> {
     m.insert(HotkeyAction::ResetCalibration, HotkeyBinding { mods: Mods::default(), key: HotKey::F });
     m.insert(HotkeyAction::MiniSettings, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::S });
     m.insert(HotkeyAction::DashboardEdit, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::E });
-    m.insert(HotkeyAction::HideHud, HotkeyBinding { mods: Mods::default(), key: HotKey::H });
+    // Same key as Clear RPM calibration: one press clears both (the tuned setup is "reset everything").
+    m.insert(HotkeyAction::ClearGearMap, HotkeyBinding { mods: Mods::default(), key: HotKey::F });
+    m.insert(HotkeyAction::HideHud, HotkeyBinding { mods: Mods::default(), key: HotKey::J });
     m
 }
 
@@ -263,13 +265,15 @@ pub struct GamepadConfig {
     pub stick_deadzone: f32,
     /// Trigger deadzone, 0..0.5 of full travel.
     pub trigger_deadzone: f32,
-    /// Controller input bound to each global action. Absent = not bound (the default).
+    /// Controller input bound to each global action. Absent = not bound (default: only Toggle Gearbox → L3).
     pub bindings: HashMap<HotkeyAction, crate::gamepad::PadControl>,
 }
 
 impl Default for GamepadConfig {
     fn default() -> Self {
-        Self { enabled: true, stick_deadzone: 0.27, trigger_deadzone: 0.10, bindings: HashMap::new() }
+        // Tuned default: the gearbox toggle on L3 (stick click).
+        let bindings = HashMap::from([(HotkeyAction::ToggleGearbox, crate::gamepad::PadControl::L3)]);
+        Self { enabled: true, stick_deadzone: 0.27, trigger_deadzone: 0.10, bindings }
     }
 }
 
@@ -465,16 +469,17 @@ pub struct OverlayConfig {
     pub notif_backfire: bool,
     /// "Calibration started" / "Shift at redline" / "Calibration done — N rpm".
     pub notif_calibration: bool,
-    /// Anchor of the notification stack on the screen (3×3), default top-centre.
+    /// Anchor of the notification stack on the screen (3×3), default centre.
     pub notif_cell: HudCell,
 }
 
 impl OverlayConfig {
-    // Default slots (the tab mockup's): map bottom-left, cluster bottom-centre,
-    // race/drift top-left.
+    // Default slots: map bottom-left, cluster bottom-centre, race/drift bottom-right.
     pub const DEFAULT_CLUSTER_CELL: HudCell = HudCell::BottomCenter;
     pub const DEFAULT_MINIMAP_CELL: HudCell = HudCell::BottomLeft;
-    pub const DEFAULT_RACE_CELL: HudCell = HudCell::TopLeft;
+    pub const DEFAULT_RACE_CELL: HudCell = HudCell::BottomRight;
+    /// Distance from the screen edges (1080p design px). The HUD's layout fallback is `hud::layout::MARGIN`.
+    pub const DEFAULT_MARGIN_PX: f32 = 4.0;
 
     /// The settings the HUD actually draws with: `self`, with the map group (`map_use_dashboard`)
     /// and/or the co-op group (`coop_use_dashboard`) replaced by the Dashboard map's values from
@@ -511,7 +516,7 @@ impl OverlayConfig {
         self.cluster_cell = Self::DEFAULT_CLUSTER_CELL;
         self.minimap_cell = Self::DEFAULT_MINIMAP_CELL;
         self.race_cell = Self::DEFAULT_RACE_CELL;
-        self.margin_px = crate::hud::layout::MARGIN;
+        self.margin_px = Self::DEFAULT_MARGIN_PX;
         self.gap_px = crate::hud::layout::GAP;
     }
 }
@@ -519,11 +524,11 @@ impl OverlayConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             scale: 1.0,
             plate_opacity: 0.68,
             fade: true,
-            focus_only: false,
+            focus_only: true,
             monitor_method: MonitorMethod::Hyprland,
             monitor_cmd: String::new(),
             monitor_fixed: String::new(),
@@ -535,24 +540,24 @@ impl Default for OverlayConfig {
             minimap_cell: Self::DEFAULT_MINIMAP_CELL,
             race_cell: Self::DEFAULT_RACE_CELL,
             cluster_style: ClusterStyle::Pill,
-            rpm_label: false,
+            rpm_label: true,
             shift_flash: true,
             gear_pulse: true,
             redline_frac: 0.85,
             shift_frac: 0.93,
-            margin_px: crate::hud::layout::MARGIN,
+            margin_px: Self::DEFAULT_MARGIN_PX,
             gap_px: crate::hud::layout::GAP,
             speed_hold: false,
             compass: true,
             // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
             zoom_stopped_m: 3000.0,
-            zoom_driving_m: 1500.0,
-            // Defaults = the HUD map's behaviour before these were settable.
+            zoom_driving_m: 500.0,
+            // Tuned defaults (the HUD map rotates to the movement direction and follows the right stick).
             map_north_up: false,
             map_north_up_when_stopped: false,
             map_smooth_rotation: true,
-            map_use_movement_dir: false,
-            map_look_stick: false,
+            map_use_movement_dir: true,
+            map_look_stick: true,
             // Dashboard default.
             map_mirror_edges: true,
             map_use_dashboard: false,
@@ -561,7 +566,7 @@ impl Default for OverlayConfig {
             coop_trail_fade_secs: 10.0,
             coop_trail_fade_m: 500.0,
             coop_waypoints: true,
-            coop_use_dashboard: false,
+            coop_use_dashboard: true,
             lap_delta: true,
             place_colour: true,
             drift_style: DriftStyle::PositionGain,
@@ -569,10 +574,10 @@ impl Default for OverlayConfig {
             drift_bar: true,
             notif_on: true,
             notif_gearbox_toggle: true,
-            notif_gearbox_mode: true,
+            notif_gearbox_mode: false,
             notif_backfire: true,
             notif_calibration: true,
-            notif_cell: HudCell::TopCenter,
+            notif_cell: HudCell::Center,
         }
     }
 }
@@ -968,7 +973,7 @@ impl Default for AppConfig {
             minimap_fps_limit_enabled: true,
             minimap_smooth_rotation: true,
             minimap_use_movement_dir: true,
-            minimap_look_stick: false,
+            minimap_look_stick: true,
             minimap_mirror_edges: true,
             minimap_north_up: false,
             minimap_north_up_when_stopped: false,
@@ -998,8 +1003,8 @@ impl Default for AppConfig {
             backfire_accel_time_ms: 8,
             backfire_dynamic_duration: true,
             backfire_dynamic_mode: BackfireDynamicMode::PacketBased,
-            backfire_limit_duration: false,
-            backfire_max_duration_ms: 1000,
+            backfire_limit_duration: true,
+            backfire_max_duration_ms: 1500,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             backfire_drift_detection: true,
@@ -1038,9 +1043,9 @@ impl Default for AppConfig {
             coop_buffer_ms: 0,
             coop_port: crate::coop::DEFAULT_COOP_PORT,
             coop_last_code: String::new(),
-            coop_transport: CoopTransport::Cloudflare,
+            coop_transport: CoopTransport::Trystero,
             coop_room: String::new(),
-            coop_autoconnect: false,
+            coop_autoconnect: true,
             coop_trail_fade_secs: 10.0,
             coop_trail_fade_m: 500.0,
             coop_map_playerlist: false,
@@ -1649,9 +1654,9 @@ mod tests {
         assert_eq!(cfg.listen_port, 4321);       // kept from the old config
         assert_eq!(cfg.coop_port, DEFAULT_COOP_PORT_TEST); // filled from default
         // Trystero fields added later fill from defaults too.
-        assert_eq!(cfg.coop_transport, CoopTransport::Cloudflare);
+        assert_eq!(cfg.coop_transport, CoopTransport::Trystero);
         assert!(cfg.coop_room.is_empty());
-        assert!(!cfg.coop_autoconnect);
+        assert!(cfg.coop_autoconnect);
     }
 
     #[test]
@@ -1875,7 +1880,7 @@ mod tests {
         m.remove("overlay");
         let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("parse");
         assert_eq!(cfg.overlay, OverlayConfig::default());
-        assert!(!cfg.overlay.enabled, "overlay is off by default");
+        assert!(cfg.overlay.enabled, "overlay is on by default");
         // A partial overlay object (older build, fewer fields) fills the rest.
         let o: OverlayConfig = serde_json::from_str(r#"{ "enabled": true }"#).unwrap();
         assert_eq!(o, OverlayConfig { enabled: true, ..Default::default() });
@@ -1886,18 +1891,42 @@ mod tests {
         assert!(!o.drift_bar && o.rpm_label);
         let o: OverlayConfig = serde_json::from_str(r#"{ "drift_style": "Total", "speed_hold": true }"#).unwrap();
         assert_eq!((o.drift_style, o.speed_hold), (DriftStyle::Total, true));
-        // An old hotkeys object without `unbound`/HideHud gets H injected on load.
+        // An old hotkeys object without `unbound`/HideHud gets J injected on load.
         let mut hk: HotkeyConfig =
             serde_json::from_str(r#"{ "bindings": { "ToggleGearbox": { "mods": { "ctrl": false, "alt": false, "shift": false, "sup": false }, "key": "G" } } }"#)
                 .unwrap();
         inject_missing_hotkeys(&mut hk);
-        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::H);
+        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::J);
+        assert_eq!(hk.bindings[&HotkeyAction::ClearGearMap].key, crate::keymap::HotKey::F);
     }
 
     #[test]
-    fn hide_hud_defaults_to_global_h_and_unbinding_survives_reload() {
+    fn tuned_defaults_apply_to_fresh_and_partial_configs() {
+        use crate::gamepad::PadControl;
+        let c = AppConfig::default();
+        assert!(c.minimap_look_stick && c.backfire_limit_duration && c.experimental_pause_detection);
+        assert_eq!(c.backfire_max_duration_ms, 1500);
+        assert_eq!(c.gamepad.bindings, HashMap::from([(HotkeyAction::ToggleGearbox, PadControl::L3)]));
+        assert_eq!((c.gamepad.stick_deadzone, c.gamepad.trigger_deadzone), (0.27, 0.10));
+        let o = OverlayConfig::default();
+        assert!(o.enabled && o.focus_only && o.rpm_label && o.coop_use_dashboard && !o.notif_gearbox_mode);
+        assert_eq!((o.race_cell, o.notif_cell), (HudCell::BottomRight, HudCell::Center));
+        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 500.0));
+        // An older overlay / gamepad object with only some keys: the rest are the tuned defaults.
+        let o: OverlayConfig = serde_json::from_str(r#"{ "scale": 1.5 }"#).unwrap();
+        assert_eq!((o.scale, o.margin_px, o.race_cell), (1.5, 4.0, HudCell::BottomRight));
+        let g: GamepadConfig = serde_json::from_str(r#"{ "enabled": false }"#).unwrap();
+        assert!(!g.enabled && g.bindings.contains_key(&HotkeyAction::ToggleGearbox));
+        // reset_layout returns to the tuned layout too.
+        let mut o = OverlayConfig { margin_px: 90.0, race_cell: HudCell::TopLeft, ..Default::default() };
+        o.reset_layout();
+        assert_eq!((o.margin_px, o.race_cell), (4.0, HudCell::BottomRight));
+    }
+
+    #[test]
+    fn hide_hud_defaults_to_global_j_and_unbinding_survives_reload() {
         let mut hk = HotkeyConfig::default();
-        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::H);
+        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::J);
         assert_eq!(HotkeyAction::HideHud.scope(), HotkeyScope::Global);
         hk.unbind(HotkeyAction::HideHud);
         let mut back: HotkeyConfig = serde_json::from_str(&serde_json::to_string(&hk).unwrap()).unwrap();
@@ -1914,7 +1943,7 @@ mod tests {
         // Older profile: hotkeys without HideHud and without `unbound`.
         let mut cfg = AppConfig::default();
         apply_preset(&mut cfg, &format!(r#"{{ "hotkeys": {{ "bindings": {{ "ToggleGearbox": {g} }} }} }}"#));
-        assert_eq!(cfg.hotkeys.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::H);
+        assert_eq!(cfg.hotkeys.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::J);
         // A profile that deliberately unbound HideHud keeps it unbound.
         let mut cfg = AppConfig::default();
         apply_preset(
@@ -1966,6 +1995,8 @@ mod tests {
             ..Default::default()
         };
         let own = OverlayConfig {
+            map_use_dashboard: false,
+            coop_use_dashboard: false,
             compass: true,
             zoom_driving_m: 100.0,
             coop_teammates: false,
@@ -1973,7 +2004,7 @@ mod tests {
             coop_trail_fade_secs: 5.0,
             ..Default::default()
         };
-        // Both off (default): the HUD's own values, untouched.
+        // Both off: the HUD's own values, untouched.
         assert_eq!(own.effective(&app), own);
 
         // Map group only: map fields come from the Dashboard, co-op fields stay the HUD's.
