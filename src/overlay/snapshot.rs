@@ -131,17 +131,37 @@ pub enum NotifKind {
     Hint,
 }
 
+/// What a notification is about. A new notification replaces the live one of the same group
+/// (same pill, new text) instead of stacking next to it. See `listeners::notify`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifGroup {
+    /// Calibration started / Shift at redline / Calibration done: one story, one pill.
+    Calibration,
+    /// Gearbox ON / OFF.
+    Gearbox,
+    /// Gearbox mode changes.
+    GearboxMode,
+    /// Backfire ON / OFF.
+    Backfire,
+}
+
 /// One short on-HUD message (D26). Created on the listener thread, which sees every source
 /// (hotkeys, config pushed from the UI, the gearbox/calibration state); the HUD only draws
 /// it while `hud_clock() − created < hud::notify::TTL_SECS`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notification {
-    /// Unique per process, rising; the HUD could key animation state on it.
+    /// Unique per process, rising. It is the pill's **slot**: a replacement keeps it, so the
+    /// stack order (by id) and the other pills never move; text/kind/`created` change in place.
     pub id: u64,
+    pub group: NotifGroup,
     pub text: String,
     pub kind: NotifKind,
-    /// [`hud_clock`] seconds.
+    /// [`hud_clock`] seconds of the latest (re)write: the TTL and the fade-out run from here.
     pub created: f64,
+    /// When the pill started fading in. Equals `created` for a fresh pill; a replacement
+    /// keeps the pill's old fade-in (backdated if it was mid fade-out) so it neither blinks
+    /// out nor re-fades from zero.
+    pub born: f64,
 }
 
 /// Everything the HUD draws from. Cheap to clone (the packet is ~200 B, the config an Arc).

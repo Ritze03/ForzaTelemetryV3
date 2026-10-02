@@ -286,11 +286,29 @@ else to see it).
 | `Gearbox: ON / OFF` | `notif_gearbox_toggle` | G hotkey or the Gearbox tab |
 | `Gearbox mode: <mode>` | `notif_gearbox_mode` | mode picker, or the automatic switch to Race in a race and back (the *effective* mode, `dsg_effective_mode`); silent while the gearbox is off |
 | `Backfire: ON / OFF` | `notif_backfire` | Backfire hotkey or tab |
-| `Calibration started` | `notif_calibration` | Clear RPM calibration hotkey / controller action, the tab's Clear RPM calibration button, a new car that starts uncalibrated |
+| `Calibration started` | `notif_calibration` | the level rule below (driving an uncalibrated car, once per episode), and the Clear RPM calibration hotkey / controller action / tab button |
 | `Shift at redline` (yellow dot, `NotifKind::Hint`) | `notif_calibration` | once per calibration cycle: the box is not calibrated (`!engaged`) and gear 1's gear-map entry first has data (`DsgListener::gear_redline_speeds[1] > 0`); tells the user data was collected and now is the time to rev out and shift. Re-arms on every new cycle (see below) |
 | `Calibration done: N rpm` | `notif_calibration` | the gearbox engaging (`DsgListener::engaged` false to true: first manual upshift or a restored profile) |
 
-**Calibration sequence:** `Calibration started` (explicit push) then `Shift at redline` (level
+**Calibration started rule** (`Notifier::watch`, level not edge). Announced when the game is
+running and not paused (`driving`: `!hud_paused(pkt, experimental_pause_detection)`, which
+includes race-on, and a non-zero car ordinal; `worker.rs:driving_car`) and the car is not
+calibrated (`!engaged`), **once per episode** (`Notifier::started_for` = the car it was told
+for). A new episode starts on: a car change (different ordinal), the box becoming calibrated
+(`engaged`), and an explicit Clear RPM calibration (which pushes the message itself, and
+counts as told if a car is being driven right now; cleared while paused, so the next drive
+announces it). So: the first car after starting the app announces once you leave the pause
+menu (or at once if the app starts mid-drive); pausing and resuming the same car does not
+repeat it; a car restored from a saved profile (already `engaged`) says nothing; the app
+restarting says it again. *Why a level:* the old rule only fired on a car change (not the
+first car) and on explicit resets, so an uncalibrated car you simply started driving got no
+message. *Why not tied to the gearbox switch:* calibration (`dynamic_max_rpm`, `engaged`) runs
+with the box off too and feeds the HUD's shift cue, the user's wording has no gearbox clause,
+and the car-change message was never gated on it; the `notif_calibration` toggle is the
+off-switch. Like the shift hint it is not announced retroactively when a toggle is switched
+on mid-episode.
+
+**Calibration sequence:** `Calibration started` (level rule / explicit push) then `Shift at redline` (level
 check in `Notifier::watch`) then `Calibration done` (`engaged` false to true). *Why gear 1's
 entry is the signal:* calibration needs the first pull to redline, which in a normal pull is
 gear 1; any sample needs >60 % of the detected redline, so the first non-zero entry is the first
@@ -304,6 +322,23 @@ counts as already told. It shares the `notif_calibration` toggle and is silent w
 is off (and is not announced retroactively when switched on mid-cycle). Clear gear map itself
 sends no `Calibration started`.
 
+**Groups and replacement.** Every notification has a `NotifGroup` (`overlay/snapshot.rs`):
+`Calibration` (Started, Shift at redline, Done), `Gearbox` (ON/OFF), `GearboxMode`,
+`Backfire`. Pushing one while a pill of the same group is still showing (younger than
+`TTL_SECS`) **replaces that pill in place** (`Notifier::push`): same `id`, so the stack order
+and every other pill stay put; new text and dot colour; `created` restarts the 2.5 s life.
+So Started, Shift, Done in quick succession is one pill that changes text, and ON then OFF is
+one pill saying OFF. Different groups still stack. *Why:* rapid same-type messages (a few
+presses of the toggle key, the calibration cycle) piled up as redundant pills; only the
+latest state matters. *Why Gearbox and Gearbox mode are two groups:* "ON/OFF" and "mode:
+Race" are different facts, and a mode change should not wipe the ON/OFF the user just saw.
+An older pill that has already expired (but is still in the 4 s queue) is not reused; the
+new one gets its own slot. *Look of a replacement:* just a text swap, no cross-fade, kept
+smooth by `Notification::born`: the fade-in start, which the replacement keeps (or backdates by the
+pill's current opacity if it was mid fade-out), so the pill neither blinks out nor re-fades
+from zero. `alpha(since_born, since_update)` = fade-in from `born`, fade-out from `created`.
+The HUD orders the stack by `id` (slot), not by `created`, since a replacement keeps its slot.
+
 Not included: Hide HUD (the HUD, notifications with it, is hidden by that very key), dashboard
 edit mode and Mini-Settings (app-window only).
 
@@ -312,16 +347,17 @@ hotkeys and gets the UI's config every frame, so `Notifier::watch` just diffs
 `dsg_enabled` / `backfire_enabled` / effective mode / `engaged` once per loop pass. *Why a
 diff and not a hook per source:* UI-side toggles, the G key, profile loads and the automatic
 race switch all produce one identical message exactly once, and there is no UI to listener
-queue. Calibration *start* can't be diffed (a reset of an uncalibrated box changes nothing),
-so the reset sites (hotkey, controller action, tab command) push it explicitly. The `Notifier` queue (max 8, pruned after 4 s)
-is copied into `HudSnapshot::notifications` (`Vec<Notification { id, text, kind, created }>`,
-`created` on `hud_clock`); a new entry forces a publish even without a packet. Text is
+queue. Calibration *start* after a reset can't be diffed (a reset of an uncalibrated box
+changes nothing), so the reset sites (hotkey, controller action, tab command) push it
+explicitly; the uncalibrated-car case is the level rule above. The `Notifier` queue (max 8, pruned after 4 s)
+is copied into `HudSnapshot::notifications` (`Vec<Notification { id, group, text, kind,
+created, born }>`, times on `hud_clock`); a new entry forces a publish even without a packet. Text is
 translated when created. The first pass only records a baseline, so starting the app says
 nothing. Nothing is queued while the overlay is off.
 
 **Look.** A 38 px plate pill (Drive cluster plate colour and font), a status dot (green on /
 done, red off, blue info, yellow hint: `col::AMBER`, the HUD's amber) and the text. Alive for `TTL_SECS` = 2.5 s, 0.15 s fade-in, 0.45 s
-fade-out; the newest 5 are drawn; the overlay's frame timer runs while any is alive. They
+fade-out (both restart per replacement, see above); the newest 5 are drawn; the overlay's frame timer runs while any is alive. They
 follow the HUD's global fade, so a hidden or paused HUD shows none.
 
 **Position** (Overlay tab, Notifications card): a 3×3 anchor picker, `notif_cell`, default
