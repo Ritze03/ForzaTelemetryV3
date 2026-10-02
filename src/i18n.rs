@@ -298,8 +298,6 @@ fn de(s: &str) -> Option<&'static str> {
              Gas-Anzeige nur dein echtes Pedal widerspiegelt.",
 
         // ── Engine swaps tab ───────────────────────────────────────────
-        "Display-only reference table. All engines available in Forza Horizon 6." =>
-            "Reine Anzeigetabelle. Alle in Forza Horizon 6 verfügbaren Motoren.",
         "Search" => "Suche",
         "engines" => "Motoren",
         "In-Game Label" => "Spiel-Bezeichnung",
@@ -711,8 +709,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Player color" => "Spielerfarbe",
         "Player" => "Spieler",
         "Colour" => "Farbe",
-        "Others see this name + colour; your own map arrow uses the colour only." =>
-            "Andere sehen diesen Namen + Farbe; dein eigener Kartenpfeil nutzt nur die Farbe.",
+        "Auto-starts on deceleration, aborts if re-accelerating for >500 ms." =>
+            "Startet automatisch beim Verzögern, bricht ab, wenn länger als 500 ms wieder beschleunigt wird.",
         "Pacing" => "Taktung",
         "Packet Buffer Size" => "Paketpuffergröße",
         "Delays remote players by this much to smooth out network jitter.\n\
