@@ -287,10 +287,11 @@ mod tests {
     }
 
     #[test]
-    fn clear_gear_map_has_no_default_key_and_unbound_stays_injectable() {
+    fn clear_gear_map_defaults_to_f_and_unbound_stays_unbound() {
         let mut hk = crate::config::HotkeyConfig::default();
-        assert!(!hk.bindings.contains_key(&HotkeyAction::ClearGearMap));
-        crate::config::inject_missing_hotkeys(&mut hk); // must not panic on an action without a default
+        assert_eq!(hk.bindings[&HotkeyAction::ClearGearMap].key, HotKey::F);
+        hk.unbind(HotkeyAction::ClearGearMap);
+        crate::config::inject_missing_hotkeys(&mut hk); // a deliberate unbind is not re-injected
         assert!(!hk.bindings.contains_key(&HotkeyAction::ClearGearMap));
         assert_eq!(serde_json::to_string(&HotkeyAction::ResetCalibration).unwrap(), "\"ResetCalibration\"");
         assert_eq!(serde_json::to_string(&HotkeyAction::ClearGearMap).unwrap(), "\"ClearGearMap\"");

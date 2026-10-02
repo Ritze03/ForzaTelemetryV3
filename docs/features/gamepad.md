@@ -10,7 +10,7 @@ Controller** (card right under Hotkey). Code: `src/gamepad.rs`; UI: `controller_
 
 - **Bindings** for the global actions (Toggle Automatic Gearbox, Clear RPM calibration, Clear gear map,
   Toggle Backfire, Hide HUD). Click a row's button, press a pad control (**Esc** cancels,
-  **Backspace** or **Delete** clears the binding and ends the capture; there is no clear button). Default: nothing bound. Several actions can share one control:
+  **Backspace** or **Delete** clears the binding and ends the capture; there is no clear button). Default: only **Toggle Automatic Gearbox = L3** (the user's own binding; `GamepadConfig::default`). Several actions can share one control:
   pressing it **fires all of them** (in `HotkeyAction::ALL` order; `PadParams::from_config`
   sorts by control then action order, `Shared::feed` sends every match). `GamepadConfig::bind`
   no longer takes the control away from other actions. *Why:* the user wants one button to do
@@ -94,7 +94,8 @@ The deadzone is applied at read time, so slider changes take effect without stic
 ## Config (`AppConfig.gamepad`, export group "Hotkeys & Input")
 
 `enabled` (true), `stick_deadzone` (0.27), `trigger_deadzone` (0.10), `bindings`
-(`HashMap<HotkeyAction, PadControl>`, empty). The UI pushes the config to the backend every
+(`HashMap<HotkeyAction, PadControl>`, default `{ ToggleGearbox: L3 }`; a config whose `gamepad` object exists keeps its own
+bindings, an object missing the `bindings` key gets the default). The UI pushes the config to the backend every
 frame (`Gamepad::set_params`, no-op when unchanged).
 
 ## Limits

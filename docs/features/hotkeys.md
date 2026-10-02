@@ -10,10 +10,11 @@ feeds the same action channel and gate: see [[gamepad]].
 ## Two scopes
 
 - **Global (while in-game)** — fire while the *game* holds focus (or our app does).
-  Defaults: `G` = toggle Automatic Gearbox, `F` = **Clear RPM calibration**, `B` =
-  toggle Backfire, `H` = **Hide HUD** (toggle the in-game overlay, see [[overlay]]). **Clear
-  gear map** is also a global action but has no default key. Routed through the capture
-  backend + focus gate.
+  Defaults: `G` = toggle Automatic Gearbox, `F` = **Clear RPM calibration**, `F` =
+  **Clear gear map** (same key: one press clears both, see "One key, several actions"),
+  `B` = toggle Backfire, `J` = **Hide HUD** (toggle the in-game overlay, see [[overlay]]).
+  *Why J and the shared F:* these two actions are new, and their defaults are the user's own
+  bindings. Routed through the capture backend + focus gate.
 - **In-app** — fire only while our telemetry window is focused. Defaults: `Ctrl+S` =
   mini-settings, `Ctrl+E` = dashboard edit. Handled via egui input (`ctx.input`), so they
   are inherently UI-only. Rebindable because the combo is read from config.

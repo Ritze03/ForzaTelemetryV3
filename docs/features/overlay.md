@@ -209,7 +209,7 @@ for it; it also avoids the cryptic spec codes in the label.
   sector gets thicker with the rpm it stands for (inner radius 47 → 40, outer 52); redline
   is shown by colour only (D14).
 
-Options (Drive Cluster card): style; **Show engine RPM instead of KM/H label** (D13: the
+Options (Drive Cluster card): style; **Show engine RPM instead of KM/H label** (on by default; D13: the
 small unit text is replaced by live rpm digits, the speed value stays); **Update speed only
 every 0.5 s** (`speed_hold`); shift flash; gear-change pulse; **Redline at** (`redline_frac`,
 default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21).
@@ -274,7 +274,7 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   `coop_hue`. *Why not reuse `ForzaApp::minimap_trails`:* the UI thread fills that and its
   loop stops while the game covers the window, i.e. exactly when the HUD is in use. The
   recording rules are the shared `minimap::trail_push`, so both buffers behave alike.
-  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 1500 / 3000,
+  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 500 / 3000,
   independent of the Dashboard map's unless reused); stopped = under 5 km/h for 1.5 s.
 
 **Options (Mini-Settings → Overlay tab).** The HUD minimap has the Dashboard map's options.
@@ -289,11 +289,11 @@ tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 | `map_north_up` | off | Lock north-up: map fixed, the car arrow turns (`MapView::arrow_angle`). Off = heading-up, arrow fixed apex-up. |
 | `map_north_up_when_stopped` | off | Heading-up only: ease to north once stopped. |
 | `map_smooth_rotation` | on | Ease rotation; off snaps (ease-to-north still eases). |
-| `map_use_movement_dir` | off | Heading-up only: rotate to the velocity direction. |
-| `map_look_stick` | off | Rotate the map by the right stick: look relative to the car in north-up and heading-up alike (look-around, see [[minimap]]; the reference heading honours `map_use_movement_dir`). |
+| `map_use_movement_dir` | on | Heading-up only: rotate to the velocity direction. |
+| `map_look_stick` | on | Rotate the map by the right stick: look relative to the car in north-up and heading-up alike (look-around, see [[minimap]]; the reference heading honours `map_use_movement_dir`). |
 | `map_mirror_edges` | on | **Mirror map at edges**: past the image edge the map continues mirrored; off = the plate shows outside the image. |
-| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 1500 / 3000 | Compass and the two zoom radii. |
-| `coop_use_dashboard` | off | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
+| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 500 / 3000 | Compass and the two zoom radii. |
+| `coop_use_dashboard` | on | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
 | `coop_teammates` | on | Draw teammates (and their trails). |
 | `coop_trails` | on | Trails behind each player, own included (the own one solo too, white). |
 | `coop_trail_fade_secs`, `coop_trail_fade_m` | 10 s / 500 m | Trail fade (Dashboard: Co-Op tab "Tracer fade"). |
@@ -303,18 +303,17 @@ tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 for the map view and for co-op. *Why:* the user wanted a single box that reuses all the
 Dashboard map settings instead of setting everything twice, individually for the map part and
 for the co-op part (so e.g. the map can mirror the Dashboard while the HUD's trails stay its
-own). Both default off, which keeps the HUD's own values. **One resolver:**
+own). `map_use_dashboard` defaults off (the HUD's own map values) and `coop_use_dashboard` on (co-op follows the Dashboard). **One resolver:**
 `OverlayConfig::effective(&AppConfig)` returns the config with the ticked group(s) replaced by
 the Dashboard's values (`minimap_*`, `coop_trail_fade_*`; the Dashboard has no
 teammate/waypoint/trail switches, so those become `true`). The listener builds the snapshot's
 `cfg` from it (`listeners/worker.rs`), so the renderer reads one config and never branches on
 the flags. The HUD's own fields are kept untouched underneath, so unticking restores them.
 
-Defaults equal the HUD's behaviour before these were settable except `map_mirror_edges` (on =
-the Dashboard's default; the old HUD smeared the edge pixel instead, a side effect of the
-clamped texture) and the marker look (above). `map_use_movement_dir` defaults off, unlike
-the Dashboard's `minimap_use_movement_dir`. The target yaw is `map_target_yaw` in
-`hud/minimap.rs`.
+Defaults are the user's own tuned setup (see **Tuned defaults** below), not the HUD's behaviour
+before these were settable. `map_mirror_edges` is on (the Dashboard's default; the old HUD
+smeared the edge pixel instead, a side effect of the clamped texture). `map_use_movement_dir`
+and `map_look_stick` are on. The target yaw is `map_target_yaw` in `hud/minimap.rs`.
 
 **Mirror at edges.** The overlay texture now wraps with `MirroredRepeat` (always; was
 `ClampToEdge`), so the fan mesh's UVs past 0..1 show the reflected map. With mirroring off the
@@ -484,7 +483,7 @@ fade-out (both restart per replacement, see above); the newest 5 are drawn; the 
 follow the HUD's global fade, so a hidden or paused HUD shows none.
 
 **Position** (Overlay tab, Notifications card): a 3×3 anchor picker, `notif_cell`, default
-top-centre; the edge margin is the Layout card's. **Stacking** (`hud::notify::stack_layout`,
+centre; the edge margin is the Layout card's. **Stacking** (`hud::notify::stack_layout`,
 pure and unit-tested per anchor; always one vertical column, never side by side):
 
 - top row (incl. top-centre): grows down from the margin, newest on top, older below;
@@ -576,14 +575,14 @@ visible = enabled && !hud_hidden && (!focus_only || game_focused)
   Detection method set in Setup. *Why here (supersedes the old D5 choice to keep it in
   Setup):* the user looked for it on the Overlay tab and didn't find it in Setup. Turning the overlay on enables the focus detector (an
   idle detector fails open, i.e. reports "focused").
-- **Hide HUD hotkey** (default **H**, global scope, rebindable in either the Overlay tab or
+- **Hide HUD hotkey** (default **J**, global scope, rebindable in either the Overlay tab or
   Setup → Hotkey; it is the one binding `hotkeys.bindings[HideHud]`). It toggles
   `hud_hidden` on the **listener thread** and is **ignored while the overlay is disabled**;
   enabling the overlay resets it to shown. The Overlay tab shows a warning hint while hidden.
   - *Why listener runtime state, not config:* a config field would be reverted by the UI's
     per-frame config push (the UI isn't even drawn while the game covers it), and a persisted
     hide would look broken after a restart.
-  - Note: H may also be an in-game binding; rebind or clear it (Backspace) if it clashes.
+  - Note: the key may also be an in-game binding; rebind or clear it (Backspace) if it clashes.
 - **Fade:** our own 0.16 s linear fade on show/hide (`hud::anim::FADE_SECS`, per the
   mockup CSS); **Fade on show / hide** off = hard cut. Nothing compositor-specific (no
   Hyprland layer animations or blur, D17). Hyprland's own quick map fade was judged
@@ -619,12 +618,42 @@ move). A failed query keeps the last known output. Runs on the focus poll thread
 Status line under the card: green "Game on DP-1" / "HUD pinned to DP-1" (Fixed), **amber**
 "Game window not focused, keeping DP-1" (third status-dot state), red on a failed query.
 
+## Tuned defaults (the user's own setup)
+
+Every `OverlayConfig` field defaults to the **user's live config**, not the original mockup
+values, so a fresh install (or an old config lacking a key) starts as the user runs it.
+*Why:* the user asked for their current settings to be the defaults wherever nothing is
+configured yet, for the whole Overlay tab. Where it differs from the former default:
+
+| Field | Default |
+|---|---|
+| `enabled` (master switch) | **on** (was off) |
+| `focus_only` | on (was off) |
+| `race_cell` (race / drift slot) | bottom-right (was top-left) |
+| `margin_px` | 4 (was 44) |
+| `rpm_label` | on (was off) |
+| `zoom_driving_m` | 500 (was 1500) |
+| `map_use_movement_dir`, `map_look_stick` | on (were off) |
+| `coop_use_dashboard` | on (was off) |
+| `notif_gearbox_mode` | off (was on) |
+| `notif_cell` | centre (was top-centre) |
+
+All other fields (scale, plate opacity, fade, module toggles, Pill style, shift cues,
+`zoom_stopped_m`, `map_north_up*`, drift counter, other notification toggles, ...) already
+matched. **Not** taken from the user: the monitor settings (`monitor_method`, `monitor_cmd`,
+`monitor_fixed` stay Hyprland / empty / empty: per-machine). The same pass changed the Hide HUD
+default key to J and gave Clear gear map the default key F ([[hotkeys]]), and set the
+controller default binding Toggle Gearbox = L3 ([[gamepad]]). The defaults live in
+`OverlayConfig::default()` (`src/config.rs`), which is what serde's struct-level
+`#[serde(default)]` fills missing keys from, so an older config gets them per field; a config
+that already stores a value keeps it.
+
 ## Layout (D19, D22, D26, D28)
 
 Three placeable modules — **Minimap**, **Drive cluster**, **Race / Drift** (one slot shared by
 R1′ and X1′) — each in one cell of a **3×3 screen grid**; there's no free placement.
 Cells are relative to the screen edges, so a layout survives a resolution change. Defaults:
-map bottom-left, cluster bottom-centre, race/drift top-left.
+map bottom-left, cluster bottom-centre, race/drift bottom-right.
 
 Modules sharing a cell **stack vertically**, in the order Map → cluster → race/drift, from
 the screen edge inward (`hud/layout.rs`):
@@ -634,12 +663,13 @@ the screen edge inward (`hud/layout.rs`):
 - middle row: the whole stack centred on the screen's vertical middle, map lowest, growing
   upward (the tab mockup's `column-reverse; justify-content:center`).
 
-Horizontal alignment follows the column. **Edge margin** (`margin_px`, default 44, 0–200)
+Horizontal alignment follows the column. **Edge margin** (`margin_px`, default 4, 0–200)
 and **module spacing** (`gap_px`, default 12, 0–60) are user settings in 1080p design px,
 scaled with the surface height and the HUD scale like the modules themselves (*Why:* a layout
-then keeps its proportions across resolutions and scale). The defaults are the former consts
-`hud::layout::MARGIN` / `GAP`, so old configs look the same. The 44 px margin shifts the
-defaults a few px from the mockup's hand-placed positions (accepted).
+then keeps its proportions across resolutions and scale). The gap default is the const
+`hud::layout::GAP`; the margin default is `OverlayConfig::DEFAULT_MARGIN_PX` (4), which is
+*not* the const `hud::layout::MARGIN` (44, the HUD's layout fallback): the defaults are the
+user's tuned values (**Tuned defaults**), and the Layout card's Reset restores them.
 
 ## The Overlay tab (`src/ui/overlay_tab.rs`)
 
