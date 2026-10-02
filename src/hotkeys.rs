@@ -17,6 +17,32 @@ pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: M
     binds.iter().find(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a)
 }
 
+/// Whether the capture backend can work here — drives the Setup "Input Permissions" light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Unsupported is only built on non-Linux/Windows targets
+pub enum HotkeyStatus { Ok, NoPermission, NoDevice, Unsupported }
+
+/// Probe `/dev/input/event*` for read access (Linux): `Ok` when at least one node opens,
+/// `NoPermission` when nodes exist but none can be read, `NoDevice` when there are none.
+/// Windows polls `GetAsyncKeyState`, which needs nothing, so it is always `Ok`.
+pub fn probe_status() -> HotkeyStatus {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(dir) = std::fs::read_dir("/dev/input") else { return HotkeyStatus::NoDevice };
+        let mut nodes = 0;
+        for e in dir.flatten() {
+            if !e.file_name().to_string_lossy().starts_with("event") { continue; }
+            nodes += 1;
+            if std::fs::File::open(e.path()).is_ok() { return HotkeyStatus::Ok; }
+        }
+        if nodes == 0 { HotkeyStatus::NoDevice } else { HotkeyStatus::NoPermission }
+    }
+    #[cfg(target_os = "windows")]
+    { HotkeyStatus::Ok }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    { HotkeyStatus::Unsupported }
+}
+
 pub struct HotkeyListener {
     binds: Bindings,
 }

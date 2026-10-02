@@ -524,6 +524,9 @@ pub struct ForzaApp {
     // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
     // crate::config::KEY_GROUPS by index.
     pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete / Export / Import
+    pub input_probe: crate::input::InputProbe, // D13: cached input-permission probe (Setup + startup modal)
+    pub input_perm_modal_open: bool,         // D13: startup modal still showing this session
+    pub input_perm_copied: Option<(usize, Instant)>, // D13: which fix command was just copied
     pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
     pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
@@ -727,6 +730,9 @@ impl ForzaApp {
         let input_allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let focus = Arc::new(FocusDetector::new(focus_params(&config)));
         let (hotkeys, hotkey_rx) = HotkeyListener::new(global_bindings(&config));
+        let input_probe = crate::input::probe();
+        let input_perm_modal_open =
+            cfg!(target_os = "linux") && !config.input_perm_dont_remind && crate::input::evaluate(&input_probe).any_missing();
         let mut input = InputSender::new();
         input.set_focus_gate(input_allowed.clone());
 
@@ -813,6 +819,9 @@ impl ForzaApp {
             page_dashboard_sub_tab: DashboardSubTab::default(),
             page_map_sub_tab: MiniMapTab::default(),
             profile_dialog: ProfileDialog::None,
+            input_probe,
+            input_perm_modal_open,
+            input_perm_copied: None,
             profile_dialog_focus: false,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
@@ -2584,6 +2593,8 @@ impl eframe::App for ForzaApp {
             Tab::Changelog => crate::ui::changelog::show(ui, self),
             Tab::Debug => crate::ui::debug_tab::show(ui, self),
         });
+
+        crate::ui::settings::input_perm_modal(ctx, self);
 
         // Hand the listener thread this frame's config plus the two focus facts only egui
         // knows (the global-hotkey gate needs them). Pushed unconditionally — it's one
