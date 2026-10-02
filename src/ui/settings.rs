@@ -1088,7 +1088,7 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
                 let h = ui.spacing().interact_size.y;
                 let resp = ui
                     .add_sized([ui.available_width(), h], egui::Button::new(text))
-                    .on_hover_text(tr("Esc cancels. Backspace clears the binding."));
+                    .on_hover_text(tr("Esc cancels. Backspace or Delete clears the binding."));
                 if resp.clicked() {
                     app.rebinding = if capturing { None } else { Some(action) };
                 }
@@ -1096,19 +1096,8 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
             });
         }
     }
-    // Key capture (bind / Backspace unbind / Esc cancel) is `ForzaApp::capture_rebind`,
+    // Key capture (bind / Backspace or Delete unbind / Esc cancel) is `ForzaApp::capture_rebind`,
     // which runs before the UI and re-syncs the hotkeys itself.
-}
-
-/// `ui.put` with an enabled flag. The child Ui starts at `rect` (not at the parent's cursor),
-/// so it never reaches outside `rect` — `add_enabled_ui(.., |ui| ui.put(..))` would, since that
-/// scope begins at the cursor and its min_rect spans from there to the put rect.
-fn put_enabled(ui: &mut Ui, rect: egui::Rect, enabled: bool, widget: impl egui::Widget) -> egui::Response {
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
-        |ui| ui.add_enabled(enabled, widget),
-    )
-    .inner
 }
 
 /// The "Controller" category: enable, detected pad, deadzones, and one capture-bind row per
@@ -1133,7 +1122,8 @@ fn controller_card(ui: &mut Ui, app: &mut ForzaApp) {
     crate::theme::slider_row(ui, tr("Stick deadzone"), &mut g.stick_deadzone, 0.0..=0.5, 0.01, 2, "");
     crate::theme::slider_row(ui, tr("Trigger deadzone"), &mut g.trigger_deadzone, 0.0..=0.5, 0.01, 2, "");
 
-    // Capture: the backend stores the next pad press; Esc or leaving the tab cancels.
+    // Capture: the backend stores the next pad press; Esc or leaving the tab cancels,
+    // Backspace / Delete clears the binding (the keyboard counterpart of the removed ✕).
     if let Some(action) = app.pad_rebinding {
         if let Some(c) = app.gamepad.take_captured() {
             app.config.gamepad.bind(action, c);
@@ -1159,22 +1149,31 @@ fn controller_card(ui: &mut Ui, app: &mut ForzaApp) {
             }
         };
         control_row(ui, tr(action.label()), |ui| {
-            // Fixed rects carved from the right column, not cursor flow. Why: the ✕ button's
-            // natural width (glyph + 2×9px button_padding ≈ 30px) exceeds the h×h it was
-            // budgeted, and egui's `Region::expand_to_include_rect` grows the parent's
-            // *max_rect* on overflow — so each row widened the card, the next row's
-            // `ui.columns` got a wider (further-right) right column, and the rows staggered.
-            // Every widget here is now `put` into a rect inside the column, so nothing overflows.
-            let en = app.config.gamepad.enabled;
+            // One fixed rect = the column's full width × h, not cursor flow. Why: egui's
+            // `Region::expand_to_include_rect` grows the parent's *max_rect* on overflow, so a
+            // widget wider than its slot widens the card, the next row's `ui.columns` gets a
+            // wider (further-right) right column, and the rows stagger. `put`ting the button
+            // into a rect inside the column (text `truncate()`d) can't overflow.
             let h = ui.spacing().interact_size.y;
-            let gap = ui.spacing().item_spacing.x;
             let col = ui.available_rect_before_wrap();
-            let row = egui::Rect::from_min_size(col.min, egui::vec2(col.width(), h));
-            let clear_rect = egui::Rect::from_min_size(egui::pos2(row.right() - h, row.top()), egui::vec2(h, h));
-            let bind_rect = egui::Rect::from_min_max(row.min, egui::pos2(clear_rect.left() - gap, row.bottom()));
-            let resp = put_enabled(ui, bind_rect, en, egui::Button::new(text).truncate())
-                .on_hover_text(tr("Esc cancels."));
-            if resp.clicked() {
+            let rect = egui::Rect::from_min_size(col.min, egui::vec2(col.width(), h));
+            let resp = ui
+                .scope_builder(
+                    egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
+                    |ui| ui.add_enabled(app.config.gamepad.enabled, egui::Button::new(text).truncate()),
+                )
+                .inner
+                .on_hover_text(tr("Esc cancels. Backspace or Delete clears the binding."));
+            // Backspace / Delete while this row captures: unbind and end the capture. Skipped
+            // while another widget (a text field) holds focus — the armed button itself may.
+            let clear_key = capturing
+                && ui.ctx().memory(|m| m.focused()).is_none_or(|f| f == resp.id)
+                && ui.input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete));
+            if clear_key {
+                app.config.gamepad.bindings.remove(&action);
+                app.gamepad.cancel_capture();
+                app.pad_rebinding = None;
+            } else if resp.clicked() {
                 if capturing {
                     app.gamepad.cancel_capture();
                     app.pad_rebinding = None;
@@ -1182,14 +1181,6 @@ fn controller_card(ui: &mut Ui, app: &mut ForzaApp) {
                     app.gamepad.arm_capture();
                     app.pad_rebinding = Some(action);
                 }
-            }
-            // Zero padding so the ✕ glyph fits the h×h square instead of widening it. Set and
-            // restored in place: a `ui.scope` would start its child at the cursor and overflow.
-            let pad = std::mem::replace(&mut ui.spacing_mut().button_padding, egui::Vec2::ZERO);
-            let clear = put_enabled(ui, clear_rect, en && bound.is_some(), crate::theme::secondary_button(crate::icons::TIMES));
-            ui.spacing_mut().button_padding = pad;
-            if clear.clicked() {
-                app.config.gamepad.bindings.remove(&action);
             }
         });
     }

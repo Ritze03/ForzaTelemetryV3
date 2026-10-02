@@ -30,12 +30,12 @@ Click a binding's button → "Press a key…". Every rebind button (Setup → Ho
 Overlay tab's Hide HUD row) arms `app.rebinding`; the key is taken by one shared
 `ForzaApp::capture_rebind`, which runs **before** the tabs are drawn:
 
-- **Esc** cancels; **Backspace** clears the binding ("Not set", shown faint); any other
+- **Esc** cancels; **Backspace** or **Delete** clears the binding ("Not set", shown faint); any other
   bindable key binds with the held Ctrl/Alt/Shift.
 - While a capture is armed the key doesn't also fire an in-app hotkey, and the listener is
   told `wants_text` (`app.rs`, the per-frame `listener.push`), so global hotkeys are gated
   too: binding G doesn't also toggle the gearbox, H doesn't hide the HUD.
-- The key that ends a capture (bind / Backspace / Esc) is **consumed** from egui's input,
+- The key that ends a capture (bind / Backspace / Delete / Esc) is **consumed** from egui's input,
   so it doesn't also reach a widget.
 - The capture **disarms without binding** on a primary press anywhere but the armed button
   (its id + rect are recorded each frame by `ForzaApp::track_rebind_button`), when another
@@ -49,7 +49,7 @@ Overlay tab's Hide HUD row) arms `app.rebinding`; the key is taken by one shared
   the next load. `HotkeyConfig::bind` clears that mark. Always edit through `bind` /
   `unbind`, never `bindings.insert` directly.
 - *Why one capture in `app.rs`:* two tabs edit the same binding, and a per-tab capture would
-  duplicate the Esc/Backspace logic (the old Setup-only capture inserted directly and would
+  duplicate the Esc/Backspace/Delete logic (the old Setup-only capture inserted directly and would
   have skipped the unbound bookkeeping).
 - **No action fires during a rebind** (keyboard *or* pad). `ForzaApp::update` mirrors
   `rebinding.is_some() || pad_rebinding.is_some()` into the shared `RebindGuard`

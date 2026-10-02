@@ -882,7 +882,7 @@ fn de(s: &str) -> Option<&'static str> {
         "The overlay stopped. Turn it off and on again to retry."
             => "Das Overlay wurde beendet. Zum erneuten Versuch aus- und wieder einschalten.",
         "Not set" => "Nicht belegt",
-        "Esc cancels. Backspace clears the binding." => "Esc bricht ab. Rücktaste entfernt die Belegung.",
+        "Esc cancels. Backspace or Delete clears the binding." => "Esc bricht ab. Rücktaste oder Entf entfernt die Belegung.",
         "Also bound to" => "Auch belegt mit",
         "Setup → Hotkey" => "Setup → Hotkey",
         "Hotkey" => "Hotkey",
@@ -895,7 +895,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Trigger deadzone" => "Trigger-Totzone",
         "Bindings" => "Belegungen",
         "Press a controller button…" => "Controller-Taste drücken…",
-        "Esc cancels." => "Esc bricht ab.",
         "Back" => "Zurück",
         "D-pad Up" => "Steuerkreuz oben",
         "D-pad Down" => "Steuerkreuz unten",
