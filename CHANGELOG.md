@@ -6,6 +6,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.4.1] – 2026-10-02
 
+### Fixed
+- **Setup layout**: the Controller card's bind buttons now all line up (the clear button's slot is always reserved, and it shows a proper icon), and the Network card moved above Game Install in the right column.
+
 ### Added
 - **HUD minimap = Dashboard map**: the in-game minimap now draws like the Dashboard map. Your own arrow uses the Dashboard's arrow in your co-op colour (Co-Op → Your Identity; white outside a session) with your trail behind it, teammates get the same arrows, names, edge pointers, paused-grey and fading trails, and shared waypoints show up too. New options in Mini-Settings → Overlay: **Mirror map at edges**, a Co-Op section (teammates, waypoints, trails, trail fade), and two tick boxes, **Use Dashboard map settings** and **Use Dashboard co-op settings**, that make the HUD use the Dashboard's values for the map view or for co-op (separately) and hide the HUD's own controls for that part.
 - **Look around with the right stick**: new option *Rotate with right stick* for the Dashboard map (Mini-Settings → Dashboard → Map) and the HUD minimap (Mini-Settings → Overlay → Minimap), both off by default. While you push the controller's right stick past its deadzone the map turns to the stick's direction (up = unchanged, right = view turned 90° right, down = looking back); on release it eases back. Works in heading-up and north-up, the compass stays correct, and it works independently of any right-stick button bindings.

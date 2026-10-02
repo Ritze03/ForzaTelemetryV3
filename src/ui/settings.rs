@@ -150,7 +150,13 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 crate::theme::checkbox_row(ui, &mut app.config.always_on_top, tr("Always on top"));
             });
 
-            crate::theme::card(left, tr("Network"), |ui| {
+            // ── RIGHT COLUMN ─────────────────────────────────────────
+            let right = &mut cols[1];
+            right.spacing_mut().item_spacing.y = 0.0;
+
+            crate::theme::card(right, tr("Repository / Credits"), |ui| repo_card(ui));
+
+            crate::theme::card(right, tr("Network"), |ui| {
                 control_row_tip(ui, tr("Listen port"), tr("Avoid ports 5200–5300 (used by the game)."), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let changed = app.pending_port != app.config.listen_port;
@@ -169,12 +175,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 crate::theme::checkbox_row(ui, &mut app.config.experimental_pause_detection, tr("Experimental pause detection"))
                     .on_hover_text(tr("Detects the garage and menus by a level, motionless car with the handbrake fully on. May miss a garage view where the car is rotated."));
             });
-
-            // ── RIGHT COLUMN ─────────────────────────────────────────
-            let right = &mut cols[1];
-            right.spacing_mut().item_spacing.y = 0.0;
-
-            crate::theme::card(right, tr("Repository / Credits"), |ui| repo_card(ui));
 
             crate::theme::card(right, tr("Game Install"), |ui| game_install_card(ui, app));
 
@@ -1149,12 +1149,12 @@ fn controller_card(ui: &mut Ui, app: &mut ForzaApp) {
         };
         control_row(ui, tr(action.label()), |ui| {
             let h = ui.spacing().interact_size.y;
-            let clear_w = if bound.is_some() { h + ui.spacing().item_spacing.x } else { 0.0 };
+            let clear_w = h + ui.spacing().item_spacing.x;
             let resp = ui
-                .add_enabled(
-                    app.config.gamepad.enabled,
-                    egui::Button::new(text).min_size(egui::vec2((ui.available_width() - clear_w).max(40.0), h)),
-                )
+                .add_enabled_ui(app.config.gamepad.enabled, |ui| {
+                    ui.add_sized([(ui.available_width() - clear_w).max(40.0), h], egui::Button::new(text))
+                })
+                .inner
                 .on_hover_text(tr("Esc cancels."));
             if resp.clicked() {
                 if capturing {
@@ -1165,7 +1165,11 @@ fn controller_card(ui: &mut Ui, app: &mut ForzaApp) {
                     app.pad_rebinding = Some(action);
                 }
             }
-            if bound.is_some() && ui.add_sized([h, h], crate::theme::secondary_button("\u{2715}")).clicked() {
+            let clear = ui.add_enabled(
+                app.config.gamepad.enabled && bound.is_some(),
+                crate::theme::secondary_button(crate::icons::TIMES).min_size(egui::vec2(h, h)),
+            );
+            if clear.clicked() {
                 app.config.gamepad.bindings.remove(&action);
             }
         });
