@@ -102,13 +102,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             crate::theme::card(left, tr("Profiles"), |ui| profiles_card(ui, app));
             crate::theme::card(left, tr("Hotkey"), |ui| hotkey_card(ui, app));
 
-            // ── RIGHT COLUMN ─────────────────────────────────────────
-            let right = &mut cols[1];
-            right.spacing_mut().item_spacing.y = 0.0;
-
-            crate::theme::card(right, tr("Repository / Credits"), |ui| repo_card(ui));
-
-            crate::theme::card(right, tr("Display"), |ui| {
+            crate::theme::card(left, tr("Display"), |ui| {
                 control_row(ui, tr("Language"), |ui| {
                     egui::ComboBox::from_id_salt("language_combo")
                         .selected_text(app.config.language.label())
@@ -155,7 +149,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 crate::theme::checkbox_row(ui, &mut app.config.always_on_top, tr("Always on top"));
             });
 
-            crate::theme::card(right, tr("Network"), |ui| {
+            crate::theme::card(left, tr("Network"), |ui| {
                 control_row_tip(ui, tr("Listen port"), tr("Avoid ports 5200–5300 (used by the game)."), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let changed = app.pending_port != app.config.listen_port;
@@ -175,12 +169,20 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                     .on_hover_text(tr("Detects the garage and menus by a level, motionless car with the handbrake fully on. May miss a garage view where the car is rotated."));
             });
 
-            crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));
+            // ── RIGHT COLUMN ─────────────────────────────────────────
+            let right = &mut cols[1];
+            right.spacing_mut().item_spacing.y = 0.0;
+
+            crate::theme::card(right, tr("Repository / Credits"), |ui| repo_card(ui));
+
+            crate::theme::card(right, tr("Game Install"), |ui| game_install_card(ui, app));
+
             // Linux-only: Windows needs no input permissions.
             if cfg!(target_os = "linux") {
                 crate::theme::card(right, tr("Input Permissions"), |ui| input_perm_card(ui, app));
             }
-            crate::theme::card(right, tr("Game Install"), |ui| game_install_card(ui, app));
+
+            crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));
         });
     });
 
