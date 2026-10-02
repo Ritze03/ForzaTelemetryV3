@@ -7,7 +7,7 @@ bordered category cards laid out per the [styling guide](../ui/STYLING-GUIDE.md)
 [[state-and-config]]). Per-widget tuning lives in the cog **Mini-Settings** popup instead —
 see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]].
 
-Cards: **Profiles**, **Hotkey**, **Display**, **Network** (left column); **Repository / Credits**,
+Cards: **Profiles**, **Hotkey**, **Controller** (see [[gamepad]]), **Display**, **Network** (left column); **Repository / Credits**,
 **Game Install**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get
 their own doc — see [[hotkeys]]; the Profiles card gets its own doc too — see [[profiles]].
 

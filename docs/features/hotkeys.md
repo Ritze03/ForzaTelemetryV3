@@ -4,6 +4,9 @@ Rebindable keyboard shortcuts, configured in **Setup → Hotkey** (the tab is `T
 labelled Setup). Two scopes, one rebind UI. Full design + rationale: [[hotkeys-design]]
 (`docs/features/hotkeys-design.md`).
 
+Controller (gamepad) bindings for the global actions are a separate card (Setup → Controller) that
+feeds the same action channel and gate: see [[gamepad]].
+
 ## Two scopes
 
 - **Global (while in-game)** — fire while the *game* holds focus (or our app does).

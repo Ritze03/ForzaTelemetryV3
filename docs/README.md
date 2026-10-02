@@ -31,6 +31,7 @@ The navigation reference — read these to move around the source efficiently.
 - [Profile Manager](features/profiles.md) — named full-config snapshots, continuous save, selective export/import.
 - [Settings](features/settings.md) — network, units, display, profiles (the Settings tab).
 - [Hotkeys](features/hotkeys.md) — rebindable global + in-app shortcuts, evdev/GetAsyncKeyState capture, window-focus detection.
+- [Gamepad](features/gamepad.md) — controller bindings for the global actions + the right-stick vector; evdev (xpad/xone/xpadneo) and XInput backends, why the physical pad.
 - [Hotkeys — Design Spec](features/hotkeys-design.md) — the design record + rationale behind the hotkeys feature (why evdev, why not a compositor API, the focus-gate rules).
 
 ## protocol/ — the wire format

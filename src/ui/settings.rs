@@ -101,6 +101,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // Left column: Profiles (with Export/Import inside it) and Hotkey.
             crate::theme::card(left, tr("Profiles"), |ui| profiles_card(ui, app));
             crate::theme::card(left, tr("Hotkey"), |ui| hotkey_card(ui, app));
+            crate::theme::card(left, tr("Controller"), |ui| controller_card(ui, app));
 
             crate::theme::card(left, tr("Display"), |ui| {
                 control_row(ui, tr("Language"), |ui| {
@@ -1097,6 +1098,78 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
     }
     // Key capture (bind / Backspace unbind / Esc cancel) is `ForzaApp::capture_rebind`,
     // which runs before the UI and re-syncs the hotkeys itself.
+}
+
+/// The "Controller" category: enable, detected pad, deadzones, and one capture-bind row per
+/// global action (the same action set as the keyboard hotkeys).
+fn controller_card(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::config::{HotkeyAction, HotkeyScope};
+
+    crate::theme::checkbox_row(ui, &mut app.config.gamepad.enabled, tr("Enable controller input"));
+    let pads = app.gamepad.devices();
+    if !app.config.gamepad.enabled {
+        status_dot(ui, Dot::Warn, tr("Controller input is off"));
+    } else if let Some(first) = pads.first() {
+        let more = if pads.len() > 1 { format!(" (+{})", pads.len() - 1) } else { String::new() };
+        status_dot(ui, Dot::Ok, &format!("{first}{more}"));
+    } else if cfg!(target_os = "linux") && !app.input_probe.hotkeys_ok {
+        status_dot(ui, Dot::Bad, tr("Can't read /dev/input (see Input Permissions)"));
+    } else {
+        status_dot(ui, Dot::Warn, tr("No controller detected"));
+    }
+
+    let g = &mut app.config.gamepad;
+    crate::theme::slider_row(ui, tr("Stick deadzone"), &mut g.stick_deadzone, 0.0..=0.5, 0.01, 2, "");
+    crate::theme::slider_row(ui, tr("Trigger deadzone"), &mut g.trigger_deadzone, 0.0..=0.5, 0.01, 2, "");
+
+    // Capture: the backend stores the next pad press; Esc or leaving the tab cancels.
+    if let Some(action) = app.pad_rebinding {
+        if let Some(c) = app.gamepad.take_captured() {
+            app.config.gamepad.bind(action, c);
+            app.pad_rebinding = None;
+        } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) || !app.config.gamepad.enabled {
+            app.gamepad.cancel_capture();
+            app.pad_rebinding = None;
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
+    sub_heading(ui, tr("Bindings"));
+    for action in HotkeyAction::ALL.iter().copied().filter(|a| a.scope() == HotkeyScope::Global) {
+        let capturing = app.pad_rebinding == Some(action);
+        let bound = app.config.gamepad.bindings.get(&action).copied();
+        let text = if capturing {
+            RichText::new(tr("Press a controller button…"))
+        } else {
+            match bound {
+                Some(c) => RichText::new(tr(c.label())),
+                None => RichText::new(tr("Not set")).color(crate::theme::FAINT),
+            }
+        };
+        control_row(ui, tr(action.label()), |ui| {
+            let h = ui.spacing().interact_size.y;
+            let clear_w = if bound.is_some() { h + ui.spacing().item_spacing.x } else { 0.0 };
+            let resp = ui
+                .add_enabled(
+                    app.config.gamepad.enabled,
+                    egui::Button::new(text).min_size(egui::vec2((ui.available_width() - clear_w).max(40.0), h)),
+                )
+                .on_hover_text(tr("Esc cancels."));
+            if resp.clicked() {
+                if capturing {
+                    app.gamepad.cancel_capture();
+                    app.pad_rebinding = None;
+                } else {
+                    app.gamepad.arm_capture();
+                    app.pad_rebinding = Some(action);
+                }
+            }
+            if bound.is_some() && ui.add_sized([h, h], crate::theme::secondary_button("\u{2715}")).clicked() {
+                app.config.gamepad.bindings.remove(&action);
+            }
+        });
+    }
 }
 
 /// The "Window Detection" category: detection method + what it gates (hotkeys, the

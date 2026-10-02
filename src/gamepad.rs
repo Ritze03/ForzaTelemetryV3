@@ -260,7 +260,6 @@ impl Gamepad {
         self.shared.capture.store(true, Ordering::Relaxed);
     }
     pub fn cancel_capture(&self) { self.shared.capture.store(false, Ordering::Relaxed); }
-    pub fn capture_armed(&self) -> bool { self.shared.capture.load(Ordering::Relaxed) }
     /// The captured control, once (taking it clears it).
     pub fn take_captured(&self) -> Option<PadControl> { self.shared.captured.lock().unwrap().take() }
 }
