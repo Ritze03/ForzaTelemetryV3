@@ -14,7 +14,7 @@ Controller** (card right under Hotkey). Code: `src/gamepad.rs`; UI: `controller_
   uses takes it away from that action (one press = one action).
 - **Bindable controls** (`PadControl`): A/B/X/Y, LB/RB, LT/RT (past a threshold), Back/Start,
   L3/R3, the D-pad's 4 directions, and the **right stick's** Up/Down/Left/Right.
-- **Deadzones**: stick (radial, default 0.15) and trigger (default 0.10).
+- **Deadzones**: stick (radial, default 0.27) and trigger (default 0.10).
 - The in-app hotkeys (mini-settings, dashboard edit) are not bindable: they are UI-only and
   the pad backend lives off the UI thread.
 
@@ -90,7 +90,7 @@ The deadzone is applied at read time, so slider changes take effect without stic
 
 ## Config (`AppConfig.gamepad`, export group "Hotkeys & Input")
 
-`enabled` (true), `stick_deadzone` (0.15), `trigger_deadzone` (0.10), `bindings`
+`enabled` (true), `stick_deadzone` (0.27), `trigger_deadzone` (0.10), `bindings`
 (`HashMap<HotkeyAction, PadControl>`, empty). The UI pushes the config to the backend every
 frame (`Gamepad::set_params`, no-op when unchanged).
 
@@ -101,4 +101,4 @@ such); no guide/share buttons; no rumble; bindings are global-scope actions only
 
 ## Controller card layout
 
-Rows copy the Hotkey card: `control_row` (label | control halves) with a fixed-width bind button (`add_sized`). Each row *always* reserves a square clear button (`icons::TIMES`, a Nerd Font glyph, disabled when unbound) so the bind button's x/width never changes with binding or capture state. *Why:* a clear button that only appeared when bound made the bind buttons shift and differ in width per row.
+Each row is `control_row` (label | control halves); inside the right half the bind button and a square clear button (`icons::TIMES`, disabled when unbound) are placed with `put_enabled` (a `scope_builder` whose max_rect is the target rect) into **fixed rects computed from the column's full width** (bind = column minus `h + item_spacing.x`, clear = the last h×h), the clear button with zero `button_padding`, the bind label `truncate()`d. The clear slot is always reserved so the bind button's x/width never changes with binding or capture state. *Why fixed rects, not cursor flow:* the first fix sized the bind button to `available_width - (h + gap)` and let the ✕ button follow, but a button's natural width is glyph + 2×`button_padding.x` (≈30px) > h (22px). egui's `Region::expand_to_include_rect` grows a Ui's **max_rect** (not just min_rect) on overflow, so every row widened the card by its overflow; the next row's `ui.columns` then split a wider rect, its right column started further right, and the rows staggered ~4px each. Nothing may overflow the column here — keep long capture text truncated too. Also don't wrap a `put` in `add_enabled_ui` / `ui.scope`: those child Uis start at the parent's cursor, so their min_rect spans from the cursor to the put rect and overflows the same way (this was verified with an offscreen egui probe: old code staggered ~9px/row, the fix keeps every row at identical x).

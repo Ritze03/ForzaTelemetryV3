@@ -8,7 +8,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ### Fixed
 - **Rebinding no longer triggers the action**: while you are binding a key or controller button (Setup → Hotkey / Controller, Overlay → Hide HUD), no hotkey or controller action fires, and the key or button you just pressed (or its release) stays silent for a moment afterwards. Before, rebinding Backfire to B while it was already on B toggled Backfire.
-- **Setup layout**: the Controller card's bind buttons now all line up (the clear button's slot is always reserved, and it shows a proper icon), and the Network card moved above Game Install in the right column.
+- **Setup layout**: the Controller card's bind buttons and clear buttons now all line up at the same position and size in every row (before, each row sat a few pixels further right than the one above), the clear button shows a proper icon, and the Network card moved above Game Install in the right column.
+- **Controller stick deadzone** now defaults to 0.27 (was 0.15), which ignores the drift of worn sticks. Existing settings keep their saved value.
 
 ### Added
 - **HUD minimap = Dashboard map**: the in-game minimap now draws like the Dashboard map. Your own arrow uses the Dashboard's arrow in your co-op colour (Co-Op → Your Identity; white outside a session) with your trail behind it, teammates get the same arrows, names, edge pointers, paused-grey and fading trails, and shared waypoints show up too. New options in Mini-Settings → Overlay: **Mirror map at edges**, a Co-Op section (teammates, waypoints, trails, trail fade), and two tick boxes, **Use Dashboard map settings** and **Use Dashboard co-op settings**, that make the HUD use the Dashboard's values for the map view or for co-op (separately) and hide the HUD's own controls for that part.

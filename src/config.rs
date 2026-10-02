@@ -254,7 +254,7 @@ pub struct GamepadConfig {
 
 impl Default for GamepadConfig {
     fn default() -> Self {
-        Self { enabled: true, stick_deadzone: 0.15, trigger_deadzone: 0.10, bindings: HashMap::new() }
+        Self { enabled: true, stick_deadzone: 0.27, trigger_deadzone: 0.10, bindings: HashMap::new() }
     }
 }
 
