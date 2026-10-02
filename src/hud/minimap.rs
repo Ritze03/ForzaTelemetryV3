@@ -123,8 +123,13 @@ impl MapAnim {
             now - *self.slow_since.get_or_insert(now) >= mm::STOPPED_SECS as f64
         };
         let target_zoom = if stopped { cfg.zoom_stopped_m } else { cfg.zoom_driving_m };
-        let target_yaw = mm::target_yaw(pkt, false);
-        let yaw = self.yaw.map_or(target_yaw, |y| mm::ease_yaw(y, target_yaw, dt));
+        let target_yaw = map_target_yaw(pkt, cfg, stopped);
+        // Ease-to-north always animates; otherwise honour "Smooth rotation".
+        let smooth = cfg.map_smooth_rotation || (cfg.map_north_up_when_stopped && stopped);
+        let yaw = match self.yaw {
+            Some(y) if smooth => mm::ease_yaw(y, target_yaw, dt),
+            _ => target_yaw,
+        };
         // Under 5 km/h but not yet stopped for 1.5 s: hold the zoom (as the Dashboard does).
         let zoom = match self.zoom {
             None => target_zoom,
@@ -136,6 +141,16 @@ impl MapAnim {
         let yaw_left = (mm::lerp_angle(yaw, target_yaw, 1.0) - yaw).abs() > 1e-3;
         let zoom_left = (zoom - target_zoom).abs() > 0.5 && (stopped || kmh >= mm::STOPPED_KMH);
         yaw_left || zoom_left
+    }
+}
+
+/// The yaw the map rotates to: 0 (north-up) when locked or (heading-up, opted in) stopped;
+/// else the car's heading, or its movement direction if enabled.
+fn map_target_yaw(pkt: &crate::packet::ForzaPacket, cfg: &crate::config::OverlayConfig, stopped: bool) -> f32 {
+    if cfg.map_north_up || (cfg.map_north_up_when_stopped && stopped) {
+        0.0
+    } else {
+        mm::target_yaw(pkt, cfg.map_use_movement_dir)
     }
 }
 
@@ -257,10 +272,14 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
         p.add(egui::Shape::convex_polygon(vec![c - tip, c - side, c + side], xf.c(col::INK), egui::Stroke::NONE));
     }
 
-    // Car marker, fixed apex up: 14 × 17, white over a 2.2 px dark stroke (canvas strokes
-    // first and fills over it, so only the outer 1.1 px of the stroke shows).
-    let tri = [[0.0, -9.0], [7.0, 8.0], [-7.0, 8.0]].map(|[x, y]| [w / 2.0 + x, h / 2.0 + y]);
-    let pts: Vec<Pos2> = tri.iter().map(|&[x, y]| xf.p(x, y)).collect();
+    // Car marker: 14 × 17, white over a 2.2 px dark stroke (canvas strokes first and fills
+    // over it, so only the outer 1.1 px of the stroke shows). Apex up while the map follows
+    // the heading; turned by `arrow_angle` when north-up (or easing / movement-direction).
+    let (sa, ca) = view.arrow_angle(snap.pkt.yaw).sin_cos();
+    let pts: Vec<Pos2> = [[0.0, -9.0], [7.0, 8.0], [-7.0, 8.0]]
+        .iter()
+        .map(|&[x, y]: &[f32; 2]| centre + vec2(x * ca - y * sa, x * sa + y * ca) * xf.s)
+        .collect();
     p.add(egui::Shape::convex_polygon(pts.clone(), xf.c(col::MARKER_EDGE), egui::Stroke::new(xf.l(2.2), xf.c(col::MARKER_EDGE))));
     p.add(egui::Shape::convex_polygon(pts, xf.c(Color32::WHITE), egui::Stroke::NONE));
 
@@ -310,6 +329,27 @@ mod tests {
         // 1 km ahead is off the map (skipped, not clamped).
         let far = view.world_to_offset(car.0 + 1000.0 * yaw.sin(), car.1 + 1000.0 * yaw.cos());
         assert!(!inside_pill(far, HALF, RADIUS, MATE_MARGIN));
+    }
+
+    #[test]
+    fn target_yaw_follows_north_up_and_stopped_options() {
+        let mut pkt = crate::packet::ForzaPacket::default();
+        pkt.yaw = 0.8;
+        let mut cfg = crate::config::OverlayConfig::default();
+        // Default: heading-up on the raw yaw, stopped or not.
+        assert_eq!(map_target_yaw(&pkt, &cfg, false), 0.8);
+        assert_eq!(map_target_yaw(&pkt, &cfg, true), 0.8);
+        cfg.map_north_up_when_stopped = true;
+        assert_eq!(map_target_yaw(&pkt, &cfg, false), 0.8);
+        assert_eq!(map_target_yaw(&pkt, &cfg, true), 0.0);
+        cfg.map_north_up_when_stopped = false;
+        cfg.map_north_up = true;
+        assert_eq!(map_target_yaw(&pkt, &cfg, false), 0.0);
+        // North-up: the car arrow turns by its raw yaw; heading-up it stays at 0.
+        let north = MapView::new(0.0, 0.0, 0.0, 400.0, 136.0);
+        assert_eq!(north.arrow_angle(pkt.yaw), 0.8);
+        let head = MapView::new(0.0, 0.0, map_target_yaw(&pkt, &crate::config::OverlayConfig::default(), false), 400.0, 136.0);
+        assert_eq!(head.arrow_angle(pkt.yaw), 0.0);
     }
 
     #[test]

@@ -1974,6 +1974,7 @@ impl eframe::App for ForzaApp {
                         ui.selectable_value(&mut self.page_settings_tab, PageSettingsTab::General, tr("General"));
                         for (tab, lbl) in [
                             (Tab::Dashboard,    "Dashboard"),
+                            (Tab::Overlay,      "Overlay"),
                             (Tab::Backfire,     "Backfire"),
                             (Tab::Gearbox,      "Gearbox"),
                             (Tab::PowerCurve,   "Power Graph"),
@@ -2524,6 +2525,28 @@ impl eframe::App for ForzaApp {
                                     }
                                 }
                             }
+                        }
+                        PageSettingsTab::Tab(Tab::Overlay) => {
+                            // HUD minimap (M2′) view options: the Dashboard map's General
+                            // section, minus what doesn't apply on the HUD (see overlay.md).
+                            let o = &mut self.config.overlay;
+                            ui.label(crate::theme::section_label(tr("Minimap")));
+                            ui.add_space(4.0);
+                            crate::theme::styled_checkbox(ui, &mut o.map_north_up, tr("Lock map north-up"));
+                            if !o.map_north_up {
+                                crate::theme::styled_checkbox(ui, &mut o.map_north_up_when_stopped, tr("North up when stopped"))
+                                    .on_hover_text(tr("Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves."));
+                                crate::theme::styled_checkbox(ui, &mut o.map_smooth_rotation, tr("Smooth rotation"));
+                                crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
+                                    .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
+                            }
+                            crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
+                            ui.add_space(4.0);
+                            ui.label(tr("Zoom when driving (radius, metres)"));
+                            ui.add(egui::Slider::new(&mut o.zoom_driving_m, 50.0..=3000.0).suffix(" m"));
+                            ui.add_space(4.0);
+                            ui.label(tr("Zoom when stopped (radius, metres)"));
+                            ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
                         }
                         PageSettingsTab::Tab(Tab::PowerCurve) => {
                             crate::ui::power_curve::options_ui(ui, &mut self.config);
