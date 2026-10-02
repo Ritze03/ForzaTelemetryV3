@@ -118,6 +118,30 @@ pub struct MinimapCalib {
     pub origin_z: f32,
 }
 
+/// How a notification looks (the dot colour). Not a severity: it says what happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifKind {
+    /// Something switched on (green dot).
+    On,
+    /// Something switched off (red dot).
+    Off,
+    /// A change or a status (blue dot).
+    Info,
+}
+
+/// One short on-HUD message (D26). Created on the listener thread, which sees every source
+/// (hotkeys, config pushed from the UI, the gearbox/calibration state); the HUD only draws
+/// it while `hud_clock() − created < hud::notify::TTL_SECS`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notification {
+    /// Unique per process, rising; the HUD could key animation state on it.
+    pub id: u64,
+    pub text: String,
+    pub kind: NotifKind,
+    /// [`hud_clock`] seconds.
+    pub created: f64,
+}
+
 /// Everything the HUD draws from. Cheap to clone (the packet is ~200 B, the config an Arc).
 #[derive(Debug, Clone, Default)]
 pub struct HudSnapshot {
@@ -160,6 +184,8 @@ pub struct HudSnapshot {
     /// race).
     pub auto_gear: Option<DriveMode>,
     pub minimap: MinimapCalib,
+    /// Recent notifications, oldest first (bounded; the HUD ignores expired ones).
+    pub notifications: Vec<Notification>,
 }
 
 /// Latest-wins mailbox. Writer `lock`s and overwrites; the overlay `try_lock`s and clones,

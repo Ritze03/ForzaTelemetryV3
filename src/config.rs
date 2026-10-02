@@ -389,6 +389,19 @@ pub struct OverlayConfig {
     pub drift_chip_secs: f32,
     /// Show the window's progress bar.
     pub drift_bar: bool,
+    // ── Notifications (D26) ──
+    /// Master switch for the short on-HUD messages.
+    pub notif_on: bool,
+    /// "Gearbox: ON / OFF" (G hotkey or the Gearbox tab).
+    pub notif_gearbox_toggle: bool,
+    /// "Gearbox mode: Race" (mode picker, or the automatic switch to Race in a race and back).
+    pub notif_gearbox_mode: bool,
+    /// "Backfire: ON / OFF".
+    pub notif_backfire: bool,
+    /// "Calibration started" / "Calibration done — N rpm".
+    pub notif_calibration: bool,
+    /// Anchor of the notification stack on the screen (3×3), default top-centre.
+    pub notif_cell: HudCell,
 }
 
 impl OverlayConfig {
@@ -450,6 +463,12 @@ impl Default for OverlayConfig {
             drift_style: DriftStyle::PositionGain,
             drift_chip_secs: 5.0,
             drift_bar: true,
+            notif_on: true,
+            notif_gearbox_toggle: true,
+            notif_gearbox_mode: true,
+            notif_backfire: true,
+            notif_calibration: true,
+            notif_cell: HudCell::TopCenter,
         }
     }
 }
