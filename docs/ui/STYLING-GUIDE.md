@@ -273,6 +273,11 @@ control_row_tip(ui, tr("Listen port"), tr("Avoid ports 5200–5300 (used by the 
 
 If the control already has a tooltip, merge the texts into one.
 
+**Tooltips only where needed.** Add one only when the label alone doesn't explain the
+control: units, side effects, interactions with other settings, non-obvious defaults. A
+self-explanatory control ("North up", "Enabled", "Always on top") gets **no tooltip** — a
+missing tooltip is fine. Never add one just to restate the label.
+
 **Exception:** short text the user must see without hovering stays: a warning
 (`DANGER` / `WARN`, e.g. a key bound twice, "HUD is hidden"), a runtime status (overlay
 state, permission missing, a Test result, a live readout such as the backfire RPM range).
@@ -280,6 +285,7 @@ These describe a state, not an option.
 
 **Why:** the user found text under every option bloated the UI (the Overlay tab in
 particular). Tooltips keep the layout compact and the explanation is one hover away.
+Tooltips everywhere are noise too, so only what needs explaining gets one.
 
 ## Fonts
 
