@@ -167,15 +167,14 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Advanced Settings ────────────────────────────────────────
             crate::theme::card(ui, tr("Advanced Settings"), |ui| {
-                if ui.button(tr("Reset settings")).clicked() {
+                if ui
+                    .button(tr("Reset settings"))
+                    .on_hover_text(tr("Resets the sliders below to the default tune. Modes and toggles are left unchanged."))
+                    .clicked()
+                {
                     app.config.reset_gearbox_numeric();
                     app.config.save();
                 }
-                ui.label(
-                    RichText::new(tr("Resets the sliders below to the default tune. Modes and toggles are left unchanged."))
-                        .size(11.0)
-                        .color(Color32::GRAY),
-                );
                 ui.add_space(4.0);
 
                 slider_row(
