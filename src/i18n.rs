@@ -92,6 +92,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Connected" => "Verbunden",
         "Disconnected" => "Getrennt",
         "Connecting…" => "Verbinde…",
+        "packets per second" => "Pakete pro Sekunde",
 
         // ── Page-settings tabs / sub-tabs ──────────────────────────────
         "Gearbox" => "Getriebe",

@@ -26,6 +26,21 @@ Save button and switching always persists the outgoing profile. Full detail in
   to this port under **SETTINGS > HUD AND GAMEPLAY > Data Out**.
 - Avoid ports **5200–5300** — the game binds its own outgoing socket there.
 
+## Status bar connection indicator
+
+Bottom bar, left side (`src/app.rs`). Governed by *Status bar: show text labels*:
+
+- **Text on** — icon + "Connected"/"Disconnected" + "70 pps" form one hover zone.
+- **Text off** — plug / no-signal icon, then the bare packet rate ("70", no unit) painted in
+  the icon's colour directly against it (no item spacing; fixed 3-digit-wide box so the
+  Co-Op icon doesn't shift when the rate changes digit count). The gap to the Co-Op icon is
+  unchanged (see the reverted `96ef8e1`/`c86cec7` spacing experiment).
+- Either way hovering the icon or number shows a tooltip: the state word, then
+  "N packets per second" (never "pps").
+
+*Why:* dropping the unit saves space, so the tooltip is where the unit is spelled out; one
+zone for the group avoids dead gaps between icon and number.
+
 ## Co-Op
 
 - **Host port** — the local port the cloudflared tunnel points at when you host.
