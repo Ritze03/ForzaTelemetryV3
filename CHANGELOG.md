@@ -22,6 +22,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Overlay: Drive cluster style** is now a dropdown with the entries **Pill** and **Halo** instead of two radio buttons.
 - **Status bar connection indicator**: in icon-only mode the packet rate now shows just the number (no "pps"), in the connection icon's colour and right next to the icon. Hovering the icon or the number (or the whole icon + text group with text labels on) shows the connection state and the rate as "N packets per second".
 - **Longer Co-Op room IDs**: generated Trystero Room IDs are now 32 characters (8 groups of 4) so shared public rooms practically never collide. Older, shorter IDs keep working.
+- **Less clutter under options**: the small grey explanation lines under settings on the Overlay, Gearbox, Backfire and Setup tabs are now tooltips on the setting itself. Warnings and status messages (e.g. a key bound twice, Test results) stay visible.
 
 ## [0.4.0] – 2026-09-30
 

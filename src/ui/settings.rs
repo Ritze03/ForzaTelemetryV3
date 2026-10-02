@@ -887,7 +887,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
         {
             use crate::config::FocusMethod;
             let method_before = app.config.hotkeys.focus_method;
-            control_row_tip(ui, tr("Window Detection Method"), tr("GNOME needs the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."), |ui| {
+            control_row_tip(ui, tr("Window Detection Method"), tr("Requires the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."), |ui| {
                 egui::ComboBox::from_id_salt("hk_focus_method")
                     .selected_text(match app.config.hotkeys.focus_method {
                         FocusMethod::Hyprland => "Hyprland",
