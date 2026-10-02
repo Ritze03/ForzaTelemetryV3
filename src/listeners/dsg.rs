@@ -68,6 +68,9 @@ pub struct DsgListener {
     /// Last ≤10 valid redline-speed estimates per gear; the committed value is their median.
     /// Never locked — the median keeps updating so a wrong value self-corrects.
     gear_samples: [VecDeque<f32>; 11],
+    /// Gear-1 samples ever taken. Only grows (a reset does not zero it), so the HUD notifier can
+    /// tell "new gear-1 data since the reset" from the map a reset kept (`listeners/notify.rs`).
+    pub gear1_seq: u64,
     /// False until the driver manually upshifts once (from any gear). While false the box stays
     /// hands-off so the driver can rev out and the redline detector locks the peak RPM to use.
     pub engaged: bool,
@@ -114,6 +117,7 @@ impl DsgListener {
         Self {
             gear_redline_speeds: [0.0; 11],
             gear_samples: std::array::from_fn(|_| VecDeque::new()),
+            gear1_seq: 0,
             engaged: false,
             prev_gear: 0,
             phase: ShiftPhase::Idle,
@@ -228,6 +232,9 @@ impl DsgListener {
                 buf.pop_front();
             }
             self.gear_redline_speeds[gear as usize] = median(buf).floor();
+            if gear == 1 {
+                self.gear1_seq += 1;
+            }
         }
 
         // Hands off until enabled, engaged (driver shifted out of 1st), and a redline is known.

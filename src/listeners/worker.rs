@@ -53,7 +53,7 @@ use crate::listeners::backfire::{BackfireListener, BackfireView};
 use crate::listeners::calib::MaxRpmChecks;
 use crate::listeners::dsg::{DsgListener, DsgView};
 use crate::listeners::hud::{hud_paused, HudTracker, VisFacts};
-use crate::listeners::notify::{Event, Notifier};
+use crate::listeners::notify::Notifier;
 use crate::overlay::snapshot::{hud_clock, HudSink};
 use crate::packet::ForzaPacket;
 
@@ -357,12 +357,12 @@ fn run(ctx: Ctx) {
             match cmd {
                 Command::ClearRpmCalibration => {
                     clear_rpm_calibration(&mut dsg, &mut dynamic_max_rpm);
-                    notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 Command::ClearGearMap => {
                     dsg.reset_calibration();
-                    notifier.rearm_shift_hint();
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 Command::SetHudSink(sink) => {
@@ -404,12 +404,12 @@ fn run(ctx: Ctx) {
                 }
                 HotkeyAction::ResetCalibration => {
                     clear_rpm_calibration(&mut dsg, &mut dynamic_max_rpm);
-                    notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 HotkeyAction::ClearGearMap => {
                     dsg.reset_calibration();
-                    notifier.rearm_shift_hint();
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 // why: ignored while the overlay is off. The key may double as a game key
@@ -428,8 +428,11 @@ fn run(ctx: Ctx) {
         );
 
         // ── One packet. The only blocking call, and no lock is held across it. ──
+        // A message queued above (reset hotkey / command) goes out at once instead of after
+        // the idle wait, packet or no packet.
+        let poll = if notifier.has_fresh() { Duration::from_millis(1) } else { IDLE_POLL };
         let mut got_packet = false;
-        match udp.recv_timeout(IDLE_POLL) {
+        match udp.recv_timeout(poll) {
             Ok(pkt) => {
                 got_packet = true;
                 // Tracked whenever the overlay is enabled, attached or not, so a lap
@@ -522,7 +525,7 @@ fn run(ctx: Ctx) {
         }
 
         // ── D26: queue what changed (hotkeys and UI settings alike). ──
-        notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dynamic_max_rpm, driving_car, hud_clock());
+        notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dsg.gear1_seq, dynamic_max_rpm, driving_car, hud_clock());
         hud_force |= notifier.take_new(); // a message must reach the HUD even without a packet
 
         // ── listener → overlay: every packet, plus any visibility change without one. ──
@@ -539,6 +542,7 @@ fn run(ctx: Ctx) {
             // manual upshift (or a restored profile). Runs with the DSG switched off too.
             let calibrated = if dsg.engaged { dynamic_max_rpm } else { 0.0 };
             let mut snap = hud.snapshot(facts, &hud_cfg, &cfg, calibrated, now);
+            notifier.hold_unseen(snap.visible, now);
             snap.notifications = notifier.items().to_vec();
             if got_packet || hud_force || snap.visible != hud_visible {
                 hud_visible = snap.visible;

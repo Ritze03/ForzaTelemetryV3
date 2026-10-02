@@ -5,9 +5,11 @@
 //! push. Rather than hooking each source, [`Notifier::watch`] diffs the relevant state once
 //! per loop pass, so every route to the same change (G key, tab toggle, profile load, the
 //! automatic switch to Race in a race) produces the same message exactly once. Calibration
-//! *start* has no state that distinguishes "reset" from "never started", so those are pushed
-//! explicitly from the reset sites in `worker.rs`, and "Calibration started" is also a level
-//! rule (an uncalibrated car being driven, once per episode; see [`Notifier::watch`]).
+//! *start* has no state that distinguishes "reset" from "never started", so every reset
+//! (Clear RPM calibration, Clear gear map; hotkey, controller or tab button) announces itself
+//! through [`Notifier::calibration_reset`] at once, paused or not, and "Calibration started"
+//! is also a level rule (an uncalibrated car being driven, once per episode; see
+//! [`Notifier::watch`]).
 //!
 //! Every event belongs to a [`NotifGroup`]; pushing one replaces the live pill of its group
 //! in place (same slot, new text, TTL restarted) rather than stacking, so rapid same-type
@@ -25,6 +27,9 @@ use crate::overlay::snapshot::{NotifGroup, NotifKind, Notification};
 const KEEP: usize = 8;
 /// Drop entries older than this, seconds (a bit beyond the HUD's `TTL_SECS`).
 const PRUNE_AFTER: f64 = 4.0;
+/// A Calibration pill pushed while the HUD is not visible keeps its full life for the first
+/// time it is shown, for at most this long after the push (see [`Notifier::hold_unseen`]).
+const HOLD_MAX: f64 = 30.0;
 
 /// What happened.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,17 +99,27 @@ pub struct Notifier {
     prev: Option<Watched>,
     /// "Shift at redline" was already handled this calibration cycle. Set when it fires (or
     /// would have, with its toggle off) and cleared by every route into a new cycle: an
-    /// explicit [`Event::CalibrationStarted`], [`Self::rearm_shift_hint`], the gear-1 map
+    /// explicit [`Event::CalibrationStarted`], [`Self::calibration_reset`], the gear-1 map
     /// emptying, or the box engaging.
     shift_hinted: bool,
     /// The car "Calibration started" was already announced for in the current uncalibrated
-    /// episode. Cleared when the box is calibrated, and by an explicit Clear RPM calibration
-    /// that is not itself seen (nothing is being driven), so the next drive announces it.
+    /// episode. Cleared when the box is calibrated; a reset ([`Self::calibration_reset`]) sets
+    /// it to the car it applies to even while paused, so resuming does not repeat the message.
     started_for: Option<i32>,
     /// The car being driven as of the last [`Self::watch`] (None = paused / no car).
     driving: Option<i32>,
     /// Something was pushed since the last [`Self::take_new`] (forces a snapshot publish).
     fresh: bool,
+    /// Gear-1 samples taken so far (`DsgListener::gear1_seq`), as of the last [`Self::watch`].
+    gear1_seq: u64,
+    /// "Shift at redline" needs `gear1_seq` to be beyond this: the value at the last
+    /// `CalibrationStarted`, so the hint means *new* data after the reset, not the map that
+    /// Clear RPM calibration deliberately keeps.
+    hint_floor: u64,
+    /// The HUD was visible as of the last [`Self::hold_unseen`].
+    visible: bool,
+    /// Calibration pills (id, push time) pushed while the HUD was not visible and not yet seen.
+    unseen: Vec<(u64, f64)>,
 }
 
 impl Notifier {
@@ -113,7 +128,8 @@ impl Notifier {
     pub fn push(&mut self, cfg: &OverlayConfig, ev: Event, now: f64) {
         if ev == Event::CalibrationStarted {
             self.shift_hinted = false; // a new cycle, whatever the toggles say
-            // Told if it can be seen right now; otherwise the level rule fires on the next drive.
+            self.hint_floor = self.gear1_seq; // ...whose hint waits for new gear-1 data
+            // Told for the car being driven (`calibration_reset` covers the paused case).
             self.started_for = self.driving;
         }
         if !cfg.enabled || !cfg.notif_on || !ev.enabled(cfg) {
@@ -129,6 +145,8 @@ impl Notifier {
             n.text = text;
             n.kind = kind;
             n.created = now;
+            let id = n.id;
+            self.track_unseen(id, group, now);
             return;
         }
         self.next_id += 1;
@@ -137,23 +155,60 @@ impl Notifier {
             self.items.remove(0);
         }
         self.items.push(Notification { id: self.next_id, group, text, kind, created: now, born: now });
+        self.track_unseen(self.next_id, group, now);
     }
 
-    /// Start a new "Shift at redline" cycle (the gear map was just cleared on purpose).
-    pub fn rearm_shift_hint(&mut self) {
-        self.shift_hinted = false;
+    fn track_unseen(&mut self, id: u64, group: NotifGroup, now: f64) {
+        if self.visible || group != NotifGroup::Calibration {
+            return;
+        }
+        self.unseen.retain(|&(i, at)| i != id && now - at < HOLD_MAX);
+        self.unseen.push((id, now));
+    }
+
+    /// A calibration reset just happened (Clear RPM calibration or Clear gear map, from the
+    /// hotkey, the controller or the tab): announce "Calibration started" **now**, paused or
+    /// not, and mark the episode of `car` (the car the reset applies to) as announced, so the
+    /// level rule does not say it again when driving resumes. Also starts a new "Shift at
+    /// redline" cycle (see `hint_floor`).
+    pub fn calibration_reset(&mut self, cfg: &OverlayConfig, car: i32, now: f64) {
+        self.push(cfg, Event::CalibrationStarted, now);
+        self.started_for = self.driving.or(Some(car));
+    }
+
+    /// Keep Calibration pills that were pushed while the HUD was hidden (paused, game
+    /// unfocused, Hide HUD) at full life until the HUD is actually visible, so a reset done
+    /// while paused is still readable when the game resumes. Call once per pass with the
+    /// snapshot's visibility, before copying the items. Bounded by [`HOLD_MAX`] so a long
+    /// hidden stretch does not show stale news. *Why only Calibration:* the other pills answer
+    /// a hotkey pressed in the running game, where the HUD is up; a reset is the case that
+    /// happens in the pause menu.
+    pub fn hold_unseen(&mut self, visible: bool, now: f64) {
+        self.visible = visible;
+        if visible {
+            self.unseen.clear();
+            return;
+        }
+        self.unseen.retain(|&(_, at)| now - at < HOLD_MAX);
+        for n in &mut self.items {
+            if self.unseen.iter().any(|&(i, _)| i == n.id) {
+                n.created = now;
+                n.born = now;
+            }
+        }
     }
 
     /// Diff the watched state against the last pass and queue what changed. The first call
     /// only records the baseline (starting the app announces nothing, the shift hint included).
     /// `engaged` = the gearbox has a usable calibration; `gear1_mapped` = gear 1's gear-map entry has data
-    /// (`gear_redline_speeds[1] > 0`); `in_race` = a real race (race position ≠ 0);
+    /// (`gear_redline_speeds[1] > 0`); `gear1_seq` = gear-1 samples ever taken
+    /// (`DsgListener::gear1_seq`, only grows); `in_race` = a real race (race position ≠ 0);
     /// `driving` = the car ordinal while the game is running and not paused
     /// (`!hud_paused`, which includes race-on), else None.
     ///
     /// **Calibration started** is a level rule: driving a car that is not calibrated
     /// (`!engaged`) announces it once per episode (`started_for`). Episodes restart on a car
-    /// change, once calibrated, or via the explicit Clear RPM calibration push. The gearbox
+    /// change or once calibrated; resets announce themselves ([`Self::calibration_reset`]). The gearbox
     /// switch is deliberately not part of it: calibration runs, and feeds the HUD's shift
     /// cue, whether or not the box is on.
     #[allow(clippy::too_many_arguments)]
@@ -163,11 +218,13 @@ impl Notifier {
         in_race: bool,
         engaged: bool,
         gear1_mapped: bool,
+        gear1_seq: u64,
         max_rpm: f32,
         driving: Option<i32>,
         now: f64,
     ) {
         self.driving = driving;
+        self.gear1_seq = gear1_seq;
         let cur = Watched {
             dsg_enabled: app.dsg_enabled,
             backfire_enabled: app.backfire_enabled,
@@ -195,18 +252,24 @@ impl Notifier {
         } else if driving.is_some() && self.started_for != driving {
             self.push(&app.overlay, Event::CalibrationStarted, now); // sets `started_for`
         }
-        // A level ("uncalibrated and gear 1 has data, not yet told"), not an edge, so it also
-        // covers a map that was already there when a cycle was restarted (Clear RPM
-        // calibration keeps the gear map). The baseline pass counts as already told.
+        // A level ("uncalibrated and gear 1 has data, not yet told"), not an edge. After a
+        // reset it also needs a gear-1 sample newer than the reset (`hint_floor`): Clear RPM
+        // calibration keeps the gear map, and without that the hint would replace "Calibration
+        // started" in the same pass. The baseline pass counts as already told.
         if engaged || !gear1_mapped {
             // Cycle over (calibrated), or the map was emptied (reset / car change): re-arm.
             self.shift_hinted = false;
-        } else if !self.shift_hinted {
+        } else if !self.shift_hinted && gear1_seq > self.hint_floor {
             self.shift_hinted = true;
             if !baseline {
                 self.push(&app.overlay, Event::ShiftAtRedline, now);
             }
         }
+    }
+
+    /// Something is queued that the HUD has not been sent yet (the worker then polls fast).
+    pub fn has_fresh(&self) -> bool {
+        self.fresh
     }
 
     /// True once after something new was queued.
@@ -242,7 +305,7 @@ mod tests {
 
     /// `watch` with only the toggles in play: not driving, nothing calibrated.
     fn idle(n: &mut Notifier, c: &AppConfig, t: f64) {
-        n.watch(c, false, false, false, 0.0, None, t);
+        n.watch(c, false, false, false, 0, 0.0, None, t);
     }
 
     #[test]
@@ -272,11 +335,11 @@ mod tests {
         // Manual mode change while on, then the automatic switch to Race in a race and back.
         let t = 1.0 + 3.0 * gap;
         c.dsg_gearbox_mode = GearboxMode::Street;
-        n.watch(&c, false, false, false, 0.0, None, t);
+        n.watch(&c, false, false, false, 0, 0.0, None, t);
         assert_eq!(n.items().last().unwrap().text, "Gearbox mode: Street");
-        n.watch(&c, true, false, false, 0.0, None, t + gap);
+        n.watch(&c, true, false, false, 0, 0.0, None, t + gap);
         assert_eq!(n.items().last().unwrap().text, "Gearbox mode: Race");
-        n.watch(&c, false, false, false, 0.0, None, t + 2.0 * gap);
+        n.watch(&c, false, false, false, 0, 0.0, None, t + 2.0 * gap);
         assert_eq!(n.items().last().unwrap().text, "Gearbox mode: Street");
     }
 
@@ -295,7 +358,7 @@ mod tests {
         let mut n = Notifier::default();
         let mut c = cfg();
         idle(&mut n, &c, 1.0);
-        n.watch(&c, false, true, false, 8499.6, None, 2.0);
+        n.watch(&c, false, true, false, 0, 8499.6, None, 2.0);
         assert_eq!(texts(&n), ["Calibration done: 8500 rpm"]);
         // Same group: a later Started replaces the pill.
         n.push(&c.overlay, Event::CalibrationStarted, 3.0);
@@ -314,7 +377,7 @@ mod tests {
 
     /// Drive the watcher the way the worker does: (engaged, gear 1 has map data, car driven).
     fn step(n: &mut Notifier, c: &AppConfig, engaged: bool, g1: bool, t: f64) {
-        n.watch(c, false, engaged, g1, 8500.0, None, t);
+        n.watch(c, false, engaged, g1, u64::from(g1), 8500.0, None, t);
     }
 
     #[test]
@@ -424,32 +487,127 @@ mod tests {
     fn shift_hint_rearms_on_each_new_cycle() {
         let mut n = Notifier::default();
         let c = cfg();
-        step(&mut n, &c, false, false, 0.1);
-        step(&mut n, &c, false, true, 0.2);
+        step_seq(&mut n, &c, false, false, 0, 0.1);
+        step_seq(&mut n, &c, false, true, 1, 0.2);
         assert_eq!(texts(&n), ["Shift at redline"]);
         assert!(pushed(&mut n));
-        step(&mut n, &c, false, true, 0.25);
+        step_seq(&mut n, &c, false, true, 2, 0.25);
         assert!(!pushed(&mut n), "once per cycle");
         // Car change while uncalibrated: map emptied, new data, new hint.
-        step(&mut n, &c, false, false, 0.3);
-        step(&mut n, &c, false, true, 0.4);
+        step_seq(&mut n, &c, false, false, 2, 0.3);
+        step_seq(&mut n, &c, false, true, 3, 0.4);
         assert!(pushed(&mut n));
-        // Clear gear map (explicit re-arm, even if the map refills within one pass).
-        n.rearm_shift_hint();
-        step(&mut n, &c, false, true, 0.5);
+        // Map emptied alone (no explicit call) re-arms too.
+        step_seq(&mut n, &c, false, false, 3, 0.8);
+        step_seq(&mut n, &c, false, true, 4, 0.9);
         assert!(pushed(&mut n));
-        // Calibrated, then Clear RPM calibration keeps the map: Started, then the hint at
-        // once (same pill, so only the hint is left showing).
-        step(&mut n, &c, true, true, 0.6);
+    }
+
+    /// `step` with an explicit gear-1 sample counter (monotonic, as in the worker).
+    fn step_seq(n: &mut Notifier, c: &AppConfig, engaged: bool, g1: bool, seq: u64, t: f64) {
+        n.watch(c, false, engaged, g1, seq, 8500.0, None, t);
+    }
+
+    // ── Calibration reset: Started shows at once and stays until real new data ──
+
+    #[test]
+    fn reset_while_driving_shows_started_immediately() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        n.watch(&c, false, true, true, 5, 8500.0, Some(7), 0.1); // calibrated, driving
         n.take_new();
-        n.push(&c.overlay, Event::CalibrationStarted, 0.7);
-        step(&mut n, &c, false, true, 0.7);
+        n.calibration_reset(&c.overlay, 7, 1.0);
+        assert_eq!(texts(&n), ["Calibration started"]);
+        assert!(n.has_fresh() && n.take_new(), "forces a snapshot publish");
+        n.watch(&c, false, false, true, 5, 0.0, Some(7), 1.0); // the same pass, uncalibrated
+        assert!(!n.take_new(), "the level rule does not repeat it");
+    }
+
+    #[test]
+    fn reset_while_paused_shows_started_at_once_and_not_again_on_resume() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        n.watch(&c, false, true, true, 5, 8500.0, Some(7), 0.1);
+        n.watch(&c, false, true, true, 5, 8500.0, None, 0.2); // paused
+        n.take_new();
+        n.calibration_reset(&c.overlay, 7, 1.0);
+        assert_eq!(texts(&n), ["Calibration started"], "pushed while paused");
+        assert!(n.take_new());
+        n.watch(&c, false, false, true, 5, 0.0, None, 1.0);
+        n.watch(&c, false, false, true, 5, 0.0, Some(7), 9.0); // resume, same car
+        assert!(!n.take_new(), "already announced");
+        // A different car is a new episode.
+        n.watch(&c, false, false, false, 5, 0.0, Some(8), 10.0);
+        assert!(n.take_new());
+    }
+
+    #[test]
+    fn clear_gear_map_announces_started_too() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        step_seq(&mut n, &c, true, true, 5, 0.1); // calibrated, map there
+        n.take_new();
+        n.calibration_reset(&c.overlay, 7, 1.0); // what Clear gear map does
+        assert_eq!(texts(&n), ["Calibration started"]);
+        assert!(n.take_new());
+        // Map emptied, then refilled while the box stays calibrated: no hint, Started stays.
+        step_seq(&mut n, &c, true, false, 5, 1.0);
+        step_seq(&mut n, &c, true, true, 6, 1.1);
+        assert_eq!(texts(&n), ["Calibration started"]);
+        // Uncalibrated box (Clear gear map after Clear RPM): hint after new data only.
+        let mut m = Notifier::default();
+        step_seq(&mut m, &c, false, true, 5, 0.1);
+        m.calibration_reset(&c.overlay, 7, 1.0);
+        step_seq(&mut m, &c, false, false, 5, 1.0); // map is empty
+        assert_eq!(texts(&m), ["Calibration started"]);
+        step_seq(&mut m, &c, false, true, 6, 1.1); // gear 1 drives again
+        assert_eq!(texts(&m), ["Shift at redline"]);
+    }
+
+    #[test]
+    fn clear_rpm_with_the_map_kept_keeps_started_until_new_gear1_data() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        step_seq(&mut n, &c, true, true, 5, 0.1); // calibrated, map there
+        n.take_new();
+        n.calibration_reset(&c.overlay, 7, 1.0);
+        step_seq(&mut n, &c, false, true, 5, 1.0); // the map is still there: no instant hint
+        step_seq(&mut n, &c, false, true, 5, 1.1);
+        assert_eq!(texts(&n), ["Calibration started"]);
+        step_seq(&mut n, &c, false, true, 6, 1.2); // new gear-1 data after the reset
         assert_eq!(texts(&n), ["Shift at redline"]);
-        n.take_new();
-        // Map emptied alone (no explicit call) also re-arms.
-        step(&mut n, &c, false, false, 0.8);
-        step(&mut n, &c, false, true, 0.9);
-        assert!(pushed(&mut n));
+        assert_eq!(n.items().len(), 1, "same pill");
+        step_seq(&mut n, &c, true, true, 7, 1.3); // the shift
+        assert_eq!(texts(&n), ["Calibration done: 8500 rpm"]);
+    }
+
+    #[test]
+    fn a_calibration_pill_pushed_while_the_hud_is_hidden_is_held_until_shown() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        n.hold_unseen(false, 0.0); // HUD hidden (paused)
+        n.calibration_reset(&c.overlay, 7, 1.0);
+        for t in [5.0, 10.0, 20.0] {
+            n.hold_unseen(false, t);
+        }
+        assert_eq!(live(n.items(), 20.0).len(), 1, "still within its life");
+        n.hold_unseen(true, 20.1); // the HUD comes back: from here the normal TTL runs
+        assert_eq!(live(n.items(), 20.0 + TTL_SECS - 0.1).len(), 1);
+        assert!(live(n.items(), 20.0 + TTL_SECS + 0.5).is_empty());
+        // Hidden for longer than the hold limit: it expires normally.
+        let mut m = Notifier::default();
+        m.hold_unseen(false, 0.0);
+        m.calibration_reset(&c.overlay, 7, 1.0);
+        for t in 2..=40 {
+            m.hold_unseen(false, t as f64);
+        }
+        assert!(live(m.items(), 40.0).is_empty());
+        // Other groups are not held.
+        let mut b = Notifier::default();
+        b.hold_unseen(false, 0.0);
+        b.push(&c.overlay, Event::Backfire(true), 1.0);
+        b.hold_unseen(false, 20.0);
+        assert!(live(b.items(), 20.0).is_empty());
     }
 
     #[test]
@@ -475,7 +633,7 @@ mod tests {
 
     /// One pass with a car on screen (`Some`) or paused (`None`), uncalibrated unless `engaged`.
     fn drive(n: &mut Notifier, c: &AppConfig, car: Option<i32>, engaged: bool, t: f64) {
-        n.watch(c, false, engaged, false, 8500.0, car, t);
+        n.watch(c, false, engaged, false, 0, 8500.0, car, t);
     }
 
     fn started_count(n: &mut Notifier) -> usize {
