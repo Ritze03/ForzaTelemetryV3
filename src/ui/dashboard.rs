@@ -2200,8 +2200,8 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let car_x = app.minimap_cached_car_x;
     let car_z = app.minimap_cached_car_z;
     // North-up locks the map (yaw 0); otherwise it's heading-up (rotates with the car). The
-    // look-around offset (right stick) is relative to that base, see `minimap::look_target`.
-    let yaw   = app.minimap_base_yaw() + app.minimap_look_off;
+    // right-stick look-around sits on top of that base, see `minimap::LookAround`.
+    let yaw   = app.minimap_look.view_yaw(app.minimap_base_yaw());
 
     // Metres visible from widget centre to nearest edge (zoom); rotates world displacement
     // into car-relative screen space (see `minimap::MapView` for the conventions).

@@ -107,8 +107,10 @@ pub struct MapAnim {
     last: Option<f64>,
     yaw: Option<f32>,
     zoom: Option<f32>,
-    /// Eased right-stick look-around offset, added to `yaw` when drawing.
-    look: f32,
+    /// Right-stick look-around; owns the drawn view yaw (`view`).
+    look: mm::LookAround,
+    /// The yaw the map is drawn with: `yaw` under the look-around.
+    view: f32,
     slow_since: Option<f64>,
 }
 
@@ -145,16 +147,15 @@ impl MapAnim {
             Some(z) if stopped || kmh >= mm::STOPPED_KMH => mm::ease_zoom(z, target_zoom, dt),
             Some(z) => z,
         };
-        // Look-around is relative to the car's heading (the heading-up yaw) in every mode.
+        // Look-around is relative to the car's heading (the heading-up yaw) in every mode, and
+        // while held it ignores the base yaw (see `minimap::LookAround`).
         let heading = mm::target_yaw(pkt, cfg.map_use_movement_dir);
-        self.look = mm::ease_look(self.look, snap.look_stick, cfg.map_look_stick, heading, yaw, dt);
+        self.view = self.look.step(snap.look_stick, cfg.map_look_stick, heading, yaw, target_yaw, dt);
         self.yaw = Some(yaw);
         self.zoom = Some(zoom);
-        let look_target = if cfg.map_look_stick { mm::look_target(snap.look_stick, heading, yaw) } else { 0.0 };
-        let look_left = (mm::lerp_angle(self.look, look_target, 1.0) - self.look).abs() > 1e-3;
         let yaw_left = (mm::lerp_angle(yaw, target_yaw, 1.0) - yaw).abs() > 1e-3;
         let zoom_left = (zoom - target_zoom).abs() > 0.5 && (stopped || kmh >= mm::STOPPED_KMH);
-        yaw_left || zoom_left || look_left
+        yaw_left || zoom_left || self.look.easing()
     }
 }
 
@@ -300,7 +301,7 @@ fn clip_convex(subject: &[Pos2], clip: &[Pos2]) -> Vec<Pos2> {
 /// Draw M2′. Returns true while the view is still easing.
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
-    let (yaw, zoom) = (anim.yaw.unwrap_or(0.0) + anim.look, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
+    let (yaw, zoom) = (anim.view, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
     let (w, h) = (SIZE.x, SIZE.y);
     let centre = xf.p(w / 2.0, h / 2.0);
     let view = MapView::new(snap.pkt.position_x, snap.pkt.position_z, yaw, zoom, xf.l(w.min(h)));
@@ -514,7 +515,7 @@ mod tests {
     #[test]
     fn map_anim_look_is_car_relative_in_north_up() {
         use std::f32::consts::{FRAC_PI_2, PI};
-        let view_yaw = |a: &MapAnim| a.yaw.unwrap() + a.look;
+        let view_yaw = |a: &MapAnim| a.view;
         let ang = |a: f32, b: f32| mm::wrap_angle(a - b).abs() < 1e-2;
         for north_up in [true, false] {
             let cfg = crate::config::OverlayConfig { map_north_up: north_up, map_look_stick: true, map_smooth_rotation: false, ..Default::default() };
@@ -538,6 +539,44 @@ mod tests {
             }
             let rest = if north_up { 0.0 } else { FRAC_PI_2 };
             assert!(ang(view_yaw(&anim), rest), "north_up {north_up}: {}", view_yaw(&anim));
+        }
+    }
+
+    /// The reported jolt, through the HUD's own `MapAnim`: stick held right, the car stops and
+    /// "north up when stopped" engages after 1.5 s. The view must not move (it used to swing
+    /// toward north, then back); released, it eases monotonically to north.
+    #[test]
+    fn map_anim_held_look_ignores_north_up_when_stopped() {
+        use std::f32::consts::FRAC_PI_2;
+        for smooth in [true, false] {
+            let cfg = crate::config::OverlayConfig { map_north_up_when_stopped: true, map_look_stick: true, map_smooth_rotation: smooth, ..Default::default() };
+            let mut s = driving_snap(cfg, 0.0, 0.0);
+            s.pkt.speed = 30.0;
+            s.pkt.yaw = 0.8;
+            s.look_stick = (1.0, 0.0);
+            let want = mm::wrap_angle(0.8 + FRAC_PI_2);
+            let mut anim = MapAnim::default();
+            let mut t = 0.0;
+            for _ in 0..240 {
+                anim.step(&s, t);
+                t += 1.0 / 60.0;
+            }
+            s.pkt.speed = 0.0; // stops: after 1.5 s the base eases to north
+            for i in 0..300 {
+                anim.step(&s, t);
+                t += 1.0 / 60.0;
+                assert!(mm::wrap_angle(anim.view - want).abs() < 1e-3, "smooth {smooth} frame {i}: {}", anim.view);
+            }
+            assert!(anim.yaw.unwrap().abs() < 1e-2, "base went north underneath: {:?}", anim.yaw);
+            s.look_stick = (0.0, 0.0);
+            let mut prev = anim.view;
+            for _ in 0..300 {
+                anim.step(&s, t);
+                t += 1.0 / 60.0;
+                assert!(anim.view.abs() <= prev.abs() + 1e-6, "{prev} -> {}", anim.view);
+                prev = anim.view;
+            }
+            assert!(prev.abs() < 1e-2 && !anim.step(&s, t), "{prev}");
         }
     }
 

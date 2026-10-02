@@ -566,7 +566,7 @@ pub struct ForzaApp {
     pub minimap_cached_car_z: f32,
     pub minimap_cached_yaw: f32,
     pub minimap_cached_raw_yaw: f32, // always raw pkt.yaw, for arrow orientation
-    pub minimap_look_off: f32,       // eased right-stick look-around offset (added to the yaw)
+    pub minimap_look: crate::minimap::LookAround, // right-stick look-around; owns the drawn view yaw
     pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     /// Debug tab's car-name DB (background-loaded on first open).
@@ -685,7 +685,7 @@ fn trace_step(dt_wall: Option<f32>, t_active: f32) -> Option<f32> {
 
 impl ForzaApp {
     /// The Dashboard map's yaw without the look-around offset: 0 when locked north-up, else the
-    /// (eased) heading-up yaw. The view yaw is this + `minimap_look_off`.
+    /// (eased) heading-up yaw. The drawn view yaw is `minimap_look.view_yaw(this)`.
     pub fn minimap_base_yaw(&self) -> f32 {
         if self.config.minimap_north_up { 0.0 } else { self.minimap_smoothed_yaw }
     }
@@ -872,7 +872,7 @@ impl ForzaApp {
             minimap_cached_car_z: 0.0,
             minimap_cached_yaw: 0.0,
             minimap_cached_raw_yaw: 0.0,
-            minimap_look_off: 0.0,
+            minimap_look: Default::default(),
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
             debug_cars: Default::default(),
@@ -1516,8 +1516,10 @@ impl eframe::App for ForzaApp {
             stopped_at.elapsed().as_secs_f32() >= crate::minimap::STOPPED_SECS
         };
 
-        // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame
-        {
+        // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame.
+        // `base_target` = where the map's own yaw (`minimap_base_yaw`) is heading, for the
+        // look-around's release (see `minimap::LookAround::step`).
+        let base_target = {
             // In heading-up mode, ease the map to north once the car has been stopped.
             let stopped_north = self.config.minimap_north_up_when_stopped && minimap_stopped;
 
@@ -1542,16 +1544,23 @@ impl eframe::App for ForzaApp {
             } else {
                 self.minimap_smoothed_yaw = self.minimap_cached_yaw;
             }
-        }
+            if self.config.minimap_north_up {
+                0.0
+            } else if self.config.minimap_smooth_rotation || stopped_north {
+                target
+            } else {
+                self.minimap_smoothed_yaw
+            }
+        };
 
-        // Look-around: ease the right-stick offset (0 when released / option off).
+        // Look-around: the view yaw under the right stick. Held: heading + stick angle,
+        // whatever the base does underneath; released: eases back to the base.
         {
             let dt = ctx.input(|i| i.unstable_dt);
             let stick = self.gamepad.right_stick();
-            // Relative to the car's heading (the heading-up yaw), whatever the map's mode.
-            self.minimap_look_off = crate::minimap::ease_look(
-                self.minimap_look_off, stick, self.config.minimap_look_stick,
-                self.minimap_cached_yaw, self.minimap_base_yaw(), dt);
+            let (enabled, heading, base) =
+                (self.config.minimap_look_stick, self.minimap_cached_yaw, self.minimap_base_yaw());
+            self.minimap_look.step(stick, enabled, heading, base, base_target, dt);
         }
 
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
