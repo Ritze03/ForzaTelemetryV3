@@ -392,8 +392,8 @@ else to see it).
 | `Gearbox: ON / OFF` | `notif_gearbox_toggle` | G hotkey or the Gearbox tab |
 | `Gearbox mode: <mode>` | `notif_gearbox_mode` | mode picker, or the automatic switch to Race in a race and back (the *effective* mode, `dsg_effective_mode`); silent while the gearbox is off |
 | `Backfire: ON / OFF` | `notif_backfire` | Backfire hotkey or tab |
-| `Calibration started` | `notif_calibration` | the level rule below (driving an uncalibrated car, once per episode), and the Clear RPM calibration hotkey / controller action / tab button |
-| `Shift at redline` (yellow dot, `NotifKind::Hint`) | `notif_calibration` | once per calibration cycle: the box is not calibrated (`!engaged`) and gear 1's gear-map entry first has data (`DsgListener::gear_redline_speeds[1] > 0`); tells the user data was collected and now is the time to rev out and shift. Re-arms on every new cycle (see below) |
+| `Calibration started` | `notif_calibration` | the level rule below (driving an uncalibrated car, once per episode), and at once on Clear RPM calibration **and** Clear gear map (hotkey / controller action / tab button) |
+| `Shift at redline` (yellow dot, `NotifKind::Hint`) | `notif_calibration` | once per calibration cycle: the box is not calibrated (`!engaged`), gear 1's gear-map entry has data (`DsgListener::gear_redline_speeds[1] > 0`) and, after a reset, a gear-1 sample newer than the reset (`DsgListener::gear1_seq`); tells the user data was collected and now is the time to rev out and shift. Re-arms on every new cycle (see below) |
 | `Calibration done: N rpm` | `notif_calibration` | the gearbox engaging (`DsgListener::engaged` false to true: first manual upshift or a restored profile) |
 
 **Calibration started rule** (`Notifier::watch`, level not edge). Announced when the game is
@@ -401,9 +401,15 @@ running and not paused (`driving`: `!hud_paused(pkt, experimental_pause_detectio
 includes race-on, and a non-zero car ordinal; `worker.rs:driving_car`) and the car is not
 calibrated (`!engaged`), **once per episode** (`Notifier::started_for` = the car it was told
 for). A new episode starts on: a car change (different ordinal), the box becoming calibrated
-(`engaged`), and an explicit Clear RPM calibration (which pushes the message itself, and
-counts as told if a car is being driven right now; cleared while paused, so the next drive
-announces it). So: the first car after starting the app announces once you leave the pause
+(`engaged`). A reset (Clear RPM calibration or Clear gear map) is not part of the level rule:
+`Notifier::calibration_reset` pushes the message **immediately** whatever the driving / paused
+state and marks the current car's episode as told (`started_for`), so resuming the same car
+does not repeat it. *Why (the old delay):* the reset used to defer to the next drive while
+paused, Clear gear map said nothing, and after Clear RPM calibration the kept gear map made
+`Shift at redline` fire in the same `watch` pass and overwrite `Calibration started` in the
+shared pill, so it was never seen. The worker also polls the socket for 1 ms instead of the
+200 ms idle wait while a message is waiting to be published, so it reaches the HUD without a
+packet. So: the first car after starting the app announces once you leave the pause
 menu (or at once if the app starts mid-drive); pausing and resuming the same car does not
 repeat it; a car restored from a saved profile (already `engaged`) says nothing; the app
 restarting says it again. *Why a level:* the old rule only fired on a car change (not the
@@ -414,19 +420,30 @@ and the car-change message was never gated on it; the `notif_calibration` toggle
 off-switch. Like the shift hint it is not announced retroactively when a toggle is switched
 on mid-episode.
 
-**Calibration sequence:** `Calibration started` (level rule / explicit push) then `Shift at redline` (level
+**Calibration sequence:** `Calibration started` (reset / level rule) then, after driving, `Shift at redline` (level
 check in `Notifier::watch`) then `Calibration done` (`engaged` false to true). *Why gear 1's
 entry is the signal:* calibration needs the first pull to redline, which in a normal pull is
 gear 1; any sample needs >60 % of the detected redline, so the first non-zero entry is the first
-moment there is something to shift on. *Why a level, not an edge:* Clear RPM calibration keeps
-the gear map, so gear 1 already has data right after it; the hint then follows `Calibration
-started` in the same pass. `Notifier::shift_hinted` makes it fire once; it clears when the box
-engages, when gear 1's entry empties (car change, Clear gear map), on every
-`Event::CalibrationStarted` push, and on `Notifier::rearm_shift_hint()` (called by the Clear
-gear map command / hotkey, in case the map refills within one pass). The first pass (baseline)
-counts as already told. It shares the `notif_calibration` toggle and is silent when the toggle
-is off (and is not announced retroactively when switched on mid-cycle). Clear gear map itself
-sends no `Calibration started`.
+moment there is something to shift on. *Why a level, not an edge, plus a sample counter:* Clear RPM
+calibration keeps the gear map, so gear 1 already has data right after it; a bare level would fire at
+once and hide `Calibration started`. `DsgListener::gear1_seq` counts gear-1 samples ever taken (never
+reset); every `CalibrationStarted` push records the current value (`Notifier::hint_floor`) and the hint
+needs `gear1_seq` to advance past it, i.e. the user actually drove (gear 1 pulled past 60 % of the
+redline) after the reset. `Notifier::shift_hinted` makes it fire once; it clears when the box engages, when
+gear 1's entry empties (car change, Clear gear map) and on every `Event::CalibrationStarted` push. The
+first pass (baseline) counts as already told. It shares the `notif_calibration` toggle and is silent
+when the toggle is off (and is not announced retroactively when switched on mid-cycle). Clear gear map
+while the box is still calibrated gives only `Calibration started`: no uncalibrated stretch, so no hint
+or Done.
+
+**Hidden HUD.** Pills only draw while the HUD is visible (paused, game unfocused, Hide HUD), so a
+reset done in the pause menu would expire unseen after 2.5 s. `Notifier::hold_unseen` (called every
+worker pass with the snapshot's visibility) therefore keeps restarting the life of a **Calibration**
+pill pushed while hidden until the HUD is visible, at most 30 s (`HOLD_MAX`) after the push; from the
+first visible pass the normal 2.5 s TTL runs. *Why only Calibration and not a general "start TTL when
+first shown":* the other pills answer a hotkey pressed in the running game (HUD up); a reset in the pause
+menu is the case this fixes, and a delayed "Gearbox: ON" would be stale news. *Why a 30 s cap:* so Hide HUD
+for ten minutes does not pop up an old message.
 
 **Groups and replacement.** Every notification has a `NotifGroup` (`overlay/snapshot.rs`):
 `Calibration` (Started, Shift at redline, Done), `Gearbox` (ON/OFF), `GearboxMode`,
@@ -454,8 +471,8 @@ hotkeys and gets the UI's config every frame, so `Notifier::watch` just diffs
 diff and not a hook per source:* UI-side toggles, the G key, profile loads and the automatic
 race switch all produce one identical message exactly once, and there is no UI to listener
 queue. Calibration *start* after a reset can't be diffed (a reset of an uncalibrated box
-changes nothing), so the reset sites (hotkey, controller action, tab command) push it
-explicitly; the uncalibrated-car case is the level rule above. The `Notifier` queue (max 8, pruned after 4 s)
+changes nothing), so the reset sites (hotkey, controller action, tab command: Clear RPM calibration and
+Clear gear map) push it explicitly via `Notifier::calibration_reset`; the uncalibrated-car case is the level rule above. The `Notifier` queue (max 8, pruned after 4 s)
 is copied into `HudSnapshot::notifications` (`Vec<Notification { id, group, text, kind,
 created, born }>`, times on `hud_clock`); a new entry forces a publish even without a packet. Text is
 translated when created. The first pass only records a baseline, so starting the app says

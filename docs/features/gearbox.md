@@ -35,14 +35,19 @@ gear-ratio table.
   `GearMapChecks`); the real logic and the Debug panel both call them, so the display
   cannot drift from what actually gates calibration.
 - **Calibration messages on the HUD** (when notifications are on): `Calibration
-  started` whenever you are driving a car that is not calibrated yet (first car
-  after starting the app and leaving the pause menu, a car change, a Clear RPM
-  calibration), once per uncalibrated episode; then `Shift at redline` (yellow
-  dot) as soon as gear 1 has gear-map data while still uncalibrated; then
+  started` the moment you press **Clear RPM calibration** or **Clear gear map**
+  (hotkey, controller or tab button; also while paused, then it is kept until the
+  HUD is visible again) and whenever you are driving a car that is not calibrated
+  yet (first car after starting the app and leaving the pause menu, a car
+  change), once per uncalibrated episode; then `Shift at redline` (yellow dot) once
+  gear 1 has *new* gear-map data while still uncalibrated (after a reset: data
+  collected since the reset, so Started is not wiped at once); then
   `Calibration done: N rpm` once you shift and the box engages. The three share
   one HUD pill, so a later one replaces an earlier one that is still showing
   instead of stacking. The middle one fires once per cycle and re-arms on a car
-  change, Clear RPM calibration or Clear gear map. Not tied to the gearbox
+  change, Clear RPM calibration or Clear gear map. With the box still calibrated
+  (Clear gear map alone) only `Calibration started` appears: no uncalibrated
+  stretch, so no shift hint or Done. Not tied to the gearbox
   switch (calibration runs with the box off too). See [[overlay]]
   (Notifications).
 - **The redline detection and engagement run with the box switched off too**
@@ -53,8 +58,9 @@ gear-ratio table.
   Gearbox tab; always shown, each disabled until it has something to clear).
   *Clear RPM calibration* forgets the detected redline + engagement (the box
   goes hands-off until your next manual upshift re-locks it) and keeps the gear
-  map; it also pushes the `Calibration started` HUD notification. *Clear gear
-  map* forgets the per-gear speed map and keeps the redline. Each also has a
+  map. *Clear gear
+  map* forgets the per-gear speed map and keeps the redline. Both push the
+  `Calibration started` HUD notification at once (`Notifier::calibration_reset`). Each also has a
   global hotkey / controller action of the same name (see [[hotkeys]],
   [[gamepad]]): **Clear RPM calibration** is `HotkeyAction::ResetCalibration`
   (default `F`; the serde name is kept from the old "Reset RPM Calibration" so
