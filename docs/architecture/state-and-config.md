@@ -16,9 +16,10 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
   stream or is pure UI/session state, none of it serialized:
   - **Session maxima** (`ForzaApp` fields, comment `// Session maxima (reset on car
     change)`): `max_power_ps`, `max_torque_nm`, `max_boost_psi`, `max_speed_kmh`,
-    `cached_engine_max_rpm`, `fi_detected`, `dynamic_max_rpm` (the dynamically detected
+    `cached_engine_max_rpm`, `dynamic_max_rpm` (the dynamically detected
     redline), `wheel_radius_est` (per-wheel EMA-smoothed tire radius). All zeroed and
-    recomputed from scratch on a car change — see the `pkt.car_ordinal !=
+    recomputed from scratch on a car change (the forced-induction latch lives in
+    `PowerCapture::fi_detected`, reset by `on_car_changed`) — see the `pkt.car_ordinal !=
     self.last_car_ordinal` branch around `app.rs:838`.
   - **Session stats structs**: `suspension_stats: SuspensionStats` (`app.rs:223`, a
     rolling min/max + short history) and `gforce_stats: GForceStats` (`app.rs:265`,

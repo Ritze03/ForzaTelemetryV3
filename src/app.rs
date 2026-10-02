@@ -489,7 +489,6 @@ pub struct ForzaApp {
     pub max_boost_psi: f32,
     pub max_speed_kmh: f32,
     pub cached_engine_max_rpm: f64,
-    pub fi_detected: bool,
     /// Highest RPM seen while making power (>0 W) — the dynamically detected redline. Per-car.
     /// Measured on the listener thread (the gearbox needs it there); this is the UI's copy.
     pub dynamic_max_rpm: f32,
@@ -819,7 +818,6 @@ impl ForzaApp {
             max_boost_psi: 0.0,
             max_speed_kmh: 0.0,
             cached_engine_max_rpm: 0.0,
-            fi_detected: false,
             dynamic_max_rpm: 0.0,
             wheel_radius_est: [0.33; 4],
             icon_center_cache: crate::iconcache::IconCenterCache::new(),
@@ -1172,7 +1170,6 @@ impl ForzaApp {
                 self.max_boost_psi = 0.0;
                 self.max_speed_kmh = 0.0;
                 self.cached_engine_max_rpm = 0.0;
-                self.fi_detected = false;
                 self.wheel_radius_est = [0.33; 4];
                 // The gearbox's own per-car reset (calibration, shift state, saved profile)
                 // happens on the listener thread — it saw this packet first.
@@ -1188,9 +1185,6 @@ impl ForzaApp {
                 self.cached_num_cylinders = pkt.num_cylinders;
                 if pkt.engine_max_rpm > 0.0 {
                     self.cached_engine_max_rpm = pkt.engine_max_rpm as f64;
-                }
-                if pkt.boost > 0.05 {
-                    self.fi_detected = true;
                 }
                 if pkt.speed >= 0.1 {
                     self.max_power_ps = self.max_power_ps.max(pkt.power_ps());
