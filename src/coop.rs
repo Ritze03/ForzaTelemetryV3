@@ -611,14 +611,15 @@ pub fn normalize_room(room: &str) -> String {
     room.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
 }
 
-/// A fresh shareable Room ID such as `k7f2-9qzm-x4pd`: three groups of four lowercase
-/// Crockford-base32 characters (~60 bits, so the ID doubles as the room's encryption secret and
-/// can't be guessed; no `i l o u`, so it survives being read out loud).
+/// A fresh shareable Room ID: eight groups of four lowercase Crockford-base32 characters
+/// (32 chars, 160 bits, so the ID doubles as the room's encryption secret, can't be guessed and
+/// shared public rooms practically never collide; no `i l o u`, so it survives being read out
+/// loud). Older, shorter IDs typed by hand still work: `normalize_room` accepts any string.
 pub fn generate_room_id() -> String {
     const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
-    let mut bytes = [0u8; 12];
+    let mut bytes = [0u8; 32];
     nostr::fill_random(&mut bytes);
-    let mut out = String::with_capacity(14);
+    let mut out = String::with_capacity(39);
     for (i, b) in bytes.iter().enumerate() {
         if i > 0 && i % 4 == 0 {
             out.push('-');
@@ -1394,13 +1395,19 @@ mod tests {
         for _ in 0..50 {
             let id = generate_room_id();
             let groups: Vec<&str> = id.split('-').collect();
-            assert_eq!(groups.len(), 3, "{id}");
+            assert_eq!(groups.len(), 8, "{id}");
+            assert_eq!(id.len(), 39, "{id}");
             for g in groups {
                 assert_eq!(g.len(), 4, "{id}");
                 assert!(g.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()), "{id}");
             }
         }
         assert_ne!(generate_room_id(), generate_room_id());
+        // Old 12-char IDs still normalise and join unchanged.
+        assert_eq!(normalize_room("K7F2-9QZM-X4PD"), "k7f2-9qzm-x4pd");
+        let mut st = CoopState::new("Me", 10.0, 0);
+        assert_eq!(st.begin_trystero("K7F2-9QZM-X4PD", "Me", 10.0, 0).as_deref(), Some("k7f2-9qzm-x4pd"));
+        st.stop();
     }
 
     /// Mesh-mode plumbing of the public API on a bare state (no threads, no network).

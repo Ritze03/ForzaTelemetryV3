@@ -4,6 +4,14 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.4.1] – 2026-10-02
+
+### Fixed
+- **HUD Pill gear position**: the gear indicator in the Pill style of the Drive cluster sat 1 px too low and now sits 1 px higher.
+
+### Info
+- **Longer Co-Op room IDs**: generated Trystero Room IDs are now 32 characters (8 groups of 4) so shared public rooms practically never collide. Older, shorter IDs keep working.
+
 ## [0.4.0] – 2026-09-30
 
 ### Added

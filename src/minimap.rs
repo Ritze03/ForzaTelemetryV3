@@ -22,7 +22,7 @@ pub const ALL_SEASONS: [Season; 4] = [Season::Spring, Season::Summer, Season::Au
 /// The season FH6's overworld map is currently showing. Wall-clock based (not from packets):
 /// the skin rotates weekly from a fixed epoch.
 pub fn current_season() -> Season {
-    // Spring started 2026-06-12 14:30:00 UTC (7:30 AM PDT). Unix: 1749738600.
+    // Spring started 2025-06-12 14:30:00 UTC (7:30 AM PDT). Unix: 1749738600.
     // Cycle repeats weekly: Spring → Summer → Autumn → Winter.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

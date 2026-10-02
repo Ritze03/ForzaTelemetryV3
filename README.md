@@ -87,6 +87,13 @@ Then, to feed it data:
 3. Enter the IP address and port shown in Forza Telemetry V3.
 4. Start driving — the dashboard comes alive. 🏎️
 
+## 🐧 Platforms, support & feedback
+
+- **Linux first.** This is a Linux-first project; Windows will most likely get the features later.
+- **Tested on Arch + Hyprland (wlroots) and Fedora + GNOME** — both are fully supported.
+- **Other window managers / compositors** can easily be added through **custom commands** (the *Custom* method under Window Detection in the Setup tab).
+- **Feature requests and bug reports:** open a GitHub issue, free form.
+
 ---
 
 <sub>Curious about the internals? Full technical documentation lives in <a href="docs/README.md"><code>docs/</code></a>.</sub>
