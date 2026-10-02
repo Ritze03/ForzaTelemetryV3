@@ -575,7 +575,7 @@ pub struct ForzaApp {
     pub fh6_setup: crate::ui::settings::Fh6Setup,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
-    /// Only maintained/drawn while in a co-op session.
+    /// The own trail is kept solo too (drawn white); teammates' only in a co-op session.
     pub minimap_trails: HashMap<String, crate::minimap::Trail>,
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
@@ -1315,18 +1315,15 @@ impl ForzaApp {
         }
     }
 
-    /// Append current positions to each player's map trail. Only active during a
-    /// co-op session (local + remotes); cleared otherwise so solo behaviour is unchanged.
+    /// Append current positions to each player's map trail. The own trail (`"local"`) is
+    /// recorded always (solo too, drawn white); teammates' only during a co-op session.
+    /// Session start/end keeps the own trail's points (only its colour follows the state) and
+    /// drops the teammates' trails and last-known spots when it ends.
     fn update_minimap_trails(&mut self) {
         use std::collections::HashSet;
-        if self.coop.role() == crate::coop::Role::Off {
-            if !self.minimap_trails.is_empty() {
-                self.minimap_trails.clear();
-            }
-            if !self.coop_last_pos.is_empty() {
-                self.coop_last_pos.clear();
-            }
-            return;
+        let in_session = self.coop.role() != crate::coop::Role::Off;
+        if !in_session && !self.coop_last_pos.is_empty() {
+            self.coop_last_pos.clear();
         }
 
         // Drop points older than the fade window so trails stay bounded by time too.
@@ -1370,7 +1367,9 @@ impl ForzaApp {
         let mut present: HashSet<String> = HashSet::new();
         present.insert("local".to_string());
         if let Some(pkt) = &self.telemetry.latest {
-            remember(&mut self.coop_last_pos, "local", pkt);
+            if in_session {
+                remember(&mut self.coop_last_pos, "local", pkt);
+            }
             // Skip paused games (car at origin) so we don't draw a line to (0,0).
             if pkt.is_race_on != 0 && !pkt.is_paused() {
                 push(
@@ -1383,7 +1382,8 @@ impl ForzaApp {
                 );
             }
         }
-        for (info, rp) in self.coop.remote_players() {
+        let remotes = if in_session { self.coop.remote_players() } else { Vec::new() };
+        for (info, rp) in remotes {
             remember(&mut self.coop_last_pos, &info.id, &rp);
             if !rp.is_paused() {
                 push(

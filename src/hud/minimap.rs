@@ -178,7 +178,8 @@ pub struct CoopInput {
     pub waypoints: Vec<(f32, f32, f32)>,
 }
 
-/// The co-op layer of the Minimap: who to draw, their trails, the shared waypoints.
+/// The co-op layer of the Minimap: who to draw, their trails, the shared waypoints. The own
+/// trail is kept without a session too (the solo trail, drawn white).
 ///
 /// **Why the HUD keeps its own trail buffers** (instead of the Dashboard's
 /// `ForzaApp::minimap_trails`, which the UI thread fills): the UI loop stops while the game
@@ -200,20 +201,21 @@ pub struct CoopLayer {
 }
 
 impl CoopLayer {
-    /// Refresh from this frame's co-op state. Anything the effective config turns off, or a
-    /// session that isn't running, leaves the matching part empty (and forgets its history).
+    /// Refresh from this frame's co-op state. Anything the effective config turns off leaves
+    /// the matching part empty (and forgets its history). Without a session only the own
+    /// trail is kept (solo trail, drawn white); it survives a session starting or ending.
     pub fn update(&mut self, input: Option<CoopInput>, snap: &HudSnapshot, now: Instant) {
         let cfg = &*snap.cfg;
         self.now = Some(now);
-        let Some(input) = input.filter(|i| i.in_session && cfg.minimap_on) else {
+        if !cfg.minimap_on {
             *self = Self { now: self.now, ..Self::default() };
             return;
-        };
-        self.in_session = true;
+        }
         let max_age = Duration::from_secs_f32(cfg.coop_trail_fade_secs.max(0.5));
         let mut present: HashSet<String> = HashSet::new();
 
-        // Own trail: only while driving (not paused, game connected), like the Dashboard.
+        // Own trail, in a session or solo: only while driving (not paused, game connected),
+        // like the Dashboard. "Show trails" off drops it in both cases.
         let pkt = &snap.pkt;
         if cfg.coop_trails {
             if snap.connected && pkt.is_race_on != 0 && !pkt.is_paused() {
@@ -221,6 +223,16 @@ impl CoopLayer {
             }
             present.insert("local".into());
         }
+
+        let Some(input) = input.filter(|i| i.in_session) else {
+            let own = self.trails.remove("local").filter(|_| cfg.coop_trails);
+            *self = Self { now: self.now, ..Self::default() };
+            if let Some(tr) = own {
+                self.trails.insert("local".into(), tr);
+            }
+            return;
+        };
+        self.in_session = true;
 
         self.teammates.clear();
         if cfg.coop_teammates {
@@ -359,8 +371,11 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let hue = |h: f32| crate::ui::coop::hue_color(h);
     let at = coop.now.unwrap_or_else(Instant::now);
     let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
+    // Own arrow and trail: the player's co-op colour in a session, white otherwise (as the
+    // Dashboard).
+    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
     if let Some(tr) = coop.trails.get("local") {
-        map_shared::draw_trail(&cv, tr, hue(snap.coop_hue), fade, at);
+        map_shared::draw_trail(&cv, tr, own, fade, at);
     }
     for t in coop.teammates.iter().filter(|t| !t.paused) {
         if let Some(tr) = coop.trails.get(&t.id) {
@@ -369,8 +384,6 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     }
     map_shared::draw_remotes(&cv, &coop.teammates, car, view.yaw);
 
-    // Own arrow: the player's co-op colour in a session, white otherwise (as the Dashboard).
-    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
     map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
     for &(x, z, hue_deg) in &coop.waypoints {
         map_shared::draw_waypoint(&cv, (x, z), hue(hue_deg), car, now as f32);
@@ -481,21 +494,26 @@ mod tests {
     }
 
     #[test]
-    fn coop_layer_records_own_and_teammate_trails_only_in_a_session() {
+    fn coop_layer_records_teammates_in_a_session_and_the_own_trail_always() {
         let cfg = crate::config::OverlayConfig::default();
         let mut layer = CoopLayer::default();
         let t0 = Instant::now();
-        // Not in a session: nothing is recorded or drawn.
-        layer.update(Some(input(false, vec![(0.0, 0.0, false)])), &driving_snap(cfg.clone(), 0.0, 0.0), t0);
-        assert!(!layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty() && layer.waypoints.is_empty());
+        // Not in a session: only the own (solo) trail is recorded; no teammates or waypoints.
+        layer.update(Some(input(false, vec![(0.0, 0.0, false)])), &driving_snap(cfg.clone(), -10.0, 0.0), t0);
+        assert!(!layer.in_session && layer.teammates.is_empty() && layer.waypoints.is_empty());
+        assert_eq!(layer.trails.keys().collect::<Vec<_>>(), ["local"]);
+        // No co-op handle at all: the same.
+        layer.update(None, &driving_snap(cfg.clone(), -20.0, 0.0), t0);
+        assert_eq!((layer.trails.len(), layer.trails["local"].len()), (1, 2));
 
         // In a session: own + teammate trails grow with movement (4 m spacing), waypoint kept.
+        // The solo points carry over into the session.
         for i in 0..3 {
             let x = i as f32 * 10.0;
             layer.update(Some(input(true, vec![(x, 5.0, false)])), &driving_snap(cfg.clone(), x, 0.0), t0);
         }
         assert!(layer.in_session);
-        assert_eq!(layer.trails["local"].len(), 3);
+        assert_eq!(layer.trails["local"].len(), 5);
         assert_eq!(layer.trails["p0"].len(), 3);
         assert_eq!((layer.teammates.len(), layer.waypoints.len()), (1, 1));
 
@@ -505,9 +523,20 @@ mod tests {
         assert!(t.paused && (t.x, t.z) == (20.0, 5.0), "{t:?}");
         assert_eq!(layer.trails["p0"].len(), 3);
 
-        // Session ends: everything is forgotten.
-        layer.update(None, &driving_snap(cfg, 20.0, 0.0), t0);
-        assert!(!layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty());
+        // Session ends: teammates, their trails and waypoints are forgotten; the own trail stays.
+        layer.update(None, &driving_snap(cfg.clone(), 20.0, 0.0), t0);
+        assert!(!layer.in_session && layer.teammates.is_empty() && layer.waypoints.is_empty());
+        assert_eq!((layer.trails.len(), layer.trails["local"].len()), (1, 5));
+
+        // "Show trails" off: the solo trail goes too.
+        let off = crate::config::OverlayConfig { coop_trails: false, ..Default::default() };
+        layer.update(None, &driving_snap(off, 30.0, 0.0), t0);
+        assert!(layer.trails.is_empty());
+        // Minimap module off: nothing.
+        layer.update(None, &driving_snap(cfg.clone(), 40.0, 0.0), t0);
+        let hidden = crate::config::OverlayConfig { minimap_on: false, ..Default::default() };
+        layer.update(None, &driving_snap(hidden, 50.0, 0.0), t0);
+        assert!(layer.trails.is_empty());
     }
 
     /// The HUD runs the same look-around as the Dashboard: in north-up and heading-up alike the
