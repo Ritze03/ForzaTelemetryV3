@@ -247,13 +247,16 @@ visible = enabled && !hud_hidden && (!focus_only || game_focused)
   Plus, when **Setup → Network → "Experimental pause detection"** is on (`experimental_pause_detection`,
   default on, D29), `garage_paused(pkt)` (also in `hud.rs`, pure, returns which sub-check
   matched for the Debug tab): `|yaw|, |pitch|, |roll| < 0.01` **and** `hand_brake == 255` **and**
-  all linear and angular velocity components `< 0.01`. `hud_paused(pkt, experimental)` takes
+  all linear velocity components `< 0.01`. Angular velocity is **not** checked. `hud_paused(pkt, experimental)` takes
   the flag as a parameter; the HUD tracker (`on_packet` / `snapshot`) and the gearbox's drift
   classifier (`dsg.rs`) pass `AppConfig::experimental_pause_detection`.
   - *Why:* user report: the HUD stayed visible in the garage, because garage packets keep
     `is_race_on = 1` and a normal max rpm. The captured garage packet is level (yaw -0.008),
     handbrake 255, every velocity/acceleration/wheel speed 0, rpm = idle.
-  - *Why the velocity guard and no extra debounce:* the guard stops a car held by the
+  - *Why no angular-velocity check:* angular velocity jumps when you accelerate while standing
+    still and when grabbing/rotating the car in the garage, so requiring it ~0 wrongly blocked
+    the garage match.
+  - *Why the linear-velocity guard and no extra debounce:* the guard stops a car held by the
     handbrake while level and rolling from matching; a one-packet match is already ridden
     out by the HUD's 0.3 s pause delay, so `garage_paused` is stateless.
   - *Limitation:* yaw is about 0 only when the garage view keeps the car's default
