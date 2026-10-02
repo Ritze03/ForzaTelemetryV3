@@ -10,7 +10,7 @@ feeds the same action channel and gate: see [[gamepad]].
 ## Two scopes
 
 - **Global (while in-game)** — fire while the *game* holds focus (or our app does).
-  Defaults: `G` = toggle Automatic Gearbox, `F` = reset RPM calibration, `B` =
+  Defaults: `G` = toggle Automatic Gearbox, `F` = clear gearbox calibration (gear map + max RPM), `B` =
   toggle Backfire, `H` = **Hide HUD** (toggle the in-game overlay, see [[overlay]]). Routed
   through the capture backend + focus gate.
 - **In-app** — fire only while our telemetry window is focused. Defaults: `Ctrl+S` =

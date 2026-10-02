@@ -8,7 +8,7 @@ Controller** (card right under Hotkey). Code: `src/gamepad.rs`; UI: `controller_
 
 ## What it does
 
-- **Bindings** for the four global actions (Toggle Automatic Gearbox, Reset RPM Calibration,
+- **Bindings** for the four global actions (Toggle Automatic Gearbox, Clear gearbox calibration,
   Toggle Backfire, Hide HUD). Click a row's button, press a pad control (**Esc** cancels,
   **Backspace** or **Delete** clears the binding and ends the capture; there is no clear button). Default: nothing bound. Binding a control that another action already
   uses takes it away from that action (one press = one action).

@@ -74,7 +74,7 @@ call, disk IO or drawing, and neither side ever holds both.
 | listener → UI | `worker.rs:ListenerView` (`DsgView`, `BackfireView`, `dynamic_max_rpm`, the two enable flags + `toggle_gen`) | listener `lock`s once per loop and overwrites it from its local copy | UI `try_lock`s once a frame in `app.rs:sync_listener_view`, clones into `app.dsg` / `app.backfire` / `app.dynamic_max_rpm`, drops the guard |
 | UI → listener | `worker.rs:ToListener` (`AppConfig` + `our_focused` / `wants_text`, which only egui knows) | UI `try_lock`s at the end of every frame (`ListenerHandle::push`) | listener `try_lock`s once per loop and takes it |
 | listener → UI packets | `worker.rs:PacketQueue` = `Arc<Mutex<VecDeque<ForzaPacket>>>`, capped at `worker::UI_BACKLOG_CAP` (200) | listener locks, `push_back`, `pop_front` when over cap, unlocks | UI locks, `std::mem::take`s the deque, unlocks, *then* iterates (`ListenerHandle::take_packets`) |
-| UI → listener (one-shot) | `worker.rs:Command` — `ClearRpmCalibration`, `ClearGearMap`, `SetHudSink`, `Shutdown` | UI, over an `mpsc` channel (never blocks, never dropped) | listener drains it once per loop |
+| UI → listener (one-shot) | `worker.rs:Command` — `ClearGearboxCalibration`, `SetHudSink`, `Shutdown` | UI, over an `mpsc` channel (never blocks, never dropped) | listener drains it once per loop |
 | listener → overlay | `overlay/snapshot.rs:HudSnapshot` in a `SnapshotSlot` (`Arc<Mutex<Option<…>>>`, latest wins) plus a calloop wake ping, via `HudSink` | listener `lock`s and overwrites on every packet and on any visibility-target change | overlay thread `try_lock`s and clones on each wake, keeping its previous copy on a miss |
 
 *Why a capped deque rather than a channel for the packets:* an `mpsc` channel is unbounded,

@@ -115,7 +115,7 @@ default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21
   profile), the same moment the DSG starts trusting it. With it: **shift cue =
   `dynamic_max_rpm × dsg_shift_rpm_pct`** (Gearbox → Shift RPM, default 98 %, the DSG's own
   full-throttle "redline upshift" point) and **redline = `redline_frac × dynamic_max_rpm`**.
-  Without it (new car, after Reset RPM Calibration / Clear RPM calibration): redline =
+  Without it (new car, after Clear gearbox calibration): redline =
   `redline_frac × engine_max_rpm`, cue = `shift_frac × engine_max_rpm`. *Why:* the user asked
   for the gearbox's reliable max-rpm calibration to drive the cue. It runs whether the
   automatic gearbox is on or off (the max-rpm tracking and the `engaged` detection sit before
@@ -286,7 +286,7 @@ else to see it).
 | `Gearbox: ON / OFF` | `notif_gearbox_toggle` | G hotkey or the Gearbox tab |
 | `Gearbox mode: <mode>` | `notif_gearbox_mode` | mode picker, or the automatic switch to Race in a race and back (the *effective* mode, `dsg_effective_mode`); silent while the gearbox is off |
 | `Backfire: ON / OFF` | `notif_backfire` | Backfire hotkey or tab |
-| `Calibration started` | `notif_calibration` | Reset-calibration hotkey, the tab's Clear RPM calibration button, a new car that starts uncalibrated |
+| `Calibration started` | `notif_calibration` | Reset-calibration hotkey, the tab's Clear gearbox calibration button, a new car that starts uncalibrated |
 | `Calibration done: N rpm` | `notif_calibration` | the gearbox engaging (`DsgListener::engaged` false to true: first manual upshift or a restored profile) |
 
 Not included: Hide HUD (the HUD, notifications with it, is hidden by that very key), dashboard
@@ -298,7 +298,7 @@ hotkeys and gets the UI's config every frame, so `Notifier::watch` just diffs
 diff and not a hook per source:* UI-side toggles, the G key, profile loads and the automatic
 race switch all produce one identical message exactly once, and there is no UI to listener
 queue. Calibration *start* can't be diffed (a reset of an uncalibrated box changes nothing),
-so the three reset sites push it explicitly. The `Notifier` queue (max 8, pruned after 4 s)
+so the reset sites (hotkey, controller action, tab command) push it explicitly. The `Notifier` queue (max 8, pruned after 4 s)
 is copied into `HudSnapshot::notifications` (`Vec<Notification { id, text, kind, created }>`,
 `created` on `hud_clock`); a new entry forces a publish even without a packet. Text is
 translated when created. The first pass only records a baseline, so starting the app says
