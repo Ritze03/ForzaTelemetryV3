@@ -958,7 +958,7 @@ impl ForzaApp {
     }
 
     /// Hotkey capture while `rebinding` is armed, for every rebind button (Setup → Hotkey and
-    /// the Overlay tab's Hide HUD row): Esc cancels, Backspace unbinds ("Not set", D28), any
+    /// the Overlay tab's Hide HUD row): Esc cancels, Backspace / Delete unbind ("Not set", D28), any
     /// other bindable key binds with the modifiers held. Runs before the tabs are drawn, so a
     /// tab's own capture code never sees the key. Returns true while a capture is armed, so
     /// the key doesn't also fire an in-app hotkey.
@@ -966,7 +966,7 @@ impl ForzaApp {
     /// The capture disarms (without binding) on a primary press anywhere but the armed button,
     /// and whenever another widget holds keyboard focus (a text field) — so a key meant for
     /// something else never rebinds silently. Tab switches disarm it in `update`. A key that
-    /// ends the capture (bind / Backspace / Esc) is consumed, so it doesn't also act elsewhere.
+    /// ends the capture (bind / Backspace / Delete / Esc) is consumed, so it doesn't also act elsewhere.
     fn capture_rebind(&mut self, ctx: &Context) -> bool {
         use crate::keymap::{HotKey, HotkeyBinding, Mods};
         let Some(action) = self.rebinding else { return false };
@@ -992,7 +992,7 @@ impl ForzaApp {
         let Some((key, m)) = pressed else { return true };
         match key {
             egui::Key::Escape => {}
-            egui::Key::Backspace => {
+            egui::Key::Backspace | egui::Key::Delete => {
                 self.config.hotkeys.unbind(action);
                 self.sync_hotkeys();
             }

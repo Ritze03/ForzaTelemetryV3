@@ -170,7 +170,7 @@ fn hide_hud_row(ui: &mut Ui, app: &mut ForzaApp) {
             btn = btn.stroke(Stroke::new(1.0, theme::ACCENT));
         }
         ui.add_sized([ui.available_width(), ui.spacing().interact_size.y], btn)
-            .on_hover_text(tr("Esc cancels. Backspace clears the binding."))
+            .on_hover_text(tr("Esc cancels. Backspace or Delete clears the binding."))
     });
     if resp.clicked() {
         app.rebinding = if capturing { None } else { Some(action) };
