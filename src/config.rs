@@ -658,6 +658,9 @@ pub struct AppConfig {
     /// D13: suppress the startup "input permissions missing" modal (Linux). Machine-specific,
     /// so excluded from profile export/import.
     pub input_perm_dont_remind: bool,
+    /// FH6 install folder for the car-name database (Setup → Game Install). Empty = auto-detect.
+    /// Machine-specific, so excluded from profile export/import.
+    pub fh6_install_dir: String,
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
     // Alignment
@@ -821,6 +824,7 @@ impl Default for AppConfig {
             always_on_top: false,
             experimental_pause_detection: true,
             input_perm_dont_remind: false,
+            fh6_install_dir: String::new(),
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             speed_align: TextAlign::RightPlaceholder,
@@ -1089,7 +1093,7 @@ const OVERLAY_KEYS: &[&str] = &["overlay"];
 
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
-const EXPORT_EXCLUDE: &[&str] = &["active_profile", "input_perm_dont_remind"];
+const EXPORT_EXCLUDE: &[&str] = &["active_profile", "input_perm_dont_remind", "fh6_install_dir"];
 
 /// One selectable group in the export/import tree.
 pub struct KeyGroup {

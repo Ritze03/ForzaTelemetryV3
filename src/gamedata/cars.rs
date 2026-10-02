@@ -48,6 +48,7 @@ pub struct CarDb {
 impl CarDb {
     /// Load for `lang` (`"EN"`, `"DE"`, ... a `Stripped/StringTables/<LANG>.zip` name), auto-detecting
     /// the install. Falls back to EN when the language zip is missing. Blocking; use a thread.
+    #[allow(dead_code)]
     pub fn load(lang: &str) -> Result<CarDb, String> {
         Self::load_from(None, lang)
     }

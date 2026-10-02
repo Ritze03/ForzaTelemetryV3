@@ -89,6 +89,25 @@ sub-heading is gone) holds the focus detection that several features share:
 
 Full detail in [[hotkeys]].
 
+## Game Install
+
+The **Game Install** card (Windows and Linux, below Input Permissions / Window Detection) sets
+where Forza Horizon 6 is installed; the Debug tab reads car names from it (see
+[[fh6-cars-names-icons]]). One path field (config `fh6_install_dir`, empty = auto via Steam; the
+game folder or its `media` folder), three buttons and a status line:
+
+- **Auto-detect** runs the Steam detection and fills the field (or reports *Not found*).
+- **Detect from running game** reads the install folder from the running FH6 process (tooltip:
+  *Start Forza first*; reports *Forza Horizon 6 is not running* otherwise).
+- **Clear** (shown while the field is set) returns to automatic detection.
+- Status dot: green = the `media` folder (and the car count), amber = *found but not readable*,
+  red = *media folder not found*. The check runs on a thread once the field loses focus or a
+  button changes it (not on every keystroke: it loads the car DB for the count).
+
+Changing the path restarts the Debug tab's car-DB load. *Why per-machine:* an install path is
+specific to a computer, so it is excluded from profile export/import (like
+`input_perm_dont_remind`). Code: `game_install_card` in `src/ui/settings.rs`.
+
 ## Save
 
 Settings save automatically (on change and on exit) — there is no Save button.

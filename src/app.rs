@@ -566,6 +566,8 @@ pub struct ForzaApp {
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     /// Debug tab's car-name DB (background-loaded on first open).
     pub debug_cars: crate::ui::debug_tab::CarDbState,
+    /// Setup → Game Install: background check of the configured / auto-detected install.
+    pub fh6_setup: crate::ui::settings::Fh6Setup,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
@@ -855,6 +857,7 @@ impl ForzaApp {
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
             debug_cars: Default::default(),
+            fh6_setup: Default::default(),
             minimap_cache_progress: None,
             minimap_trails: HashMap::new(),
             coop_last_pos: HashMap::new(),
