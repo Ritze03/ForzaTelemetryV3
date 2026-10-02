@@ -1,6 +1,6 @@
 # In-game HUD overlay
 
-A compact, click-through HUD drawn **over the running game** on Linux/Wayland: RPM, gear and
+A compact, click-through HUD drawn **over the running game** on Linux (Wayland, X11) and, experimentally, Windows: RPM, gear and
 speed, a minimap, and race position/lap (or a drift counter). It replaces FH6's stock HUD
 with telemetry you pick. Configured in the **Overlay** tab. The user calls it the
 "WSL overlay" / "WLR overlay" (see [[TERMINOLOGY]]): *WSL* here means **wlr-layer-shell**, not
@@ -23,9 +23,11 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
   Fedora 44 base, GNOME Wayland + XWayland, AMD RX 9070 XT, Mesa 26.2.3, two 1080p monitors
   DP-2/DP-3) — works. Still experimental in the remaining gaps: fractional scaling is untested,
   older Mutter may name outputs `XWAYLAND0…` (see below), and native X11 sessions are untested.
-- **Doesn't:** Windows/macOS. When no backend works the overlay reports a *disabled* reason
+- **Experimental, untested: Windows** (own backend, see [Windows](#windows)).
+- **Doesn't:** macOS. When no backend works the overlay reports a *disabled* reason
   instead of failing, shown in the Overlay tab's status line. On non-Linux builds the tab says
-  the overlay is Linux only (Wayland or X11).
+  the overlay is Linux only (Wayland or X11); that text predates the Windows backend and the
+  tab's `cfg!(target_os = "linux")` gates still need to learn about Windows.
 - **Backend selection** (`overlay::Backend::from_env`, env var `FORZA_OVERLAY_BACKEND`, a
   developer override only):
   - unset / empty / unknown / `auto` (case-insensitive) = **auto**: layer-shell, then X11. On
@@ -81,6 +83,102 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
   in the tab.
 - Scale factor is fixed at 1.0 (all target monitors are 1080p @1); fractional/integer
   scaling is a known ponytail in `overlay/render.rs` and `wayland.rs`.
+
+## Windows
+
+Experimental (D31): written **blind**. Nobody could run Windows while it was built; it compiles
+(`cargo check --target x86_64-pc-windows-gnu`, and links) and its test pattern was smoke-tested
+under Wine/Hyprland (transparent per-pixel alpha, text, ring), nothing more. Code: `overlay/win32.rs`
+(thread, window, handle), `overlay/wgl.rs` (GL), `overlay/monitors.rs` (pure monitor choice),
+`overlay/pacing.rs` (shared D17 pacing). The HUD drawing (`src/hud/`), `Renderer`, the snapshot
+pipeline, focus-only, pause hiding and the Hide HUD hotkey are the same code as on Linux; the
+Windows module is just another surface backend with the same `OverlayHandle` API (`app.rs`'s
+`#[cfg(any(linux, windows))]` code drives either).
+
+**Render path.** `Renderer` (egui + `egui_glow`) draws into an **offscreen FBO** on a private
+**WGL context** (a legacy `wglCreateContext` on a hidden 1x1 helper window; drivers return their
+newest compatibility profile, enough for egui_glow). Each frame the FBO is read back with
+`glReadPixels(GL_BGRA)` straight into a **DIB section** (`CreateDIBSection`, positive height, so
+row order matches GL's bottom-up) and presented with `UpdateLayeredWindow(ULW_ALPHA, AC_SRC_ALPHA)`.
+egui_glow already blends premultiplied (and keeps destination alpha correct), so the bytes are
+exactly the premultiplied BGRA the call wants: no CPU conversion.
+- *Why not an OpenGL window surface:* per-pixel alpha through DWM needs a layered window
+  (`UpdateLayeredWindow`), and a GL swap chain can't feed one; the alternative is a DXGI
+  composition swap chain with `WS_EX_NOREDIRECTIONBITMAP`, which is a lot of new GPU code. This
+  path reuses `Renderer` unchanged and adds only ~300 lines of WGL.
+- *Cost:* one blocking readback + copy per frame (about 8 MB at 1080p, 33 MB at 4K) at ~60 Hz.
+  ponytail: PBO double-buffering or a dirty rectangle if it ever shows up in a profile.
+- *Why not `windows-sys` DWM/D3D or `glutin` WGL:* no new crates or features beyond
+  `Win32_Graphics_Gdi/OpenGL`, `Win32_System_LibraryLoader`, `Win32_UI_HiDpi`, `Win32_Security`
+  on the existing `windows-sys 0.59`, plus a direct `egui_glow` dependency (already built by
+  eframe's glow backend on Windows).
+- GL needs a real GPU driver (OpenGL 3+); in a VM without one (GDI Generic, GL 1.1) the overlay
+  reports "Couldn't set up OpenGL (WGL) for the overlay: OpenGL 1.1 is too old ...".
+
+**Window.** `WS_POPUP` with `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+WS_EX_TOOLWINDOW`, covering exactly one monitor's rectangle:
+- `LAYERED`: per-pixel alpha. `TRANSPARENT` (plus `WM_NCHITTEST` returning `HTTRANSPARENT`):
+  clicks fall through to the game. `NOACTIVATE` (plus `WM_MOUSEACTIVATE` returning
+  `MA_NOACTIVATE`, shown with `SWP_NOACTIVATE`): it never takes focus, so the game keeps keyboard
+  and pad input and Window Detection still sees the game as the foreground window. `TOPMOST`,
+  **re-asserted once a second** since a borderless game may re-raise itself. `TOOLWINDOW`: no
+  taskbar button, not in Alt+Tab.
+- Created when the HUD becomes visible, shown after its first frame is presented (no empty
+  flash), **destroyed when the fade-out ends**, like the Linux surfaces. *Why:* a topmost window over
+  a borderless game can cost it the independent-flip/direct-scanout fast path; a hidden HUD must
+  have no window at all. The GL context, painter and map texture stay alive.
+
+**Thread and loop.** One `overlay` thread (spawned and waited for like Linux: `OverlayHandle::spawn`
+blocks up to 5 s, run from `overlay-start`). `MsgWaitForMultipleObjects` on **one auto-reset
+event** plus the window's messages. The event is the listener's `Waker` ping *and* the doorbell
+for `OverlayCmd`s (a mutex-guarded queue, `OverlaySender`), so no calloop on Windows. Frames: one
+per ping (coalescing); the animation fallback timer (`pacing::next_wake`, also used by Wayland)
+is the wait timeout; a 1 s housekeeping tick re-asserts topmost and re-checks the monitor.
+Windows' default timer granularity (~15.6 ms) makes the 16 ms animation step coarse when packets
+have stopped; ponytail: `timeBeginPeriod(1)` if it looks choppy. Three failed frames in a row
+stop the thread (the tab shows "stopped"), like Linux's EGL failures.
+
+**Snapshot reuse.** Identical: `HudSink` writes the `SnapshotSlot`, `Waker::wake` sets the event,
+the thread `try_lock`s the slot. Visibility (`HudSnapshot::visible`) is followed exactly as in
+`wayland.rs`.
+
+**Monitor.** `EnumDisplayMonitors` + `GetMonitorInfoW`; the overlay thread sets **per-monitor-v2
+DPI awareness for itself** (`SetThreadDpiAwarenessContext`), whatever the process default is, so
+rectangles are physical pixels and the bitmap is never stretched (a blurry or mis-sized HUD
+otherwise). The HUD's own scale is `surface_height / 1080` already, so 1440p/4K need nothing more.
+Which monitor (`monitors::pick`, pure, unit-tested): the target name (Overlay tab -> Monitor
+Detection -> **Fixed monitor**, or `FORZA_OVERLAY_OUTPUT`) matched case-insensitively against the GDI
+device name (`\\.\DISPLAY2`), the name without the prefix (`DISPLAY2`), or a 1-based number
+(`2`, the enumeration order, which normally equals Windows' Display settings numbering but isn't
+guaranteed); no match, empty or a Linux-style name (`DP-1`) -> the **primary monitor**. The
+Hyprland/Custom detection methods don't exist on Windows (`focus::query_monitor` reports
+"unsupported platform"), so only Fixed has an effect. `overlay::foreground_monitor_name()` is ready
+for a Windows branch of that query (monitor of the focused game window); nothing calls it yet.
+A changed monitor layout recreates the window within a second.
+
+**Limits.**
+- **Exclusive fullscreen can't be overlaid.** Only a *borderless/windowed* FH6 works; in exclusive
+  fullscreen the game owns the display and no window can be drawn above it. Set the game to
+  borderless (FH6's default "Fullscreen" is usually borderless-fullscreen already).
+- Anti-cheat/overlay-hostile software, capture software hooks and HDR output are all unverified.
+- `FORZA_OVERLAY_BACKEND` does nothing on Windows.
+
+**Testing it on Windows** (for whoever has a machine or VM with a GPU driver):
+1. Build: `cargo build --release` (or use a build artifact). Run it with the console variable
+   `set FORZA_OVERLAY_TEST=1` first (PowerShell: `$env:FORZA_OVERLAY_TEST=1`): a pill, outlined text
+   and a ring appear bottom-centre of the primary monitor without the game. `=2` redraws at
+   60 Hz with a counter. `FORZA_OVERLAY_OUTPUT=2` picks monitor 2. Check: it is crisp (no blur) at
+   your display scaling, clicks pass through, it's absent from the taskbar and Alt+Tab, typing in
+   another window keeps working, and it stays on top of a borderless fullscreen window.
+2. Without the variable: Overlay tab -> **Enable overlay** (note: the checkbox is greyed out until
+   the tab drops its Linux-only gate), start Forza (borderless), enable Data Out; the HUD should
+   show while driving and hide in menus/pause.
+3. On a failure the status line shows the reason (`Couldn't set up OpenGL (WGL)...` = driver/GL;
+   `Couldn't create the overlay window:` = Win32). Stderr has `overlay: ...` lines (run from a
+   console; release builds have no console, debug builds do).
+4. Things to look at: colours/transparency (premultiplied alpha), the HUD sitting on the right
+   monitor, flicker or a one-frame white/black flash on show, CPU use at 1440p/4K (readback),
+   and the Hide HUD hotkey / focus-only behaviour.
 
 ## Widgets
 
