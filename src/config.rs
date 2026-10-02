@@ -623,6 +623,9 @@ pub struct AppConfig {
     pub always_on_top: bool,
     /// D29: also treat the garage (level, motionless car, handbrake on) as paused. See `listeners::hud::garage_paused`.
     pub experimental_pause_detection: bool,
+    /// D13: suppress the startup "input permissions missing" modal (Linux). Machine-specific,
+    /// so excluded from profile export/import.
+    pub input_perm_dont_remind: bool,
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
     // Alignment
@@ -785,6 +788,7 @@ impl Default for AppConfig {
             theme: Theme::Dark,
             always_on_top: false,
             experimental_pause_detection: true,
+            input_perm_dont_remind: false,
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             speed_align: TextAlign::RightPlaceholder,
@@ -1053,7 +1057,7 @@ const OVERLAY_KEYS: &[&str] = &["overlay"];
 
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
-const EXPORT_EXCLUDE: &[&str] = &["active_profile"];
+const EXPORT_EXCLUDE: &[&str] = &["active_profile", "input_perm_dont_remind"];
 
 /// One selectable group in the export/import tree.
 pub struct KeyGroup {

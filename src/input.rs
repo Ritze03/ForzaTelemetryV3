@@ -391,9 +391,128 @@ pub use windows::{InputSender, KeyCode, char_to_key};
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use stub::{InputSender, KeyCode, char_to_key};
 
+// ── Permission check (Linux) ───────────────────────────────────────
+// Hotkeys read /dev/input/event*, synthetic input writes /dev/uinput; both silently
+// fail without the right group. `probe()` gathers the facts, `evaluate()` is pure.
+
+/// Raw facts about input access. `Default` = everything fine (what Windows reports).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputProbe {
+    /// `/dev/input/event*` readable (or no nodes at all, which isn't a permission problem).
+    pub hotkeys_ok: bool,
+    /// `/dev/uinput` can be opened for writing.
+    pub uinput_ok: bool,
+    /// `/dev/uinput` exists (else the `uinput` kernel module isn't loaded).
+    pub uinput_exists: bool,
+    /// `/dev/uinput` is group `input` with group rw — otherwise a udev rule is needed.
+    pub uinput_group_input: bool,
+    /// The running process is in the `input` group.
+    pub in_input_group: bool,
+}
+
+impl Default for InputProbe {
+    fn default() -> Self {
+        InputProbe { hotkeys_ok: true, uinput_ok: true, uinput_exists: true, uinput_group_input: true, in_input_group: true }
+    }
+}
+
+pub const CMD_USERMOD: &str = "sudo usermod -aG input $USER";
+pub const CMD_MODPROBE: &str = "sudo modprobe uinput";
+pub const CMD_UDEV: &str = "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/99-uinput.rules && sudo udevadm control --reload && sudo udevadm trigger";
+
+/// What is missing and the shell commands that fix it (deduplicated, in run order).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputReport {
+    pub hotkeys_missing: bool,
+    pub uinput_missing: bool,
+    pub commands: Vec<&'static str>,
+}
+
+impl InputReport {
+    pub fn any_missing(&self) -> bool { self.hotkeys_missing || self.uinput_missing }
+}
+
+/// Pure: turn probe results into the missing items + fix commands.
+pub fn evaluate(p: &InputProbe) -> InputReport {
+    let mut r = InputReport { hotkeys_missing: !p.hotkeys_ok, uinput_missing: !p.uinput_ok, commands: Vec::new() };
+    if r.uinput_missing {
+        if !p.uinput_exists {
+            r.commands.push(CMD_MODPROBE);
+        } else if !p.uinput_group_input {
+            r.commands.push(CMD_UDEV);
+        }
+    }
+    if r.any_missing() && !p.in_input_group {
+        r.commands.insert(0, CMD_USERMOD);
+    }
+    r
+}
+
+/// Probe this machine. Windows (and anything non-Linux) needs no permissions.
+pub fn probe() -> InputProbe {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let input_gid = std::fs::read_to_string("/etc/group").ok().and_then(|g| {
+            g.lines().find_map(|l| {
+                let mut f = l.split(':');
+                if f.next() != Some("input") { return None; }
+                f.nth(1).and_then(|n| n.parse::<u32>().ok())
+            })
+        });
+        let in_input_group = input_gid.is_some_and(|gid| {
+            std::fs::read_to_string("/proc/self/status").ok().is_some_and(|s| {
+                s.lines().find(|l| l.starts_with("Groups:")).is_some_and(|l| {
+                    l.split_whitespace().skip(1).any(|g| g.parse::<u32>().ok() == Some(gid))
+                })
+            })
+        });
+        let meta = std::fs::metadata("/dev/uinput").ok();
+        InputProbe {
+            hotkeys_ok: !matches!(crate::hotkeys::probe_status(), crate::hotkeys::HotkeyStatus::NoPermission),
+            uinput_ok: std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok(),
+            uinput_exists: meta.is_some(),
+            uinput_group_input: meta.is_some_and(|m| Some(m.gid()) == input_gid && m.mode() & 0o060 == 0o060),
+            in_input_group,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    { InputProbe::default() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evaluate_all_ok_is_empty() {
+        let r = evaluate(&InputProbe::default());
+        assert!(!r.any_missing());
+        assert!(r.commands.is_empty());
+    }
+
+    #[test]
+    fn evaluate_not_in_group_suggests_usermod() {
+        let p = InputProbe { hotkeys_ok: false, uinput_ok: false, in_input_group: false, ..Default::default() };
+        let r = evaluate(&p);
+        assert!(r.hotkeys_missing && r.uinput_missing);
+        assert_eq!(r.commands, vec![CMD_USERMOD]);
+    }
+
+    #[test]
+    fn evaluate_uinput_module_and_udev() {
+        let p = InputProbe { uinput_ok: false, uinput_exists: false, ..Default::default() };
+        assert_eq!(evaluate(&p).commands, vec![CMD_MODPROBE]);
+        let p = InputProbe { uinput_ok: false, uinput_group_input: false, in_input_group: false, ..Default::default() };
+        assert_eq!(evaluate(&p).commands, vec![CMD_USERMOD, CMD_UDEV]);
+    }
+
+    #[test]
+    fn evaluate_group_member_only_hotkeys_gives_no_command() {
+        // Already in the group but still can't read: needs a re-login, no command helps.
+        let r = evaluate(&InputProbe { hotkeys_ok: false, ..Default::default() });
+        assert!(r.hotkeys_missing && r.commands.is_empty());
+    }
 
     #[test]
     fn focus_gate_blocks_when_not_allowed() {

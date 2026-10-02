@@ -176,6 +176,10 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             });
 
             crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));
+            // Linux-only: Windows needs no input permissions.
+            if cfg!(target_os = "linux") {
+                crate::theme::card(right, tr("Input Permissions"), |ui| input_perm_card(ui, app));
+            }
         });
     });
 
@@ -271,6 +275,134 @@ fn open_profile_dialog(app: &mut ForzaApp, kind: ProfileDialog, name_seed: Strin
     app.profile_dialog = kind;
     app.profile_name_buf = name_seed;
     app.profile_dialog_focus = true;
+}
+
+/// A fix command in a monospace box with a Copy button (same look as the co-op share
+/// code). `idx` identifies the command for the "Copied" flash in `app.input_perm_copied`.
+fn command_box(ui: &mut Ui, app: &mut ForzaApp, idx: usize, cmd: &str) {
+    use crate::icons;
+    egui::Frame::new()
+        .fill(crate::theme::FIELD)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .corner_radius(4.0)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let just_copied = app
+                    .input_perm_copied
+                    .is_some_and(|(i, t)| i == idx && t.elapsed().as_secs_f32() < 1.5);
+                let label = if just_copied {
+                    format!("{}  {}", icons::CHECK, tr("Copied"))
+                } else {
+                    format!("{}  {}", icons::COPY, tr("Copy"))
+                };
+                if ui.button(label).clicked() {
+                    ui.ctx().copy_text(cmd.to_string());
+                    app.input_perm_copied = Some((idx, std::time::Instant::now()));
+                }
+                // Wraps (the udev command is long); selectable as a copy fallback.
+                ui.add(egui::Label::new(RichText::new(cmd).monospace().size(12.0)).wrap().selectable(true));
+            });
+        });
+}
+
+/// What is missing + the fix commands + the log-out note, shared by the modal and the
+/// Setup card.
+fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::InputReport) {
+    if report.hotkeys_missing {
+        status_dot(ui, Dot::Bad, tr("Hotkeys: cannot read /dev/input"));
+    }
+    if report.uinput_missing {
+        status_dot(ui, Dot::Bad, tr("Gearbox / Backfire key input: cannot write /dev/uinput"));
+    }
+    ui.add_space(4.0);
+    for (i, cmd) in report.commands.iter().enumerate() {
+        command_box(ui, app, i, cmd);
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new(tr("Log out and back in for it to take effect.")).size(11.0).color(crate::theme::TEXT_DIM));
+}
+
+/// The "Input Permissions" category (Linux): one status light per requirement, plus the
+/// fix commands when something is missing and the startup-reminder toggle.
+fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
+    let p = app.input_probe;
+    let dot = |ok: bool| if ok { Dot::Ok } else { Dot::Bad };
+    status_dot(ui, dot(p.hotkeys_ok), tr("Hotkeys: read /dev/input"));
+    status_dot(ui, dot(p.uinput_ok), tr("Key input: write /dev/uinput"));
+    status_dot(ui, dot(p.in_input_group), tr("Member of the input group"));
+    let report = crate::input::evaluate(&p);
+    if report.any_missing() {
+        ui.add_space(4.0);
+        input_perm_fixes(ui, app, &report);
+    }
+    ui.add_space(4.0);
+    let mut remind = !app.config.input_perm_dont_remind;
+    if crate::theme::checkbox_row(ui, &mut remind, tr("Remind me on startup"))
+        .on_hover_text(tr("Show the missing-permissions dialog at launch while something is missing."))
+        .changed()
+    {
+        app.config.input_perm_dont_remind = !remind;
+    }
+    if ui.add(crate::theme::secondary_button(tr("Re-check"))).clicked() {
+        app.input_probe = crate::input::probe();
+    }
+}
+
+/// Startup modal (Linux): shown once per launch while hotkey / synthetic-input access is
+/// missing. X closes it for this session; "Don't remind me again" persists in config.
+/// Rendered from `ForzaApp::update` so it appears over any tab.
+pub fn input_perm_modal(ctx: &egui::Context, app: &mut ForzaApp) {
+    if !app.input_perm_modal_open {
+        return;
+    }
+    let report = crate::input::evaluate(&app.input_probe);
+    if !report.any_missing() {
+        app.input_perm_modal_open = false;
+        return;
+    }
+    let screen = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("input_perm_backdrop"))
+        .order(egui::Order::Middle)
+        .fixed_pos(egui::Pos2::ZERO)
+        .interactable(true)
+        .show(ctx, |ui| {
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(160));
+            ui.allocate_response(screen.size(), egui::Sense::click());
+        });
+
+    let mut close = false;
+    let mut dont_remind = false;
+    egui::Window::new("input_perm_modal")
+        .title_bar(false)
+        .order(egui::Order::Foreground)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.set_width(440.0_f32.min(screen.width() - 48.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Input permissions missing")).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(crate::icons::TIMES).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            input_perm_fixes(ui, app, &report);
+            ui.add_space(12.0);
+            if ui.add(crate::theme::secondary_button(tr("Don't remind me again"))).clicked() {
+                dont_remind = true;
+            }
+        });
+    if dont_remind {
+        app.config.input_perm_dont_remind = true;
+        close = true;
+    }
+    if close {
+        app.input_perm_modal_open = false;
+    }
 }
 
 /// The modal for New / Duplicate / Rename / Delete: a dim backdrop that swallows
