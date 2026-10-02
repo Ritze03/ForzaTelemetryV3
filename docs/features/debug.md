@@ -54,8 +54,9 @@ Per-wheel checks (slip, suspension travel) are one row with the four wheels colo
 individually; the row's dot is "all four pass". Three groups, each with an overall dot
 (`capturing now` / `engaged` / `sampling now`):
 
-1. **Max RPM capture**: race on, power > 0, handbrake released, slip <= 0.5 per wheel; plus
-   the max RPM captured so far.
+1. **Max RPM capture**: race on, handbrake released, slip <= 0.5 per wheel; plus
+   the max RPM captured so far. An **Engine power** row is shown dim and marked *(ignored)*:
+   informational only, not part of the result (fast rev limiters report power 0).
 2. **Calibrated (box engages)**: engaged yes/no, previous forward gear in 1..=9, current gear
    in 2..=10, upshift. (These three are per-packet, so they only light up on the shift itself;
    the *Engaged* row is the sticky result.)
