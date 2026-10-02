@@ -330,13 +330,14 @@ fn render_spec_states() -> Result<(), String> {
                     };
                     check(&mut failures, &img, &id, (23, 7), gear, "gear cell");
                     // User: the gear sat too high. Its ink (near-white, inside the cell) is now
-                    // centred at y 24, a px below the cell centre; allow ±1 for AA and glyphs.
+                    // centred at y 23, the cell centre (it was 24, which read a px too low in-game; keep in sync with
+                    // `cluster::PILL_GEAR.y`, which is private); allow ±1 for AA and glyphs.
                     if *name != "pulse" {
                         match ink_box(&img, (23.0, 23.0), 18.0) {
-                            Some([_, top, _, bot]) if (23.0..=25.0).contains(&((top + bot) / 2.0)) => {
+                            Some([_, top, _, bot]) if (22.0..=24.0).contains(&((top + bot) / 2.0)) => {
                                 println!("  {id} gear ink y {top}–{bot}: ok");
                             }
-                            other => failures.push(format!("{id}: gear ink box {other:?} not centred on y 24")),
+                            other => failures.push(format!("{id}: gear ink box {other:?} not centred on y 23")),
                         }
                     }
                     if *name == "redline" {
