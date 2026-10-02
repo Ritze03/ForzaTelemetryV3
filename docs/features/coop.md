@@ -57,12 +57,12 @@ the top of the Session card (`theme::segmented`, locked while a session is live;
 
 ## Trystero transport
 
-Pick **Trystero**, type a **Room ID** (or press **Generate**: lowercase Crockford base32 3x4,
-e.g. `k7f2-9qzm-x4pd`) and press **Join Room**; everyone using the same ID ends up in one
+Pick **Trystero**, type a **Room ID** (or press **Generate**: lowercase Crockford base32, 8 groups of 4 = 32 chars / 160 bits,
+e.g. `k7f2-9qzm-x4pd-...`; older 12-char IDs still work, `normalize_room` is unchanged) and press **Join Room**; everyone using the same ID ends up in one
 session. While connected the card shows "Room" + ID with Copy. The ID is persisted as
 `coop_room`; it is normalised (`normalize_room`: lowercase, all whitespace stripped) in
 `start_trystero`, so the UI and auto-connect agree on the room (it is hashed into the topics and
-key, so any difference is a different room). Enter in the Room ID field joins. Hint shown: "Anyone with this ID can join. Treat it like a password."
+key, so any difference is a different room). *Why 32 chars:* generated IDs should be >= 32 chars so shared public rooms practically never collide (the ID is also the encryption secret). Enter in the Room ID field joins. Hint shown: "Anyone with this ID can join. Treat it like a password."
 **Auto-connect on startup** (`coop_autoconnect`, Trystero only) rejoins the last room at launch
 (`ForzaApp::new` in `app.rs`, right after `CoopState::new`). **Why Trystero only:** Cloudflare
 slugs are random per host session, so auto-rejoin would nearly always fail.

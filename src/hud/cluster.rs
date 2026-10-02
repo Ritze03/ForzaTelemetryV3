@@ -184,11 +184,12 @@ impl Cl {
 
 const GEAR_PILL: TextStyle = TextStyle { family: W900, size: 32.0, tracking: 0.0, cells: Cells::Widest, shadow: true };
 // why (user: gear sat too high): the spec's baseline 35 put the ink at 9.3–35 (centre 22.2) in
-// the cell centred on 23; it read high in-game at 1080p. Ink now centred 1 px below the cell
-// centre, i.e. y 24 (plain gear: baseline 36.8, +1.8 px).
+// the cell centred on 23; it read high in-game at 1080p. Ink was moved 1 px below the cell
+// centre (y 24), then back up 1 px because it then read 1 px too low: y 23 (ink centred on
+// the cell).
 const PILL_GEAR: GearSpec = GearSpec {
     cx: 23.0,
-    y: 24.0,
+    y: 23.0,
     centred: true,
     plain: GEAR_PILL,
     auto: TextStyle { size: 26.0, ..GEAR_PILL },
