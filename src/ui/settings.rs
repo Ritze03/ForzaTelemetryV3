@@ -180,6 +180,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             if cfg!(target_os = "linux") {
                 crate::theme::card(right, tr("Input Permissions"), |ui| input_perm_card(ui, app));
             }
+            crate::theme::card(right, tr("Game Install"), |ui| game_install_card(ui, app));
         });
     });
 
@@ -352,6 +353,109 @@ fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
     }
     if ui.add(crate::theme::secondary_button(tr("Re-check"))).clicked() {
         app.input_probe = crate::input::probe();
+    }
+}
+
+/// Setup → Game Install state: the last check of the configured (or auto-detected) FH6 install,
+/// run on a thread (it loads the car DB for the count, up to ~1 s cold).
+#[derive(Default)]
+pub struct Fh6Setup {
+    /// The `fh6_install_dir` value the running / finished check was started for.
+    key: Option<String>,
+    rx: Option<std::sync::mpsc::Receiver<(crate::gamedata::install::InstallCheck, Option<usize>)>>,
+    result: Option<(crate::gamedata::install::InstallCheck, Option<usize>)>,
+    /// Feedback of the last button press (dot, text).
+    note: Option<(Dot, &'static str)>,
+}
+
+impl Fh6Setup {
+    /// (Re)start the check when the configured folder changed; not while the field is being typed in.
+    fn poll(&mut self, ctx: &egui::Context, dir: &str, editing: bool) {
+        use crate::gamedata::{cars::CarDb, install};
+        if self.key.as_deref() != Some(dir) && !editing {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let dir_s = dir.trim().to_string();
+            let lang = crate::i18n::language_code();
+            std::thread::spawn(move || {
+                let over = (!dir_s.is_empty()).then(|| std::path::PathBuf::from(&dir_s));
+                let chk = match &over {
+                    Some(p) => install::check(p),
+                    None => install::find_media(None).map_or(install::InstallCheck::NotFound, install::InstallCheck::Found),
+                };
+                let n = matches!(chk, install::InstallCheck::Found(_))
+                    .then(|| CarDb::load_from(over.as_deref(), lang).ok().map(|d| d.len()))
+                    .flatten();
+                let _ = tx.send((chk, n));
+            });
+            self.key = Some(dir.to_string());
+            self.rx = Some(rx);
+            self.result = None;
+        }
+        if let Some(rx) = &self.rx {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.result = Some(r);
+                    self.rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                Err(_) => self.rx = None,
+            }
+        }
+    }
+}
+
+/// The "Game Install" category: where the FH6 install is (car names come from it). Empty =
+/// auto-detect through Steam; otherwise the typed / detected folder (game folder or `media`).
+fn game_install_card(ui: &mut Ui, app: &mut ForzaApp) {
+    use crate::gamedata::{install::InstallCheck, process};
+    let id = egui::Id::new("fh6_install_dir");
+    let editing = ui.ctx().memory(|m| m.has_focus(id));
+    app.fh6_setup.poll(ui.ctx(), &app.config.fh6_install_dir, editing);
+    ui.add(
+        egui::TextEdit::singleline(&mut app.config.fh6_install_dir)
+            .id(id)
+            .hint_text(tr("Auto (Steam)"))
+            .desired_width(f32::INFINITY),
+    );
+    ui.horizontal_wrapped(|ui| {
+        if ui.add(crate::theme::secondary_button(tr("Auto-detect"))).clicked() {
+            app.fh6_setup.note = Some(match crate::gamedata::install::steam_game_dir() {
+                Some(g) => {
+                    app.config.fh6_install_dir = g.display().to_string();
+                    (Dot::Ok, tr("Found through Steam"))
+                }
+                None => (Dot::Bad, tr("Not found. Enter the path manually.")),
+            });
+        }
+        if ui
+            .add(crate::theme::secondary_button(tr("Detect from running game")))
+            .on_hover_text(tr("Start Forza first"))
+            .clicked()
+        {
+            app.fh6_setup.note = Some(match process::detect_running() {
+                Some(d) => {
+                    app.config.fh6_install_dir = d.display().to_string();
+                    (Dot::Ok, tr("Found from the running game"))
+                }
+                None => (Dot::Bad, tr("Forza Horizon 6 is not running")),
+            });
+        }
+        if !app.config.fh6_install_dir.is_empty() && ui.add(crate::theme::secondary_button(tr("Clear"))).clicked() {
+            app.config.fh6_install_dir.clear();
+            app.fh6_setup.note = None;
+        }
+    });
+    match &app.fh6_setup.result {
+        None => result_line(ui, tr("Checking...")),
+        Some((InstallCheck::Found(m), n)) => {
+            let cars = n.map_or(String::new(), |n| format!(" ({n} {})", tr("cars")));
+            status_dot(ui, Dot::Ok, &format!("{}{cars}", m.display()));
+        }
+        Some((InstallCheck::NotReadable, _)) => status_dot(ui, Dot::Warn, tr("Found but not readable (permissions)")),
+        Some((InstallCheck::NotFound, _)) => status_dot(ui, Dot::Bad, tr("media folder not found")),
+    }
+    if let Some((dot, msg)) = app.fh6_setup.note {
+        status_dot(ui, dot, msg);
     }
 }
 

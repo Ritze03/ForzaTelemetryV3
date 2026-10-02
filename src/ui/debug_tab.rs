@@ -37,22 +37,26 @@ pub enum CarDbState {
 }
 
 impl CarDbState {
-    fn lang(&self) -> Option<&str> {
+    fn key(&self) -> Option<&str> {
         match self {
             Self::NotStarted => None,
             Self::Loading(l, _) | Self::Ready(l, _) | Self::Failed(l, _) => Some(l),
         }
     }
 
-    /// Start (or restart on a UI-language change) the load, and collect a finished one.
-    fn poll(&mut self, ctx: &egui::Context) {
+    /// Start (or restart on a UI-language or configured-install change) the load, and collect a
+    /// finished one. `dir` is `AppConfig::fh6_install_dir` (empty = auto-detect).
+    fn poll(&mut self, ctx: &egui::Context, dir: &str) {
         let want = crate::i18n::language_code();
-        if self.lang() != Some(want) {
+        let key = format!("{want}\n{dir}");
+        if self.key() != Some(&key) {
             let (tx, rx) = std::sync::mpsc::channel();
+            let dir = dir.trim().to_string();
             std::thread::spawn(move || {
-                let _ = tx.send(crate::gamedata::cars::CarDb::load(want));
+                let over = (!dir.is_empty()).then(|| std::path::PathBuf::from(dir));
+                let _ = tx.send(crate::gamedata::cars::CarDb::load_from(over.as_deref(), want));
             });
-            *self = Self::Loading(want.to_string(), rx);
+            *self = Self::Loading(key, rx);
         }
         if let Self::Loading(l, rx) = self {
             match rx.try_recv() {
@@ -189,7 +193,7 @@ fn derived_card(ui: &mut egui::Ui, app: &crate::app::ForzaApp) {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut crate::app::ForzaApp) {
-    app.debug_cars.poll(ui.ctx());
+    app.debug_cars.poll(ui.ctx(), &app.config.fh6_install_dir);
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     let app = &*app;
     egui::ScrollArea::vertical().show(ui, |ui| {
