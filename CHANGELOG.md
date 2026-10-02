@@ -7,6 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.4.1] – 2026-10-02
 
 ### Added
+- **Debug tab: "Derived from telemetry"**: the Debug tab is now split in two halves. The left keeps the raw packet fields; the right shows what the app derives from them: whether the game counts as paused and which rule fired, the calibrated max RPM, the gearbox's selected / effective mode, the map season, and the car's make and model read from your own FH6 install. Display only for now.
 - **Experimental pause detection**: a new checkbox in Setup → Network (on by default). The in-game HUD, and the gearbox's drift detection, now treat the garage as paused: when the car is level, completely motionless and the handbrake is fully on, the HUD hides as it does on the pause menu. Hover the checkbox for details; it may miss a garage view where the car is rotated.
 - **Backfire: Limit max. duration**: a new checkbox under *RPM interval* on the Backfire tab. When on, a slider (100-5000 ms, default 1000) caps how long backfire may run continuously; after that it stops even if RPM is still in range, and starts again once you touch the throttle or downshift.
 - **Automatic Gearbox: Manual mode**: a new first entry in the Gearbox mode dropdown. In Manual the gearbox never shifts and the in-game HUD shows it exactly as if the gearbox were off. With *Auto Race mode in races* on, it still switches to Race mode in an actual race and goes back to Manual afterwards, so you can drive free roam by hand and use the gearbox only in races.

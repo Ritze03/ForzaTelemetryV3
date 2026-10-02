@@ -279,6 +279,14 @@ might produce.
 | `prims.rs` / `fonts.rs` | Drawing primitives in design px (fixed digit cells, outlined text); the baked Big Shoulders fonts. |
 | `png.rs` / `tests.rs` | Offscreen PNG harness (compiled as `overlay::render::png`) and unit tests. |
 
+### `src/gamedata/` (runtime reads of the user's own FH6 install; nothing shipped) — see [[fh6-cars-names-icons]]
+
+| File | What it does |
+| --- | --- |
+| `install.rs` | Steam detection of the FH6 install (+ `FH6_INSTALL_DIR` override). |
+| `strtable.rs` | `.str` string-table parser + `strhash`. |
+| `cars.rs` | `CarDb::load(lang)` / `lookup(ordinal)`: CarOrdinal → make + model, JSON-cached in `app_data_dir()`. Blocks the caller, so load it on a background thread (the Debug tab does). Docs: `docs/game-data/fh6-cars-names-icons.md`. |
+
 ### `src/listeners/` (event-driven, fire inside `drain_packets`)
 
 | File | What it does |

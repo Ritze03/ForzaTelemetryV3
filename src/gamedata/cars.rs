@@ -79,6 +79,7 @@ impl CarDb {
         self.cars.len()
     }
 
+    #[allow(dead_code)] // API for later consumers; the Debug tab only needs lookup
     pub fn iter(&self) -> impl Iterator<Item = &CarName> {
         self.cars.values()
     }

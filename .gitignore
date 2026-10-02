@@ -2,3 +2,4 @@
 /raw_assets
 Cargo.lock
 .claude/
+__pycache__/
