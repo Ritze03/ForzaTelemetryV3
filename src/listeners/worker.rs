@@ -359,6 +359,7 @@ fn run(ctx: Ctx) {
                 }
                 Command::ClearGearMap => {
                     dsg.reset_calibration();
+                    notifier.rearm_shift_hint();
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 Command::SetHudSink(sink) => {
@@ -405,6 +406,7 @@ fn run(ctx: Ctx) {
                 }
                 HotkeyAction::ClearGearMap => {
                     dsg.reset_calibration();
+                    notifier.rearm_shift_hint();
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 // why: ignored while the overlay is off. The key may double as a game key
@@ -523,7 +525,7 @@ fn run(ctx: Ctx) {
         }
 
         // ── D26: queue what changed (hotkeys and UI settings alike). ──
-        notifier.watch(&cfg, in_race, dsg.engaged, dynamic_max_rpm, hud_clock());
+        notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dynamic_max_rpm, hud_clock());
         hud_force |= notifier.take_new(); // a message must reach the HUD even without a packet
 
         // ── listener → overlay: every packet, plus any visibility change without one. ──

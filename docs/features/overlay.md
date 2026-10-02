@@ -287,7 +287,22 @@ else to see it).
 | `Gearbox mode: <mode>` | `notif_gearbox_mode` | mode picker, or the automatic switch to Race in a race and back (the *effective* mode, `dsg_effective_mode`); silent while the gearbox is off |
 | `Backfire: ON / OFF` | `notif_backfire` | Backfire hotkey or tab |
 | `Calibration started` | `notif_calibration` | Clear RPM calibration hotkey / controller action, the tab's Clear RPM calibration button, a new car that starts uncalibrated |
+| `Shift at redline` (yellow dot, `NotifKind::Hint`) | `notif_calibration` | once per calibration cycle: the box is not calibrated (`!engaged`) and gear 1's gear-map entry first has data (`DsgListener::gear_redline_speeds[1] > 0`); tells the user data was collected and now is the time to rev out and shift. Re-arms on every new cycle (see below) |
 | `Calibration done: N rpm` | `notif_calibration` | the gearbox engaging (`DsgListener::engaged` false to true: first manual upshift or a restored profile) |
+
+**Calibration sequence:** `Calibration started` (explicit push) then `Shift at redline` (level
+check in `Notifier::watch`) then `Calibration done` (`engaged` false to true). *Why gear 1's
+entry is the signal:* calibration needs the first pull to redline, which in a normal pull is
+gear 1; any sample needs >60 % of the detected redline, so the first non-zero entry is the first
+moment there is something to shift on. *Why a level, not an edge:* Clear RPM calibration keeps
+the gear map, so gear 1 already has data right after it; the hint then follows `Calibration
+started` in the same pass. `Notifier::shift_hinted` makes it fire once; it clears when the box
+engages, when gear 1's entry empties (car change, Clear gear map), on every
+`Event::CalibrationStarted` push, and on `Notifier::rearm_shift_hint()` (called by the Clear
+gear map command / hotkey, in case the map refills within one pass). The first pass (baseline)
+counts as already told. It shares the `notif_calibration` toggle and is silent when the toggle
+is off (and is not announced retroactively when switched on mid-cycle). Clear gear map itself
+sends no `Calibration started`.
 
 Not included: Hide HUD (the HUD, notifications with it, is hidden by that very key), dashboard
 edit mode and Mini-Settings (app-window only).
@@ -305,7 +320,7 @@ translated when created. The first pass only records a baseline, so starting the
 nothing. Nothing is queued while the overlay is off.
 
 **Look.** A 38 px plate pill (Drive cluster plate colour and font), a status dot (green on /
-done, red off, blue info) and the text. Alive for `TTL_SECS` = 2.5 s, 0.15 s fade-in, 0.45 s
+done, red off, blue info, yellow hint: `col::AMBER`, the HUD's amber) and the text. Alive for `TTL_SECS` = 2.5 s, 0.15 s fade-in, 0.45 s
 fade-out; the newest 5 are drawn; the overlay's frame timer runs while any is alive. They
 follow the HUD's global fade, so a hidden or paused HUD shows none.
 

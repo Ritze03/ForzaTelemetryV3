@@ -2604,7 +2604,7 @@ impl eframe::App for ForzaApp {
                                 crate::theme::styled_checkbox(ui, &mut o.notif_gearbox_toggle, tr("Gearbox on / off"));
                                 crate::theme::styled_checkbox(ui, &mut o.notif_gearbox_mode, tr("Gearbox mode changed"));
                                 crate::theme::styled_checkbox(ui, &mut o.notif_backfire, tr("Backfire on / off"));
-                                crate::theme::styled_checkbox(ui, &mut o.notif_calibration, tr("Calibration started / done"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_calibration, tr("Calibration started / shift / done"));
                             });
                         }
                         PageSettingsTab::Tab(Tab::PowerCurve) => {

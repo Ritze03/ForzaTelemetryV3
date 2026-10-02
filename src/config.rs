@@ -463,7 +463,7 @@ pub struct OverlayConfig {
     pub notif_gearbox_mode: bool,
     /// "Backfire: ON / OFF".
     pub notif_backfire: bool,
-    /// "Calibration started" / "Calibration done — N rpm".
+    /// "Calibration started" / "Shift at redline" / "Calibration done — N rpm".
     pub notif_calibration: bool,
     /// Anchor of the notification stack on the screen (3×3), default top-centre.
     pub notif_cell: HudCell,
