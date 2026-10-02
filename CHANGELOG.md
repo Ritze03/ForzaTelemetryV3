@@ -6,6 +6,10 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.4.1] – 2026-10-02
 
+### Added
+- **Automatic Gearbox: Manual mode**: a new first entry in the Gearbox mode dropdown. In Manual the gearbox never shifts and the in-game HUD shows it exactly as if the gearbox were off. With *Auto Race mode in races* on, it still switches to Race mode in an actual race and goes back to Manual afterwards, so you can drive free roam by hand and use the gearbox only in races.
+- **Automatic Gearbox: Disable in drift events**: a new checkbox under *Auto Race mode in races*. While a drift event is detected (the same detection the HUD uses to show the drift counter) the gearbox turns off, HUD included, and comes back when the event ends. It applies with *Auto Race mode in races* on or with Race mode selected.
+
 ### Fixed
 - **HUD Pill gear position**: the gear indicator in the Pill style of the Drive cluster sat 1 px too low and now sits 1 px higher.
 

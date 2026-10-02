@@ -59,12 +59,30 @@ gear-ratio table.
   tolerates the brief neutral flash some cars show mid-shift. A timed-out
   shift is treated as a desync: the box accepts the gear it actually landed
   in and pauses briefly before commanding again.
-- **Modes** — **Street**, **Sport**, **Race** — each has its own **Cruise
+- **Modes** — **Manual**, **Street**, **Sport**, **Race** — each has its own **Cruise
   RPM** and **Accelerator gamma** tuning. Race ignores the cruise/downshift
   settings entirely: it always wants the full powerband and only upshifts at
   the redline. **Auto Race mode in races** forces Race mode whenever you're
   in an actual race (race position ≥ P1), then reverts to your chosen mode
   back in free roam.
+  - **Manual** (D25) — the box never shifts and the HUD treats it as the gearbox
+    off (no drive-mode letter). With **Auto Race mode in races** on it still flips
+    to Race in a race and falls back to Manual after. *Why:* the user drives manual
+    in free roam and wants the auto gearbox only in races. The effective mode is
+    re-derived from config + race/drift state on every packet (stateless), so
+    "reverting" is automatic for any selected mode. Manual is serialized by name,
+    so existing configs are unaffected. Manual has no tuning of its own (the
+    Advanced sliders edit Sport's while it's selected).
+  - **Disable in drift events** (D30) — with `dsg_disable_in_drift` on, a detected
+    drift event turns the box off (no shifting, HUD shows it as off) until the event
+    ends. Only applies when Auto Race mode is on or Race is the selected mode.
+    *Why:* drifting wants the driver's own gear choice; the user's condition was
+    scoping it to the race-oriented setups. Detection reuses the HUD's
+    `ModeClassifier` (see [[overlay]], *Race vs drift detection*); `DsgListener`
+    runs its own instance fed every packet, because the HUD tracker's copy only
+    runs while the overlay is enabled. The pure decision is
+    `AppConfig::dsg_resolved_mode(in_race, in_drift) -> Option<GearboxMode>`
+    (`None` = off), used by both the shift loop and the HUD gear label.
 - **Calibration persistence** — with **Remember calibration per car** on,
   each car's measured gear speeds and detected redline are saved to
   `automatic-gearbox-saved-calibrations.json` in the app data dir (keyed by
@@ -104,7 +122,7 @@ visualization on the right.
 
 - **General** — **Enabled**, **Ignore Backfire input**, **Shift RPM** and
   **Upshift min. speed** sliders, the **Gearbox mode** dropdown
-  (Street/Sport/Race), **Auto Race mode in races**, **Remember calibration
+  (Manual/Street/Sport/Race), **Auto Race mode in races**, **Disable in drift events**, **Remember calibration
   per car**, and the **Clear RPM calibration** / **Clear gear map** buttons
   (see *Reset calibration* above).
 - **Advanced Settings** — a **Reset settings** button (resets the sliders
@@ -135,8 +153,9 @@ visualization on the right.
 | `dsg_enabled` | off | Master toggle. |
 | `dsg_shift_rpm_pct` | 98% | Redline upshift point, as % of detected max RPM. |
 | `dsg_upshift_speed_pct` | 80% | Minimum % of a gear's calibrated top speed before a redline upshift can fire. |
-| `dsg_gearbox_mode` | Sport | `Street` / `Sport` / `Race`. |
+| `dsg_gearbox_mode` | Sport | `Manual` / `Street` / `Sport` / `Race`. |
 | `dsg_auto_race_mode` | on | Force Race mode whenever an actual race is detected (race position ≥ P1). |
+| `dsg_disable_in_drift` | off | Gearbox off while a drift event is detected (needs Auto Race mode on or Race selected). |
 | `dsg_tuning_street` / `dsg_tuning_sport` / `dsg_tuning_race` | cruise 35% / 50% / 85%, gamma 1.0 each | Per-mode `{ cruise_rpm_pct, accel_gamma }`. |
 | `dsg_kickdown_cooldown_secs` | 5.0 s | How long the lower gear is held after a full-throttle kickdown once you lift off. |
 | `dsg_downshift_deadzone_pct` | 60% | Highest the part-throttle rev target climbs to, as % of the shift point. |

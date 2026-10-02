@@ -58,7 +58,7 @@ pub enum BackfireDynamicMode {
     PacketBased, // hold until the next packet arrives (exact one frame)
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
 pub enum GearboxMode {
     /// No automatic shifting; the HUD shows the gearbox as off. Serialized by name, so adding
     /// it first doesn't change the stored value of the other modes.
@@ -1407,6 +1407,38 @@ pub fn app_data_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dsg_resolved_mode_manual_race_and_drift() {
+        use super::GearboxMode::*;
+        let mut c = AppConfig { dsg_auto_race_mode: true, dsg_disable_in_drift: false, ..Default::default() };
+        // Manual: off in free roam, Race in a race (auto-race), back to off afterwards.
+        c.dsg_gearbox_mode = Manual;
+        assert_eq!(c.dsg_resolved_mode(false, false), None);
+        assert_eq!(c.dsg_resolved_mode(true, false), Some(Race));
+        assert_eq!(c.dsg_resolved_mode(false, false), None);
+        c.dsg_auto_race_mode = false;
+        assert_eq!(c.dsg_resolved_mode(true, false), None);
+        // Drift rule: needs the flag, and auto-race on or Race selected.
+        c.dsg_gearbox_mode = Sport;
+        c.dsg_disable_in_drift = true;
+        assert_eq!(c.dsg_resolved_mode(false, true), Some(Sport)); // neither auto-race nor Race
+        c.dsg_auto_race_mode = true;
+        assert_eq!(c.dsg_resolved_mode(false, true), None);
+        assert_eq!(c.dsg_resolved_mode(false, false), Some(Sport));
+        c.dsg_auto_race_mode = false;
+        c.dsg_gearbox_mode = Race;
+        assert_eq!(c.dsg_resolved_mode(false, true), None);
+        c.dsg_disable_in_drift = false;
+        assert_eq!(c.dsg_resolved_mode(false, true), Some(Race));
+    }
+
+    #[test]
+    fn gearbox_mode_serialization_is_by_name() {
+        assert_eq!(serde_json::to_string(&GearboxMode::Sport).unwrap(), "\"Sport\"");
+        assert_eq!(serde_json::from_str::<GearboxMode>("\"Race\"").unwrap(), GearboxMode::Race);
+        assert!(!AppConfig::default().dsg_disable_in_drift);
+    }
+
     use super::*;
 
     #[test]
