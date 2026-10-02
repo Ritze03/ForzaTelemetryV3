@@ -43,6 +43,11 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
                         crate::theme::slider_row(ui, tr("Maximum RPM"), &mut app.config.backfire_max_rpm, 0.0..=20000.0, 50.0, 0, "");
                     }
                     crate::theme::slider_row(ui, tr("RPM interval"), &mut app.config.backfire_interval_rpm, 0.0..=2000.0, 10.0, 0, "");
+                    crate::theme::checkbox_row(ui, &mut app.config.backfire_limit_duration, tr("Limit max. duration"))
+                        .on_hover_text(tr("Stops backfire after it has run continuously for this long, even if RPM is still in range. Re-arms when you touch the throttle or downshift."));
+                    if app.config.backfire_limit_duration {
+                        crate::theme::slider_row(ui, tr("Max. duration"), &mut app.config.backfire_max_duration_ms, 100..=5000, 50.0, 0, " ms");
+                    }
                 });
 
                 // ── Key Press ────────────────────────────────────────────

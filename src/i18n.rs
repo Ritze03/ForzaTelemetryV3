@@ -272,6 +272,11 @@ fn de(s: &str) -> Option<&'static str> {
         "Maximum RPM" => "Maximale Drehzahl",
         "RPM interval" => "Drehzahl-Intervall",
         "Key press duration" => "Tastendruck-Dauer",
+        "Limit max. duration" => "Max. Dauer begrenzen",
+        "Max. duration" => "Max. Dauer",
+        "Stops backfire after it has run continuously for this long, even if RPM is still in range. Re-arms when you touch the throttle or downshift." =>
+            "Beendet die Fehlzündung, nachdem sie so lange ununterbrochen lief, auch wenn die Drehzahl noch im Bereich liegt. \
+             Wird wieder scharf, sobald du Gas gibst oder herunterschaltest.",
         "Disable if standing still" => "Im Stand deaktivieren",
         "Drift detection (no pop while sliding)" =>
             "Drifterkennung (keine Fehlzündung beim Rutschen)",

@@ -32,6 +32,14 @@ a real (tiny) throttle input and produces its own backfire/anti-lag sound.
   the fake key press after release. While it's open, the listener ignores
   that self-inflicted accel blip instead of mistaking it for the driver
   lifting back on the throttle — so backfire pops can't retrigger each other.
+- **Max burst duration** (`BurstLimiter` in `listeners/backfire.rs`): when
+  enabled, once backfire has been in its lift-off-in-RPM-range state
+  *continuously* for the limit (measured with packet `timestamp_ms`), it stops,
+  even if RPM is still in range. It re-arms on any non-zero real gas or a
+  downshift (gear number decreases; upshifts don't re-arm); the timer then
+  restarts at the next burst. Our own pop's accel echo is masked, so it neither
+  re-arms nor ends the run. *Why:* user request - continuous backfire on a long
+  lift-off drags on unrealistically.
 - **Disable if standing still** skips the effect below ~1 km/h. **Test mode**
   bypasses the throttle/RPM/speed conditions entirely, useful for confirming
   the key press and game reaction work at all.
@@ -59,6 +67,8 @@ Open the **Backfire** tab:
   RPM** are shown as % of the car's max RPM (with a live "Range: X – Y RPM"
   readout below); when off, they are absolute RPM values. **RPM interval** sets
   the minimum RPM drop between two pops.
+  **Limit max. duration** (off by default) adds a slider + spinner (100-5000 ms,
+  default 1000) below it.
 - **Key Press** — **Dynamic key press duration** toggle with a **Time-based
   / Packet-based** mode dropdown; when off, a fixed **Key press duration**
   slider (ms) appears instead.
@@ -79,6 +89,7 @@ Open the **Backfire** tab:
 | `backfire_accel_time_ms` | 8 ms | Fixed key-press duration (used when Dynamic key press duration is off). |
 | `backfire_disable_standstill` | on | Suppress the effect below ~1 km/h. |
 | `backfire_drift_detection` | on | Suppress the pop while any wheel's slip-ratio magnitude exceeds `1.1` (a slide/wheelspin). |
+| `backfire_limit_duration` / `backfire_max_duration_ms` | off / 1000 ms | Stop a continuous backfire after this long (100-5000 ms); re-arms on throttle or downshift. |
 | `backfire_test_mode` | off | Ignore all throttle/RPM/speed conditions — always fires on lift-off. |
 | `inputs_filter_backfire_accel` | on | Dashboard **Inputs** widget shows Accel as 0 while a backfire pop is actively firing, so the synthetic tap doesn't show up as a real pedal input. |
 
