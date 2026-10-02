@@ -101,7 +101,7 @@ enum HotkeyAction {
     ToggleBackfire,  // Global   — flips config.backfire_enabled
     MiniSettings,    // AppFocused — flips page_settings_open
     DashboardEdit,   // AppFocused — flips config.dashboard_edit_mode (Dashboard tab only)
-    // (also ResetCalibration, Global, F)
+    // (also ResetCalibration = "Clear RPM calibration", Global, F; ClearGearMap, Global, no default)
     HideHud,         // Global, H — toggles the listener's runtime hud_hidden (not config);
                      // ignored while the overlay is disabled. See features/overlay.md
 }
@@ -253,8 +253,8 @@ today's behaviour; opt-in).
   - **In-app:** Mini-settings, Dashboard edit.
 - Each row: `action name | current combo ("Ctrl + E") | [Rebind]`. Click Rebind → row shows
   "Press a key…", captures the next non-modifier key + held modifiers from **egui input**
-  (the app is focused during rebind, so no backend involved), Esc cancels. Simple conflict
-  warning if two bindings collide.
+  (the app is focused during rebind, so no backend involved), Esc cancels. Several actions
+  may share one combo (all fire; no conflict warning, see [[hotkeys]]).
   - *Update (overlay work):* **Backspace clears** a binding ("Not set"). The capture for
     every rebind button (Setup → Hotkey and the Overlay tab's Hide HUD row) is one
     `ForzaApp::capture_rebind` in `app.rs`, run before the tabs; see [[hotkeys]].

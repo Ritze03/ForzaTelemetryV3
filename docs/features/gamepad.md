@@ -8,10 +8,13 @@ Controller** (card right under Hotkey). Code: `src/gamepad.rs`; UI: `controller_
 
 ## What it does
 
-- **Bindings** for the four global actions (Toggle Automatic Gearbox, Clear gearbox calibration,
+- **Bindings** for the global actions (Toggle Automatic Gearbox, Clear RPM calibration, Clear gear map,
   Toggle Backfire, Hide HUD). Click a row's button, press a pad control (**Esc** cancels,
-  **Backspace** or **Delete** clears the binding and ends the capture; there is no clear button). Default: nothing bound. Binding a control that another action already
-  uses takes it away from that action (one press = one action).
+  **Backspace** or **Delete** clears the binding and ends the capture; there is no clear button). Default: nothing bound. Several actions can share one control:
+  pressing it **fires all of them** (in `HotkeyAction::ALL` order; `PadParams::from_config`
+  sorts by control then action order, `Shared::feed` sends every match). `GamepadConfig::bind`
+  no longer takes the control away from other actions. *Why:* the user wants one button to do
+  several things (e.g. both clears); same rule as the keyboard hotkeys ([[hotkeys]]).
 - **Bindable controls** (`PadControl`): A/B/X/Y, LB/RB, LT/RT (past a threshold), Back/Start,
   L3/R3, the D-pad's 4 directions, and the **right stick's** Up/Down/Left/Right.
 - **Deadzones**: stick (radial, default 0.27) and trigger (default 0.10).

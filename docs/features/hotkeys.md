@@ -10,9 +10,10 @@ feeds the same action channel and gate: see [[gamepad]].
 ## Two scopes
 
 - **Global (while in-game)** — fire while the *game* holds focus (or our app does).
-  Defaults: `G` = toggle Automatic Gearbox, `F` = clear gearbox calibration (gear map + max RPM), `B` =
-  toggle Backfire, `H` = **Hide HUD** (toggle the in-game overlay, see [[overlay]]). Routed
-  through the capture backend + focus gate.
+  Defaults: `G` = toggle Automatic Gearbox, `F` = **Clear RPM calibration**, `B` =
+  toggle Backfire, `H` = **Hide HUD** (toggle the in-game overlay, see [[overlay]]). **Clear
+  gear map** is also a global action but has no default key. Routed through the capture
+  backend + focus gate.
 - **In-app** — fire only while our telemetry window is focused. Defaults: `Ctrl+S` =
   mini-settings, `Ctrl+E` = dashboard edit. Handled via egui input (`ctx.input`), so they
   are inherently UI-only. Rebindable because the combo is read from config.
@@ -23,6 +24,19 @@ A binding's *scope* is fixed per action (`HotkeyAction::scope`), not user-chosen
 thread, never config, and it does nothing while the overlay is disabled (details and *why* in
 [[overlay]]). Its binding is the one `hotkeys.bindings[HideHud]`, editable both here and in
 the Overlay tab's General card (D28).
+
+## One key, several actions
+
+Any number of actions can share one key combo (e.g. **Clear RPM calibration** + **Clear gear
+map** on `F`); pressing it **fires every action bound to it**, in `HotkeyAction::ALL` order
+(`HotkeyAction::order`; `app::global_bindings` sorts the list handed to the backend). Nothing
+warns about or blocks a shared key. In code: `hotkeys::match_combo` returns *all* matching
+actions and `hotkeys::dispatch` sends each one; both backends use it. *Why:* the user wants one
+button to do several things (both clears at once). It used to fire only the first: the Linux
+backend took the first match, and the Windows poll looped per binding with the edge state kept
+per key, so the first binding on a key consumed the rising edge and the rest never fired. The
+Windows poll now loops over distinct keys. The same applies to controller controls
+([[gamepad]]).
 
 ## Rebinding and unbinding
 

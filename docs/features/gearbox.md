@@ -21,20 +21,24 @@ gear-ratio table.
   (`worker.rs` tracks `dynamic_max_rpm` unconditionally; `DsgListener::update`
   sets `engaged` before its `dsg_enabled` gate). The in-game HUD reuses them:
   its shift cue is this box's Shift RPM on the detected redline. See [[overlay]].
-- **Clear gearbox calibration** — one button (Automatic Gearbox tab; always
-  shown, disabled until there is something to clear). It wipes the whole
-  calibration for the current car: the per-gear speed map *and* the detected
-  redline + engagement, so the box goes hands-off until your next manual upshift
-  re-locks the redline and re-samples the gears. The **Clear gearbox
-  calibration** hotkey (default `F`, see [[hotkeys]]) and the controller action
-  of the same name ([[gamepad]]) do exactly this. It also rewrites the saved
-  per-car profile to match (removing it, since nothing's left), so a car reload
-  can't restore what you just cleared. *Why one operation:* it used to be two
-  buttons (RPM calibration / gear map) and the hotkey reset only the RPM half,
-  but a user who recalibrates wants a clean slate. Implemented as one
-  `Command::ClearGearboxCalibration` / `clear_gearbox_calibration()` in
-  `listeners/worker.rs`. The action's serialized name is still
-  `ResetCalibration`, so saved hotkey and controller bindings keep working.
+- **Clear RPM calibration** and **Clear gear map** — two buttons (Automatic
+  Gearbox tab; always shown, each disabled until it has something to clear).
+  *Clear RPM calibration* forgets the detected redline + engagement (the box
+  goes hands-off until your next manual upshift re-locks it) and keeps the gear
+  map; it also pushes the `Calibration started` HUD notification. *Clear gear
+  map* forgets the per-gear speed map and keeps the redline. Each also has a
+  global hotkey / controller action of the same name (see [[hotkeys]],
+  [[gamepad]]): **Clear RPM calibration** is `HotkeyAction::ResetCalibration`
+  (default `F`; the serde name is kept from the old "Reset RPM Calibration" so
+  saved bindings still load), **Clear gear map** is `HotkeyAction::ClearGearMap`
+  (no default key). Both rewrite the saved per-car profile to match
+  (`persist_calibration`; removed once nothing is left), so a car reload can't
+  restore what you just cleared. Implemented as `Command::ClearRpmCalibration` /
+  `Command::ClearGearMap` and the matching hotkey arms in `listeners/worker.rs`.
+  *Why two again:* the user wants to choose the half to clear, and, since one
+  key or pad button can be bound to several actions, to bind both to one button
+  to get a full reset. (They were briefly merged into one "Clear gearbox
+  calibration".)
 - **Shift decision**, in order, each packet:
   1. **Hard redline upshift** — once RPM reaches **Shift RPM** (% of the
      detected max RPM) and road speed has reached **Upshift min. speed** (%
@@ -98,8 +102,8 @@ gear-ratio table.
   `winit wayland/event_loop/mod.rs:486`), and everything in it — including the
   shift logic — simply stopped. The thread owns the live `DsgListener` and the
   per-car calibrations; the Automatic Gearbox tab reads a copy of its state
-  (`DsgView`) refreshed once a frame, and the **Clear gearbox
-  calibration** button sends it a command. A displayed value can therefore be
+  (`DsgView`) refreshed once a frame, and the **Clear RPM
+  calibration** / **Clear gear map** buttons send it a command. A displayed value can therefore be
   one frame stale, which is fine — nothing shown is critical, and in exchange the
   shift loop is never affected by the UI. See [[overview]] for the mailbox design.
   If that thread ever dies, the status-bar Gearbox indicator reads **Stopped
@@ -124,8 +128,8 @@ visualization on the right.
 - **General** — **Enabled**, **Ignore Backfire input**, **Shift RPM** and
   **Upshift min. speed** sliders, the **Gearbox mode** dropdown
   (Manual/Street/Sport/Race), **Auto Race mode in races**, **Disable in drift events**, **Remember calibration
-  per car**, and the **Clear gearbox calibration** button
-  (see above).
+  per car**, and the **Clear RPM calibration** / **Clear gear map**
+  buttons (see above).
 - **Advanced Settings** — a **Reset settings** button (resets the sliders
   below to a tuned baseline; leaves modes/toggles alone), **Accelerator
   gamma**, **Gear overlap** (Race only), and — hidden in Race, since Race
