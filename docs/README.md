@@ -41,6 +41,10 @@ The navigation reference — read these to move around the source efficiently.
 
 - [Styling Guide](ui/STYLING-GUIDE.md) — cards/categories, control rows, reserved spinner widths, the `theme::` helpers.
 
+## game-data/ — reverse-engineered FH6 game files
+
+- [FH6 Game Files](game-data/fh6-game-files.md) — how to read the map imagery (`.swatchbin` BC1 tiles), the road graph (`Brio_00.nav`) and POIs (trigger zones, locators) from the user's own install; formats, validation, dead ends, and why we read at runtime instead of bundling. Scripts: [`tools/fh6-extract/`](../tools/fh6-extract/README.md).
+
 ## claude-instructions/ — mandatory rules for agents
 
 - [Working with the Docs](claude-instructions/documentation.md) — read before you touch, update after you change, record the *why*, and the `@` force-load convention. Linked from the repo-root `CLAUDE.md`.
