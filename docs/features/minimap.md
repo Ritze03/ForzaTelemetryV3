@@ -97,8 +97,11 @@ auto-zooms in while driving and back out once parked.
 - **Mirror map at edges** — instead of clipping at the image boundary, the mesh's
   UVs are allowed outside [0,1] and the texture sampler mirrors/repeats, so panning
   past the map edge shows a reflected continuation rather than a hard cutoff.
-- **Show compass** — a small N-marked compass in the top-left corner showing
-  world-north relative to the current map rotation.
+- **Show compass** — a compass disc with a two-colour needle in the top-left corner
+  pointing to world-north (`MapView::north_dir`, so it is right in north-up and heading-up
+  modes alike). It is the HUD Minimap's compass, drawn by the shared
+  `hud::minimap::draw_compass`, scaled with the widget (`min(w,h)/200`, clamped 0.8-1.6).
+  *Why:* the user prefers the HUD look, and one implementation keeps the two identical.
 - **Render FPS limit** — throttles how often the car's cached position/yaw are
   refreshed for the minimap, independent of the app's global FPS limit.
 

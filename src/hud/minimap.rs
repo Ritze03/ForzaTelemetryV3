@@ -227,6 +227,19 @@ fn draw_teammates(p: &Painter, xf: &Xf, view: &MapView, centre: Pos2, teammates:
     }
 }
 
+/// Compass (D12): disc at (18, 18) r 11, two-colour needle 16 x 6 pointing to world north.
+/// `north` is the unit screen direction of world-north (`MapView::north_dir`). Shared with
+/// the Dashboard map so the two compasses can't drift apart.
+pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
+    let c = xf.p(18.0, 18.0);
+    p.circle_filled(c, xf.l(11.0), xf.c(col::COMPASS));
+    let n = vec2(north[0], north[1]);
+    let side = vec2(-n.y, n.x) * xf.l(3.0);
+    let tip = n * xf.l(8.0);
+    p.add(egui::Shape::convex_polygon(vec![c + tip, c + side, c - side], xf.c(col::NORTH), egui::Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(vec![c - tip, c - side, c + side], xf.c(col::INK), egui::Stroke::NONE));
+}
+
 /// Draw M2′. Returns true while the view is still easing.
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, teammates: &[Teammate]) -> bool {
     let animating = anim.step(snap, now);
@@ -260,16 +273,8 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
 
     draw_teammates(p, xf, &view, centre, teammates);
 
-    // Compass (D12): disc at (18, 18) r 11, two-colour needle 16 × 6 pointing to world north.
     if snap.cfg.compass {
-        let c = xf.p(18.0, 18.0);
-        p.circle_filled(c, xf.l(11.0), xf.c(col::COMPASS));
-        let [nx, ny] = view.north_dir();
-        let n = vec2(nx, ny);
-        let side = vec2(-ny, nx) * xf.l(3.0);
-        let tip = n * xf.l(8.0);
-        p.add(egui::Shape::convex_polygon(vec![c + tip, c + side, c - side], xf.c(col::NORTH), egui::Stroke::NONE));
-        p.add(egui::Shape::convex_polygon(vec![c - tip, c - side, c + side], xf.c(col::INK), egui::Stroke::NONE));
+        draw_compass(p, xf, view.north_dir());
     }
 
     // Car marker: 14 × 17, white over a 2.2 px dark stroke (canvas strokes first and fills
@@ -312,6 +317,15 @@ mod tests {
     use super::*;
 
     const HALF: Vec2 = vec2(104.0, 68.0);
+
+    #[test]
+    fn compass_north_follows_map_rotation() {
+        let up = MapView::new(0.0, 0.0, 0.0, 400.0, 136.0).north_dir();
+        assert!(up[0].abs() < 1e-6 && (up[1] + 1.0).abs() < 1e-6, "{up:?}");
+        // Map turned a quarter clockwise: north swings to the left of the screen.
+        let q = MapView::new(0.0, 0.0, std::f32::consts::FRAC_PI_2, 400.0, 136.0).north_dir();
+        assert!((q[0] + 1.0).abs() < 1e-6 && q[1].abs() < 1e-6, "{q:?}");
+    }
 
     #[test]
     fn teammate_ahead_is_above_the_car_and_inside_the_pill() {
