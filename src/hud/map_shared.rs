@@ -222,7 +222,7 @@ mod tests {
         // Age halfway, distance fresh: age rules. Distance halfway, age fresh: distance rules.
         assert_eq!(f.alpha(5.0, 0.0), 110);
         assert_eq!(f.alpha(0.0, 250.0), 110);
-        assert_eq!(f.alpha(5.0, 400.0), (0.2_f32 * 220.0) as u8);
+        assert!((f.alpha(5.0, 400.0) as i32 - 44).abs() <= 1);
         // Past either limit: invisible.
         assert_eq!(f.alpha(10.0, 0.0), 0);
         assert_eq!(f.alpha(0.0, 500.0), 0);

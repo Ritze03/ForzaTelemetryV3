@@ -254,6 +254,20 @@ impl CoopReader {
         remote_players(&self.0)
     }
 
+    /// Whether a session is running (role ≠ `Off`): the Minimap's own arrow takes the co-op
+    /// colour and trails are recorded only then, as on the Dashboard map.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn in_session(&self) -> bool {
+        self.0.lock().unwrap().role != Role::Off
+    }
+
+    /// The session's shared waypoints as `(setter_id, world_x, world_z, hue)`
+    /// ([`CoopState::waypoints`]).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn waypoints(&self) -> Vec<(String, f32, f32, f32)> {
+        self.0.lock().unwrap().waypoints.iter().map(|(id, &(x, z, h))| (id.clone(), x, z, h)).collect()
+    }
+
     /// Send our locally-received packet to peers (listener thread, every packet — it runs
     /// while the game covers the window, which the UI loop doesn't). No-op while co-op is off.
     pub fn push_local(&self, pkt: &ForzaPacket) {

@@ -57,7 +57,6 @@ pub mod col {
     pub const FRAME: Color32 = rgba(12, 17, 27, 0.88);
     pub const COMPASS: Color32 = rgba(12, 17, 27, 0.85);
     pub const NORTH: Color32 = rgba(0xFF, 0x5A, 0x4E, 1.0);
-    pub const MARKER_EDGE: Color32 = rgba(0, 0, 0, 0.75);
     pub const MAP_TINT: Color32 = rgba(10, 14, 22, 0.12);
     pub const MAP_TINT_WINTER: Color32 = rgba(20, 30, 45, 0.30);
 
@@ -124,8 +123,8 @@ impl Hud {
     /// Draw the whole HUD on `screen`. Returns true while anything still animates (fade,
     /// shift flash, pulse, place layer, lap hold, chip, count-up, drift bar, map easing);
     /// false once settled, and false after the fade-out finished (the surface can go).
-    /// `teammates` are the co-op markers for M2′ (empty when off or not connected).
-    pub fn draw(&mut self, p: &Painter, screen: Rect, snap: &HudSnapshot, now: f64, map: Option<minimap::MapTex>, teammates: &[minimap::Teammate]) -> bool {
+    /// `coop` is the Minimap's co-op layer (empty when off or not in a session).
+    pub fn draw(&mut self, p: &Painter, screen: Rect, snap: &HudSnapshot, now: f64, map: Option<minimap::MapTex>, coop: &minimap::CoopLayer) -> bool {
         let cfg = &*snap.cfg;
         let dt = self.last_now.map_or(0.0, |t| (now - t).clamp(0.0, 0.1) as f32);
         self.last_now = Some(now);
@@ -148,7 +147,7 @@ impl Hud {
         for ((module, _, _), rect) in items.iter().zip(rects) {
             let xf = Xf { o: screen.min + rect.min.to_vec2(), s, a: self.fade };
             animating |= match module {
-                Module::Map => minimap::draw(p, &xf, snap, now, &mut self.map_anim, map, teammates),
+                Module::Map => minimap::draw(p, &xf, snap, now, &mut self.map_anim, map, coop),
                 Module::Cluster => {
                     let speed = self.speed(snap, now);
                     match cfg.cluster_style {

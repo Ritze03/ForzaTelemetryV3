@@ -11,7 +11,7 @@ use egui_glow::glow;
 
 use super::snapshot::{hud_clock, HudSnapshot};
 use crate::coop::CoopReader;
-use crate::hud::minimap::{MapLoader, Teammate};
+use crate::hud::minimap::{CoopInput, CoopLayer, MapLoader};
 use crate::hud::{fonts, Hud};
 
 pub struct Renderer {
@@ -20,8 +20,10 @@ pub struct Renderer {
     start: Instant,
     hud: Hud,
     map: MapLoader,
-    /// Co-op teammates for M2′, read per frame (never through the UI thread).
+    /// Co-op session handle for M2′, read per frame (never through the UI thread).
     coop: Option<CoopReader>,
+    /// What M2′ draws from the session: teammates, trails, waypoints.
+    layer: CoopLayer,
 }
 
 impl Renderer {
@@ -31,7 +33,7 @@ impl Renderer {
         let painter = egui_glow::Painter::new(gl, "", None, true).map_err(|e| format!("egui_glow: {e}"))?;
         let ctx = egui::Context::default();
         fonts::install(&ctx);
-        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default(), coop })
+        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default(), coop, layer: CoopLayer::default() })
     }
 
     /// Draw one frame of `size` physical px. Returns true while an animation still needs
@@ -44,38 +46,30 @@ impl Renderer {
     /// [`Self::frame`] at a pinned `now` ([`hud_clock`] seconds) over a premultiplied
     /// `clear` colour (the PNG harness renders over an opaque backdrop).
     fn frame_at(&mut self, size: [u32; 2], snapshot: Option<&HudSnapshot>, test_pattern: bool, now: f64, clear: [f32; 4]) -> bool {
-        let (hud, map, coop) = (&mut self.hud, &mut self.map, &self.coop);
+        let (hud, map, coop, layer) = (&mut self.hud, &mut self.map, &self.coop, &mut self.layer);
         paint(&self.ctx, &mut self.painter, self.start, size, clear, |ctx, p| {
             if test_pattern {
                 draw_test_pattern(p, ctx.content_rect(), ctx.cumulative_pass_nr());
             }
             let Some(snap) = snapshot else { return false };
             let tex = map.poll(ctx, now, snap.cfg.minimap_on);
-            let cfg = &*snap.cfg;
-            let mates = match coop {
-                Some(c) if cfg.minimap_on && cfg.coop_teammates => teammates(c),
-                _ => Vec::new(),
-            };
-            hud.draw(p, ctx.content_rect(), snap, now, tex, &mates)
+            // Co-op layer: teammates, trails, waypoints (empty without a session or with the
+            // minimap off). The overlay thread records the trails itself, see `CoopLayer`.
+            layer.update(coop.as_ref().map(coop_input), snap, Instant::now());
+            hud.draw(p, ctx.content_rect(), snap, now, tex, layer)
         })
     }
 }
 
-/// The live, unpaused remote players as map markers, in their identity colour (as on the
-/// Dashboard map). Paused teammates are skipped: their packet sits at the world origin and
-/// their last-known spot is UI-side state (`ForzaApp::coop_last_pos`).
-fn teammates(coop: &CoopReader) -> Vec<Teammate> {
-    coop.remote_players()
-        .into_iter()
-        .filter(|(_, pkt)| !pkt.is_paused())
-        .map(|(info, pkt)| Teammate {
-            x: pkt.position_x,
-            z: pkt.position_z,
-            yaw: pkt.yaw,
-            name: info.name,
-            colour: crate::ui::coop::hue_color(info.hue),
-        })
-        .collect()
+/// The session state M2′ draws from (one lock per read; `remote_players` also advances the
+/// jitter buffers, as the UI's `tick` stops while the game covers the window).
+fn coop_input(coop: &CoopReader) -> CoopInput {
+    let in_session = coop.in_session();
+    CoopInput {
+        in_session,
+        remotes: if in_session { coop.remote_players() } else { Vec::new() },
+        waypoints: if in_session { coop.waypoints().into_iter().map(|(_, x, z, hue)| (x, z, hue)).collect() } else { Vec::new() },
+    }
 }
 
 /// Run one egui frame over `size` px with `draw` on a background-layer painter, then

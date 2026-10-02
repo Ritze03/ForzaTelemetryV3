@@ -310,7 +310,7 @@ fn run(ctx: Ctx) {
     let mut hud_hidden = false;
     let mut hud_visible = false;
     let mut hud_force = false;
-    let mut hud_cfg = Arc::new(cfg.overlay.clone());
+    let mut hud_cfg = Arc::new(cfg.overlay.effective(&cfg));
     // D26 on-HUD messages; `in_race` = race position ≠ 0 on the last race-on packet.
     let mut notifier = Notifier::default();
     let mut in_race = false;
@@ -333,8 +333,11 @@ fn run(ctx: Ctx) {
                     hud_hidden = false;
                 }
                 cfg = msg.cfg;
-                if *hud_cfg != cfg.overlay {
-                    hud_cfg = Arc::new(cfg.overlay.clone());
+                // The HUD draws with the effective config (Dashboard values where "Use Dashboard ...
+                // settings" is ticked), so the renderer never branches on those flags.
+                let eff = cfg.overlay.effective(&cfg);
+                if *hud_cfg != eff {
+                    hud_cfg = Arc::new(eff);
                 }
                 if stale_toggles {
                     cfg.dsg_enabled = dsg_on;
