@@ -88,13 +88,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("Shift personality. Street/Sport cruise economically (upshift early, lazy \
                      downshifts); Race holds the full powerband and ignores the cruise/deadzone \
                      settings."),
-                    tr("Street = relaxed, Sport = balanced, Race = aggressive/track."),
+                    tr("Manual = you shift (box off), Street = relaxed, Sport = balanced, Race = aggressive/track."),
                     |ui| {
                         egui::ComboBox::from_id_salt("dsg_mode_combo")
                             .selected_text(app.config.dsg_gearbox_mode.label())
                             .width(ui.available_width())
                             .show_ui(ui, |ui| {
-                                for mode in [GearboxMode::Street, GearboxMode::Sport, GearboxMode::Race] {
+                                for mode in [GearboxMode::Manual, GearboxMode::Street, GearboxMode::Sport, GearboxMode::Race] {
                                     ui.selectable_value(
                                         &mut app.config.dsg_gearbox_mode,
                                         mode,
@@ -109,6 +109,12 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("Forces Race mode whenever you're in an actual race (position P1+), and \
                      reverts to your chosen mode in free-roam."),
                     tr("Off to keep your selected mode everywhere."),
+                );
+                hover(
+                    crate::theme::checkbox_row(ui, &mut app.config.dsg_disable_in_drift, tr("Disable in drift events")),
+                    tr("Turns the gearbox off for as long as a drift event is detected, then back on. \
+                     Applies with Auto Race mode in races on, or with Race mode selected."),
+                    tr("Tick it if the gearbox fights you while drifting."),
                 );
                 if app.config.dsg_auto_race_mode {
                     let in_race = app

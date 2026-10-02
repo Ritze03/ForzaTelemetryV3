@@ -100,7 +100,8 @@ pub enum DriveMode {
 impl From<GearboxMode> for DriveMode {
     fn from(m: GearboxMode) -> Self {
         match m {
-            GearboxMode::Street => Self::Street,
+            // Manual is never shown (the HUD treats it as the gearbox off); see `dsg_resolved_mode`.
+            GearboxMode::Street | GearboxMode::Manual => Self::Street,
             GearboxMode::Sport => Self::Sport,
             GearboxMode::Race => Self::Race,
         }

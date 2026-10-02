@@ -58,8 +58,11 @@ pub enum BackfireDynamicMode {
     PacketBased, // hold until the next packet arrives (exact one frame)
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
 pub enum GearboxMode {
+    /// No automatic shifting; the HUD shows the gearbox as off. Serialized by name, so adding
+    /// it first doesn't change the stored value of the other modes.
+    Manual,
     Street,
     #[default]
     Sport,
@@ -69,6 +72,7 @@ pub enum GearboxMode {
 impl GearboxMode {
     pub fn label(&self) -> &'static str {
         crate::i18n::tr(match self {
+            GearboxMode::Manual => "Manual",
             GearboxMode::Street => "Street",
             GearboxMode::Sport  => "Sport",
             GearboxMode::Race   => "Race",
@@ -718,6 +722,7 @@ pub struct AppConfig {
     pub dsg_upshift_speed_pct: f32,  // upshift only once speed reaches this % of the gear's redline speed
     pub dsg_gearbox_mode: GearboxMode,
     pub dsg_auto_race_mode: bool, // force Race mode whenever in an actual race (race position > P0)
+    pub dsg_disable_in_drift: bool, // gearbox off while a drift event is detected (only with auto-race on or Race selected)
     pub dsg_tuning_street: GearboxTuning,
     pub dsg_tuning_sport: GearboxTuning,
     pub dsg_tuning_race: GearboxTuning,
@@ -849,6 +854,7 @@ impl Default for AppConfig {
             dsg_upshift_speed_pct: 80.0,
             dsg_gearbox_mode: GearboxMode::Sport,
             dsg_auto_race_mode: true,
+            dsg_disable_in_drift: false,
             dsg_tuning_street: GearboxTuning { cruise_rpm_pct: 35.0, accel_gamma: 1.0 },
             dsg_tuning_sport:  GearboxTuning { cruise_rpm_pct: 50.0, accel_gamma: 1.0 },
             dsg_tuning_race:   GearboxTuning { cruise_rpm_pct: 85.0, accel_gamma: 1.0 },
@@ -1016,7 +1022,7 @@ const BACKFIRE_KEYS: &[&str] = &[
 
 const DSG_KEYS: &[&str] = &[
     "dsg_enabled", "dsg_shift_rpm_pct", "dsg_upshift_speed_pct", "dsg_gearbox_mode",
-    "dsg_auto_race_mode", "dsg_tuning_street", "dsg_tuning_sport", "dsg_tuning_race",
+    "dsg_auto_race_mode", "dsg_disable_in_drift", "dsg_tuning_street", "dsg_tuning_sport", "dsg_tuning_race",
     "dsg_kickdown_cooldown_secs", "dsg_downshift_deadzone_pct", "dsg_full_throttle_pct",
     "dsg_race_gear_overlap_pct", "dsg_downshift_powerband_buffer_pct",
     "dsg_kickdown_powerband_buffer_pct", "dsg_debug", "dsg_log_shifts",
@@ -1145,7 +1151,8 @@ impl AppConfig {
     pub fn dsg_active_tuning(&self) -> GearboxTuning {
         match self.dsg_gearbox_mode {
             GearboxMode::Street => self.dsg_tuning_street,
-            GearboxMode::Sport  => self.dsg_tuning_sport,
+            // Manual never shifts; any tuning will do (Sport keeps the UI sliders sane).
+            GearboxMode::Sport | GearboxMode::Manual => self.dsg_tuning_sport,
             GearboxMode::Race   => self.dsg_tuning_race,
         }
     }
@@ -1154,7 +1161,7 @@ impl AppConfig {
     pub fn dsg_active_tuning_mut(&mut self) -> &mut GearboxTuning {
         match self.dsg_gearbox_mode {
             GearboxMode::Street => &mut self.dsg_tuning_street,
-            GearboxMode::Sport  => &mut self.dsg_tuning_sport,
+            GearboxMode::Sport | GearboxMode::Manual => &mut self.dsg_tuning_sport,
             GearboxMode::Race   => &mut self.dsg_tuning_race,
         }
     }
@@ -1170,11 +1177,27 @@ impl AppConfig {
         }
     }
 
+    /// What the gearbox actually does this packet: `Some(mode)` = shifting with that mode,
+    /// `None` = off (Manual, or a drift event with *Disable in drift events* on). The HUD shows
+    /// `None` exactly like the gearbox switched off. The drift rule applies only when Auto Race
+    /// mode is on or Race is the selected mode. Stateless on purpose: every packet re-derives it,
+    /// so after a race / drift event it falls straight back to the selected mode.
+    pub fn dsg_resolved_mode(&self, in_race: bool, in_drift: bool) -> Option<GearboxMode> {
+        let mode = self.dsg_effective_mode(in_race);
+        let drift_rule = self.dsg_auto_race_mode || self.dsg_gearbox_mode == GearboxMode::Race;
+        if mode == GearboxMode::Manual || (self.dsg_disable_in_drift && drift_rule && in_drift) {
+            None
+        } else {
+            Some(mode)
+        }
+    }
+
     /// Tuning for the mode actually in effect (Race when auto-switched in a race).
     pub fn dsg_effective_tuning(&self, in_race: bool) -> GearboxTuning {
         match self.dsg_effective_mode(in_race) {
             GearboxMode::Street => self.dsg_tuning_street,
-            GearboxMode::Sport  => self.dsg_tuning_sport,
+            // Manual never shifts; any tuning will do (Sport keeps the UI sliders sane).
+            GearboxMode::Sport | GearboxMode::Manual => self.dsg_tuning_sport,
             GearboxMode::Race   => self.dsg_tuning_race,
         }
     }
@@ -1384,6 +1407,38 @@ pub fn app_data_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dsg_resolved_mode_manual_race_and_drift() {
+        use super::GearboxMode::*;
+        let mut c = AppConfig { dsg_auto_race_mode: true, dsg_disable_in_drift: false, ..Default::default() };
+        // Manual: off in free roam, Race in a race (auto-race), back to off afterwards.
+        c.dsg_gearbox_mode = Manual;
+        assert_eq!(c.dsg_resolved_mode(false, false), None);
+        assert_eq!(c.dsg_resolved_mode(true, false), Some(Race));
+        assert_eq!(c.dsg_resolved_mode(false, false), None);
+        c.dsg_auto_race_mode = false;
+        assert_eq!(c.dsg_resolved_mode(true, false), None);
+        // Drift rule: needs the flag, and auto-race on or Race selected.
+        c.dsg_gearbox_mode = Sport;
+        c.dsg_disable_in_drift = true;
+        assert_eq!(c.dsg_resolved_mode(false, true), Some(Sport)); // neither auto-race nor Race
+        c.dsg_auto_race_mode = true;
+        assert_eq!(c.dsg_resolved_mode(false, true), None);
+        assert_eq!(c.dsg_resolved_mode(false, false), Some(Sport));
+        c.dsg_auto_race_mode = false;
+        c.dsg_gearbox_mode = Race;
+        assert_eq!(c.dsg_resolved_mode(false, true), None);
+        c.dsg_disable_in_drift = false;
+        assert_eq!(c.dsg_resolved_mode(false, true), Some(Race));
+    }
+
+    #[test]
+    fn gearbox_mode_serialization_is_by_name() {
+        assert_eq!(serde_json::to_string(&GearboxMode::Sport).unwrap(), "\"Sport\"");
+        assert_eq!(serde_json::from_str::<GearboxMode>("\"Race\"").unwrap(), GearboxMode::Race);
+        assert!(!AppConfig::default().dsg_disable_in_drift);
+    }
+
     use super::*;
 
     #[test]

@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::config::{app_data_dir, AppConfig, GearboxMode};
+use crate::listeners::hud::{hud_paused, ModeClassifier};
+use crate::overlay::snapshot::HudMode;
 use crate::input::{char_to_key, InputSender};
 use crate::packet::ForzaPacket;
 
@@ -83,6 +85,9 @@ pub struct DsgListener {
     resync_until: Option<Instant>,
     /// Pre-shift snapshot awaiting its post-shift values (shift logging only).
     pending_log: Option<PendingLog>,
+    /// The HUD's race-vs-drift classifier, fed every packet here too (the HUD's own copy only
+    /// runs while the overlay is on). Drives *Disable in drift events*.
+    drift: ModeClassifier,
     // ── Debug telemetry (read by the Fun-tab debug panel) ──
     pub dbg_desired_gear: i32,
     pub dbg_effective_max_rpm: f32,
@@ -117,6 +122,7 @@ impl DsgListener {
             kickdown_cooldown_until: None,
             resync_until: None,
             pending_log: None,
+            drift: ModeClassifier::default(),
             dbg_desired_gear: 0,
             dbg_effective_max_rpm: 0.0,
             dbg_shift_threshold: 0.0,
@@ -166,6 +172,10 @@ impl DsgListener {
         dynamic_max_rpm: f32,
         suppress_accel: bool,
     ) {
+        // Race vs drift, shared with the HUD (`listeners/hud.rs`). Fed before the paused early-out
+        // so its window restarts on a pause instead of measuring it.
+        let in_drift = self.drift.update(pkt.current_lap, pkt.timestamp_ms, !hud_paused(pkt)) == HudMode::Drift;
+
         if pkt.is_race_on == 0 {
             return;
         }
@@ -230,6 +240,14 @@ impl DsgListener {
 
         // Hands off until enabled, engaged (driver shifted out of 1st), and a redline is known.
         if !cfg.dsg_enabled || !self.engaged || effective_max_rpm <= 0.0 {
+            return;
+        }
+
+        // Manual mode, or a drift event with "Disable in drift events": no shifting at all. Drop
+        // any in-flight shift so resuming doesn't misread it as a desync.
+        if cfg.dsg_resolved_mode(pkt.race_position != 0, in_drift).is_none() {
+            self.phase = ShiftPhase::Idle;
+            self.pending_log = None;
             return;
         }
 
