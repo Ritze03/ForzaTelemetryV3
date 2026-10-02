@@ -448,10 +448,14 @@ pub struct ForzaApp {
     pub dsg: DsgView,
     input: InputSender,
     pub hotkeys: HotkeyListener,
+    /// Controller backend; `gamepad.right_stick()` is the shared right-stick vector.
+    pub gamepad: crate::gamepad::Gamepad,
     pub focus: Arc<FocusDetector>,
     /// Hotkey rebind state (Setup → Hotkey, Overlay → Hide HUD): the action capturing a new
     /// key. The key itself is taken by [`ForzaApp::capture_rebind`].
     pub rebinding: Option<crate::config::HotkeyAction>,
+    /// Setup → Controller: the action whose controller binding is waiting for a pad press.
+    pub pad_rebinding: Option<crate::config::HotkeyAction>,
     /// The armed rebind button's id and rect, refreshed by [`ForzaApp::track_rebind_button`]
     /// each frame it's drawn: a press anywhere else cancels the capture (the tab mockup).
     rebind_button: Option<(egui::Id, egui::Rect)>,
@@ -734,6 +738,10 @@ impl ForzaApp {
         let input_allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let focus = Arc::new(FocusDetector::new(focus_params(&config)));
         let (hotkeys, hotkey_rx) = HotkeyListener::new(global_bindings(&config));
+        let gamepad = crate::gamepad::Gamepad::spawn(
+            hotkeys.action_sender(),
+            crate::gamepad::PadParams::from_config(&config.gamepad),
+        );
         let input_probe = crate::input::probe();
         let input_perm_modal_open =
             cfg!(target_os = "linux") && !config.input_perm_dont_remind && crate::input::evaluate(&input_probe).any_missing();
@@ -781,8 +789,10 @@ impl ForzaApp {
             dsg: DsgView::default(),
             input,
             hotkeys,
+            gamepad,
             focus,
             rebinding: None,
+            pad_rebinding: None,
             rebind_button: None,
             last_tab: Tab::Dashboard,
             hud_hidden: false,
@@ -1408,6 +1418,7 @@ impl eframe::App for ForzaApp {
         crate::i18n::set_language(self.config.language);
         self.sync_listener_view();
         self.sync_overlay();
+        self.gamepad.set_params(crate::gamepad::PadParams::from_config(&self.config.gamepad));
         self.drain_packets();
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
@@ -1570,6 +1581,7 @@ impl eframe::App for ForzaApp {
         if self.current_tab != self.last_tab {
             self.last_tab = self.current_tab;
             self.rebinding = None;
+            if self.pad_rebinding.take().is_some() { self.gamepad.cancel_capture(); }
             crate::ui::overlay_tab::clear_layout_selection(ctx);
         }
         let capturing = self.capture_rebind(ctx);
