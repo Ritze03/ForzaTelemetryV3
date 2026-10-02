@@ -566,6 +566,7 @@ pub struct ForzaApp {
     pub minimap_cached_car_z: f32,
     pub minimap_cached_yaw: f32,
     pub minimap_cached_raw_yaw: f32, // always raw pkt.yaw, for arrow orientation
+    pub minimap_look_off: f32,       // eased right-stick look-around offset (added to the yaw)
     pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     /// Debug tab's car-name DB (background-loaded on first open).
@@ -864,6 +865,7 @@ impl ForzaApp {
             minimap_cached_car_z: 0.0,
             minimap_cached_yaw: 0.0,
             minimap_cached_raw_yaw: 0.0,
+            minimap_look_off: 0.0,
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
             debug_cars: Default::default(),
@@ -1094,7 +1096,7 @@ impl ForzaApp {
     #[cfg(target_os = "linux")]
     fn attach_overlay(&mut self, h: crate::overlay::OverlayHandle) {
         let waker = h.waker();
-        self.listener.set_hud_sink(Some(crate::overlay::snapshot::HudSink::new(h.slot(), move || waker.wake())));
+        self.listener.set_hud_sink(Some(crate::overlay::snapshot::HudSink::new(h.slot(), move || waker.wake()).with_stick(self.gamepad.clone())));
         let sender = h.sender();
         self.focus.set_output_sink(Some(Box::new(move |name| {
             sender.send(crate::overlay::OverlayCmd::SetOutput(name))
@@ -1553,6 +1555,13 @@ impl eframe::App for ForzaApp {
             } else {
                 self.minimap_smoothed_yaw = self.minimap_cached_yaw;
             }
+        }
+
+        // Look-around: ease the right-stick offset (0 when released / option off).
+        {
+            let dt = ctx.input(|i| i.unstable_dt);
+            let stick = self.gamepad.right_stick();
+            self.minimap_look_off = crate::minimap::ease_look(self.minimap_look_off, stick, self.config.minimap_look_stick, dt);
         }
 
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
@@ -2421,6 +2430,7 @@ impl eframe::App for ForzaApp {
                                         crate::theme::styled_checkbox(ui, &mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
                                     }
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_look_stick, tr("Rotate with right stick"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
                                     ui.add_space(4.0);
                                     ui.label(tr("Zoom when driving (radius, metres)"));
@@ -2555,6 +2565,7 @@ impl eframe::App for ForzaApp {
                                 crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
                                     .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
                             }
+                            crate::theme::styled_checkbox(ui, &mut o.map_look_stick, tr("Rotate with right stick"));
                             crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
                             ui.add_space(4.0);
                             ui.label(tr("Zoom when driving (radius, metres)"));

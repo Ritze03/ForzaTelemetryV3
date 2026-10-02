@@ -184,6 +184,9 @@ pub struct HudSnapshot {
     /// race).
     pub auto_gear: Option<DriveMode>,
     pub minimap: MinimapCalib,
+    /// Right-stick vector (x right, y up, post-deadzone) for the Minimap's look-around; set
+    /// by [`HudSink::publish`], `(0, 0)` without a pad. Only used with `map_look_stick`.
+    pub look_stick: (f32, f32),
     /// Recent notifications, oldest first (bounded; the HUD ignores expired ones).
     pub notifications: Vec<Notification>,
 }
@@ -199,16 +202,25 @@ pub struct HudSink {
     pub slot: SnapshotSlot,
     /// Wakes the overlay to draw one frame. Must be cheap and non-blocking.
     pub wake: Box<dyn Fn() + Send>,
+    /// Source of `HudSnapshot::look_stick` (the listener thread has no gamepad of its own).
+    pub stick: Option<crate::gamepad::Gamepad>,
 }
 
 impl HudSink {
     pub fn new(slot: SnapshotSlot, wake: impl Fn() + Send + 'static) -> Self {
-        Self { slot, wake: Box::new(wake) }
+        Self { slot, wake: Box::new(wake), stick: None }
+    }
+
+    /// Stamp every published snapshot with this pad's right stick.
+    pub fn with_stick(mut self, pad: crate::gamepad::Gamepad) -> Self {
+        self.stick = Some(pad);
+        self
     }
 
     /// Overwrite the slot (latest wins), then wake the overlay. The lock is held only for
     /// the move.
-    pub fn publish(&self, snap: HudSnapshot) {
+    pub fn publish(&self, mut snap: HudSnapshot) {
+        snap.look_stick = self.stick.as_ref().map_or((0.0, 0.0), |g| g.right_stick());
         if let Ok(mut s) = self.slot.lock() {
             *s = Some(snap);
         }
