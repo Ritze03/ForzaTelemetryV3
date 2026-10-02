@@ -51,6 +51,16 @@ Overlay tab's Hide HUD row) arms `app.rebinding`; the key is taken by one shared
 - *Why one capture in `app.rs`:* two tabs edit the same binding, and a per-tab capture would
   duplicate the Esc/Backspace logic (the old Setup-only capture inserted directly and would
   have skipped the unbound bookkeeping).
+- **No action fires during a rebind** (keyboard *or* pad). `ForzaApp::update` mirrors
+  `rebinding.is_some() || pad_rebinding.is_some()` into the shared `RebindGuard`
+  (`hotkeys.rs`); the evdev / `GetAsyncKeyState` backends and the gamepad backend check
+  `guard.blocked()` before sending. After the capture ends it stays blocked for
+  `REBIND_GRACE` (300 ms), which also covers the capturing key being released. *Why:* the
+  raw-device backends are always ahead of egui, so rebinding Backfire to B (its current key)
+  delivered B to the backend, and the queued action reached the listener thread after the
+  UI had already ended the capture (the old per-frame "typing" flag was a frame stale) —
+  Backfire toggled. On Windows the rising-edge state is kept per virtual key and updated
+  even while muted, so the key just bound has no edge when the guard lifts.
 
 ## Capture backend (`src/hotkeys.rs`)
 

@@ -741,6 +741,7 @@ impl ForzaApp {
         let (hotkeys, hotkey_rx) = HotkeyListener::new(global_bindings(&config));
         let gamepad = crate::gamepad::Gamepad::spawn(
             hotkeys.action_sender(),
+            hotkeys.rebind_guard(),
             crate::gamepad::PadParams::from_config(&config.gamepad),
         );
         let input_probe = crate::input::probe();
@@ -2663,6 +2664,11 @@ impl eframe::App for ForzaApp {
         });
 
         crate::ui::settings::input_perm_modal(ctx, self);
+
+        // Mute every hotkey / pad source while a rebind capture is armed (keyboard, Hide HUD or
+        // pad), and for a short grace after it ends. Mirrored last in the frame so the click
+        // that armed it and the key that ended it are both seen; see `RebindGuard`.
+        self.hotkeys.rebind_guard().set_active(self.rebinding.is_some() || self.pad_rebinding.is_some());
 
         // Hand the listener thread this frame's config plus the two focus facts only egui
         // knows (the global-hotkey gate needs them). Pushed unconditionally — it's one

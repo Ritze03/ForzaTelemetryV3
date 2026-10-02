@@ -36,6 +36,11 @@ Controller** (card right under Hotkey). Code: `src/gamepad.rs`; UI: `controller_
 - **Capture.** `arm_capture()` makes the next rising edge be stored (`take_captured()`)
   instead of sent as an action, so binding Y doesn't also toggle the gearbox. The UI polls it
   in `controller_card` (`app.pad_rebinding`); a tab switch cancels.
+- **Muted during any rebind.** `Shared::feed` sends no action while the shared
+  `RebindGuard` (`hotkeys.rs`) is blocked: active while a keyboard *or* pad rebind is armed,
+  plus a 300 ms grace after. *Why:* the capture flag clears the moment the press is stored,
+  but the UI commits it a frame later, so rebinding to the control it already had (B → B)
+  could still fire its old action in that gap.
 
 ### Linux (`backend`, evdev)
 
