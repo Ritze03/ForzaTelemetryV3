@@ -8,7 +8,7 @@ mod focus;
 mod gamepad;
 mod gamedata;
 mod hotkeys;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // drawn only by the Linux overlay
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // drawn only by the overlay (Linux, Windows)
 mod hud;
 mod i18n;
 mod iconcache;
@@ -19,7 +19,7 @@ mod labels;
 mod listeners;
 mod minimap;
 mod network;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay runtime is Linux-only
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay runtime is Linux + Windows
 mod overlay;
 mod packet;
 mod telemetry;
@@ -29,8 +29,9 @@ mod ui;
 use app::ForzaApp;
 
 fn main() -> eframe::Result<()> {
-    // Dev only: FORZA_OVERLAY_TEST=1 [FORZA_OVERLAY_OUTPUT=DP-1]. Held until the window closes.
-    #[cfg(target_os = "linux")]
+    // Dev only: FORZA_OVERLAY_TEST=1 [FORZA_OVERLAY_OUTPUT=DP-1 | DISPLAY2 on Windows]. Held
+    // until the window closes.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let _overlay = overlay::spawn_dev_test();
 
     let options = eframe::NativeOptions {

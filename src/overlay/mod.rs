@@ -1,4 +1,4 @@
-//! HUD overlay runtime (Linux/Wayland only, D1/D23): a click-through `wlr-layer-shell`
+//! HUD overlay runtime (Linux/Wayland, X11 and, experimentally, Windows; D1/D23, D31): a click-through `wlr-layer-shell`
 //! surface on the `overlay` layer, rendered with egui through `egui_glow` on its own
 //! in-process thread. That thread owns its own Wayland connection, calloop loop, EGL
 //! context, `egui_glow::Painter` and `egui::Context`, so it keeps drawing while the main
@@ -11,18 +11,30 @@
 //! Second surface backend (`x11.rs`, [`Backend`]): an override-redirect X11 window, for
 //! GNOME (no layer-shell) through XWayland. By default layer-shell is tried first and X11 is
 //! the fallback; `FORZA_OVERLAY_BACKEND` forces one (developer override).
+//!
+//! Third backend, Windows (`win32.rs` + `wgl.rs`, D31): a click-through layered window fed
+//! from an offscreen WGL/FBO render. Written blind and untested; see `docs/features/overlay.md`.
 
 #[allow(dead_code)] // pending: most snapshot fields are read by the HUD renderer (I6)
 pub mod snapshot;
 
 #[cfg(target_os = "linux")]
 mod gl;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod pacing;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod render;
 #[cfg(target_os = "linux")]
 mod wayland;
 #[cfg(target_os = "linux")]
 mod x11;
+// Pure monitor choice for Windows; compiled on Linux for its unit tests only.
+#[cfg(any(target_os = "windows", test))]
+mod monitors;
+#[cfg(target_os = "windows")]
+mod wgl;
+#[cfg(target_os = "windows")]
+mod win32;
 
 use std::fmt;
 
@@ -30,6 +42,8 @@ use crate::i18n::tr;
 
 #[cfg(target_os = "linux")]
 pub use linux::*;
+#[cfg(target_os = "windows")]
+pub use win32::*;
 
 /// Why the overlay can't run. Shown to the user; the app keeps working without it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +60,10 @@ pub enum DisabledReason {
     NoX11,
     /// X11 backend: connecting failed or a needed extension is missing.
     X11(String),
+    /// Windows backend: OpenGL (WGL) context, pixel format or driver unusable.
+    Wgl(String),
+    /// Windows backend: the window, class, event or DIB couldn't be created.
+    Win32(String),
 }
 
 impl fmt::Display for DisabledReason {
@@ -60,12 +78,15 @@ impl fmt::Display for DisabledReason {
             Self::Egl(e) => write!(f, "{} {e}", tr("Couldn't set up OpenGL (EGL) for the overlay:")),
             Self::NoX11 => f.write_str(tr("The X11 overlay needs an X display (DISPLAY is not set).")),
             Self::X11(e) => write!(f, "{} {e}", tr("Couldn't use the X display for the overlay:")),
+            Self::Wgl(e) => write!(f, "{} {e}", tr("Couldn't set up OpenGL (WGL) for the overlay:")),
+            Self::Win32(e) => write!(f, "{} {e}", tr("Couldn't create the overlay window:")),
         }
     }
 }
 
 /// Startup capability check, pure so it's unit-testable. The facts are in probe order
 /// (a probe only runs when the ones before it passed) and the first failure wins.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn capability(
     wayland_display: Option<&str>,
     has_layer_shell: bool,
@@ -85,6 +106,7 @@ pub fn capability(
 
 /// X11 backend's startup check, same shape as [`capability`]: `DISPLAY`, then the first
 /// missing X extension (SHAPE, RANDR 1.5), then EGL.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn capability_x11(
     x_display: Option<&str>,
     missing_extension: Option<&str>,
@@ -108,6 +130,7 @@ pub fn capability_x11(
 ///   (Hyprland…), so its own error is the real problem, not the fallback's;
 /// - there is neither `WAYLAND_DISPLAY` nor `DISPLAY`: [`DisabledReason::NoWayland`], whose
 ///   text names both variables (no graphical session at all).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn auto_error(layer_shell: DisabledReason, x11: DisabledReason) -> DisabledReason {
     match (layer_shell, x11) {
         (DisabledReason::NoWayland, DisabledReason::NoX11) => DisabledReason::NoWayland,
@@ -118,6 +141,7 @@ pub fn auto_error(layer_shell: DisabledReason, x11: DisabledReason) -> DisabledR
 
 /// Which surface backend `OverlayHandle::spawn` uses (`FORZA_OVERLAY_BACKEND`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum Backend {
     /// wlr-layer-shell only (`wayland`).
     Wayland,
@@ -127,6 +151,7 @@ pub enum Backend {
     Auto,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl Backend {
     /// `FORZA_OVERLAY_BACKEND`'s value (a developer override); unset, empty or unknown =
     /// [`Backend::Auto`], so a plain `cargo run` works on Hyprland and GNOME alike. On a
