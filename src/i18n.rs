@@ -992,11 +992,12 @@ fn de(s: &str) -> Option<&'static str> {
         "Gearbox on / off" => "Getriebe an / aus",
         "Gearbox mode changed" => "Getriebemodus geändert",
         "Backfire on / off" => "Fehlzündung an / aus",
-        "Calibration started / done" => "Kalibrierung gestartet / fertig",
+        "Calibration started / shift / done" => "Kalibrierung gestartet / schalten / fertig",
         "ON" => "AN",
         "OFF" => "AUS",
         "Calibration started" => "Kalibrierung gestartet",
         "Calibration done" => "Kalibrierung fertig",
+        "Shift at redline" => "Am Begrenzer schalten",
 
         _ => return None,
     })

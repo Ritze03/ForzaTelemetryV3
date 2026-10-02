@@ -127,6 +127,8 @@ pub enum NotifKind {
     Off,
     /// A change or a status (blue dot).
     Info,
+    /// A nudge to do something (yellow dot): "Shift at redline".
+    Hint,
 }
 
 /// One short on-HUD message (D26). Created on the listener thread, which sees every source

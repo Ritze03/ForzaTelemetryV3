@@ -80,6 +80,7 @@ fn dot(kind: NotifKind) -> egui::Color32 {
         NotifKind::On => col::BEST,
         NotifKind::Off => col::RED,
         NotifKind::Info => col::SHIFT,
+        NotifKind::Hint => col::AMBER,
     }
 }
 

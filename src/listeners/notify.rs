@@ -27,6 +27,8 @@ pub enum Event {
     GearboxMode(GearboxMode),
     Backfire(bool),
     CalibrationStarted,
+    /// First gear-map data arrived while uncalibrated: the cue to rev out and shift.
+    ShiftAtRedline,
     /// Calibrated max rpm.
     CalibrationDone(f32),
 }
@@ -38,7 +40,7 @@ impl Event {
             Event::GearboxToggle(_) => c.notif_gearbox_toggle,
             Event::GearboxMode(_) => c.notif_gearbox_mode,
             Event::Backfire(_) => c.notif_backfire,
-            Event::CalibrationStarted | Event::CalibrationDone(_) => c.notif_calibration,
+            Event::CalibrationStarted | Event::ShiftAtRedline | Event::CalibrationDone(_) => c.notif_calibration,
         }
     }
 
@@ -52,6 +54,7 @@ impl Event {
             Event::Backfire(on) => on_off("Backfire", on),
             Event::GearboxMode(m) => (format!("{}: {}", tr("Gearbox mode"), m.label()), NotifKind::Info),
             Event::CalibrationStarted => (tr("Calibration started").to_string(), NotifKind::Info),
+            Event::ShiftAtRedline => (tr("Shift at redline").to_string(), NotifKind::Hint),
             Event::CalibrationDone(rpm) => (format!("{}: {} rpm", tr("Calibration done"), rpm.round() as i64), NotifKind::On),
         }
     }
@@ -71,6 +74,11 @@ pub struct Notifier {
     items: Vec<Notification>,
     next_id: u64,
     prev: Option<Watched>,
+    /// "Shift at redline" was already handled this calibration cycle. Set when it fires (or
+    /// would have, with its toggle off) and cleared by every route into a new cycle: an
+    /// explicit [`Event::CalibrationStarted`], [`Self::rearm_shift_hint`], the gear-1 map
+    /// emptying, or the box engaging.
+    shift_hinted: bool,
     /// Something was pushed since the last [`Self::take_new`] (forces a snapshot publish).
     fresh: bool,
 }
@@ -78,6 +86,9 @@ pub struct Notifier {
 impl Notifier {
     /// Queue `ev` if notifications and this event type are on and the overlay is enabled.
     pub fn push(&mut self, cfg: &OverlayConfig, ev: Event, now: f64) {
+        if ev == Event::CalibrationStarted {
+            self.shift_hinted = false; // a new cycle, whatever the toggles say
+        }
         if !cfg.enabled || !cfg.notif_on || !ev.enabled(cfg) {
             return;
         }
@@ -91,16 +102,23 @@ impl Notifier {
         self.fresh = true;
     }
 
+    /// Start a new "Shift at redline" cycle (the gear map was just cleared on purpose).
+    pub fn rearm_shift_hint(&mut self) {
+        self.shift_hinted = false;
+    }
+
     /// Diff the watched state against the last pass and queue what changed. The first call
-    /// only records the baseline (starting the app announces nothing). `engaged` = the
-    /// gearbox has a usable calibration; `in_race` = a real race (race position ≠ 0).
-    pub fn watch(&mut self, app: &AppConfig, in_race: bool, engaged: bool, max_rpm: f32, now: f64) {
+    /// only records the baseline (starting the app announces nothing, the shift hint included).
+    /// `engaged` = the gearbox has a usable calibration; `gear1_mapped` = gear 1's gear-map entry has data
+    /// (`gear_redline_speeds[1] > 0`); `in_race` = a real race (race position ≠ 0).
+    pub fn watch(&mut self, app: &AppConfig, in_race: bool, engaged: bool, gear1_mapped: bool, max_rpm: f32, now: f64) {
         let cur = Watched {
             dsg_enabled: app.dsg_enabled,
             backfire_enabled: app.backfire_enabled,
             mode: app.dsg_effective_mode(in_race),
             engaged,
         };
+        let baseline = self.prev.is_none();
         if let Some(prev) = self.prev.replace(cur) {
             let o = &app.overlay;
             if cur.dsg_enabled != prev.dsg_enabled {
@@ -114,6 +132,18 @@ impl Notifier {
             }
             if cur.engaged && !prev.engaged {
                 self.push(o, Event::CalibrationDone(max_rpm), now);
+            }
+        }
+        // A level ("uncalibrated and gear 1 has data, not yet told"), not an edge, so it also
+        // covers a map that was already there when a cycle was restarted (Clear RPM
+        // calibration keeps the gear map). The baseline pass counts as already told.
+        if engaged || !gear1_mapped {
+            // Cycle over (calibrated), or the map was emptied (reset / car change): re-arm.
+            self.shift_hinted = false;
+        } else if !self.shift_hinted {
+            self.shift_hinted = true;
+            if !baseline {
+                self.push(&app.overlay, Event::ShiftAtRedline, now);
             }
         }
     }
@@ -150,7 +180,7 @@ mod tests {
     #[test]
     fn first_pass_is_a_baseline_only() {
         let mut n = Notifier::default();
-        n.watch(&cfg(), false, false, 0.0, 1.0);
+        n.watch(&cfg(), false, false, false, 0.0, 1.0);
         assert!(n.items().is_empty());
         assert!(!n.take_new());
     }
@@ -160,20 +190,20 @@ mod tests {
         let mut n = Notifier::default();
         let mut c = cfg();
         c.dsg_enabled = true;
-        n.watch(&c, false, false, 0.0, 1.0);
+        n.watch(&c, false, false, false, 0.0, 1.0);
         c.dsg_enabled = false;
-        n.watch(&c, false, false, 0.0, 2.0);
-        n.watch(&c, false, false, 0.0, 2.1); // unchanged: nothing
+        n.watch(&c, false, false, false, 0.0, 2.0);
+        n.watch(&c, false, false, false, 0.0, 2.1); // unchanged: nothing
         c.dsg_enabled = true;
         c.backfire_enabled = true;
-        n.watch(&c, false, false, 0.0, 3.0);
+        n.watch(&c, false, false, false, 0.0, 3.0);
         assert_eq!(texts(&n), ["Gearbox: OFF", "Gearbox: ON", "Backfire: ON"]);
         assert!(n.take_new() && !n.take_new());
         // Manual mode change while on, then the automatic switch to Race in a race and back.
         c.dsg_gearbox_mode = GearboxMode::Street;
-        n.watch(&c, false, false, 0.0, 3.1);
-        n.watch(&c, true, false, 0.0, 3.2);
-        n.watch(&c, false, false, 0.0, 3.3);
+        n.watch(&c, false, false, false, 0.0, 3.1);
+        n.watch(&c, true, false, false, 0.0, 3.2);
+        n.watch(&c, false, false, false, 0.0, 3.3);
         let t = texts(&n);
         assert_eq!(&t[3..], ["Gearbox mode: Street", "Gearbox mode: Race", "Gearbox mode: Street"]);
     }
@@ -182,9 +212,9 @@ mod tests {
     fn mode_changes_are_silent_while_the_gearbox_is_off() {
         let mut n = Notifier::default();
         let mut c = cfg();
-        n.watch(&c, false, false, 0.0, 1.0);
+        n.watch(&c, false, false, false, 0.0, 1.0);
         c.dsg_gearbox_mode = GearboxMode::Race;
-        n.watch(&c, false, false, 0.0, 2.0);
+        n.watch(&c, false, false, false, 0.0, 2.0);
         assert!(n.items().is_empty());
     }
 
@@ -192,8 +222,8 @@ mod tests {
     fn calibration_done_on_engage_and_toggles_respect_config() {
         let mut n = Notifier::default();
         let mut c = cfg();
-        n.watch(&c, false, false, 0.0, 1.0);
-        n.watch(&c, false, true, 8499.6, 2.0);
+        n.watch(&c, false, false, false, 0.0, 1.0);
+        n.watch(&c, false, true, false, 8499.6, 2.0);
         assert_eq!(texts(&n), ["Calibration done: 8500 rpm"]);
         n.push(&c.overlay, Event::CalibrationStarted, 3.0);
         assert_eq!(n.items().len(), 2);
@@ -206,6 +236,95 @@ mod tests {
         c.overlay.enabled = false;
         n.push(&c.overlay, Event::CalibrationStarted, 4.0);
         assert_eq!(n.items().len(), 2);
+    }
+
+    /// Drive the watcher the way the worker does: (engaged, gear 1 has map data).
+    fn step(n: &mut Notifier, c: &AppConfig, engaged: bool, g1: bool, t: f64) {
+        n.watch(c, false, engaged, g1, 8500.0, t);
+    }
+
+    #[test]
+    fn calibration_sequence_started_shift_done() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        step(&mut n, &c, false, false, 0.1); // baseline
+        n.push(&c.overlay, Event::CalibrationStarted, 0.2);
+        step(&mut n, &c, false, false, 0.2); // nothing mapped yet: no hint
+        assert_eq!(texts(&n), ["Calibration started"]);
+        step(&mut n, &c, false, true, 0.3); // gear 1 gets its first data
+        assert_eq!(texts(&n), ["Calibration started", "Shift at redline"]);
+        assert_eq!(n.items()[1].kind, NotifKind::Hint);
+        for t in 4..10 {
+            step(&mut n, &c, false, true, t as f64 / 10.0); // data keeps accumulating: no repeat
+        }
+        assert_eq!(n.items().len(), 2);
+        step(&mut n, &c, true, true, 1.0); // the shift
+        assert_eq!(texts(&n), ["Calibration started", "Shift at redline", "Calibration done: 8500 rpm"]);
+        step(&mut n, &c, true, true, 1.1);
+        assert_eq!(n.items().len(), 3);
+    }
+
+    #[test]
+    fn no_shift_hint_when_calibrated_or_on_the_baseline() {
+        let c = cfg();
+        // Already calibrated (restored profile / past the shift): never.
+        let mut n = Notifier::default();
+        step(&mut n, &c, true, false, 0.1);
+        step(&mut n, &c, true, true, 0.2);
+        assert!(n.items().is_empty());
+        // App starts uncalibrated with a map already there: that is not news.
+        let mut n = Notifier::default();
+        step(&mut n, &c, false, true, 0.1);
+        step(&mut n, &c, false, true, 0.2);
+        assert!(n.items().is_empty());
+    }
+
+    #[test]
+    fn shift_hint_rearms_on_each_new_cycle() {
+        let mut n = Notifier::default();
+        let c = cfg();
+        step(&mut n, &c, false, false, 0.1);
+        step(&mut n, &c, false, true, 0.2);
+        assert_eq!(n.items().len(), 1);
+        // Car change while uncalibrated: map emptied, Started pushed, new data, new hint.
+        n.push(&c.overlay, Event::CalibrationStarted, 0.3);
+        step(&mut n, &c, false, false, 0.3);
+        step(&mut n, &c, false, true, 0.4);
+        assert_eq!(texts(&n).iter().filter(|t| **t == "Shift at redline").count(), 2);
+        // Clear gear map (explicit re-arm, even if the map refills within one pass).
+        n.rearm_shift_hint();
+        step(&mut n, &c, false, true, 0.5);
+        assert_eq!(texts(&n).iter().filter(|t| **t == "Shift at redline").count(), 3);
+        // Calibrated, then Clear RPM calibration keeps the map: Started, then the hint at once.
+        step(&mut n, &c, true, true, 0.6);
+        n.push(&c.overlay, Event::CalibrationStarted, 0.7);
+        step(&mut n, &c, false, true, 0.7);
+        let t = texts(&n);
+        assert_eq!(&t[t.len() - 2..], ["Calibration started", "Shift at redline"]);
+        // Map emptied alone (no explicit call) also re-arms.
+        step(&mut n, &c, false, false, 0.8);
+        step(&mut n, &c, false, true, 0.9);
+        assert_eq!(texts(&n).last(), Some(&"Shift at redline"));
+        assert_eq!(texts(&n).iter().filter(|t| **t == "Shift at redline").count(), 5);
+    }
+
+    #[test]
+    fn shift_hint_respects_the_calibration_toggle() {
+        let mut n = Notifier::default();
+        let mut c = cfg();
+        c.overlay.notif_calibration = false;
+        step(&mut n, &c, false, false, 0.1);
+        step(&mut n, &c, false, true, 0.2);
+        assert!(n.items().is_empty());
+        // Toggling on mid-cycle does not retroactively announce it.
+        c.overlay.notif_calibration = true;
+        step(&mut n, &c, false, true, 0.3);
+        assert!(n.items().is_empty());
+        // Master switch off too.
+        c.overlay.notif_on = false;
+        n.push(&c.overlay, Event::CalibrationStarted, 0.4);
+        step(&mut n, &c, false, true, 0.4);
+        assert!(n.items().is_empty());
     }
 
     #[test]
