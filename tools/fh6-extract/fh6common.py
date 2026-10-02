@@ -62,3 +62,24 @@ def resolve_media(args):
         sys.exit('FH6 media dir not found. Pass --media /path/to/steamapps/common/ForzaHorizon6/media')
     os.makedirs(args.out, exist_ok=True)
     return media
+
+
+# ---- plain-text game files shared by several scripts ------------------------------------------------------------------
+def rd(path):
+    """text of a game file (they may start with a UTF-8 BOM)"""
+    return open(path, encoding='utf-8-sig', errors='replace').read()
+
+
+def locators(path):
+    """`.nt` locator list -> [(name, x, y, z)].  Format: <Locator><Name value=".."/> ... <SceneTransform value._41=x _42=height _43=z/>"""
+    return [(n, float(x), float(y), float(z)) for n, x, y, z in re.findall(
+        r'<Name value="([^"]*)"/>.*?value\._41="([-\d.]+)" value\._42="([-\d.]+)" value\._43="([-\d.]+)"', rd(path), re.S)]
+
+
+def tzones(path):
+    """`.tz` trigger zones -> [(type, name, x, y, z, size_x, size_z)]"""
+    res = []
+    for m in re.finditer(r'<triggerzone type="(\w+)" name="([^"]*)".*?<position x="([-\d.]+)" y="([-\d.]+)" z="([-\d.]+)" />'
+                         r'\s*<size x="([-\d.]+)" y="([-\d.]+)" z="([-\d.]+)"', rd(path), re.S):
+        res.append((m.group(1), m.group(2), float(m.group(3)), float(m.group(4)), float(m.group(5)), float(m.group(6)), float(m.group(8))))
+    return res

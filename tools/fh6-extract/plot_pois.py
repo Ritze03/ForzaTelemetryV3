@@ -18,7 +18,7 @@ Image.MAX_IMAGE_PIXELS = None
 im = Image.open(args.map).convert('RGB'); W = im.size[0]; k = 0.3722 * W / 8192
 def tf(x, z): return ((x + 12540) * k, (10738 - z) * k)
 # (type group, colour, shape, size)
-CATS = [('race_start', (255, 40, 40), 'c', 7), ('route_node0', (255, 150, 0), 't', 4), ('story_activation', (60, 200, 255), 'c', 6), ('job_activation', (0, 120, 255), 'c', 6),
+CATS = [('race_pin', (255, 40, 40), 'c', 7), ('route_node0', (255, 150, 0), 't', 4), ('story_activation', (60, 200, 255), 'c', 6), ('job_activation', (0, 120, 255), 'c', 6),
         ('house', (255, 255, 0), 's', 7), ('fast_travel', (255, 255, 255), 'd', 5), ('festival_site', (255, 0, 255), 's', 9), ('barn_find', (0, 255, 100), 'd', 7),
         ('landmark', (190, 120, 255), 't', 5), ('xp_board', (255, 220, 120), 'x', 4), ('drift_zone', (255, 100, 200), 'c', 5), ('danger_sign', (255, 60, 0), 'x', 5),
         ('treasure_chest_board', (0, 255, 255), 's', 5), ('aftermarket_spot', (160, 255, 60), 'c', 3), ('showcase', (255, 128, 128), 's', 7),
