@@ -25,8 +25,9 @@ How it works (everything lives in Tracks/Brio/GeoChunk0.minizip, see pgzp.py):
    u32 len + name; f32[3] bbox_min, pad; f32[3] bbox_max, pad; ...; s32 @ +64 from bbox_min = -vertexCount; vertices 10 B = 3 x u16 (x,y,z quantised
    over the bbox, ~1 mm) + 2 x u16 unknown; u32 triCount; triCount x 8 B {u8 flags, u8 materialSlot, u16 i0,i1,i2}; u32 n2 + n2 x 32 B
    undecoded; u32 ?; u32 nMat; nMat x (4 x u16) material table: cols 0-2 = per-corner material id, col 3 unknown; column 1 is used as the
-   triangle's dominant id; + 8 B tail.   Ids are GLOBAL (~350 values, 56 occur on terrain).  The names behind the ids live in the ENCRYPTED
-   Physics/surfaceTypes.xml, so the CLASSES below are OUR inference from where each id occurs, NOT game names.
+   triangle's dominant id; + 8 B tail.   Ids are GLOBAL (~350 values, 54 occur on terrain).  The names behind the ids live in the ENCRYPTED
+   Physics/surfaceTypes.xml, so the names are OURS: fh6surfaces.py marks each id 'confirmed' (checked in-game by the user), 'seen' or
+   'reasoned' (a guess); the colour CLASSES below only group ids for the preview render.
 """
 import argparse, json, os, re, struct, sys
 import numpy as np
@@ -35,6 +36,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fh6common import add_media_args, ci, resolve_media
 from pgzp import Pgzp
+from fh6surfaces import SURFACES
 
 # whole-map extent of the telemetry coordinate system covered by the terrain (same origin as the map calibration in the docs)
 X0, X1, Z0, Z1 = -12540.0, 9470.0, -11272.0, 10738.0
@@ -242,20 +244,20 @@ def render_elevation(g, args, maxpx=1600):
 
 
 # ------------------------------------------------------------------------------------------------ surfaces
-# OUR grouping of terrain material ids by where they occur (NOT game names - the id -> name table is in the encrypted Physics/surfaceTypes.xml).
+# Colour grouping of terrain material ids for the preview render only (NOT game names - the id -> name table is in the encrypted
+# Physics/surfaceTypes.xml; per-id names + how sure we are: fh6surfaces.py).  Regrouped after the in-game survey (2026-10-02).
 CLASSES = [  # name, colour, ids, paint-as-road-priority
-    ('Asphalt road', (255, 255, 255), [9, 286], True),
-    ('Road B: urban/dust? (ids 8,10)', (230, 140, 40), [8, 10], True),
-    ('Road shoulder / verge (assumed)', (190, 190, 120), [280, 281, 242, 26], True),
-    ('Concrete / pavement', (170, 170, 210), [27], True),
+    ('Asphalt', (255, 255, 255), [9, 8, 286, 10], True),
+    ('Dirt track / road verge (280, 242, 26 weak)', (190, 190, 120), [281, 280, 242, 26], True),
+    ('Concrete', (170, 170, 210), [27], True),
     ('Snow road', (120, 200, 255), [40], True),
-    ('Water / flat lake+sea floor', (40, 110, 200), [207], False),
-    ('Sand / seabed / shore', (235, 215, 120), [36, 39, 208, 60, 331], False),
-    ('Snow / alpine rock', (235, 240, 250), [345, 211, 41, 328, 183], False),
-    ('Riverbank stones / rock', (150, 120, 100), [230], False),
-    ('Dirt / farmland / gravel', (180, 110, 60), [7, 56, 19, 279, 43], False),
-    ('Forest floor / dense vegetation', (30, 110, 45), [31, 20, 340, 336, 339, 23, 46, 53, 342, 17, 239], False),
-    ('Grass / meadow / lawn', (130, 190, 60), [22, 346], False),
+    ('Water / puddle', (40, 110, 200), [207], False),
+    ('Seabed / sand / shore', (235, 215, 120), [36, 39, 208, 60, 331], False),
+    ('Snow / snowy ground', (235, 240, 250), [345, 211, 41, 328, 183], False),
+    ('Packed gravel / stones', (150, 120, 100), [230, 7], False),
+    ('Field / dirt / clearing', (180, 110, 60), [56, 19, 279, 43], False),
+    ('Forest floor / vegetation', (30, 110, 45), [31, 20, 340, 336, 339, 46, 53, 342, 17, 239], False),
+    ('Grass / lawn', (130, 190, 60), [22, 346, 23], False),
     ('Other / unclassified id', (200, 60, 160), [], False),
 ]
 
@@ -318,8 +320,10 @@ def surfaces(pg, args, region, in_region):
     ids_present = np.unique(mid)
     json.dump({'x0': rx0, 'z0': rz0, 'x1': rx0 + W * res, 'z1': rz1, 'res_m': res, 'width': W, 'height': H, 'nodata': 0xFFFF,
                'triangles': ntri, 'ids_present': ids_present.tolist(),
-               'note': 'dominant (by area) material id per pixel; ids are the game\'s global physics-material ids, names unknown (encrypted table). '
-                       'Class grouping in extract_terrain.CLASSES is our own inference.'}, open(os.path.join(args.out, 'surfaces.json'), 'w'))
+               'names': {int(i): {'name': SURFACES[int(i)][0], 'status': SURFACES[int(i)][1]} for i in ids_present if int(i) in SURFACES},
+               'note': 'dominant (by area) material id per pixel; ids are the game\'s global physics-material ids; the game\'s name table is encrypted, '
+                       'so `names` are OURS (fh6surfaces.py): status confirmed (checked in-game) / seen / reasoned (guess). '
+                       'Colour grouping in extract_terrain.CLASSES is only for the preview.'}, open(os.path.join(args.out, 'surfaces.json'), 'w'))
     print(f'surfaces: {ntri} triangles, {len(ids_present)} distinct ids, ids = {ids_present.tolist()}')
     render_surfaces(S, args)
 

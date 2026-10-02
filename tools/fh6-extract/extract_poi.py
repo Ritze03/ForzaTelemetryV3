@@ -11,7 +11,7 @@ Sources (all under <media>/):
   Tracks/Brio/trackroutes/*.nt            XML <Locator><Name/><SceneTransform value._41/_42/_43 = world x/y/z>
   Tracks/Brio/triggerzones/*/*.tz         XML <triggerzone type name><position x y z/>... (sphere/box/mesh)
   Stripped/gs/brio/gameobjs.xml           XML <Obj GameplayID><Pos value="x,y,z"/>
-  OpenWorld/Brio/AITracks/Route<N>.owt    binary 'FTWO': u32 count @0x24, nodes @0x60, 56 B each, f32 x,y,z first
+  OpenWorld/Brio/AITracks/Route<N>.owt    binary 'FTWO': 56 B nodes, f32 x,y,z first; node offset depends on the section count (fh6owt.py)
   Tracks/Brio/ChunkContentsMiniZip*.txt   file lists of the geometry streams; proc-cell pgeo file names carry the
                                           200 m (etc.) grid cell "scene\\proc\\cellsize\\<S>\\<i>_<j>\\..." ->
                                           cell centre ((i+.5)S, (j+.5)S)  [APPROXIMATE, +-0.7*S]
@@ -23,6 +23,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fh6common import add_media_args, ci, resolve_media, rd, locators, tzones
 from fh6str import StringTables
+from fh6owt import positions as owt_positions
 
 ap = argparse.ArgumentParser(description='Extract FH6 points of interest -> pois.json')
 add_media_args(ap)
@@ -52,10 +53,7 @@ for typ, n, x, y, z, sx, sz in tzones(ci(TB, 'triggerzones/tz_race_activations/r
 
 
 def owt_nodes(path):
-    d = open(path, 'rb').read()
-    n = struct.unpack_from('<I', d, 0x24)[0]
-    a = np.frombuffer(d, dtype=np.dtype([('p', '<f4', 3), ('r', 'u1', 44)]), offset=0x60, count=n)['p']
-    return a[np.isfinite(a).all(axis=1)]
+    return owt_positions(path)                                   # fh6owt.py: handles the multi-section header layout
 
 
 _ai = ci(MEDIA, 'OpenWorld/Brio/AITracks')

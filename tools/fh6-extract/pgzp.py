@@ -39,10 +39,13 @@ class Pgzp:
         assert h[0] == 0x505a4750 and h[1] == 101, 'not a PGZP v101 file'
         self.n, m, self.per, nseg = h[3], h[4], h[5], h[6]
         self.f.seek(32 + 4 * m)                                   # skip the u32[m] id list
-        S = np.frombuffer(self.f.read(4 * (3 + 3 * self.n + 2 * nseg)), '<u4')
+        S = np.frombuffer(self.f.read(4 * (4 + 3 * self.n + 2 * nseg)), '<u4')
+        # N is repeated right after the id list: as u32 in GeoChunk0 (then the first segment offset follows as u64 = S[1:3]),
+        # as u64 in GeoChunk2 (S[0:2] = N, high word 0, so S[1] == 0; the offset is S[2:4]).  S[1] is a real offset's low word otherwise != 0.
+        p = 2 if S[1] == 0 else 1
         assert S[0] == self.n
-        self.segs = [int(S[1]) | int(S[2]) << 32]                 # absolute start offset of every segment (+ one past the end)
-        body = S[3:]
+        self.segs = [int(S[p]) | int(S[p + 1]) << 32]             # absolute start offset of every segment (+ one past the end)
+        body = S[p + 2:]
         self.off = np.empty(self.n, np.uint64); self.us = np.empty(self.n, np.uint32)
         self.fl = np.empty(self.n, np.uint32); self.sg = np.empty(self.n, np.int32)
         p = k = 0
@@ -72,10 +75,12 @@ class Pgzp:
         s = int(self.sg[r]); o = int(self.off[r]); a = self.segs[s] + o
         # compressed size = next row's offset in the same segment, else up to the next segment start
         c = (int(self.off[r + 1]) - o) if (r + 1 < self.n and self.sg[r + 1] == s) else self.segs[s + 1] - a
+        if c <= 0:                                                 # last entry of the file: the "next segment" word is not an offset
+            self.f.seek(0, 2); c = self.f.tell() - a
         self.f.seek(a); d = self.f.read(c)
         us = int(self.us[r]); k = int(self.fl[r]) & 0xff
         if k == 0x1f: return lz4_block(d, us)                      # raw LZ4 block
-        if k == 0x08: return zlib.decompress(d, -15)               # raw deflate
+        if k == 0x08: return zlib.decompressobj(-15).decompress(d)  # raw deflate (tolerates trailing bytes)
         return d[:us]                                              # stored (0x00)
 
     def close(self): self.f.close()

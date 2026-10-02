@@ -1,12 +1,15 @@
 # Forza Horizon 6 game files — reverse-engineering notes
 
-What we know about reading **map imagery, roads, points of interest (POIs), race starts, terrain
-elevation and surfaces** straight from the user's own FH6 install, so a feature like "load map /
+What we know about reading **map imagery, roads, points of interest (POIs), race starts and race
+lines, speed-limit signs, terrain elevation and surfaces, car names, area/region names and the
+game's map icons** straight from the user's own FH6 install, so a feature like "load map /
 roads / POIs / race lines from the game" can be built without redoing the research. Everything
 here was derived from the PC (Steam) build and verified with the scripts in
 [`tools/fh6-extract/`](../../tools/fh6-extract/README.md) — **the scripts are the ground truth**; if
-this doc and a script disagree, trust the script and fix the doc. Terrain has its own page:
-[FH6 terrain](fh6-terrain.md).
+this doc and a script disagree, trust the script and fix the doc. Two sub-pages:
+[FH6 terrain](fh6-terrain.md) (elevation + the surface-id table) and
+[FH6 cars, names, regions and icons](fh6-cars-names-icons.md) (`CarOrdinal` → name, 24-language area names, region outlines, map icons).
+Open items (things nobody has verified yet) are collected in [Open items](#10-open-items).
 
 Status: research only. Nothing in `src/` reads game files yet. Written against the Steam install
 at game build 440853 (from `PreCrashReport.xml`), Sept 2026; a game update can change file contents
@@ -46,26 +49,31 @@ Precision: *exact* = world coordinates straight from the file; *approx* = recons
 | Map imagery, 4 seasons | `UI/Textures/Data_Bound/Map_Brio_<Season>.zip` | 4 × 85 BC1 tiles (8192²) | exact | n/a | **yes** |
 | Road graph | `OpenWorld/Brio/Freeroam/Brio_00.nav` | 38 473 nodes / 1 532 roads | exact positions; class partly guessed, one-way/tunnel flags undecoded | no street names | **yes** |
 | Terrain elevation | GeoChunk0 `tbheightfield\*_cb_/_ul_cluster*.modelbin` | ~5.8 M tris | median 0.17 m vs roads (4 m raster) | n/a | **yes** (needs PGZP) — [terrain](fh6-terrain.md) |
-| Terrain surface ids | GeoChunk0 `tbheightfield\*_square*.phys` | 34.7 M tris, 54–56 ids | ids exact; class names **inferred (ours)** | **no** (table encrypted) | **yes** — [terrain](fh6-terrain.md) |
+| Terrain surface ids | GeoChunk0 `tbheightfield\*_square*.phys` | 34.7 M tris, 54 ids | ids exact; **names ours**: 18 confirmed in-game, 4 seen, 32 reasoned | **no** (table encrypted) | **yes** — [terrain](fh6-terrain.md#surface-names-id-table) |
 | Race start line + 12-slot grid + heading + finish | `OpenWorld/Brio/AITracks/Route<N>.nav` (`RVAN` block) | 169 routes (+ route 99 test) | exact (on racing line < 0.1 m) | partial, see next rows | **yes** |
-| Race racing line | `AITracks/Route<N>.owt` | 170 | exact | n/a | **yes** |
+| Race racing line + track width | `AITracks/Route<N>.owt` | 170 (127 point-to-point + 43 circuits; 2 off-map, 1 test) | exact; edges = pos ± half-width vector | n/a | **yes** — [Race lines](#race-lines-the-owt-racing-line-files) |
 | Race map pin (activation sphere) | `Tracks/Brio/triggerzones/tz_race_activations/race_triggers.tz` | 36 | exact pin, **not** the start (median 185 m off) | slug `rt<N>` only | **yes** |
 | Race display names | `Stripped/StringTables/EN.zip` `CareerRaceCollection.str` | 110 unique | text exact | yes, but **route ↔ name link is not in the files** | strings **yes**; link: 15 routes (3 rush via locators, 5 IE + 7 chase by id convention) without the dump, +10 exact +44 heuristic +10 guess with it |
 | Race types (sprint, circuit, scramble, …) | `Entities/Brio/campaign_slots.xml` | 88 routes | exact | yes | **creator dump only** |
-| Landmarks | `Tracks/Brio/triggerzones/tz_world_constraints/landmark_triggers.tz` | 75 | exact (sphere centre) | slug (`shibuya_crossing`); English name for 54/75 via `Landmarks.IDS_Area_Discovered_<slug>`, all via `Entities/…/landmark_areas.xml` | slugs **yes**; full names partly (dump for the rest) |
+| Landmarks | `Tracks/Brio/triggerzones/tz_world_constraints/landmark_triggers.tz` | 75 | exact (sphere centre) | slug (`shibuya_crossing`); **names 75/75 in 24 languages** from `Landmarks.str` (54 direct, 17 alternate ids, 2 by name/position, 2 borrow the parent name) | **yes** — [names](fh6-cars-names-icons.md#2-area-landmark-and-region-names-24-languages) |
 | Named locators (houses, fast travel, festival, barn finds + hint areas, car/drag meets, touge, showcases, treasure cars, aftermarket spots/boards, Horizon Jobs/Stories, rush, invitational/legend, upsell) | `Tracks/Brio/trackroutes/route0.nt` (+ `route40001/40900/4004x/4005x.nt`) | ~370 + extras | exact | internal slugs | **yes** |
 | Pinatas / eliminator spawns / parking areas | `trackroutes/{pinata_locators,eliminator_locators,parkingareas}.nt` | 1536 / 373 / 2664 | exact | no | **yes** |
-| Horizon Story/Job activation zones, creature zones, map regions | `triggerzones/tz_bucket_challenges`, `tz_creatures`, `trackroutes/map_region_*.nt` | 11+6 / 47 / 10 | exact (regions: centroid) | slugs | **yes** |
+| Horizon Story/Job activation zones, creature zones | `triggerzones/tz_bucket_challenges`, `tz_creatures` | 11+6 / 47 | exact | slugs | **yes** |
 | XP boards (A/B/C = 100/75/25), speed traps, speed zones, trailblazers, drift zones, mascots, estate entrances, treasure-chest boards | `Tracks/Brio/Ribbon_00/GameObjs.xml` | 200 / 30 / 30 (×2 gates) / 12 (×2) / 20 (×2) / 200 / 37 / 3 | **exact** + orientation | ids (`SPEEDCAMERA_07_LEFT`) | **yes** (plain XML!) |
 | Danger signs, drift-zone marker posts, drift-circuit props | GeoChunk0 `.pgeo` | 15 / 1027 / 13 | exact (16.16 fixed) | ids | **yes** (needs PGZP) |
-| Speed-limit signs, rush ramps (as instances) | GeoChunk0 `.pgeo` | ~1659 / ~1700 | exact | — | yes, **not extracted** by our scripts |
+| Speed-limit signs (limit / high-speed / end-of-limit) | GeoChunk0 `c300_signs_do*.pgeo` | 1659 / 217 / 265 | exact position + facing; road snap median 7 m | limit is a **variant 0–5**; **km/h not in the files** | positions **yes** (needs PGZP) — [Speed signs](#speed-limit-signs) |
+| Rush ramps (as instances) | GeoChunk0 `.pgeo` | ~1700 | exact | — | yes, **not extracted** by our scripts |
 | Playground arenas (3), Hide & Seek arenas (6), flag-rush flags (6), rural train line (505 pts) | `trackroutes/route30xx/8100-8105.nt`, `Stripped/gs/brio/gameobjs.xml`, `OpenWorld/Brio/Freeroam/Ambient_RuralTrain_RuralLine.owcp` | 3 / 6 / 6 / 1 | exact (arenas: outline centroid) | arena names partly inferred | **yes** |
 | Photo spots | `Entities/Brio/entities_photo_challenge_landmarks.xml` | 37 | exact | slugs | **creator dump only** (not in any pgeo) |
 | Time-attack boards (4), Horizon Chase starts (7), backstage passes, labyrinth entrance, IE activator, community gift shop, Legend Island gates (2) | `Entities/Brio/*.xml`, `Templates/*.xml` | — | exact | partly | **creator dump only** |
 | Map element / filter types (the game's own ~230) | `UI.zip` → `MapProfiles/MapIncludes/*.xml` | ~230 | n/a | yes (plaintext XML) | **yes** |
-| String tables (all UI text) | `Stripped/StringTables/<LANG>.zip` | 291 tables (EN) | n/a | yes | **yes** |
+| Map regions (10) with outlines | `trackroutes/map_region_<slug>.nt` (`Arena_NNN` polygon) | 10 | exact outline (0 self-intersections, tile the island, 188 km²) | **10/10 in 24 languages** (slug → name inferred from mascots) | **yes** — [regions](fh6-cars-names-icons.md#map-regions--10--10-with-outlines) |
+| Map icons (the game's own symbols) | `UI/Textures/HiRes/Data_Bound/Horizon_Map.zip` (+ atlas `ForteMapIconSheet`, slot grid in `UI.zip`) | 1014 swatchbins + 6 ext + 54 atlas crops = 1074 PNGs; 45 / 53 POI categories mapped | n/a | type tag → icon from the game's XML | **yes** (BC7) — [icons](fh6-cars-names-icons.md#3-map-icons--the-games-own-symbols) |
+| Car names (`CarOrdinal` → make + model) | `Cars/<MediaName>.zip` (ordinal) + `StringTables/<LANG>.zip` `Data_Car.str` (name) | 671 cars, 24 languages | exact; packet `CarOrdinal` == this id **unverified** | full name incl. make, model-only | **yes** — [cars](fh6-cars-names-icons.md#1-car-names--carordinal--makemodel) |
+| Stunt name tables (speed zone / trap, drift zone, danger sign, trailblazer, time/drift attack) | `StringTables/<LANG>.zip` | 30 / 30 / 20 / 20 / 11 / 10 / 2 | names only — **no link to a position** | yes | strings **yes** |
+| String tables (all UI text) | `Stripped/StringTables/<LANG>.zip` | 291 tables (EN), 24 languages | n/a | yes | **yes** |
 | Which speed traps / drift zones are *this week's* Festival Playlist | server data | — | — | — | **no, unobtainable** — [verdict](#6-seasonal--weekly-festival-playlist-verdict) |
-| Car database, rules, tunables, physics surface names | `gamedbRC.slt`, `Rules.zip`, `GameTunableSettings.zip`, `Physics/surfaceTypes.xml` | — | — | — | **no, encrypted** |
+| Car database (make field, performance, prices), rules, tunables, physics surface names | `gamedbRC.slt`, `Rules.zip`, `GameTunableSettings.zip`, `Physics/surfaceTypes.xml` | — | — | — | **no, encrypted** |
 
 ## Locating the install
 
@@ -93,7 +101,8 @@ shared was decrypted. Signature of the encrypted ones: zip method **22** (or a r
 | `Physics/surfaceTypes.xml` | **encrypted** | the terrain-surface id → name table |
 | profile backups; `…/compatdata/2483190/pfx/…/AppData/Local/ForzaHorizon6/CmsCache/*` | **encrypted** | save data; server-delivered content (CMS) cache |
 | `UI.zip` (incl. `MapProfiles/MapIncludes/*.xml`) | plaintext | UI definitions, the game's own map filter/icon types |
-| `Stripped/StringTables/<LANG>.zip` (`*.str`) | plaintext | all UI/event/race text |
+| `Stripped/StringTables/<LANG>.zip` (`*.str`, 24 languages) | plaintext | all UI/event/race text, car names (`Data_Car.str`), landmark / region names |
+| `Cars/<MediaName>.zip` (671), `UI/Textures/HiRes/Data_Bound/Horizon_Map.zip` | plaintext (deflate) | car clip ids (= `CarOrdinal`), map icons |
 | `UI/Textures/Data_Bound/Map_Brio_<Season>.zip` | plaintext | map tiles |
 | everything under `Tracks/` and `OpenWorld/` used so far (`.nt`, `.tz`, `GameObjs.xml`, `Route<N>.nav/.owt`, `Brio_00.nav`, `ChunkContentsMiniZip*.txt`) and `GeoChunk*.minizip` | plaintext | world data |
 | `Physics/NatalSurfaceTypes.xml`, `Audio/AudioSurfacesInfo.xml` | plaintext | old unrelated surface table / ~43 game surface names for audio |
@@ -237,13 +246,23 @@ Every tile is 1024×1024. Lower levels are cheaper in RAM (L2 4096 px, L1 2048 p
 | 0x4c | u32 width (1024) |
 | 0x50 | u32 height (1024) |
 | 0x54 | u32 mip count (= 1) |
-| 0x80 | u32 top-mip data size (524288 = 1024²/2) |
+| **0x74** | **u32 pixel format** (table below) — all other header words are identical across formats |
+| 0x80 | u32 top-mip data size (524288 = 1024²/2 for these tiles) |
 | `hdr_size` | pixel data |
 
-Pixel data = `bytes[0x8c : 0x8c + 524288]`, **BC1 / DXT1**, row-major 4×4 blocks (8 B each), no gamma
-conversion needed. Which header word holds the DXGI format is **unknown** (candidates 0x48 / 0x58;
-observed values there: `0x01000000` and `0x06010001`) — BC1 was determined from the size
-(0.5 B/px) and by the decoded result matching the bundled jpgs.
+Pixel data = `bytes[0x8c : 0x8c + size@0x80]`, row-major 4×4 blocks, no gamma conversion needed. **Pixel format = u32 LE at 0x74**
+(earlier notes said this field was unknown and guessed BC1 from the size; the icons exposed it):
+
+| 0x74 | Format | Block | Seen in |
+|---|---|---|---|
+| `0x00` | **BC1 / DXT1** (RGB565 endpoints, 4-colour mode when `c0 > c1`, else 3-colour + transparent; 2-bit indices LSB first) | 8 B | the map tiles (`Map_Brio_*.zip`) |
+| `0x09` | **BC7** | 16 B | all 1020 map icons (`Horizon_Map.zip` + 6 ext) |
+| `0x0d` | RGBA8, byte order R, G, B, A | 4 B / px | other zips |
+| `0x07` | 16 B / block, **probably BC6H** (HDR) — *unverified, not decoded* | 16 B | `HDRImages.zip` only |
+
+Width @0x4c, height @0x50 need not be multiples of 4 (icons are e.g. 121², 141²): the data is `ceil(w/4)·ceil(h/4)` blocks. Decoders:
+`extract_map.py:decode_bc1` (BC1, numpy), `extract_icons.py:decode` (BC1/RGBA8 + BC7 through Pillow's `bcn` decoder — `Image.frombytes('RGBA', (w, h), data, 'bcn', 7)` —
+with an optional `texture2ddecoder` fallback). Rust: no BCn in the `image` crate — BC1 by hand, BC7 via a crate (`texture2ddecoder` exists).
 
 ### Validation
 
@@ -261,8 +280,8 @@ jpgs are re-encodes of this data and `MapCalibration::DEFAULT` applies unchanged
 
 ### Not the map
 
-`HiRes/Data_Bound` has no map variant. `Horizon_Map.zip` holds ~1000 small icon/filter
-swatchbins — not imagery, possibly the map icons (**unchecked**).
+`HiRes/Data_Bound` has no map variant. `Horizon_Map.zip` holds 1014 small icon/filter swatchbins — **the game's own map icons**, decoded and mapped to our POI
+categories: [FH6 cars, names, regions and icons → Map icons](fh6-cars-names-icons.md#3-map-icons--the-games-own-symbols).
 
 ---
 
@@ -290,25 +309,51 @@ for what only the binary has. The "approximate cell centre" records are supersed
 | `trackroutes/pinata_locators.nt` | same | 1536 pinatas |
 | `trackroutes/eliminator_locators.nt` | same | 373 eliminator spawns |
 | `trackroutes/parkingareas.nt` | same | 2664 parking areas |
-| `trackroutes/map_region_<region>.nt` | same | `Arena_NNN` locators = outline points of a map region; script reports the **centroid** (10 regions) |
+| `trackroutes/map_region_<region>.nt` | same | `Arena_NNN` locators = outline points of a map region; `extract_poi.py` reports the **centroid** (10 regions), `extract_names.py` the full outline + names ([regions](fh6-cars-names-icons.md#map-regions--10--10-with-outlines)) |
 | `trackroutes/{job,bucket}_challenges_startend_locations.nt` | same | `VOL_HJ_*` / `VOL_HS_*` volumes → mean of their `_start<N>` locators |
 | `Stripped/gs/brio/gameobjs.xml` | XML `<Obj GameplayID><Pos value="x,y,z"/>` | 12 treasure-chest discount boards, 14 `BARN_FIND_INTERIOR_*` (interior coords) |
 | `OpenWorld/Brio/AITracks/Route<N>.owt` | binary, magic `FTWO` | route node paths, below |
 
 `.nt`/`.tz`/`gameobjs.xml` may start with a UTF-8 BOM (read as `utf-8-sig`).
 
-### `AITracks/Route<N>.owt` (magic `FTWO`)
+### Race lines (the `.owt` racing-line files)
 
-| Offset | Meaning |
+`OpenWorld/Brio/AITracks/Route<N>.owt` (magic `FTWO`, little endian) is the route's driven **racing line with the track width**: 170 files, one per route.
+Decoder: [`fh6owt.py`](../../tools/fh6-extract/fh6owt.py) (layout) + [`extract_racelines.py`](../../tools/fh6-extract/extract_racelines.py) (trim + width → `racelines.json`).
+
+**Header** — `u32[24]` at offset 0:
+
+| idx | Meaning |
 |---|---|
-| 0x24 | u32 node count |
-| 0x60 | nodes, stride **56 B**, first 12 B = f32 `x, y, z` |
+| 8 | **section count**: 1 normally; **4–5 in routes 132, 281, 351, 1181, 1281, 8008** (extra header block, see node offset) |
+| 9 | **node count** |
+| 11 | low u16 = **start node index** — the node the `RVAN` `start_line` sits on (matches 170 / 170) |
+| 20 | = node count again, except in the 6 multi-section files (there it is the loop part) |
+| 21 | **256** point-to-point · **257** circuit · **258** circuit with a lead-out tail |
 
-Caveats: **node 0 is not the race start** (0–1200 m off — it is just lead-in); some routes have a NaN
-node 0; circuits have first node == last; files whose u32 @0x20 is 4 carry 112 extra header bytes and 2 extra
-nodes (`extract_races.py:owt_line`). The .owt gives the route's driven racing line (the script records
-`route_node0` + end + circuit flag). Start positions: the `RVAN` block below, **not** `race_triggers.tz`.
+**Nodes** start at `0x60 + (0 if h[8] == 1 else 16 + 48·(h[8] − 2))`, `h[9]` × **56 B**, followed by a 16 or 24 B tail (`FTWO` footer + hash).
+Verified for all 170 files: `offset + count·56 + tail == file length` (`read_owt` asserts it).
 
+| Node offset | Type | Meaning |
+|---|---|---|
+| +0 | f32[3] | position `x, y(height), z` (telemetry space) |
+| +12 | f32[3] | **left half-width vector** `A`: horizontal, ⟂ to the path, length **2.5–12.5 m** (usually 5–6). Left edge = `p + A`, right edge = `p − A`; `A = −cross(up, tangent)` |
+| +24 | f32[3] | unit up vector |
+| +36 | i16, i16 (+40 copy of the first) | smooth per-node signed values — **undecoded** (correlation −0.4 with signed curvature) |
+| +44 | u16[4] | run-constant tag (`1,1,1,1`, `19,19,19,187`, …) — **undecoded** (looks like a section / surface id) |
+| +52 | u32 | `16` on every 5th–10th node, else 0 — **undecoded** |
+
+Node 0 is **not** the race start (0–1200 m off — lead-in), and some files have NaN nodes (filter with `isfinite`); use header word 11.
+
+**Trimming to one drive** (what `extract_racelines.py` does; the raw file also holds lead-in / lead-out):
+- *point-to-point (127)*: `nodes[start .. finish]`, finish = the node nearest the `RVAN` `finish_line` at or after the start. All 127 end within 3 m (max 2.1 m).
+- *circuit (43)*: one lap rotated to begin at the start node (`nodes[start..j] + nodes[0..start−1]`); `j` = first local-minimum node after the start within 2.6 m of node 0 (regular circuits: the last node). All 43 close within 3 m. 6 files with a lead-out tail (258) are cut at that node.
+- Routes **102 and 103 lie off the playable map**; route **99** is a test route (RVAN start at 0,0). Totals from the script: 170 routes, 171 564 points at 5 m decimation.
+
+*Why the old reader was wrong:* the first version used `u32 @0x20 == 4` → "112 extra header bytes and 2 extra nodes". The real rule is the section count in `h[8]` (4 or 5) and the node count `h[9]`; the old
+code dropped nodes on the multi-section files. `extract_races.py` / `extract_poi.py` now use `fh6owt.py` (start line within 0.1 m of its own line: 165 / 169, was 164 / 169).
+
+Start positions come from the `RVAN` block below, **not** from `race_triggers.tz`.
 
 ### Approximate only (cell centre, ±100 m or worse) — superseded
 
@@ -370,7 +415,7 @@ streamed geometry packages. **Never read them whole** — the script seek-reads 
 | Chunk | Holds |
 |---|---|
 | `GeoChunk0` | everything useful: 411 013 entries — `.pgeo` (96 234 prop groups), `.phys` (collision), `.modelbin` (render models), `.mtxmoddxt` palettes, some `.pb`… |
-| `GeoChunk1`, `GeoChunk2` | only `.pb` entries (not pursued; row order may be permuted vs the name list) |
+| `GeoChunk1`, `GeoChunk2` | only `.pb` entries = `burG` texture swatch mips named `…_quality<n>.pb` (chunk 2: 78 727 `.pb` + 1113 `.dxt`; higher-quality mips than chunk 0 — q3 = 512 px, q4 = 1024 px). Entry count == name-list length for both, so names line up with rows once the u64-N table is read (below). Not pursued further |
 | `GeoChunk3` | textures only (`hqdxt` / `hqbc3`) |
 
 **Name list.** Each line looks like `<PREZIPPED>d:\scratch\p4\forte_main\zipcache\pc\tracks\brio\scene\proc\cellsize\200\3_4\x.pgeo|<n>` —
@@ -389,8 +434,8 @@ strip the build-machine prefix and the `|n` suffix (`n` is *not* the entry index
 | 24 | u32 | S = segment count = ceil(N/512) (803 for GeoChunk0) |
 | 28 | u32 | 0 |
 | 32 | u32[M] | ascending id list (subset of entry ids; unused) |
-| 32 + 4M | u32 N, u64 | N again, then the absolute offset of the first segment |
-| per segment | 512 × `{u32 off, u32 usize, u32 flags}` + u64 | one row per entry, then the absolute offset of the **next** segment |
+| 32 + 4M | N, u64 | N again, then the absolute offset of the first segment. **N is a u32 in GeoChunk0/1/3 but a u64 in GeoChunk2** (high word 0), which shifts everything after it by 4 bytes — `pgzp.py` detects it (`S[1] == 0` ⇒ wide), the old reader asserted on GeoChunk2 |
+| per segment | 512 × `{u32 off, u32 usize, u32 flags}` + u64 | one row per entry, then the absolute offset of the **next** segment (for the last segment this word is not an offset: the last entry's compressed size is then taken to end-of-file — `pgzp.py`) |
 
 - Entry data starts at `segment_start + off`. **Compressed size** = (next row's `off`) − `off` inside a segment, or (next segment start) − this start for the last row.
 - `flags & 0xff` selects the codec: **`0x1f` = raw LZ4 block** (no frame header; decoded size = `usize`), **`0x08` = raw deflate** (zlib `wbits = −15`), **`0x00` = stored** (terrain `.phys` entries often are). The upper 24 bits are unknown (look like a running counter / hint).
@@ -418,7 +463,27 @@ What the `rt`/`tag` pgeo files give (one file per tag per cell, so a file *is* a
 | `driftzonemarker_*`, `discount_board_*` | duplicates of `GameObjs.xml` positions (used for the 0.000 m cross-check) |
 | `tag_time_attack_drift_circuit_*` | 13 drift-circuit prop clusters |
 
-Also present as instances but **not extracted**: 1659 speed-limit signs and ~1700 rush ramps. Photo spots are not in any pgeo.
+Also present as instances: ~1700 rush ramps (**not extracted**) and the speed-limit signs below. Photo spots are not in any pgeo.
+
+#### Speed-limit signs
+
+`extract_speedsigns.py` seek-reads only the **1182 `c300_signs_do*.pgeo`** entries of GeoChunk0 (~5 MB, a few seconds). Same 80-byte instance as above; models:
+
+| Model | Count | `kind` |
+|---|---|---|
+| `sgn_gbl_info_speed_01_a` | 1659 | `limit` — speed-limit sign (red ring) |
+| `sgn_gbl_info_high_speed_01_a` | 217 | `limit_high` — same family on a pole / expressway |
+| `sgn_gbl_info_pfb_speedend_01_a` | 265 | `limit_end` — "end of speed limit" (white disc, slash) |
+
+The 32 undecoded instance bytes (`+48..+79`): `+48 0x80800000`, `+52 0xffffffff`, `+56 0` (constants); **`+60` u32 VARIANT 0..5**; `+64 0`; `+68` per-instance hash; `+72 0`; `+76` 256 or 512.
+Variant counts for `limit`: v0 661, v1 718, v2 129, v3 17, v4 45, v5 89 (`limit_high`: 79 / 70 / 42 / 2 / 18 / 6; `limit_end` is always 0).
+
+- **The variant is the printed number.** The model has materials `SGN_GBL_INFO_SPEED_01_A_Alpha_Retro` (= variant 0) and `_VARIANT_1.._5`; their `MatI` blocks differ only by two float
+  parameters, a UV offset `(0,0) (.25,0) (.5,0) (.75,0) (0,.25) (.25,.25)` — a cell of a **4-column number atlas**. That atlas texture is **not** in the model's swatches (they hold the blank red-ring face) and was not found elsewhere,
+  so **the km/h value of each variant is not readable**. `speedsigns.json` has `limit_kmh: null` unless you pass `--variant-map "0=50,1=60,…"`.
+  *Guess from where each variant stands (spatial inference), lowest → highest limit: 5 / 3 < 0 < 1 < 2 < 4* — **a guess, needs an in-game check.** One sign per variant to read the number off in-game (x, z): v0 (3097, −2360), v1 (1290, 1788), v2 (−1142, 62), v3 (−2073, 1451), v4 (1962, −2538), v5 (−2117, −4773).
+- **Facing:** `heading = atan2(n.x, n.z)` with face normal `n = −(right × up)` (the face quad sits at local z = −0.05, the pole at z > 0); 0 = +z (north). Signs face **oncoming traffic**; 97.4 % are consistent with left-hand traffic.
+- **Road snap:** median 7.1–7.2 m to the nearest `Brio_00.nav` polyline (signs stand beside the road, not on it); `extract_speedsigns.py` adds `road_dist_m` / `road_class` when `roads.json` (from `decode_nav.py`) is available.
 
 ### Race starts — the `RVAN` block of the route files
 
@@ -477,8 +542,9 @@ So **without the creator dump only 15 of 169 routes get a name**; the app can st
 `Route <N>`. Race *types* for 88 routes (`brio_{circuit,sprint,scramble,trail,street,touge,finale,horizon_rush}_<N>` in `campaign_slots.xml`, with
 `CareerRaceCollectionId` 80–87 = cross-country circuit, 88–97 = cross-country sprint) are also creator-dump only.
 
-Traps: the landmark strings for `seaside_circuit` / `seaside_offroad_circuit` look **swapped** (race evidence: Hokubu Circuit is near (2830, 2700), Sekibe
-near (2500, −5000)); `Landmarks.IDS_Area_Discovered_<slug>` resolves for 54 of 75 landmark slugs, the rest need `landmark_areas.xml`.
+Corrected trap (earlier notes were wrong twice): the landmark strings for `seaside_circuit` / `seaside_offroad_circuit` are **not swapped** — `seaside_circuit` (2606, 2805)
+is the Hokubu Circuit (race start 2827, 2696) and `seaside_offroad_circuit` (2676, −5095) is Sekibe Scramble (2496, −5065); and landmark names resolve for **75 of 75** slugs from the
+install (not 54 of 75 — 17 slugs just use a different string id, see [names](fh6-cars-names-icons.md#landmarks--75--75-named)), so `landmark_areas.xml` (creator dump) is not needed.
 
 ### More categories (route files, arenas, train, creator dump)
 
@@ -513,8 +579,8 @@ The whole island's terrain **height** (render mesh) and a per-triangle **surface
 validation and the open surface-naming question: **[FH6 terrain](fh6-terrain.md)**. Headlines:
 
 - Elevation → 4 m raster; median |Δy| **0.17 m** against the 38 473 road nodes (98 % coverage; p90 10.9 m = bridges/tunnels). Coarse whole-island LOD (26 MB): 1.1 m.
-- Surfaces → 34.7 M triangles, 54–56 global material ids on the terrain. The **names are not in any readable file** (`Physics/surfaceTypes.xml` is encrypted), so any
-  class name (asphalt, water, sand, snow, forest, grass…) is **ours**. Status: *surface names — in progress (plan D7)*: file decode attempt failed, in-game survey with the user is the next step.
+- Surfaces → 34.7 M triangles, **54** global material ids on the terrain. The game's **name table is not readable** (`Physics/surfaceTypes.xml` is encrypted), so every name is **ours**;
+  after the in-game survey (plan D7/D9) the [id table](fh6-terrain.md#surface-names-id-table) marks each id **confirmed in-game (18)**, **seen (4)** or **reasoned (32)**, and `fh6surfaces.py` carries the same split in code.
 - The user visually verified both renders.
 
 ---
@@ -530,7 +596,10 @@ validation and the open surface-naming question: **[FH6 terrain](fh6-terrain.md)
 | `routeassettransforms.txt` | 1.19 M `x,y,z:routeid` prop transforms — cones/barriers along race routes; too noisy to be useful. |
 | ~~`Ribbon_00/GameObjs.xml`~~ | **Not a dead end** — it was wrongly recorded as "all 0,0,0". Exact positions for 793 objects, see [GameObjs.xml](#gameobjsxml--exact-gameplay-props). |
 | Race-trigger spheres as race starts | Wrong — they are map pins; use the `RVAN` block. |
-| `.owt` node 0 as race start | Wrong — lead-in node, 0–1200 m off. |
+| `.owt` node 0 as race start | Wrong — lead-in node, 0–1200 m off; the start node is `header[11] & 0xffff`. |
+| `.owt` node count at `0x24` with nodes at `0x60` | Wrong for the 6 multi-section files (132, 281, 351, 1181, 1281, 8008) — node offset depends on the section count, see [Race lines](#race-lines-the-owt-racing-line-files). |
+| `PointsOfInterest.str` | **Stale FH5 text** — not FH6 names. |
+| Speed-limit number atlas | The texture with the printed km/h numbers was not found in any readable file (sign swatches hold the blank face) — values need an in-game check. |
 | A `media.zip` sent by the Horizon Nav creator | July-build dump, **decrypted**: it has the SQLite gamedb, physics, audio **and `Stripped/EntityModel.zip`** (race types, photo spots, time attacks…). Useful for research only — the same files are encrypted in a user install. |
 | Breaking the encryption | Not attempted (key presumably in the exe); not something an app can ship. |
 | Reading the running game's memory | Deliberately not done — anti-cheat risk, see the licensing/safety section. |
@@ -582,16 +651,23 @@ decode_nav.py  --out DIR [--map map_summer_L3.png]            # roads.json, road
 extract_poi.py --out DIR [--entity-model OLD_EntityModel.zip] # pois.json (5578 records; 5632 with the creator dump)
 extract_geochunk.py --out DIR [--skip-pgeo]                   # geochunk_pois.json (1649 exact prop records)
 extract_races.py --out DIR [--entity-model ...]               # races.json (169 race starts + grids + finishes, names)
-extract_terrain.py --out DIR [--region X0,Z0,X1,Z1] [--coarse]# elevation.npy/.png, surfaces.npy/.png
+extract_racelines.py --out DIR [--step 5]                     # racelines.json (170 trimmed racing lines + track edges)
+extract_speedsigns.py --out DIR [--roads roads.json] [--variant-map "0=50,1=60,..."]   # speedsigns.json (2141 signs)
+extract_terrain.py --out DIR [--region X0,Z0,X1,Z1] [--coarse]# elevation.npy/.png, surfaces.npy/.png (+ names in surfaces.json)
+extract_cars.py --out DIR [--lang EN,DE|all] [--ordinal N ..] # cars.json (671 ordinals -> media name + full/model name)
+extract_names.py --out DIR                                    # names.json (75 landmarks, 24 languages, stunt name tables), regions.json (10 outlines)
+extract_icons.py --out DIR; build_icon_mapping.py DIR         # png/ (1074 icons), icons.json, xml_symbols.json; mapping.json (POI category -> icon)
 roaddist.py / plot_pois.py                                    # validation helpers
 ```
 
-Library modules: `fh6common.py` (install detection, case-insensitive paths, `.nt`/`.tz` readers), `pgzp.py` + `lz4b.py` (PGZP reader),
-`fh6str.py` (string tables), `fh6bxml.py` (BXML, creator dump only).
+Library modules: `fh6common.py` (install detection, case-insensitive paths, `.nt`/`.tz` readers), `pgzp.py` + `lz4b.py` (PGZP reader, u32 **and** u64 table),
+`fh6str.py` (string tables), `fh6owt.py` (`.owt` racing line + `RVAN` block), `fh6surfaces.py` (terrain surface-id names with their confirmed/reasoned status), `fh6bxml.py` (BXML, creator dump only).
 
 Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 GameObjs objects, 1649 records, pgeo error 0.000 m, identical to the original research output;
-`extract_races.py` → 169 race starts, identical to the original research output (names: 22 exact incl. IE/chase, 3 locator, 44 landmark ≤ 400 m, 10 weaker);
-`extract_terrain.py` on a 1.5 km region → median |Δy| 0.17 m, full-island surfaces → 34 716 033 triangles; `extract_poi.py` → 5578 records.
+`extract_races.py` → 169 race starts, start line within 0.1 m of its own racing line for 165 (was 164 before the `.owt` fix) (names: 22 exact incl. IE/chase, 3 locator, 44 landmark ≤ 400 m, 10 weaker with the creator dump);
+`extract_terrain.py` on a 1.5 km region → median |Δy| 0.17 m, full-island surfaces → 34 716 033 triangles; `extract_poi.py` → 5578 records;
+`extract_racelines.py` → 170 routes (127 p2p + 43 circuits, all closed/ending within 3 m); `extract_speedsigns.py` → 1659 / 217 / 265; `extract_cars.py` → 671 ordinals (4144 → `Mazda RX-7 '92`);
+`extract_names.py` → 75 / 75 landmarks, 10 regions, 24 languages; `extract_icons.py` → 1074 icons (pixel-identical with the `texture2ddecoder` decode); `pgzp.py` opens GeoChunk0–3.
 
 ## 9. What a runtime implementation needs
 
@@ -601,7 +677,24 @@ Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 Ga
 3. Roads: parse `Brio_00.nav` per [Roads](#1-roads--openworldbriofreeroambrio_00nav) (it is a flat
    binary — only needs positions, road table and list A).
 4. POIs: parse the small XML/text files (regex is enough, see `extract_poi.py`) **and `Ribbon_00/GameObjs.xml`** (speed traps, zones, drift zones, XP boards… — no binary needed).
-5. Race starts/grids: the `RVAN` block of `AITracks/Route<N>.nav` (flat binary; no PGZP needed). Names only for ~15 routes without the (encrypted) entity data.
-6. Anything from GeoChunk (danger signs, drift posts, terrain) additionally needs the PGZP reader (u32/u64 tables, LZ4 block, deflate). Do it lazily and cache a *derived, compact* grid in the app data dir.
+5. Race starts/grids: the `RVAN` block of `AITracks/Route<N>.nav` (flat binary; no PGZP needed). Names only for ~15 routes without the (encrypted) entity data. Racing line / track edges: `Route<N>.owt` ([layout](#race-lines-the-owt-racing-line-files); flat binary, mind the section count).
+6. Anything from GeoChunk (danger signs, drift posts, speed-limit signs, terrain) additionally needs the PGZP reader (u32/u64 tables, LZ4 block, deflate). Do it lazily and cache a *derived, compact* grid in the app data dir.
 7. Do it lazily on a background thread and cache nothing derived in the repo.
-8. Never rely on the *creator-dump only* categories, and never present inferred names (terrain classes, arena names, name guesses) as the game's own.
+8. Names: car names (`Cars/*.zip` central directories + `Data_Car.str`), landmark / region names (`Landmarks.str`, `MapRegion.str`, any of 24 languages) and the game's map icons all come from plaintext
+   install files — see [cars, names, regions and icons](fh6-cars-names-icons.md). Pick the language from the app's own i18n setting (EN/DE) with an English fallback.
+9. Never rely on the *creator-dump only* categories, and never present inferred names (terrain surface names that are not `confirmed`, arena names, race-name guesses) as the game's own.
+
+## 10. Open items
+
+Things the research could not settle — each needs a human, a live game, or a decision:
+
+| Item | State | How to close it |
+|---|---|---|
+| Packet `CarOrdinal` == `carclips_<ordinal>` id | **unverified** (matches the gamedb `Data_Car.Id` 638/638, never compared with a live packet) | one live check: drive a known car, compare the Debug tab's `CarOrdinal` with `extract_cars.py --ordinal <n>` |
+| Speed-limit **variant → km/h** | **unknown** (number atlas not in any readable file); guessed order 5/3 < 0 < 1 < 2 < 4 | read the number on one sign per variant in-game ([coordinates](#speed-limit-signs)), then feed `--variant-map` |
+| Speed zone / trailblazer / drift zone **gate `_1` vs `_2`** = start vs end | **not verified** (both gates are emitted) | drive one zone and see which gate starts the timer |
+| `.owt` undecoded node fields (+36 i16 pair, +44 u16[4] tag, +52 flag) | **undecoded** — guesses: curvature-like value, section/surface id | correlate with the race's surface type / corners if a feature needs them |
+| Terrain surface names | 18 confirmed, 4 seen, **32 reasoned** — see the [id table](fh6-terrain.md#surface-names-id-table); 280 / 242 may be dirt track rather than verge | more in-game spot checks, or the encrypted `surfaceTypes.xml` (not attempted) |
+| BC6H swatchbins (`0x07`) | probable format, not decoded | only if HDR images are ever needed |
+| `Brio_00.nav` per-road values (one-way, tunnel, road type), list B | undecoded | see [Roads → Unknowns](#unknowns) |
+| Which stunts are this week's Festival Playlist | **unobtainable** | [verdict](#6-seasonal--weekly-festival-playlist-verdict) |
