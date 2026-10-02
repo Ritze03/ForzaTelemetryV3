@@ -68,7 +68,17 @@ Available widget kinds (`WidgetKind` in `src/config.rs`), rendered by
   Its Dashboard → **Graphs** mini-settings carry the widget's own toggles (Show
   Boost / Compact / Show grid) plus the full [[power-curve]] tab's capture options
   (RPM step size, forced-induction detection, save-FI-state) — they share config.
-- **Boost Graph** — RPM vs boost bar chart from the same capture data.
+- **Boost Graph** — RPM vs boost bar chart from the same capture data. Built on the
+  same helpers as the Power Graph (`graph_module_rect` / `graph_plot` /
+  `paint_peak_labels` / `paint_compact_graph_title` in `src/ui/dashboard.rs`), so it
+  has the same title, padding, grid, RPM range and Compact style, and reads the same
+  `power_graph_compact` / `power_graph_show_grid` toggles. *Why one shared set:* the
+  user asked for it to look and behave like the Power Graph "with the same settings";
+  separate flags would let the two side-by-side modules drift apart again. With no
+  detected boost it shows a dim "No boost detected" instead of bars.
+- Both graph modules obey forced-induction detection through
+  `power_capture::boost_visible`, judged on the series actually plotted (live, else the
+  saved reference) — see [[power-curve]].
 
 ## Enabling / disabling widgets
 

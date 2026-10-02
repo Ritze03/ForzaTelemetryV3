@@ -82,15 +82,13 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     // Detection OFF → always show boost (no filtering).
     let saved_curve = app.saved_power_curve.as_ref();
 
-    let has_boost_data = if app.config.power_curve_forced_induction {
-        app.power_capture.boost_series.iter().any(|&[_, v]| v > 0.05)
-            || saved_curve
-                .map(|curve| curve.boost_series.iter().any(|&[_, v]| v > 0.05))
-                .unwrap_or(false)
-            || (app.config.power_curve_save_fi_state && app.fi_detected)
-    } else {
-        true
-    };
+    // Shared rule (`power_capture::boost_visible`); this tab plots live AND saved, so either counts.
+    let has_boost_data = crate::listeners::power_capture::boost_visible(
+        app.config.power_curve_forced_induction,
+        app.config.power_curve_save_fi_state,
+        app.power_capture.fi_detected(),
+        &[&app.power_capture.boost_series, saved_curve.map_or(&[][..], |c| &c.boost_series[..])],
+    );
 
     // Remaining height after the controls row.
     // Each group adds ~30 px overhead (inner margins + label + spacing).

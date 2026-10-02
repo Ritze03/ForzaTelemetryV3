@@ -601,6 +601,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Map" => "Karte",
         "Power Graph" => "Leistungsdiagramm",
         "Boost Graph" => "Ladedruckdiagramm",
+        "No boost detected" => "Kein Ladedruck erkannt",
 
         // ── Settings: Load Preset ──────────────────────────────────────
         "Load Preset" => "Voreinstellung laden",

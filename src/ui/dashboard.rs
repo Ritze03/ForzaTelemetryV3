@@ -2435,15 +2435,153 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     }
 }
 
-fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
+// ── Graph modules (Power Graph + Boost Graph) ─────────────────────
+//
+// Both graph modules run through the same helpers below, so they share one look and one
+// set of options: the blue section title (or, in Compact, a small title painted over the
+// plot), the 8px axis-label padding, zero RPM margin, the grid toggle, Compact's peak guide
+// lines + labels, and the RPM axis extent. The options are the dashboard mini-settings'
+// "Power Graph" page (`power_graph_compact`, `power_graph_show_grid`) plus the shared
+// `power_curve_*` capture options.
+// Why one shared set: the user asked for the Boost Graph to look and behave like the Power
+// Graph "with the same settings" — two modules side by side reading different compact/grid
+// flags would drift apart again.
+
+/// Series colours — data colours, matching the Power Curve tab.
+const GRAPH_POWER: Color32 = Color32::from_rgb(80, 160, 240);
+const GRAPH_TORQUE: Color32 = Color32::from_rgb(240, 140, 40);
+const GRAPH_BOOST: Color32 = Color32::from_rgb(180, 80, 220);
+
+/// PSI → bar.
+const PSI_TO_BAR: f64 = 0.0689476;
+
+/// Title row (normal mode only) and the rect the plot gets. Non-compact: the rotated y-axis
+/// label overhangs the plot's left edge (egui_plot draws it at rect.left() - gap), so the
+/// plot gets 8px left/right padding or the module cell clips the label. Compact has no axis
+/// labels, so it uses the full width — its title is painted over the plot afterwards by
+/// [`paint_compact_graph_title`], costing no vertical space.
+fn graph_module_rect(ui: &mut Ui, app: &ForzaApp, title: &str) -> egui::Rect {
     let compact = app.config.power_graph_compact;
-    // Normal mode: a section title above the plot, like other widgets. Compact mode
-    // has no title row — it's painted over the top-left of the plot below, so it
-    // costs no vertical space.
     if !compact && !app.config.hide_widget_titles {
-        ui.label(crate::theme::section_label(tr("Power Graph")));
+        ui.label(crate::theme::section_label(title));
         ui.add_space(4.0);
     }
+    let mut plot_rect = ui.available_rect_before_wrap();
+    if !compact {
+        plot_rect.min.x += 8.0;
+        plot_rect.max.x -= 8.0;
+    }
+    plot_rect
+}
+
+/// The plot base both graph modules share: 0 RPM flush on the left edge, a static
+/// (non-interactive) view, the grid toggle, axes hidden in Compact, and the right edge
+/// 1000 RPM past the highest recorded point (the full rev range before any data).
+fn graph_plot(app: &ForzaApp, id: &str, data_max_rpm: f64) -> Plot<'static> {
+    let g = app.config.power_graph_show_grid;
+    let mut plot = Plot::new(id)
+        // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
+        .set_margin_fraction(egui::vec2(0.0, 0.05))
+        .include_x(0.0)
+        .include_y(0.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        // Grid lines toggle applies regardless of compact/normal mode.
+        .show_grid([g, g]);
+    if app.config.power_graph_compact {
+        // No legend or axis ticks/labels — but keep the grid lines for reference.
+        plot = plot.show_axes([false, false]);
+    } else {
+        plot = plot.x_axis_label(tr("RPM"));
+    }
+    let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 { app.cached_engine_max_rpm } else { 8000.0 };
+    if data_max_rpm > 0.0 {
+        plot.include_x(data_max_rpm + 1000.0)
+    } else {
+        plot.include_x(engine_max_rpm)
+    }
+}
+
+/// Peak point (max y and its x) of a series.
+fn series_peak(s: &[[f64; 2]]) -> Option<[f64; 2]> {
+    s.iter().copied().reduce(|a, b| if b[1] > a[1] { b } else { a })
+}
+
+/// Compact mode's peak value labels, in screen space: to the RIGHT of each peak guide line,
+/// near the bottom, with the same gap to the line as to the bottom, coloured like the line,
+/// and nudged up so overlapping labels don't collide.
+fn paint_peak_labels(ui: &Ui, transform: &egui_plot::PlotTransform, mut labels: Vec<(f64, Color32, String)>) {
+    let frame = *transform.frame();
+    let gap = 3.0_f32;
+    let font = egui::FontId::proportional(10.0);
+    let painter = ui.painter().with_clip_rect(frame);
+    labels.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut placed: Vec<egui::Rect> = Vec::new();
+    for (rpm, color, text) in labels {
+        let line_x = transform.position_from_point_x(rpm);
+        let galley = painter.layout_no_wrap(text, font.clone(), color);
+        let sz = galley.size();
+        // Right of the line by `gap`; flip to the left if it would overflow the edge.
+        let mut x = line_x + gap;
+        if x + sz.x > frame.right() { x = line_x - gap - sz.x; }
+        let mut y = frame.bottom() - gap - sz.y;
+        let mut rect = egui::Rect::from_min_size(pos2(x, y), sz);
+        while placed.iter().any(|r| r.intersects(rect.expand(1.0))) {
+            y -= sz.y + 2.0;
+            rect = egui::Rect::from_min_size(pos2(x, y), sz);
+        }
+        placed.push(rect);
+        painter.galley(pos2(x, y), galley, color);
+    }
+}
+
+/// Compact mode's title, painted over the plot's top-left corner (no vertical space cost).
+fn paint_compact_graph_title(ui: &Ui, app: &ForzaApp, plot_rect: egui::Rect, title: &str) {
+    if !app.config.power_graph_compact || app.config.hide_widget_titles {
+        return;
+    }
+    let pos = plot_rect.min + vec2(4.0, 2.0);
+    let galley = ui.painter().layout_no_wrap(
+        title.to_uppercase(),
+        egui::FontId::proportional(12.0),
+        crate::theme::ACCENT,
+    );
+    if app.config.power_graph_show_grid {
+        // Gridlines run under the title — back it with a small filled box so it
+        // stays readable. Only drawn when the grid is on.
+        let bg_rect = egui::Rect::from_min_size(pos, galley.size()).expand(3.0);
+        ui.painter().rect_filled(bg_rect, 3.0, egui::Color32::from_black_alpha(160));
+    }
+    ui.painter().galley(pos, galley, crate::theme::ACCENT);
+}
+
+/// The boost series a dashboard graph plots (live capture, falling back to the saved
+/// reference), and whether forced-induction detection lets it be shown. Visibility is judged
+/// on the series actually plotted — a saved turbo reference must not make an NA car's live
+/// (vacuum) series show up. See `power_capture::boost_visible`.
+fn dashboard_boost_series(app: &ForzaApp) -> (&[[f64; 2]], bool) {
+    let series: &[[f64; 2]] = if !app.power_capture.boost_series.is_empty() {
+        &app.power_capture.boost_series
+    } else if let Some(curve) = app.saved_power_curve.as_ref() {
+        &curve.boost_series
+    } else {
+        &[]
+    };
+    let visible = crate::listeners::power_capture::boost_visible(
+        app.config.power_curve_forced_induction,
+        app.config.power_curve_save_fi_state,
+        app.power_capture.fi_detected(),
+        &[series],
+    );
+    (series, visible)
+}
+
+fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
+    let compact = app.config.power_graph_compact;
+    let title = tr("Power Graph");
+    let plot_rect = graph_module_rect(ui, app, title);
 
     // Live capture, falling back to the saved reference curve (same data as the
     // Power Curve tab).
@@ -2459,19 +2597,16 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         (Vec::new(), Vec::new())
     };
 
-    // Optional boost line from the same series the Boost Graph uses.
+    // Optional boost line from the same series the Boost Graph uses — only when
+    // "Show Boost" is on AND forced-induction detection allows it (an NA car's vacuum
+    // readings used to draw a flat line at 0 plus a boost axis).
     let use_bar = app.config.use_bar;
-    let boost_series: Vec<[f64; 2]> = if app.config.power_graph_show_boost {
-        let raw: &[[f64; 2]] = if !app.power_capture.boost_series.is_empty() {
-            &app.power_capture.boost_series
-        } else if let Some(curve) = app.saved_power_curve.as_ref() {
-            &curve.boost_series
-        } else {
-            &[]
-        };
-        raw.iter()
+    let (raw_boost, boost_ok) = dashboard_boost_series(app);
+    let boost_series: Vec<[f64; 2]> = if app.config.power_graph_show_boost && boost_ok {
+        raw_boost
+            .iter()
             .map(|&[rpm, psi]| {
-                let val = if use_bar { psi * 0.0689476 } else { psi };
+                let val = if use_bar { psi * PSI_TO_BAR } else { psi };
                 [rpm, val.max(0.0)]
             })
             .collect()
@@ -2492,18 +2627,12 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     let boost_top = if boost_series.is_empty() {
         if use_bar { 1.0 } else { 15.0 }
     } else {
-        // Same headroom style as the Boost Graph widget.
+        // Same headroom style as the Boost Graph module.
         let max_boost = boost_series.iter().map(|&[_, v]| v).fold(0.0_f64, f64::max);
         let min_headroom = if use_bar { 0.25 } else { 3.0 };
         max_boost + (max_boost.abs() * 0.15).max(min_headroom)
     };
     let boost_scale = y_top / boost_top;
-
-    let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
-        app.cached_engine_max_rpm
-    } else {
-        8000.0
-    };
 
     // Highest recorded RPM across the plotted series — the axis runs 0..this+1000.
     let data_max_rpm = power_series
@@ -2513,41 +2642,15 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         .map(|&[rpm, _]| rpm)
         .fold(0.0_f64, f64::max);
 
-    // Peak points (max y and its x) for compact-mode inline annotations. Compute
-    // before the series are moved into the plot below.
-    let peak = |s: &[[f64; 2]]| -> Option<[f64; 2]> {
-        s.iter().copied().reduce(|a, b| if b[1] > a[1] { b } else { a })
-    };
-    let peak_power = peak(&power_series);
-    let peak_torque = peak(&torque_series);
-    let peak_boost = peak(&boost_series);
+    // Peak points for compact-mode inline annotations. Compute before the series are
+    // moved into the plot below.
+    let peak_power = series_peak(&power_series);
+    let peak_torque = series_peak(&torque_series);
+    let peak_boost = series_peak(&boost_series);
 
-    // Non-compact: the rotated y-axis label overhangs the plot's left edge
-    // (egui_plot draws it at rect.left() - gap), so give the plot a child rect
-    // with left/right padding or the widget cell clips the label. Compact has no
-    // axis labels, so use the full available width.
-    let mut plot_rect = ui.available_rect_before_wrap();
-    if !compact {
-        plot_rect.min.x += 8.0;
-        plot_rect.max.x -= 8.0;
-    }
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
-    let mut plot = Plot::new("dash_power_graph")
-        // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
-        .set_margin_fraction(egui::vec2(0.0, 0.05))
-        .include_x(0.0)
-        .include_y(0.0)
-        .allow_drag(false)
-        .allow_zoom(false)
-        .allow_scroll(false)
-        .allow_boxed_zoom(false);
-    // Grid lines toggle applies regardless of compact/normal mode.
-    let g = app.config.power_graph_show_grid;
-    plot = plot.show_grid([g, g]);
-    if compact {
-        // No legend or axis ticks/labels — but keep the grid lines for reference.
-        plot = plot.show_axes([false, false]);
-    } else {
+    let mut plot = graph_plot(app, "dash_power_graph", data_max_rpm);
+    if !compact {
         // The default left axis, plus a dedicated right-side scale for the boost
         // line (tick marks converted back to bar/PSI via the scale factor).
         let mut y_axes = vec![AxisHints::new_y().label("PS / Nm")];
@@ -2562,29 +2665,22 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         }
         plot = plot
             .legend(Legend::default().position(egui_plot::Corner::RightBottom).follow_insertion_order(true))
-            .x_axis_label(tr("RPM"))
             .custom_y_axes(y_axes);
     }
     if power_series.is_empty() {
         // No captured data yet — keep the empty plot's y-axis at a sensible extent.
         plot = plot.include_y(100.0);
     }
-    // Right edge: 1000 RPM past the highest recorded point (full rev range when empty).
-    plot = if data_max_rpm > 0.0 {
-        plot.include_x(data_max_rpm + 1000.0)
-    } else {
-        plot.include_x(engine_max_rpm)
-    };
     let resp = plot.show(&mut plot_ui, |plot_ui| {
         if !power_series.is_empty() {
             plot_ui.line(
                 Line::new(tr("Power (PS)"), PlotPoints::new(power_series))
-                    .color(Color32::from_rgb(80, 160, 240))
+                    .color(GRAPH_POWER)
                     .width(2.5),
             );
             plot_ui.line(
                 Line::new(tr("Torque (Nm)"), PlotPoints::new(torque_series))
-                    .color(Color32::from_rgb(240, 140, 40))
+                    .color(GRAPH_TORQUE)
                     .width(2.5),
             );
         }
@@ -2596,178 +2692,97 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
                 .collect();
             plot_ui.line(
                 Line::new(boost_label, PlotPoints::new(scaled))
-                    .color(Color32::from_rgb(180, 80, 220))
+                    .color(GRAPH_BOOST)
                     .width(2.0),
             );
         }
         if compact {
-            // A thin vertical guide line at each series' peak RPM. The value labels are
-            // drawn afterwards in screen space (below) for pixel-precise placement and
-            // overlap avoidance.
-            let mut vline = |peak: Option<[f64; 2]>, color: Color32| {
+            // A thin vertical guide line at each series' peak RPM; the value labels are
+            // drawn afterwards in screen space (paint_peak_labels).
+            for (peak, color) in [(peak_power, GRAPH_POWER), (peak_torque, GRAPH_TORQUE), (peak_boost, GRAPH_BOOST)] {
                 if let Some([rpm, _]) = peak {
                     plot_ui.vline(egui_plot::VLine::new("", rpm).color(color).width(1.0));
                 }
-            };
-            vline(peak_power,  Color32::from_rgb(80, 160, 240));
-            vline(peak_torque, Color32::from_rgb(240, 140, 40));
-            vline(peak_boost,  Color32::from_rgb(180, 80, 220));
+            }
         }
     });
 
     if compact {
-        // Peak value labels in screen space: to the RIGHT of each guide line, near the
-        // bottom, with the same gap to the line as to the bottom, colored like the line,
-        // and nudged up so overlapping labels don't collide.
-        let tf = &resp.transform;
-        let frame = *tf.frame();
-        let gap = 3.0_f32;
-        let font = egui::FontId::proportional(10.0);
-        let painter = plot_ui.painter().with_clip_rect(frame);
         let mut labels: Vec<(f64, Color32, String)> = Vec::new();
-        if let Some([rpm, v]) = peak_power  { labels.push((rpm, Color32::from_rgb(80, 160, 240), format!("{:.0} PS", v))); }
-        if let Some([rpm, v]) = peak_torque { labels.push((rpm, Color32::from_rgb(240, 140, 40), format!("{:.0} Nm", v))); }
-        if let Some([rpm, v]) = peak_boost  { labels.push((rpm, Color32::from_rgb(180, 80, 220), format!("{:.2}", v))); }
-        labels.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let mut placed: Vec<egui::Rect> = Vec::new();
-        for (rpm, color, text) in labels {
-            let line_x = tf.position_from_point_x(rpm);
-            let galley = painter.layout_no_wrap(text, font.clone(), color);
-            let sz = galley.size();
-            // Right of the line by `gap`; flip to the left if it would overflow the edge.
-            let mut x = line_x + gap;
-            if x + sz.x > frame.right() { x = line_x - gap - sz.x; }
-            let mut y = frame.bottom() - gap - sz.y;
-            let mut rect = egui::Rect::from_min_size(pos2(x, y), sz);
-            while placed.iter().any(|r| r.intersects(rect.expand(1.0))) {
-                y -= sz.y + 2.0;
-                rect = egui::Rect::from_min_size(pos2(x, y), sz);
-            }
-            placed.push(rect);
-            painter.galley(pos2(x, y), galley, color);
-        }
+        if let Some([rpm, v]) = peak_power  { labels.push((rpm, GRAPH_POWER, format!("{:.0} PS", v))); }
+        if let Some([rpm, v]) = peak_torque { labels.push((rpm, GRAPH_TORQUE, format!("{:.0} Nm", v))); }
+        if let Some([rpm, v]) = peak_boost  { labels.push((rpm, GRAPH_BOOST, format!("{:.2}", v))); }
+        paint_peak_labels(&plot_ui, &resp.transform, labels);
     }
-
-    if compact && !app.config.hide_widget_titles {
-        // Title painted over the plot's top-left corner (no vertical space cost).
-        let pos = plot_rect.min + vec2(4.0, 2.0);
-        let galley = ui.painter().layout_no_wrap(
-            tr("Power Graph").to_uppercase(),
-            egui::FontId::proportional(12.0),
-            crate::theme::ACCENT,
-        );
-        if app.config.power_graph_show_grid {
-            // Gridlines run under the title — back it with a small filled box so it
-            // stays readable. Only drawn when the grid is on.
-            let bg_rect = egui::Rect::from_min_size(pos, galley.size()).expand(3.0);
-            ui.painter().rect_filled(bg_rect, 3.0, egui::Color32::from_black_alpha(160));
-        }
-        ui.painter().galley(pos, galley, crate::theme::ACCENT);
-    }
+    paint_compact_graph_title(ui, app, plot_rect, title);
 }
 
 fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
-    if !app.config.hide_widget_titles {
-        ui.heading(tr("Boost Graph"));
-        ui.add_space(4.0);
-    }
+    let compact = app.config.power_graph_compact;
+    let title = tr("Boost Graph");
+    let plot_rect = graph_module_rect(ui, app, title);
 
-    let saved_curve = app.saved_power_curve.as_ref();
-
-    // Same forced-induction visibility rule as the Power Curve tab:
-    // Detection ON  → show boost only when positive pressure was actually captured.
-    // Detection OFF → always show boost (no filtering).
-    let has_boost_data = if app.config.power_curve_forced_induction {
-        app.power_capture.boost_series.iter().any(|&[_, v]| v > 0.05)
-            || saved_curve
-                .map(|curve| curve.boost_series.iter().any(|&[_, v]| v > 0.05))
-                .unwrap_or(false)
-            || (app.config.power_curve_save_fi_state && app.fi_detected)
-    } else {
-        true
-    };
-
-    // Live capture, falling back to the saved reference curve.
-    let boost_series: &[[f64; 2]] = if !app.power_capture.boost_series.is_empty() {
-        &app.power_capture.boost_series
-    } else if let Some(curve) = saved_curve {
-        &curve.boost_series
-    } else {
-        &[]
-    };
-
-    // Forced-induction detection controls only whether bars are plotted; the
-    // plot itself (axes/grid) always renders.
-    let plot_bars = has_boost_data && !boost_series.is_empty();
-
-    let engine_max_rpm = if app.cached_engine_max_rpm > 0.0 {
-        app.cached_engine_max_rpm
-    } else {
-        8000.0
-    };
+    // Forced-induction detection controls only whether bars are plotted; the plot itself
+    // (axes/grid) always renders, with a dim note in place of the bars.
+    let (boost_series, boost_ok) = dashboard_boost_series(app);
+    let plot_bars = boost_ok && !boost_series.is_empty();
 
     let use_bar = app.config.use_bar;
     let step = app.config.power_curve_step as f64;
-    let max_boost = boost_series
-        .iter()
-        .map(|&[_, psi]| if use_bar { psi * 0.0689476 } else { psi })
-        .fold(0.0_f64, f64::max);
-    let min_headroom = if use_bar { 0.25 } else { 3.0 };
-    let boost_top = if max_boost.is_finite() {
-        max_boost + (max_boost.abs() * 0.15).max(min_headroom)
-    } else {
-        min_headroom
-    };
-
-    let bars: Vec<Bar> = if plot_bars {
+    let values: Vec<[f64; 2]> = if plot_bars {
         boost_series
             .iter()
-            .map(|&[rpm, psi]| {
-                let val = if use_bar { psi * 0.0689476 } else { psi };
-                Bar::new(rpm, val)
-                    .fill(Color32::from_rgb(180, 80, 220))
-                    .width(step * 0.8)
-            })
+            .map(|&[rpm, psi]| [rpm, if use_bar { psi * PSI_TO_BAR } else { psi }])
             .collect()
     } else {
         Vec::new()
     };
+    let max_boost = values.iter().map(|&[_, v]| v).fold(0.0_f64, f64::max);
+    let min_headroom = if use_bar { 0.25 } else { 3.0 };
+    let boost_top = max_boost + (max_boost.abs() * 0.15).max(min_headroom);
+    let peak_boost = series_peak(&values);
+    // Highest recorded RPM (only when bars are actually shown).
+    let data_max_rpm = values.iter().map(|&[rpm, _]| rpm).fold(0.0_f64, f64::max);
+
+    let bars: Vec<Bar> = values
+        .iter()
+        .map(|&[rpm, v]| Bar::new(rpm, v).fill(GRAPH_BOOST).width(step * 0.8))
+        .collect();
 
     let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
-    // Left/right padding for the rotated y-axis label's overhang (see show_power_graph_widget).
-    let mut plot_rect = ui.available_rect_before_wrap();
-    plot_rect.min.x += 8.0;
-    plot_rect.max.x -= 8.0;
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
-    // Highest recorded RPM (only when bars are actually shown).
-    let data_max_rpm = if plot_bars {
-        boost_series.iter().map(|&[rpm, _]| rpm).fold(0.0_f64, f64::max)
-    } else {
-        0.0
-    };
-    let mut plot = Plot::new("dash_boost_graph")
-        .x_axis_label(tr("RPM"))
-        .y_axis_label(boost_label)
-        // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
-        .set_margin_fraction(egui::vec2(0.0, 0.05))
-        .include_x(0.0)
-        .include_y(0.0)
-        .include_y(boost_top)
-        .allow_drag(false)
-        .allow_zoom(false)
-        .allow_scroll(false)
-        .allow_boxed_zoom(false);
-    // Right edge: 1000 RPM past the highest recorded point (full rev range when empty).
-    plot = if data_max_rpm > 0.0 {
-        plot.include_x(data_max_rpm + 1000.0)
-    } else {
-        plot.include_x(engine_max_rpm)
-    };
-    plot.show(&mut plot_ui, |plot_ui| {
+    let mut plot = graph_plot(app, "dash_boost_graph", data_max_rpm).include_y(boost_top);
+    if !compact {
+        plot = plot.custom_y_axes(vec![AxisHints::new_y().label(boost_label)]);
+    }
+    let resp = plot.show(&mut plot_ui, |plot_ui| {
         if !bars.is_empty() {
-            plot_ui.bar_chart(BarChart::new(tr("Boost"), bars));
+            plot_ui.bar_chart(BarChart::new(boost_label, bars));
+        }
+        if compact {
+            if let Some([rpm, _]) = peak_boost {
+                plot_ui.vline(egui_plot::VLine::new("", rpm).color(GRAPH_BOOST).width(1.0));
+            }
         }
     });
+
+    if compact {
+        if let Some([rpm, v]) = peak_boost {
+            paint_peak_labels(&plot_ui, &resp.transform, vec![(rpm, GRAPH_BOOST, format!("{:.2}", v))]);
+        }
+    }
+    if !plot_bars {
+        // Naturally aspirated (or nothing captured yet) — say so instead of an empty chart.
+        let frame = *resp.transform.frame();
+        plot_ui.painter().with_clip_rect(frame).text(
+            frame.center(),
+            egui::Align2::CENTER_CENTER,
+            tr("No boost detected"),
+            egui::FontId::proportional(12.0),
+            crate::theme::TEXT_DIM,
+        );
+    }
+    paint_compact_graph_title(ui, app, plot_rect, title);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
