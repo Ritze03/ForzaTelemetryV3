@@ -16,12 +16,8 @@ pub fn show_backfire(ui: &mut Ui, app: &mut ForzaApp) {
 
                 // ── General ──────────────────────────────────────────────
                 crate::theme::card(ui, tr("General"), |ui| {
-                    crate::theme::checkbox_row(ui, &mut app.config.backfire_enabled, tr("Enabled"));
-                    ui.label(
-                        RichText::new(tr("Only works in Online Mode"))
-                            .size(11.0)
-                            .color(Color32::GRAY),
-                    );
+                    crate::theme::checkbox_row(ui, &mut app.config.backfire_enabled, tr("Enabled"))
+                        .on_hover_text(tr("Only works in Online Mode"));
                 });
 
                 // ── RPM Range ────────────────────────────────────────────

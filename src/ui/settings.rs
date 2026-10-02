@@ -17,6 +17,15 @@ fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// [`control_row`] with a tooltip on the label (the explanation that would otherwise be a
+/// helper line under the control; see the styling guide's "No helper text under options").
+fn control_row_tip(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui)) {
+    ui.columns(2, |c| {
+        crate::theme::row_label(&mut c[0], label).on_hover_text(tip);
+        c[1].horizontal(|ui| right(ui));
+    });
+}
+
 /// Natural width of a [`crate::theme::styled_radio`] mark + `label`, for use as a
 /// shared `col_w` (see [`crate::theme::styled_radio_w`]) so a set of radio rows lines
 /// up into columns.
@@ -50,8 +59,8 @@ fn status_dot(ui: &mut Ui, dot: Dot, msg: &str) {
     });
 }
 
-/// A small grey hint line under a control.
-fn hint(ui: &mut Ui, text: &str) {
+/// A small grey status line (a Test result, a source note), never an option explanation.
+fn result_line(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(11.0).color(Color32::GRAY));
 }
 
@@ -147,7 +156,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             });
 
             crate::theme::card(right, tr("Network"), |ui| {
-                control_row(ui, tr("Listen port"), |ui| {
+                control_row_tip(ui, tr("Listen port"), tr("Avoid ports 5200–5300 (used by the game)."), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let changed = app.pending_port != app.config.listen_port;
                         let btn = egui::Button::new(tr("Apply")).fill(if changed {
@@ -162,7 +171,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                         ui.add(egui::DragValue::new(&mut app.pending_port).range(1024..=65535));
                     });
                 });
-                hint(ui, tr("Avoid ports 5200–5300 (used by the game)."));
                 crate::theme::checkbox_row(ui, &mut app.config.experimental_pause_detection, tr("Experimental pause detection"))
                     .on_hover_text(tr("Detects the garage and menus by a level, motionless car with the handbrake fully on. May miss a garage view where the car is rotated."));
             });
@@ -709,7 +717,7 @@ fn import_source_col(ui: &mut Ui, app: &mut ForzaApp) {
             recompute_import_present(app);
         }
     } else {
-        hint(ui, tr("Using a bundled preset as the source."));
+        result_line(ui, tr("Using a bundled preset as the source."));
     }
 }
 
@@ -833,15 +841,14 @@ fn hotkey_card(ui: &mut Ui, app: &mut ForzaApp) {
             };
             control_row(ui, tr(action.label()), |ui| {
                 let h = ui.spacing().interact_size.y;
-                let resp = ui.add_sized([ui.available_width(), h], egui::Button::new(text));
+                let resp = ui
+                    .add_sized([ui.available_width(), h], egui::Button::new(text))
+                    .on_hover_text(tr("Esc cancels. Backspace clears the binding."));
                 if resp.clicked() {
                     app.rebinding = if capturing { None } else { Some(action) };
                 }
                 app.track_rebind_button(action, &resp);
             });
-            if capturing {
-                hint(ui, tr("Esc cancels. Backspace clears the binding."));
-            }
         }
     }
     // Key capture (bind / Backspace unbind / Esc cancel) is `ForzaApp::capture_rebind`,
@@ -880,7 +887,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
         {
             use crate::config::FocusMethod;
             let method_before = app.config.hotkeys.focus_method;
-            control_row(ui, tr("Window Detection Method"), |ui| {
+            control_row_tip(ui, tr("Window Detection Method"), tr("Requires the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."), |ui| {
                 egui::ComboBox::from_id_salt("hk_focus_method")
                     .selected_text(match app.config.hotkeys.focus_method {
                         FocusMethod::Hyprland => "Hyprland",
@@ -900,7 +907,6 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
                 app.focus_preview.clear(); // a preview from the old method would mislead
             }
             if app.config.hotkeys.focus_method == FocusMethod::Gnome {
-                hint(ui, tr("Requires the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."));
                 control_row(ui, tr("Active window"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(tr("Test")).clicked() {
@@ -909,7 +915,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
                     });
                 });
                 if !app.focus_preview.is_empty() {
-                    hint(ui, &format!("\u{2192} {}", app.focus_preview));
+                    result_line(ui, &format!("\u{2192} {}", app.focus_preview));
                 }
             }
             if app.config.hotkeys.focus_method == FocusMethod::Custom {
@@ -922,7 +928,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
                     });
                 });
                 if !app.focus_preview.is_empty() {
-                    hint(ui, &format!("\u{2192} {}", app.focus_preview));
+                    result_line(ui, &format!("\u{2192} {}", app.focus_preview));
                 }
             }
         }
@@ -993,5 +999,5 @@ fn repo_card(ui: &mut Ui) {
         tr("Trystero — Dan Motzenbecker (MIT), P2P co-op design"),
         "https://github.com/dmotz/trystero",
     );
-    hint(ui, tr("Font licences: assets/fonts/"));
+    result_line(ui, tr("Font licences: assets/fonts/"));
 }

@@ -42,7 +42,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
 // ── Small shared pieces ──────────────────────────────────────────────────────
 
-/// A small grey hint line (Setup's `hint`).
+/// A small status line (a Test result). Never an option explanation: those are tooltips.
 fn hint(ui: &mut Ui, text: &str) {
     hint_col(ui, text, Color32::GRAY);
 }
@@ -69,34 +69,46 @@ fn control_row<R>(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui) -> R) ->
     })
 }
 
-/// A 0–1 fraction edited as a percentage slider row.
-fn pct_row(ui: &mut Ui, label: &str, v: &mut f32, lo: f32, hi: f32, step: f64) {
+/// [`control_row`] with a tooltip on the label (the explanation, instead of a helper line).
+fn control_row_tip<R>(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.columns(2, |c| {
+        theme::row_label(&mut c[0], label).on_hover_text(tip);
+        c[1].horizontal(right).inner
+    })
+}
+
+/// A 0–1 fraction edited as a percentage slider row; `tip` is shown on hover.
+fn pct_row(ui: &mut Ui, label: &str, v: &mut f32, lo: f32, hi: f32, step: f64, tip: Option<&str>) {
     let mut p = *v * 100.0;
-    if theme::slider_row(ui, label, &mut p, lo..=hi, step, 1, "%").changed() {
+    let resp = theme::slider_row(ui, label, &mut p, lo..=hi, step, 1, "%");
+    if resp.changed() {
         *v = p / 100.0;
+    }
+    if let Some(t) = tip {
+        resp.on_hover_text(t);
     }
 }
 
 /// A module card: greyed out while the overlay is off (the mockup's `card.off`), its body
-/// greyed while the module's own "Enabled" is off. `footer` is a hint outside the greyed body.
+/// greyed while the module's own "Enabled" is off. `tip` is the tooltip of its "Enabled" box.
 fn module_card(
     ui: &mut Ui,
     app: &mut ForzaApp,
     title: &str,
     on: fn(&mut OverlayConfig) -> &mut bool,
-    footer: Option<&str>,
+    tip: Option<&str>,
     body: impl FnOnce(&mut Ui, &mut ForzaApp),
 ) {
     let overlay_on = app.config.overlay.enabled;
     ui.add_enabled_ui(overlay_on, |ui| {
         theme::card(ui, title, |ui| {
             let flag = on(&mut app.config.overlay);
-            theme::checkbox_row(ui, flag, tr("Enabled"));
+            let resp = theme::checkbox_row(ui, flag, tr("Enabled"));
+            if let Some(text) = tip {
+                resp.on_hover_text(text);
+            }
             let module_on = *flag;
             ui.add_enabled_ui(module_on, |ui| body(ui, app));
-            if let Some(text) = footer {
-                hint(ui, text);
-            }
         });
     });
 }
@@ -107,17 +119,17 @@ fn general(ui: &mut Ui, app: &mut ForzaApp) {
     theme::card(ui, tr("General"), |ui| {
         // The overlay is Linux only (layer-shell or X11): greyed out elsewhere.
         ui.add_enabled_ui(cfg!(target_os = "linux"), |ui| {
-            theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay"));
+            theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay"))
+                .on_hover_text(tr("The HUD hides by itself while the game is paused."));
         });
         overlay_status_line(ui, app);
         hide_hud_row(ui, app);
         let o = &mut app.config.overlay;
-        pct_row(ui, tr("Scale"), &mut o.scale, 50.0, 200.0, 5.0);
-        pct_row(ui, tr("Plate opacity"), &mut o.plate_opacity, 0.0, 100.0, 1.0);
+        pct_row(ui, tr("Scale"), &mut o.scale, 50.0, 200.0, 5.0, None);
+        pct_row(ui, tr("Plate opacity"), &mut o.plate_opacity, 0.0, 100.0, 1.0, None);
         theme::checkbox_row(ui, &mut o.fade, tr("Fade on show / hide"));
         theme::checkbox_row(ui, &mut o.focus_only, tr("Only when game window is focused"))
             .on_hover_text(tr("Hides the HUD while another window is focused. Uses the Window Detection method set in Setup."));
-        hint(ui, tr("The HUD hides by itself while the game is paused."));
     });
 }
 
@@ -158,14 +170,13 @@ fn hide_hud_row(ui: &mut Ui, app: &mut ForzaApp) {
             btn = btn.stroke(Stroke::new(1.0, theme::ACCENT));
         }
         ui.add_sized([ui.available_width(), ui.spacing().interact_size.y], btn)
+            .on_hover_text(tr("Esc cancels. Backspace clears the binding."))
     });
     if resp.clicked() {
         app.rebinding = if capturing { None } else { Some(action) };
     }
     app.track_rebind_button(action, &resp);
-    if capturing {
-        hint(ui, tr("Esc cancels. Backspace clears the binding."));
-    } else if let Some(b) = binding {
+    if let (false, Some(b)) = (capturing, binding) {
         let clash = HotkeyAction::ALL
             .iter()
             .find(|&&a| a != action && app.config.hotkeys.bindings.get(&a) == Some(&b));
@@ -189,6 +200,8 @@ fn method_label(m: MonitorMethod) -> &'static str {
     })
 }
 
+const READ_WHILE_FOCUSED: &str = "Read only while Forza is the active window. Otherwise the HUD stays where it was.";
+
 fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
     // Last Test / Detect result, kept in egui memory (UI-only, not config).
     let test_id = Id::new("overlay_monitor_test");
@@ -196,7 +209,14 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
     theme::card(ui, tr("Monitor Detection"), |ui| {
         let o = &mut app.config.overlay;
         let before = o.monitor_method;
-        control_row(ui, tr("Method"), |ui| {
+        let method_tip = match o.monitor_method {
+            MonitorMethod::Hyprland => {
+                format!("{}\n{}", tr("Runs hyprctl activeworkspace and reads the monitor it names."), tr(READ_WHILE_FOCUSED))
+            }
+            MonitorMethod::Custom => tr(READ_WHILE_FOCUSED).to_string(),
+            MonitorMethod::Fixed => String::new(),
+        };
+        control_row_tip(ui, tr("Method"), &method_tip, |ui| {
             egui::ComboBox::from_id_salt("overlay_monitor_method")
                 .selected_text(method_label(o.monitor_method))
                 .width(ui.available_width())
@@ -210,11 +230,9 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
             test = None; // a result from the old method would mislead
         }
         match o.monitor_method {
-            MonitorMethod::Hyprland => {
-                hint(ui, tr("Runs hyprctl activeworkspace and reads the monitor it names."));
-            }
+            MonitorMethod::Hyprland => {}
             MonitorMethod::Custom => {
-                control_row(ui, tr("Command"), |ui| {
+                control_row_tip(ui, tr("Command"), tr("Must print one monitor name, e.g. DP-1."), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(tr("Test")).clicked() {
                             test = Some(crate::focus::query_monitor(o.monitor_method, &o.monitor_cmd));
@@ -226,10 +244,9 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
                         );
                     });
                 });
-                hint(ui, tr("Must print one monitor name, e.g. DP-1."));
             }
             MonitorMethod::Fixed => {
-                control_row(ui, tr("Monitor"), |ui| {
+                control_row_tip(ui, tr("Monitor"), tr("The output name, e.g. DP-1. Empty = the first monitor."), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Fills the field with the monitor Hyprland reports as focused: the one
                         // this window is on when you click.
@@ -246,11 +263,7 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
                         );
                     });
                 });
-                hint(ui, tr("The output name, e.g. DP-1. Empty = the first monitor."));
             }
-        }
-        if o.monitor_method != MonitorMethod::Fixed {
-            hint(ui, tr("Read only while Forza is the active window. Otherwise the HUD stays where it was."));
         }
         match &test {
             Some(Ok(name)) => hint(ui, &format!("\u{2192} {name}")),
@@ -420,11 +433,9 @@ fn layout(ui: &mut Ui, app: &mut ForzaApp) {
         let sel_id = Id::new(LAYOUT_SEL_KEY);
         let mut sel: Option<Module> = ui.data(|d| d.get_temp(sel_id)).flatten();
         layout_grid(ui, o, &mut sel);
-        hint(ui, tr("Drag a module onto a cell. Or select one, then click a cell or use the arrow keys."));
-        hint(ui, tr("Modules in one cell stack from the screen edge inward: Minimap, then Drive cluster, then Race / Drift."));
-        theme::slider_row(ui, tr("Edge margin"), &mut o.margin_px, 0.0..=200.0, 1.0, 0, " px");
-        theme::slider_row(ui, tr("Module spacing"), &mut o.gap_px, 0.0..=60.0, 1.0, 0, " px");
-        hint(ui, tr("In pixels at 1080p. Both scale with the resolution and the HUD scale."));
+        let px_tip = tr("In pixels at 1080p. Both scale with the resolution and the HUD scale.");
+        theme::slider_row(ui, tr("Edge margin"), &mut o.margin_px, 0.0..=200.0, 1.0, 0, " px").on_hover_text(px_tip);
+        theme::slider_row(ui, tr("Module spacing"), &mut o.gap_px, 0.0..=60.0, 1.0, 0, " px").on_hover_text(px_tip);
         if ui.add(theme::secondary_button(tr("Reset layout"))).clicked() {
             o.reset_layout();
             sel = None;
@@ -464,7 +475,13 @@ fn layout_grid(ui: &mut Ui, o: &mut OverlayConfig, sel: &mut Option<Module>) {
     // Cells first, so the chips drawn after them sit on top for hover and clicks.
     for cell in HudCell::ALL {
         let r = cell_rect(cell);
-        let resp = ui.interact(r, Id::new(("overlay_cell", cell as usize)), Sense::click());
+        let resp = ui
+            .interact(r, Id::new(("overlay_cell", cell as usize)), Sense::click())
+            .on_hover_text(format!(
+                "{}\n{}",
+                tr("Drag a module onto a cell. Or select one, then click a cell or use the arrow keys."),
+                tr("Modules in one cell stack from the screen edge inward: Minimap, then Drive cluster, then Race / Drift."),
+            ));
         if let (true, Some(m)) = (resp.clicked(), *sel) {
             move_to = Some((m, cell));
             *sel = None; // placed: the mockup drops the selection
@@ -587,16 +604,22 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
         } else {
             tr("Show engine RPM instead of KM/H label")
         };
-        theme::checkbox_row(ui, &mut o.rpm_label, rpm_label);
-        hint(ui, tr("The speed stays. Only the unit text changes."));
-        theme::checkbox_row(ui, &mut o.speed_hold, tr("Update speed only every 0.5 s"));
-        hint(ui, tr("Calmer to read. Gear and revs stay live."));
+        theme::checkbox_row(ui, &mut o.rpm_label, rpm_label).on_hover_text(tr("The speed stays. Only the unit text changes."));
+        theme::checkbox_row(ui, &mut o.speed_hold, tr("Update speed only every 0.5 s"))
+            .on_hover_text(tr("Calmer to read. Gear and revs stay live."));
         theme::checkbox_row(ui, &mut o.shift_flash, tr("Shift flash"));
         theme::checkbox_row(ui, &mut o.gear_pulse, tr("Gear-change pulse"));
-        pct_row(ui, tr("Redline at (max rpm)"), &mut o.redline_frac, 50.0, 100.0, 0.5);
-        hint(ui, tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Reset RPM Calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\"."));
-        pct_row(ui, tr("Shift cue before calibration"), &mut o.shift_frac, 50.0, 100.0, 0.5);
-        hint(ui, tr("Until the first full pull and manual upshift in a car, both use the game's max rpm and this fallback."));
+        let redline_tip = tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Reset RPM Calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\".");
+        pct_row(ui, tr("Redline at (max rpm)"), &mut o.redline_frac, 50.0, 100.0, 0.5, Some(redline_tip));
+        pct_row(
+            ui,
+            tr("Shift cue before calibration"),
+            &mut o.shift_frac,
+            50.0,
+            100.0,
+            0.5,
+            Some(tr("Until the first full pull and manual upshift in a car, both use the game's max rpm and this fallback.")),
+        );
     });
 }
 
@@ -612,27 +635,27 @@ fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 fn race(ui: &mut Ui, app: &mut ForzaApp) {
-    let footer = tr("Swaps to the drift counter by itself when drifting is detected. Placed as Race / Drift in Layout.");
-    module_card(ui, app, tr("Race Block"), |o| &mut o.race_on, Some(footer), |ui, app| {
+    let tip = tr("Swaps to the drift counter by itself when drifting is detected. Placed as Race / Drift in Layout.");
+    module_card(ui, app, tr("Race Block"), |o| &mut o.race_on, Some(tip), |ui, app| {
         let o = &mut app.config.overlay;
         theme::checkbox_row(ui, &mut o.lap_delta, tr("Lap delta chip"));
-        theme::checkbox_row(ui, &mut o.place_colour, tr("Place-change colour"));
-        hint(ui, tr("Green fade when you gain a place, red when you lose one."));
+        theme::checkbox_row(ui, &mut o.place_colour, tr("Place-change colour"))
+            .on_hover_text(tr("Green fade when you gain a place, red when you lose one."));
     });
 }
 
 fn drift(ui: &mut Ui, app: &mut ForzaApp) {
-    module_card(ui, app, tr("Drift Counter"), |o| &mut o.drift_on, None, |ui, app| {
+    let tip = tr("Replaces the race block automatically while you drift, in the same spot.");
+    module_card(ui, app, tr("Drift Counter"), |o| &mut o.drift_on, Some(tip), |ui, app| {
         let o = &mut app.config.overlay;
-        control_row(ui, tr("Style"), |ui| {
+        let style_tip = tr("Position + Gain shows your place and the points of the last interval, counting up. Total shows the event score, which Forza also shows itself.");
+        control_row_tip(ui, tr("Style"), style_tip, |ui| {
             theme::styled_radio(ui, &mut o.drift_style, DriftStyle::PositionGain, tr("Position + Gain"));
             theme::styled_radio(ui, &mut o.drift_style, DriftStyle::Total, tr("Total score"));
         });
-        hint(ui, tr("Position + Gain shows your place and the points of the last interval, counting up. Total shows the event score, which Forza also shows itself."));
         theme::slider_row(ui, tr("Gain chip interval"), &mut o.drift_chip_secs, 1.0..=10.0, 1.0, 0, " s");
         let bar = format!("{} ({:.0} s)", tr("Progress bar"), o.drift_chip_secs);
         theme::checkbox_row(ui, &mut o.drift_bar, bar);
-        hint(ui, tr("Replaces the race block automatically while you drift, in the same spot."));
     });
 }
 

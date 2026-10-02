@@ -258,6 +258,29 @@ than a fixed pixel width, so they don't get clipped inside a narrow card. Pin a
 trailing button to the right with a `right_to_left` layout and let the field take the
 rest.
 
+## No helper text under options
+
+Do not put explanatory text under (or beside) an individual option. Put it in a
+**tooltip** on the control or its label, and keep helper text rare.
+
+```rust
+// checkbox / button / any control: attach to the returned Response
+theme::checkbox_row(ui, &mut o.speed_hold, tr("Update speed only every 0.5 s"))
+    .on_hover_text(tr("Calmer to read. Gear and revs stay live."));
+// a row whose control is a closure: tooltip on the label (control_row_tip in the tabs)
+control_row_tip(ui, tr("Listen port"), tr("Avoid ports 5200–5300 (used by the game)."), |ui| { /* … */ });
+```
+
+If the control already has a tooltip, merge the texts into one.
+
+**Exception:** short text the user must see without hovering stays: a warning
+(`DANGER` / `WARN`, e.g. a key bound twice, "HUD is hidden"), a runtime status (overlay
+state, permission missing, a Test result, a live readout such as the backfire RPM range).
+These describe a state, not an option.
+
+**Why:** the user found text under every option bloated the UI (the Overlay tab in
+particular). Tooltips keep the layout compact and the explanation is one hover away.
+
 ## Fonts
 
 The app renders in Geist Mono. Values/readouts stay monospace so columns line up;
