@@ -235,6 +235,38 @@ impl Default for HotkeyConfig {
     }
 }
 
+// ── Gamepad ──────────────────────────────────────────────────────────────────
+
+/// Controller settings (Setup → Controller). Struct-level `serde(default)`: an older config
+/// or preset without the object (or with missing fields) falls back to these defaults.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct GamepadConfig {
+    /// Read controllers at all (bindings and the right-stick vector). See `docs/features/gamepad.md`.
+    pub enabled: bool,
+    /// Radial deadzone of the sticks, 0..0.5 of full deflection.
+    pub stick_deadzone: f32,
+    /// Trigger deadzone, 0..0.5 of full travel.
+    pub trigger_deadzone: f32,
+    /// Controller input bound to each global action. Absent = not bound (the default).
+    pub bindings: HashMap<HotkeyAction, crate::gamepad::PadControl>,
+}
+
+impl Default for GamepadConfig {
+    fn default() -> Self {
+        Self { enabled: true, stick_deadzone: 0.15, trigger_deadzone: 0.10, bindings: HashMap::new() }
+    }
+}
+
+impl GamepadConfig {
+    /// Bind `control` to `action`; the control is taken away from any other action
+    /// (one press = one action).
+    pub fn bind(&mut self, action: HotkeyAction, control: crate::gamepad::PadControl) {
+        self.bindings.retain(|_, c| *c != control);
+        self.bindings.insert(action, control);
+    }
+}
+
 // ── HUD overlay ──────────────────────────────────────────────────────────────
 
 /// One slot of the HUD's 3×3 screen grid (D19/D26), row-major. Slots are relative to the
@@ -758,6 +790,9 @@ pub struct AppConfig {
     // Hotkeys (global + app-focused rebindable shortcuts + focus detection)
     #[serde(default)]
     pub hotkeys: HotkeyConfig,
+    // Controller (gamepad bindings + deadzones, Setup → Controller)
+    #[serde(default)]
+    pub gamepad: GamepadConfig,
     // DSG automatic gearbox
     pub dsg_enabled: bool,
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
@@ -896,6 +931,7 @@ impl Default for AppConfig {
             backfire_drift_detection: true,
             inputs_filter_backfire_accel: true,
             hotkeys: HotkeyConfig::default(),
+            gamepad: GamepadConfig::default(),
             dsg_enabled: false,
             dsg_shift_rpm_pct: 98.0,
             dsg_upshift_speed_pct: 80.0,
@@ -1108,7 +1144,7 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
     KeyGroup { section: "Dashboard", name: "Mini-settings",    keys: MINISETTINGS_KEYS },
     KeyGroup { section: "Settings",  name: "Network",          keys: NETWORK_KEYS },
     KeyGroup { section: "Settings",  name: "Display",          keys: DISPLAY_KEYS },
-    KeyGroup { section: "Settings",  name: "Hotkeys & Input",  keys: &["hotkeys"] },
+    KeyGroup { section: "Settings",  name: "Hotkeys & Input",  keys: &["hotkeys", "gamepad"] },
     KeyGroup { section: "Settings",  name: "Co-Op",            keys: COOP_KEYS },
     KeyGroup { section: "Tuning",    name: "Backfire",         keys: BACKFIRE_KEYS },
     KeyGroup { section: "Tuning",    name: "Automatic Gearbox", keys: DSG_KEYS },

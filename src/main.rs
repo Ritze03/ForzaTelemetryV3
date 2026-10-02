@@ -5,6 +5,7 @@ mod config;
 mod coop;
 mod engines;
 mod focus;
+mod gamepad;
 mod gamedata;
 mod hotkeys;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // drawn only by the Linux overlay

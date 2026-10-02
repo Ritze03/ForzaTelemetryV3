@@ -45,6 +45,7 @@ pub fn probe_status() -> HotkeyStatus {
 
 pub struct HotkeyListener {
     binds: Bindings,
+    tx: std::sync::mpsc::Sender<HotkeyAction>,
 }
 
 impl HotkeyListener {
@@ -55,9 +56,12 @@ impl HotkeyListener {
     pub fn new(initial: Vec<(HotkeyBinding, HotkeyAction)>) -> (Self, Receiver<HotkeyAction>) {
         let binds: Bindings = Arc::new(Mutex::new(initial));
         let (tx, rx) = std::sync::mpsc::channel();
-        backend::spawn(binds.clone(), tx);
-        (HotkeyListener { binds }, rx)
+        backend::spawn(binds.clone(), tx.clone());
+        (HotkeyListener { binds, tx }, rx)
     }
+    /// A sender into the same action channel, for other input sources (the gamepad), so
+    /// they pass through the listener thread's focus gate exactly like keyboard hotkeys.
+    pub fn action_sender(&self) -> std::sync::mpsc::Sender<HotkeyAction> { self.tx.clone() }
     pub fn set_bindings(&self, b: Vec<(HotkeyBinding, HotkeyAction)>) { *self.binds.lock().unwrap() = b; }
 }
 
