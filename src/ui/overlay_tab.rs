@@ -22,10 +22,10 @@ type CardFn = fn(&mut Ui, &mut ForzaApp);
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     let cols: &[&[CardFn]] = if ui.available_width() >= THREE_COLS_MIN_W {
-        &[&[general, monitor], &[layout, race, drift], &[cluster, minimap]]
+        &[&[general, monitor], &[layout, race, drift], &[cluster, minimap, notifications]]
     } else {
         // Layout first: it's the one card you can't find by scrolling past settings.
-        &[&[layout, general, monitor], &[cluster, minimap, race, drift]]
+        &[&[layout, general, monitor], &[cluster, minimap, race, drift, notifications]]
     };
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
@@ -657,6 +657,41 @@ fn drift(ui: &mut Ui, app: &mut ForzaApp) {
         let bar = format!("{} ({:.0} s)", tr("Progress bar"), o.drift_chip_secs);
         theme::checkbox_row(ui, &mut o.drift_bar, bar);
     });
+}
+
+/// D26: the master switch and the stack's anchor. The per-event toggles live in
+/// Mini-Settings → Overlay (`app.rs`), where they're one click from the game.
+fn notifications(ui: &mut Ui, app: &mut ForzaApp) {
+    module_card(ui, app, tr("Notifications"), |o| &mut o.notif_on, None, |ui, app| {
+        ui.label(theme::section_label(tr("Position")));
+        anchor_picker(ui, &mut app.config.overlay.notif_cell);
+    });
+}
+
+/// A small 3×3 picker for one [`HudCell`]: click a cell to anchor there.
+fn anchor_picker(ui: &mut Ui, cell: &mut HudCell) {
+    let w = ui.available_width().min(220.0);
+    let (grid, _) = ui.allocate_exact_size(vec2(w, w * 9.0 / 16.0), Sense::hover());
+    ui.painter().rect(grid, 6.0, theme::FIELD, Stroke::new(1.0, theme::BTNBD), egui::StrokeKind::Inside);
+    let inner = grid.shrink(GRID_GAP);
+    let size = (inner.size() - Vec2::splat(2.0 * GRID_GAP)) / 3.0;
+    for c in HudCell::ALL {
+        let at = vec2(c.col() as f32, c.row() as f32) * (size + Vec2::splat(GRID_GAP));
+        let r = Rect::from_min_size(inner.min + at, size);
+        let resp = ui
+            .interact(r, Id::new(("notif_cell", c as usize)), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        if resp.clicked() {
+            *cell = c;
+        }
+        if *cell == c {
+            ui.painter().rect(r, 4.0, theme::SEL, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+            ui.painter().circle_filled(r.center(), 4.0, theme::ACCENT);
+        } else {
+            let (fill, stroke) = if resp.hovered() { (theme::SEL, theme::ACCENT) } else { (Color32::TRANSPARENT, theme::BORDER) };
+            ui.painter().rect(r, 4.0, fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+        }
+    }
 }
 
 #[cfg(test)]
