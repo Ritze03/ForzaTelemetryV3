@@ -165,7 +165,8 @@ pub struct PadParams {
 impl PadParams {
     pub fn from_config(c: &crate::config::GamepadConfig) -> Self {
         let mut bindings: Vec<_> = c.bindings.iter().map(|(a, p)| (*p, *a)).collect();
-        bindings.sort_by_key(|(p, _)| p.bit()); // stable order → cheap equality
+        // Stable order → cheap equality, and actions sharing a control fire in action order.
+        bindings.sort_by_key(|(p, a)| (p.bit(), a.order()));
         PadParams { enabled: c.enabled, stick_deadzone: c.stick_deadzone, trigger_deadzone: c.trigger_deadzone, bindings }
     }
     fn deadzones(&self) -> Deadzones { Deadzones { stick: self.stick_deadzone, trigger: self.trigger_deadzone } }
@@ -749,11 +750,31 @@ mod tests {
     }
 
     #[test]
-    fn gamepad_config_bind_steals_the_control() {
+    fn gamepad_config_bind_does_not_steal_the_control() {
         let mut c = crate::config::GamepadConfig::default();
         c.bind(HotkeyAction::ToggleGearbox, PadControl::A);
         c.bind(HotkeyAction::ToggleBackfire, PadControl::A);
-        assert_eq!(c.bindings.get(&HotkeyAction::ToggleGearbox), None);
+        assert_eq!(c.bindings[&HotkeyAction::ToggleGearbox], PadControl::A);
         assert_eq!(c.bindings[&HotkeyAction::ToggleBackfire], PadControl::A);
+    }
+
+    #[test]
+    fn one_control_bound_to_two_actions_sends_both_in_action_order() {
+        let mut c = crate::config::GamepadConfig::default();
+        c.bind(HotkeyAction::ClearGearMap, PadControl::X);
+        c.bind(HotkeyAction::ResetCalibration, PadControl::X);
+        let params = PadParams::from_config(&c);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shared = Shared {
+            params: Mutex::new(params), sticks: Mutex::new(HashMap::new()), devices: Mutex::new(vec![]),
+            capture: AtomicBool::new(false), captured: Mutex::new(None), tx: Mutex::new(tx),
+            guard: Arc::default(),
+        };
+        let mut proc = Processor::default();
+        let x = PadInput { buttons: PadControl::X.bit(), ..Default::default() };
+        shared.feed(1, &mut proc, &x);
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyAction::ResetCalibration));
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyAction::ClearGearMap));
+        assert!(rx.try_recv().is_err());
     }
 }
