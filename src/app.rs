@@ -37,12 +37,16 @@ pub(crate) fn global_bindings(
     cfg: &crate::config::AppConfig,
 ) -> Vec<(crate::keymap::HotkeyBinding, crate::config::HotkeyAction)> {
     use crate::config::HotkeyScope;
-    cfg.hotkeys
+    // Action order (not HashMap order): actions sharing a key fire in a stable sequence.
+    let mut v: Vec<_> = cfg
+        .hotkeys
         .bindings
         .iter()
         .filter(|(a, _)| a.scope() == HotkeyScope::Global)
         .map(|(a, b)| (*b, *a))
-        .collect()
+        .collect();
+    v.sort_by_key(|(_, a)| a.order());
+    v
 }
 
 // ── Minimap map loading ───────────────────────────────────────────
@@ -928,13 +932,19 @@ impl ForzaApp {
         }
     }
 
-    /// Clear the whole gearbox calibration (tab button; the hotkey / controller action do
-    /// the same on the listener thread): forgets the per-gear speed map and the detected
-    /// redline, and sets the box hands-off until the driver's next manual upshift re-locks
-    /// it. The listener thread owns the calibration, so this is a command — the UI's copy
-    /// catches up with the next snapshot.
-    pub fn clear_gearbox_calibration(&self) {
-        self.listener.send(Command::ClearGearboxCalibration);
+    /// Clear the RPM (redline) calibration + engagement (tab button; the "Clear RPM
+    /// calibration" hotkey / pad action does the same on the listener thread): forgets the
+    /// detected redline and sets the box hands-off until the driver's next manual upshift
+    /// re-locks it. The per-gear speed map is left intact. The listener thread owns the
+    /// calibration, so this is a command — the UI's copy catches up with the next snapshot.
+    pub fn clear_rpm_calibration(&self) {
+        self.listener.send(Command::ClearRpmCalibration);
+    }
+
+    /// Clear the per-gear speed map (tab button; the "Clear gear map" hotkey / pad action does
+    /// the same). The detected redline is left intact.
+    pub fn clear_gear_map(&self) {
+        self.listener.send(Command::ClearGearMap);
     }
 
     /// Push current hotkey config to the live backend + focus detector. Call
@@ -1594,7 +1604,7 @@ impl eframe::App for ForzaApp {
                 if pressed { self.run_app_hotkey(action); }
             }
         }
-        // Global actions (G / B / Reset-RPM) and the synthetic-input focus gate are handled
+        // Global actions (G / B / Clear RPM / Clear gear map / Hide HUD) and the synthetic-input focus gate are handled
         // on the listener thread — they have to keep working while this loop isn't running.
         // Detect button: when the 3s countdown elapses, capture the active window.
         if let Some(t) = self.detect_until {

@@ -176,15 +176,6 @@ fn hide_hud_row(ui: &mut Ui, app: &mut ForzaApp) {
         app.rebinding = if capturing { None } else { Some(action) };
     }
     app.track_rebind_button(action, &resp);
-    if let (false, Some(b)) = (capturing, binding) {
-        let clash = HotkeyAction::ALL
-            .iter()
-            .find(|&&a| a != action && app.config.hotkeys.bindings.get(&a) == Some(&b));
-        if let Some(other) = clash {
-            let msg = format!("{} {} ({})", tr("Also bound to"), tr(other.label()), tr("Setup → Hotkey"));
-            hint_col(ui, &msg, theme::DANGER);
-        }
-    }
     if app.hud_hidden && app.config.overlay.enabled {
         hint_col(ui, tr("The HUD is hidden. Press the Hide HUD key again to show it."), theme::WARN);
     }
@@ -609,7 +600,7 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
             .on_hover_text(tr("Calmer to read. Gear and revs stay live."));
         theme::checkbox_row(ui, &mut o.shift_flash, tr("Shift flash"));
         theme::checkbox_row(ui, &mut o.gear_pulse, tr("Gear-change pulse"));
-        let redline_tip = tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Clear gearbox calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear gearbox calibration\".");
+        let redline_tip = tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Clear RPM calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\".");
         pct_row(ui, tr("Redline at (max rpm)"), &mut o.redline_frac, 50.0, 100.0, 0.5, Some(redline_tip));
         pct_row(
             ui,

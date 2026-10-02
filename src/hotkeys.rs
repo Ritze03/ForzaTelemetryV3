@@ -14,9 +14,20 @@ use crate::keymap::{HotKey, HotkeyBinding, Mods};
 /// Shared list of global bindings the backend matches against.
 pub type Bindings = Arc<Mutex<Vec<(HotkeyBinding, HotkeyAction)>>>;
 
-/// Pure match: a combo matches when its key was pressed and modifiers match exactly.
-pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods) -> Option<HotkeyAction> {
-    binds.iter().find(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a)
+/// Pure match: a combo matches when its key was pressed and modifiers match exactly. Returns
+/// **every** action bound to that combo, in list order (the app sorts the list by action
+/// order). Why all: one key may be bound to several actions and must fire all of them.
+pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods) -> Vec<HotkeyAction> {
+    binds.iter().filter(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a).collect()
+}
+
+/// Send every action bound to `key` + `mods` (the caller has already checked the rebind guard).
+/// Shared by both backends so neither can stop at the first match.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn dispatch(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods, tx: &std::sync::mpsc::Sender<HotkeyAction>) {
+    for action in match_combo(binds, key, mods) {
+        let _ = tx.send(action);
+    }
 }
 
 /// How long input sources stay muted after a rebind capture ends (see [`RebindGuard`]).
@@ -115,7 +126,7 @@ mod backend {
     use std::thread;
     use evdev::{Device, EventType, Key};
     use std::sync::Arc;
-    use super::{Bindings, RebindGuard, match_combo};
+    use super::{Bindings, RebindGuard, dispatch};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
@@ -148,10 +159,8 @@ mod backend {
                                 _ if down => {
                                     if let Some(hk) = HotKey::from_evdev(key) {
                                         let list = binds.lock().unwrap();
-                                        if let Some(action) = match_combo(&list, hk, mods) {
-                                            // Muted while a rebind capture runs (and just after).
-                                            if !guard.blocked() { let _ = tx.send(action); }
-                                        }
+                                        // Muted while a rebind capture runs (and just after).
+                                        if !guard.blocked() { dispatch(&list, hk, mods, &tx); }
                                         // Non-matching keys are dropped here — never stored/logged.
                                     }
                                 }
@@ -172,9 +181,9 @@ mod backend {
     use std::thread;
     use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use super::{Bindings, RebindGuard, match_combo};
+    use super::{Bindings, RebindGuard, dispatch};
     use crate::config::HotkeyAction;
-    use crate::keymap::Mods;
+    use crate::keymap::{HotKey, Mods};
 
     const VK_CONTROL: i32 = 0x11;
     const VK_MENU: i32 = 0x12; // Alt
@@ -193,15 +202,20 @@ mod backend {
                 let mods = Mods { ctrl: down(VK_CONTROL), alt: down(VK_MENU), shift: down(VK_SHIFT), sup: down(VK_LWIN) };
                 let list = binds.lock().unwrap().clone();
                 let muted = guard.blocked();
-                for (b, action) in &list {
-                    let vk = b.key.to_vk();
+                // One pass per distinct key (not per binding): the edge state is per key, so a
+                // per-binding pass let only the first of several bindings on one key fire.
+                let mut keys: Vec<HotKey> = Vec::new();
+                for (b, _) in &list {
+                    if !keys.contains(&b.key) { keys.push(b.key); }
+                }
+                for key in keys {
+                    let vk = key.to_vk();
                     let key_down = down(vk);
                     let was = *prev.get(&vk).unwrap_or(&false);
-                    // Rising edge of the base key, with modifiers matching now.
+                    // Rising edge of the base key, with modifiers matching now: fires every
+                    // action bound to the combo.
                     if key_down && !was && !muted {
-                        if match_combo(&list, b.key, mods) == Some(*action) {
-                            let _ = tx.send(*action);
-                        }
+                        dispatch(&list, key, mods, &tx);
                     }
                     prev.insert(vk, key_down);
                 }
@@ -237,11 +251,49 @@ mod tests {
             (bind(true, HotKey::E), HotkeyAction::DashboardEdit),
         ];
         // Plain G with no mods → gearbox.
-        assert_eq!(match_combo(&binds, HotKey::G, Mods::default()), Some(HotkeyAction::ToggleGearbox));
+        assert_eq!(match_combo(&binds, HotKey::G, Mods::default()), vec![HotkeyAction::ToggleGearbox]);
         // G but Ctrl held → no match (modifiers must match exactly).
-        assert_eq!(match_combo(&binds, HotKey::G, Mods { ctrl: true, ..Default::default() }), None);
+        assert!(match_combo(&binds, HotKey::G, Mods { ctrl: true, ..Default::default() }).is_empty());
         // Ctrl+E → dashboard.
-        assert_eq!(match_combo(&binds, HotKey::E, Mods { ctrl: true, ..Default::default() }), Some(HotkeyAction::DashboardEdit));
+        assert_eq!(match_combo(&binds, HotKey::E, Mods { ctrl: true, ..Default::default() }), vec![HotkeyAction::DashboardEdit]);
+    }
+
+    #[test]
+    fn one_key_bound_to_two_actions_sends_both_in_list_order() {
+        let binds = vec![
+            (bind(false, HotKey::F), HotkeyAction::ResetCalibration),
+            (bind(false, HotKey::G), HotkeyAction::ToggleGearbox),
+            (bind(false, HotKey::F), HotkeyAction::ClearGearMap),
+        ];
+        let (tx, rx) = std::sync::mpsc::channel();
+        dispatch(&binds, HotKey::F, Mods::default(), &tx);
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyAction::ResetCalibration));
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyAction::ClearGearMap));
+        assert!(rx.try_recv().is_err(), "the G binding does not fire");
+        // Same key, different modifiers: not part of the combo.
+        dispatch(&binds, HotKey::F, Mods { ctrl: true, ..Default::default() }, &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn global_bindings_are_sorted_by_action_order() {
+        let mut cfg = crate::config::AppConfig::default();
+        let f = bind(false, HotKey::F);
+        cfg.hotkeys.bind(HotkeyAction::ClearGearMap, f);
+        cfg.hotkeys.bind(HotkeyAction::ResetCalibration, f);
+        let list = crate::app::global_bindings(&cfg);
+        let on_f: Vec<_> = list.iter().filter(|(b, _)| b.key == HotKey::F).map(|(_, a)| *a).collect();
+        assert_eq!(on_f, vec![HotkeyAction::ResetCalibration, HotkeyAction::ClearGearMap]);
+    }
+
+    #[test]
+    fn clear_gear_map_has_no_default_key_and_unbound_stays_injectable() {
+        let mut hk = crate::config::HotkeyConfig::default();
+        assert!(!hk.bindings.contains_key(&HotkeyAction::ClearGearMap));
+        crate::config::inject_missing_hotkeys(&mut hk); // must not panic on an action without a default
+        assert!(!hk.bindings.contains_key(&HotkeyAction::ClearGearMap));
+        assert_eq!(serde_json::to_string(&HotkeyAction::ResetCalibration).unwrap(), "\"ResetCalibration\"");
+        assert_eq!(serde_json::to_string(&HotkeyAction::ClearGearMap).unwrap(), "\"ClearGearMap\"");
     }
 
     #[test]

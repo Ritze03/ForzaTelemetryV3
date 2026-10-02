@@ -87,7 +87,11 @@ impl GearboxMode {
 pub enum HotkeyAction {
     ToggleGearbox,
     ToggleBackfire,
+    /// Clear the RPM (redline) calibration. Serde name kept from the old "Reset RPM
+    /// Calibration" so saved bindings still load.
     ResetCalibration,
+    /// Clear the per-gear speed map (appended: no default key).
+    ClearGearMap,
     MiniSettings,
     DashboardEdit,
     /// Toggle the HUD overlay's visibility (D16). Runtime-only state on the listener
@@ -106,6 +110,7 @@ impl HotkeyAction {
     pub const ALL: &'static [HotkeyAction] = &[
         HotkeyAction::ToggleGearbox,
         HotkeyAction::ResetCalibration,
+        HotkeyAction::ClearGearMap,
         HotkeyAction::ToggleBackfire,
         HotkeyAction::HideHud,
         HotkeyAction::MiniSettings,
@@ -116,16 +121,23 @@ impl HotkeyAction {
             HotkeyAction::ToggleGearbox
             | HotkeyAction::ToggleBackfire
             | HotkeyAction::ResetCalibration
+            | HotkeyAction::ClearGearMap
             | HotkeyAction::HideHud => HotkeyScope::Global,
             HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => HotkeyScope::AppFocused,
         }
     }
     /// English label for the settings row.
+    /// Position in [`HotkeyAction::ALL`]: the stable order in which actions sharing one key
+    /// or pad control fire.
+    pub fn order(self) -> usize {
+        Self::ALL.iter().position(|a| *a == self).unwrap_or(usize::MAX)
+    }
     pub fn label(self) -> &'static str {
         match self {
             HotkeyAction::ToggleGearbox => "Toggle Automatic Gearbox",
             HotkeyAction::ToggleBackfire => "Toggle Backfire",
-            HotkeyAction::ResetCalibration => "Clear gearbox calibration",
+            HotkeyAction::ResetCalibration => "Clear RPM calibration",
+            HotkeyAction::ClearGearMap => "Clear gear map",
             HotkeyAction::MiniSettings => "Open mini-settings",
             HotkeyAction::DashboardEdit => "Toggle dashboard edit",
             HotkeyAction::HideHud => "Hide HUD",
@@ -204,7 +216,10 @@ pub fn inject_missing_hotkeys(hk: &mut HotkeyConfig) {
         if hk.unbound.contains(&action) {
             continue;
         }
-        hk.bindings.entry(action).or_insert_with(|| defaults[&action]);
+        // Actions without a default key (Clear gear map) simply stay "Not set".
+        if let Some(d) = defaults.get(&action) {
+            hk.bindings.entry(action).or_insert(*d);
+        }
     }
 }
 
@@ -259,10 +274,9 @@ impl Default for GamepadConfig {
 }
 
 impl GamepadConfig {
-    /// Bind `control` to `action`; the control is taken away from any other action
-    /// (one press = one action).
+    /// Bind `control` to `action`. Other actions bound to the same control keep it: one press
+    /// fires all of them (see `docs/features/gamepad.md`).
     pub fn bind(&mut self, action: HotkeyAction, control: crate::gamepad::PadControl) {
-        self.bindings.retain(|_, c| *c != control);
         self.bindings.insert(action, control);
     }
 }
