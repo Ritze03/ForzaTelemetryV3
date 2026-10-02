@@ -140,35 +140,86 @@ default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21
 
 ### Minimap M2′ (`hud/minimap.rs`)
 
-208×136 pill-framed, heading-up season map with the car arrow at the centre, a compass
-(optional, D12) and **co-op teammates** (optional): a 12×14 arrow in the teammate's identity
-colour plus their name, only while inside the pill. Paused teammates are skipped (their
-packet sits at the world origin). There is no scale bar. Zoom eases between **Zoom when
-driving** / **Zoom when stopped** (100–5000 m, defaults 1500 / 3000, independent of the
-Dashboard map's); stopped = under 5 km/h for 1.5 s, the same rule as the Dashboard.
+208×136 pill-framed, heading-up season map with a compass (optional, D12) and the **same
+markers as the Dashboard map**: the own arrow, co-op teammates, trails and shared waypoints,
+all drawn by `hud/map_shared.rs`, the code the Dashboard map widget calls too
+([[minimap]] "Shared drawing"). *Why:* the user wanted the HUD map to look like the Dashboard
+map ("the same arrow styling with the same co-op colour and the trail behind the player"), and
+one implementation can't drift. This replaced the mockup's white car marker and chevron
+teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
 
-**View options (Mini-Settings → Overlay tab).** The HUD minimap is configurable like the
-Dashboard map. *Why:* the user wants the same view options on the HUD that the Dashboard map
-has. They live in `OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys) and are
-edited in the cog-wheel **Mini-Settings**, tab **Overlay** (`src/app.rs`, next to
-Dashboard); compass and the two zooms are also on the Overlay tab's Minimap card (same fields).
+- **Own arrow:** the Dashboard's triangle (14×~14, black outline), in the player's **co-op
+  colour** (Co-Op → Your Identity, `AppConfig::coop_hue`, carried as `HudSnapshot::coop_hue`)
+  while a co-op session runs, white otherwise (exactly the Dashboard's rule).
+- **Teammates:** arrow in their colour with the name above (labels nudged apart), a pointer
+  clamped to the edge with the distance when off the map, grey + pause glyph at the last known
+  spot when paused. (The first HUD version skipped off-map and paused teammates.)
+- **Trails:** each player's breadcrumb trail in their colour, fading by age or distance behind
+  them, whichever first (`TrailFade`; `minimap::trail_push` records them). Only during a co-op
+  session, like the Dashboard (its trail fade lives on the Co-Op tab).
+- **Shared waypoints:** the pulsing diamond with the distance (set by clicking the Dashboard map;
+  the HUD cannot be clicked, it only shows them).
+- **Trail transport:** the overlay thread records trails itself (`CoopLayer` in
+  `hud/minimap.rs`, updated by `overlay/render.rs`) from the snapshot's packet (own) and
+  `CoopReader::remote_players` (teammates); nothing travels in the snapshot except
+  `coop_hue`. *Why not reuse `ForzaApp::minimap_trails`:* the UI thread fills that and its
+  loop stops while the game covers the window, i.e. exactly when the HUD is in use. The
+  recording rules are the shared `minimap::trail_push`, so both buffers behave alike.
+  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 1500 / 3000,
+  independent of the Dashboard map's unless reused); stopped = under 5 km/h for 1.5 s.
+
+**Options (Mini-Settings → Overlay tab).** The HUD minimap has the Dashboard map's options.
+*Why:* the user wants everything the Dashboard map has on the HUD too. They live in
+`OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys), in the cog-wheel
+**Mini-Settings**, tab **Overlay** (`src/app.rs`, "Minimap" and "Co-Op" sections; the Overlay
+tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 
 | Field | Default | Meaning |
 |---|---|---|
+| `map_use_dashboard` | off | **Use Dashboard map settings**: all the map fields below follow the Dashboard map and their controls are hidden. |
 | `map_north_up` | off | Lock north-up: map fixed, the car arrow turns (`MapView::arrow_angle`). Off = heading-up, arrow fixed apex-up. |
 | `map_north_up_when_stopped` | off | Heading-up only: ease to north once stopped. |
 | `map_smooth_rotation` | on | Ease rotation; off snaps (ease-to-north still eases). |
 | `map_use_movement_dir` | off | Heading-up only: rotate to the velocity direction. |
 | `map_look_stick` | off | Rotate the map by the right stick (look-around, see [[minimap]]). |
-| `compass`, `zoom_driving_m`, `zoom_stopped_m` | as before | Already existed. |
+| `map_mirror_edges` | on | **Mirror map at edges**: past the image edge the map continues mirrored; off = the plate shows outside the image. |
+| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 1500 / 3000 | Compass and the two zoom radii. |
+| `coop_use_dashboard` | off | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
+| `coop_teammates` | on | Draw teammates (and their trails). |
+| `coop_trails` | on | Trails behind each player, own included. |
+| `coop_trail_fade_secs`, `coop_trail_fade_m` | 10 s / 500 m | Trail fade (Dashboard: Co-Op tab "Tracer fade"). |
+| `coop_waypoints` | on | Shared waypoints. |
 
-Defaults equal the HUD's behaviour before these were settable, so nothing changed until edited
-(`map_use_movement_dir` therefore defaults off, unlike the Dashboard's `minimap_use_movement_dir`).
-The target yaw is `map_target_yaw` in `hud/minimap.rs`. **Not ported:** *Mirror map at edges*
-(the overlay texture is ClampToEdge, shared options; see [[minimap]]), *Render FPS limit* (the
-overlay draws on its own wake/frame pacing), *Image quality / Reload / Rebuild* (the HUD uses
-the fixed q50 cache file), *Advanced calibration* (the HUD already reads the Dashboard's
-calibration; one source of truth), and the F10 north-up hotkey.
+**The two "use Dashboard settings" checkboxes.** One tick mirrors the Dashboard, separately
+for the map view and for co-op. *Why:* the user wanted a single box that reuses all the
+Dashboard map settings instead of setting everything twice, individually for the map part and
+for the co-op part (so e.g. the map can mirror the Dashboard while the HUD's trails stay its
+own). Both default off, which keeps the HUD's own values. **One resolver:**
+`OverlayConfig::effective(&AppConfig)` returns the config with the ticked group(s) replaced by
+the Dashboard's values (`minimap_*`, `coop_trail_fade_*`; the Dashboard has no
+teammate/waypoint/trail switches, so those become `true`). The listener builds the snapshot's
+`cfg` from it (`listeners/worker.rs`), so the renderer reads one config and never branches on
+the flags. The HUD's own fields are kept untouched underneath, so unticking restores them.
+
+Defaults equal the HUD's behaviour before these were settable except `map_mirror_edges` (on =
+the Dashboard's default; the old HUD smeared the edge pixel instead, a side effect of the
+clamped texture) and the marker look (above). `map_use_movement_dir` defaults off, unlike
+the Dashboard's `minimap_use_movement_dir`. The target yaw is `map_target_yaw` in
+`hud/minimap.rs`.
+
+**Mirror at edges.** The overlay texture now wraps with `MirroredRepeat` (always; was
+`ClampToEdge`), so the fan mesh's UVs past 0..1 show the reflected map. With mirroring off the
+pill polygon is clipped to the (rotated) image quad (`clip_convex`, Sutherland-Hodgman) and the
+plate shows outside. *Why a clip instead of two texture modes:* switching the wrap mode would
+mean re-uploading the 64 MiB image (the CPU copy is dropped after upload); clipping is a few
+vertices per frame.
+
+**Not ported:** *Render FPS limit* (the overlay draws on its own wake/frame pacing), *Image
+quality / Reload / Rebuild* (the HUD uses the fixed q50 cache file; the two maps share the q50
+file only when the Dashboard is at 50 %), *Advanced calibration* (the HUD already reads the
+Dashboard's calibration; one source of truth), the F10 north-up hotkey, and the **on-map
+player list** and its columns (a 208×136 pill has no room for a table; the names are on the
+arrows already).
 
 - The map is drawn as a triangle-fan mesh with per-vertex UVs from
   `MapView::uv_at_offset` (affine, so UV interpolation is exact), 0.5 px under the frame
@@ -479,7 +530,7 @@ listener thread (worker.rs)                         overlay thread (wayland.rs)
   HudTracker::on_packet(pkt)  ─┐
   HudTracker::snapshot(...)    ├─ HudSink::publish ─► SnapshotSlot (Arc<Mutex<Option<HudSnapshot>>>)
                                └─ wake() ── calloop ping ──► follow_snapshot → maybe_render
-coop.rs CoopReader ───────── remote_players() each HUD frame ──► M2′ teammates
+coop.rs CoopReader ───────── remote_players() each HUD frame ──► M2′ teammates, trails
 focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──► recreate surface
 ```
 
@@ -496,8 +547,9 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
 - All event times are seconds on `hud_clock()`, one process-wide monotonic clock shared by
   the listener (stamps) and the overlay (animation "now"), so tests and the PNG harness can
   pin time.
-- **Co-op teammates** are read by the overlay itself through a `CoopReader`
-  (`OverlayOptions::coop`), not carried in the snapshot. `CoopReader::remote_players`
+- **Co-op teammates, trails and waypoints** are read by the overlay itself through a
+  `CoopReader` (`OverlayOptions::coop`; `in_session`, `remote_players`, `waypoints`), not carried
+  in the snapshot, and fed into `CoopLayer` each frame. `CoopReader::remote_players`
   **advances the jitter buffers itself** before reading, because the UI's `coop.tick()`
   stops while the game covers the window (the advance is time-based, so two callers are
   harmless). See [[coop]].

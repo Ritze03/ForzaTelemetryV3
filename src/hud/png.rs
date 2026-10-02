@@ -413,7 +413,14 @@ fn render_spec_states() -> Result<(), String> {
             });
             let id = format!("m2_{name}_{sfx}");
             if s == 1.0 {
-                check(&mut failures, &img, &id, (104, 70), [255, 255, 255], "car marker");
+                // The own arrow is white solo, in the co-op colour (`coop_hue`) in a session.
+                let own = if *name == "coop" {
+                    let [r, g, b, _] = crate::ui::coop::hue_color(snap.coop_hue).to_array();
+                    [r, g, b]
+                } else {
+                    [255, 255, 255]
+                };
+                check(&mut failures, &img, &id, (104, 70), own, "car marker");
                 if *name == "coop" {
                     let [r, g, b, _] = crate::ui::coop::hue_color(36.0).to_array();
                     check(&mut failures, &img, &id, (87, 30), [r, g, b], "teammate arrow fill");

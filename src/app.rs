@@ -2532,27 +2532,52 @@ impl eframe::App for ForzaApp {
                             }
                         }
                         PageSettingsTab::Tab(Tab::Overlay) => {
-                            // HUD minimap (M2′) view options: the Dashboard map's General
-                            // section, minus what doesn't apply on the HUD (see overlay.md).
+                            // HUD minimap (M2′) options: the Dashboard map's General and Co-Op
+                            // sections, minus what doesn't apply on the HUD (see overlay.md). Each
+                            // group has a "use Dashboard settings" tick that hides its own controls
+                            // (`OverlayConfig::effective` swaps the values in).
                             let o = &mut self.config.overlay;
                             ui.label(crate::theme::section_label(tr("Minimap")));
                             ui.add_space(4.0);
-                            crate::theme::styled_checkbox(ui, &mut o.map_north_up, tr("Lock map north-up"));
-                            if !o.map_north_up {
-                                crate::theme::styled_checkbox(ui, &mut o.map_north_up_when_stopped, tr("North up when stopped"))
-                                    .on_hover_text(tr("Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves."));
-                                crate::theme::styled_checkbox(ui, &mut o.map_smooth_rotation, tr("Smooth rotation"));
-                                crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
-                                    .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
+                            crate::theme::styled_checkbox(ui, &mut o.map_use_dashboard, tr("Use Dashboard map settings"));
+                            if !o.map_use_dashboard {
+                                ui.add_space(4.0);
+                                crate::theme::styled_checkbox(ui, &mut o.map_north_up, tr("Lock map north-up"));
+                                if !o.map_north_up {
+                                    crate::theme::styled_checkbox(ui, &mut o.map_north_up_when_stopped, tr("North up when stopped"))
+                                        .on_hover_text(tr("Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves."));
+                                    crate::theme::styled_checkbox(ui, &mut o.map_smooth_rotation, tr("Smooth rotation"));
+                                    crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
+                                        .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
+                                }
+                                crate::theme::styled_checkbox(ui, &mut o.map_mirror_edges, tr("Mirror map at edges"));
+                                crate::theme::styled_checkbox(ui, &mut o.map_look_stick, tr("Rotate with right stick"));
+                                crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
+                                ui.add_space(4.0);
+                                ui.label(tr("Zoom when driving (radius, metres)"));
+                                ui.add(egui::Slider::new(&mut o.zoom_driving_m, 50.0..=3000.0).suffix(" m"));
+                                ui.add_space(4.0);
+                                ui.label(tr("Zoom when stopped (radius, metres)"));
+                                ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
                             }
-                            crate::theme::styled_checkbox(ui, &mut o.map_look_stick, tr("Rotate with right stick"));
-                            crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
+                            ui.add_space(10.0);
+                            ui.label(crate::theme::section_label(tr("Co-Op")));
                             ui.add_space(4.0);
-                            ui.label(tr("Zoom when driving (radius, metres)"));
-                            ui.add(egui::Slider::new(&mut o.zoom_driving_m, 50.0..=3000.0).suffix(" m"));
-                            ui.add_space(4.0);
-                            ui.label(tr("Zoom when stopped (radius, metres)"));
-                            ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
+                            crate::theme::styled_checkbox(ui, &mut o.coop_use_dashboard, tr("Use Dashboard co-op settings"));
+                            if !o.coop_use_dashboard {
+                                ui.add_space(4.0);
+                                crate::theme::styled_checkbox(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
+                                crate::theme::styled_checkbox(ui, &mut o.coop_waypoints, tr("Show shared waypoints"));
+                                crate::theme::styled_checkbox(ui, &mut o.coop_trails, tr("Show trails"));
+                                ui.add_enabled_ui(o.coop_trails, |ui| {
+                                    ui.add_space(4.0);
+                                    ui.label(tr("Fade after (time)"));
+                                    ui.add(egui::Slider::new(&mut o.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
+                                    ui.add_space(4.0);
+                                    ui.label(tr("Fade after (distance)"));
+                                    ui.add(egui::Slider::new(&mut o.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
+                                });
+                            }
                             ui.add_space(10.0);
                             ui.label(crate::theme::section_label(tr("Notifications")));
                             ui.add_space(4.0);
