@@ -117,6 +117,21 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 
 - **Linux `input` group:** reading `/dev/input` needs the user in the `input` group
   (`sudo usermod -aG input $USER`, then re-login). The settings status light shows 🟢/🔴.
+- **Input-permission check (D13, Linux only):** at startup `input::probe()` gathers the facts
+  (`/dev/input/event*` readable via `hotkeys::probe_status()`, `/dev/uinput` writable,
+  `/dev/uinput` existing / group `input` rw, process in the `input` group) and the pure
+  `input::evaluate()` turns them into *what's missing* + the fix commands: `sudo usermod -aG
+  input $USER` (not in the group), `sudo modprobe uinput` (no `/dev/uinput`), or a udev rule
+  (`KERNEL=="uinput", GROUP="input", MODE="0660"` into `/etc/udev/rules.d/99-uinput.rules`,
+  then `udevadm control --reload && udevadm trigger`) when the node exists but isn't
+  group-`input` writable. If anything is missing a **modal** opens once per launch (X = closed
+  for this session; *Don't remind me again* sets `input_perm_dont_remind`). Setup has an
+  **Input Permissions** category below *Window Detection* (a light per requirement, the same
+  copyable commands, a *Remind me on startup* checkbox = inverse of the flag, *Re-check*).
+  Hidden on Windows. *Why:* both failures are silent otherwise (no hotkeys, dead gearbox /
+  backfire). *Why a probe, not the listener:* the backends run on worker threads and only
+  `return` on failure, so the UI can't ask them; opening the nodes is cheap and exact.
+  *Why the flag is `EXPORT_EXCLUDE`:* it's per-machine, not a tuning setting.
 - Observe-only (a bound key still reaches the game); modifiers tracked per keyboard device;
   focus reads can be up to `1/Hz` stale; keyboards hot-plugged after launch need a restart.
   See spec §11.

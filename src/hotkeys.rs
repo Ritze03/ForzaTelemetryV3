@@ -19,6 +19,7 @@ pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: M
 
 /// Whether the capture backend can work here — drives the Setup "Input Permissions" light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Unsupported is only built on non-Linux/Windows targets
 pub enum HotkeyStatus { Ok, NoPermission, NoDevice, Unsupported }
 
 /// Probe `/dev/input/event*` for read access (Linux): `Ok` when at least one node opens,
