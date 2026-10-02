@@ -36,6 +36,14 @@ pub fn set_language(l: Language) {
     CURRENT.store(l as u8, Ordering::Relaxed);
 }
 
+/// The active UI language as the game's `<LANG>` string-table code (`"EN"` / `"DE"`).
+pub fn language_code() -> &'static str {
+    match current() {
+        Language::English => "EN",
+        Language::German => "DE",
+    }
+}
+
 fn current() -> Language {
     match CURRENT.load(Ordering::Relaxed) {
         1 => Language::German,
@@ -791,6 +799,33 @@ fn de(s: &str) -> Option<&'static str> {
         "LAST LAP" => "LETZTE RUNDE",
         "DRIFT" => "DRIFT",
         "Overlay" => "Overlay",
+        "Derived from telemetry" => "Aus Telemetrie abgeleitet",
+        "no" => "nein",
+        "off" => "aus",
+        "Race off (is_race_on = 0)" => "Rennen aus (is_race_on = 0)",
+        "No max RPM (engine_max_rpm <= 0)" => "Keine Max-Drehzahl (engine_max_rpm <= 0)",
+        "Zero attitude (yaw = pitch = roll = 0)" => "Nulllage (Yaw = Pitch = Roll = 0)",
+        "Garage rule (level + handbrake 255 + standing still)" => "Garagen-Regel (waagerecht + Handbremse 255 + Stillstand)",
+        "Paused" => "Pausiert",
+        "Pause reason" => "Pausengrund",
+        "In race (race position set)" => "Im Rennen (Rennposition gesetzt)",
+        "Gearbox: selected mode" => "Getriebe: gewählter Modus",
+        "Gearbox: effective mode" => "Getriebe: effektiver Modus",
+        "Gearbox: resolved (drift ignored)" => "Getriebe: aufgelöst (Drift ignoriert)",
+        "Calibrated max RPM" => "Kalibrierte Max-Drehzahl",
+        "not calibrated" => "nicht kalibriert",
+        "Season (wall clock)" => "Jahreszeit (Uhrzeit)",
+        "Loading car names from the game install..." => "Autonamen werden aus der Spielinstallation geladen...",
+        "Car names unavailable (FH6 install not found?)" => "Autonamen nicht verfügbar (FH6-Installation nicht gefunden?)",
+        "Ordinal" => "Ordinal",
+        "Make" => "Marke",
+        "Media name" => "Medienname",
+        "unknown" => "unbekannt",
+        "not in the car database" => "nicht in der Auto-Datenbank",
+        "Install" => "Installation",
+        "cars" => "Autos",
+        "cache" => "Cache",
+        "install scan" => "Installations-Scan",
         "Raw Telemetry" => "Rohdaten",
         "No telemetry yet" => "Noch keine Telemetrie",
         "HUD Overlay" => "HUD-Overlay",

@@ -559,6 +559,8 @@ pub struct ForzaApp {
     pub minimap_cached_raw_yaw: f32, // always raw pkt.yaw, for arrow orientation
     pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
+    /// Debug tab's car-name DB (background-loaded on first open).
+    pub debug_cars: crate::ui::debug_tab::CarDbState,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
@@ -840,6 +842,7 @@ impl ForzaApp {
             minimap_cached_raw_yaw: 0.0,
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
+            debug_cars: Default::default(),
             minimap_cache_progress: None,
             minimap_trails: HashMap::new(),
             coop_last_pos: HashMap::new(),
