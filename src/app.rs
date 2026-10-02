@@ -1717,38 +1717,70 @@ impl eframe::App for ForzaApp {
                         (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
                     };
                     // Connection status + pps are informational, not content to
-                    // select/copy — disable text selection on just these two labels.
-                    if show_text {
-                        let sep = if self.telemetry.is_connected { " " } else { "  " };
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!("{icon}{sep}{word}")).color(color),
-                            )
-                            .selectable(false),
-                        );
-                    } else {
-                        let font = egui::FontId::proportional(14.0);
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::hover());
-                        let pos = self
-                            .icon_center_cache
-                            .centered_pos(ui, icon, font.clone(), rect.center());
-                        ui.painter()
-                            .text(pos, egui::Align2::LEFT_TOP, icon, font, color);
-                        if resp.hovered() {
-                            show_center_tooltip(ui, rect, word.to_string());
+                    // select/copy — disable text selection on these labels.
+                    // The whole group (icon [+ word] + rate) is ONE hover zone whose
+                    // tooltip spells out state and rate ("packets per second", never
+                    // "pps"). Why: icon-only drops the " pps" unit, so the tooltip is
+                    // the only place the unit is explained.
+                    let connected = self.telemetry.is_connected;
+                    let pps = self.telemetry.packets_per_sec;
+                    let group = ui.scope(|ui| {
+                        if show_text {
+                            let sep = if connected { " " } else { "  " };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{icon}{sep}{word}")).color(color),
+                                )
+                                .selectable(false),
+                            );
+                            if connected {
+                                // Right-align in a 3-wide field so the label doesn't shift
+                                // as the packet rate gains or loses a digit.
+                                ui.add(
+                                    egui::Label::new(format!("  {:>3.0} pps", pps))
+                                        .selectable(false),
+                                );
+                            }
+                        } else {
+                            // Number sits directly against its icon (no item spacing).
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let font = egui::FontId::proportional(14.0);
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::hover());
+                            let pos = self
+                                .icon_center_cache
+                                .centered_pos(ui, icon, font.clone(), rect.center());
+                            ui.painter()
+                                .text(pos, egui::Align2::LEFT_TOP, icon, font, color);
+                            if connected {
+                                // Fixed 3-digit-wide, left-aligned box so the Co-Op icon
+                                // doesn't shift as the rate changes digit count.
+                                let nfont = egui::TextStyle::Body.resolve(ui.style());
+                                let w = ui
+                                    .painter()
+                                    .layout_no_wrap("000".into(), nfont.clone(), color)
+                                    .size()
+                                    .x;
+                                let (nrect, _) = ui.allocate_exact_size(
+                                    egui::vec2(w, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().text(
+                                    nrect.left_center(),
+                                    egui::Align2::LEFT_CENTER,
+                                    format!("{:.0}", pps),
+                                    nfont,
+                                    color,
+                                );
+                            }
                         }
-                    }
-                    if self.telemetry.is_connected {
-                        // Right-align in a 3-wide field so the label doesn't shift
-                        // as the packet rate gains or loses a digit.
-                        ui.add(
-                            egui::Label::new(format!(
-                                "  {:>3.0} pps",
-                                self.telemetry.packets_per_sec
-                            ))
-                            .selectable(false),
-                        );
+                    });
+                    if ui.rect_contains_pointer(group.response.rect) {
+                        let mut tip = word.to_string();
+                        if connected {
+                            tip.push_str(&format!("\n{:.0} {}", pps, tr("packets per second")));
+                        }
+                        show_center_tooltip(ui, group.response.rect, tip);
                     }
 
                     // Co-Op indicator (visible from any tab)
