@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FH6 map viewer</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<style>
+:root{--bg:#0f1218;--panel:#161b24;--panel2:#1d2430;--line:#2a3342;--text:#e6e9ef;--dim:#8a94a6;--accent:#4aa3ff;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:13px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#map{position:absolute;inset:0;background:#0b0e13}
+#panel{position:absolute;top:0;right:0;bottom:0;width:340px;max-width:92vw;background:var(--panel);border-left:1px solid var(--line);z-index:1000;display:flex;flex-direction:column;transition:transform .2s}
+#panel.hidden{transform:translateX(100%)}
+#ptoggle{position:absolute;top:10px;right:350px;z-index:1001;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer;transition:right .2s}
+#ptoggle.shifted{right:10px}
+#phead{padding:10px 12px;border-bottom:1px solid var(--line);display:grid;gap:7px}
+#phead h1{font-size:15px;margin:0;letter-spacing:.3px}
+#phead h1 small{color:var(--dim);font-weight:400;font-size:11px;margin-left:6px}
+.row{display:flex;gap:6px;align-items:center}
+.row label{color:var(--dim);font-size:11px;min-width:54px}
+select,input[type=text],button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:5px;padding:4px 6px;font:inherit}
+select,input[type=text]{flex:1;min-width:0}
+input[type=range]{flex:1;accent-color:var(--accent)}
+button{cursor:pointer}button:hover{border-color:var(--accent)}
+#results{max-height:210px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:5px;display:none}
+#results div{padding:4px 8px;cursor:pointer;border-bottom:1px solid var(--line)}#results div:hover{background:#26303f}
+#results small{color:var(--dim);margin-left:6px}
+#plist{overflow:auto;flex:1;padding-bottom:30px}
+details{border-bottom:1px solid var(--line)}
+summary{cursor:pointer;padding:7px 12px;font-weight:600;color:var(--accent);font-size:11px;letter-spacing:.8px;text-transform:uppercase;list-style:none;user-select:none}
+summary::before{content:"\25B8";display:inline-block;width:14px}details[open]>summary::before{content:"\25BE"}
+.item{display:flex;align-items:center;gap:7px;padding:3px 12px 3px 14px}
+.item:hover{background:#1b222d}
+.item .sw{width:18px;height:18px;flex:none;display:flex;align-items:center;justify-content:center}
+.item .sw i{display:block;width:11px;height:11px;border-radius:50%}
+.item .sw i.ln{width:16px;height:3px;border-radius:2px}
+.item .sw img{max-width:18px;max-height:18px}
+.item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .n{color:var(--dim);font-size:11px}
+.sub{padding:2px 12px 8px 40px;display:none}.sub.show{display:block}
+.legend{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:5px;margin-top:4px}
+.lg{display:flex;gap:6px;align-items:center;padding:2px 6px;cursor:pointer;font-size:12px}.lg:hover{background:#26303f}.lg.sel{background:#2d3d57}
+.lg i{width:12px;height:12px;border-radius:2px;flex:none;border:1px solid #0006}
+.lg .k{color:var(--dim);font-size:10px;margin-left:auto;white-space:nowrap}
+.tag{font-size:9px;padding:0 4px;border-radius:3px;border:1px solid;margin-left:4px;text-transform:uppercase;letter-spacing:.4px}
+.tag.confirmed{color:var(--ok)}.tag.seen{color:var(--warn)}.tag.reasoned{color:var(--bad)}.tag.unknown{color:var(--dim)}
+.lg.reasoned .t{font-style:italic}
+.grad{height:12px;border-radius:3px;border:1px solid var(--line);margin:4px 0 2px}
+.small{color:var(--dim);font-size:11px}
+#coords{position:absolute;left:10px;bottom:24px;z-index:1000;background:#10151dd9;border:1px solid var(--line);border-radius:6px;padding:5px 9px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;white-space:pre}
+#coords b{color:var(--accent);font-weight:600}
+#msg{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:2000;background:#3b1f24;border:1px solid var(--bad);padding:8px 14px;border-radius:6px;display:none;max-width:70vw}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--panel);color:var(--text);border:1px solid var(--line)}
+.leaflet-popup-content{margin:10px 12px;min-width:210px;max-width:340px}
+.leaflet-popup-content h3{margin:0 0 2px;font-size:14px}
+.leaflet-popup-content .typ{color:var(--dim);font-size:11px;margin-bottom:6px}
+.leaflet-popup-content table{border-collapse:collapse;width:100%}
+.leaflet-popup-content td{padding:1px 4px 1px 0;vertical-align:top;font-size:12px}
+.leaflet-popup-content td:first-child{color:var(--dim);white-space:nowrap}
+.leaflet-popup-content td:last-child{word-break:break-word}
+.leaflet-popup-content a.act{color:var(--accent);cursor:pointer;text-decoration:underline;margin-right:10px}
+.leaflet-container a.leaflet-popup-close-button{color:var(--dim)}
+.leaflet-tooltip{background:var(--panel);color:var(--text);border:1px solid var(--line);box-shadow:none}
+.leaflet-tooltip-top:before{border-top-color:var(--line)}.leaflet-tooltip-bottom:before{border-bottom-color:var(--line)}
+.leaflet-bar a{background:var(--panel);color:var(--text);border-bottom-color:var(--line)}.leaflet-bar a:hover{background:var(--panel2)}
+.lbl{white-space:nowrap;transform:translate(-50%,-50%);display:inline-block;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 6px #000;pointer-events:none;font-weight:600}
+.lbl.lm{font-size:11px;margin-top:-12px}
+.lbl.rg{font-size:20px;letter-spacing:2px;text-transform:uppercase;opacity:.9;font-weight:700}
+.zlow .lbl.lm{display:none}.zhigh .lbl.rg{opacity:.35}
+.poi-ic{filter:drop-shadow(0 0 2px #000) drop-shadow(0 0 1px #000)}
+.sgn{pointer-events:auto}
+.sgn svg{display:block;overflow:visible}
+.pix{image-rendering:pixelated}
+.leaflet-marker-icon.dot{border-radius:50%}
+.marker-cluster-small,.marker-cluster-medium,.marker-cluster-large{background-color:#4aa3ff55}
+.marker-cluster-small div,.marker-cluster-medium div,.marker-cluster-large div{background-color:#4aa3ffb0;color:#04101f;font-weight:700}
+</style>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+</head>
+<body>
+<div id="map"></div>
+<div id="msg"></div>
+<button id="ptoggle" title="Layers panel">Layers</button>
+<div id="coords">move the mouse over the map</div>
+<div id="panel">
+  <div id="phead">
+    <h1>FH6 map viewer <small id="ver"></small></h1>
+    <div class="row"><label data-t="season">Season</label><select id="season"></select></div>
+    <div class="row"><label data-t="lang">Names</label><select id="lang"></select></div>
+    <div class="row"><label data-t="basedim">Base map</label><input type="range" id="baseop" min="0.15" max="1" step="0.05" value="1"></div>
+    <div class="row"><input type="text" id="search" placeholder="Search names, or type  x z  to jump"></div>
+    <div id="results"></div>
+  </div>
+  <div id="plist"></div>
+</div>
+<!--@DATA_SCRIPTS@-->
+<script>
+(function () {
+'use strict';
+const D = window.FH6 || {};
+const META = D.meta;
+const msg = (s) => { const m = document.getElementById('msg'); m.textContent = s; m.style.display = 'block'; };
+if (typeof L === 'undefined') { msg('Leaflet could not be loaded from unpkg.com - this viewer needs an internet connection for the map library.'); return; }
+if (!META) { msg('data/meta.js is missing - rebuild the viewer with build_viewer.py.'); return; }
+const MC = typeof L.markerClusterGroup === 'function';
+
+// ---------------------------------------------------------------------------------------------------------------- helpers
+const { x0: X0, z1: Z1, s: SC } = META.calib;
+const ll = (x, z) => L.latLng(-(Z1 - z) * SC, (x - X0) * SC);                // world metres -> map (8192-px units, lat = -py)
+const world = (p) => ({ x: p.lng / SC + X0, z: Z1 + p.lat / SC });
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const f1 = (v) => (v == null ? '-' : Number(v).toFixed(1));
+const store = { get(k, d) { try { const v = localStorage.getItem('fh6viewer.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+                set(k, v) { try { localStorage.setItem('fh6viewer.' + k, JSON.stringify(v)); } catch (e) { /* storage may be blocked */ } } };
+
+const UI = {
+  en: { season: 'Season', lang: 'Names', basedim: 'Base map', world_x: 'x', copy: 'copy x, z', type: 'Type', name: 'Name', pos: 'Position (x, z, y)', src: 'Source',
+        route_line: 'show race line', surfaces: 'Terrain surfaces', elevation: 'Elevation (hillshade)', opacity: 'opacity', roads: 'Roads', regions: 'Regions',
+        landmarks: 'Landmarks', racelines: 'Race lines (centre)', ribbons: 'Track edges (zoom in)', grids: 'Race start grids', hover: 'move the mouse over the map',
+        surf_hint: 'Names are OURS (the game table is encrypted): confirmed = checked in-game, seen = visual only, reasoned = guess. Click a row to isolate it.',
+        map: 'Map', terrain: 'Terrain', signs: 'Speed-limit signs', limit: 'Limit sign', high: 'High-speed sign', end: 'End of limit', variant: 'variant', kmh_unknown: 'km/h not in the files',
+        cls4: 'Highway-class roads (guess)', cls5: 'Normal roads', cls6: 'Dirt / track roads (guess)', cls8: 'Other road class (1 road)', ok: 'ok',
+        region: 'Region', landmark: 'Landmark', radius: 'Radius', area: 'Area', route: 'Route', circuit: 'circuit', p2p: 'point-to-point', length: 'Length', heading: 'Heading',
+        facing: 'Faces', width: 'Half-width', roadd: 'Road distance', cell: 'Source cell', surface: 'Surface', elev: 'Terrain height', layers: 'Layers', model: 'Model', ctx: 'Position',
+        grid_hint: 'Race start grids', goto: 'jump to', nores: 'no matches', basis_guess: 'icon is a guess', basis_ours: 'icon chosen by us', unreachable: 'visual only' },
+  de: { season: 'Jahreszeit', lang: 'Namen', basedim: 'Basiskarte', copy: 'x, z kopieren', type: 'Typ', name: 'Name', pos: 'Position (x, z, y)', src: 'Quelle',
+        route_line: 'Rennlinie zeigen', surfaces: 'Gelaende-Untergrund', elevation: 'Hoehe (Schummerung)', opacity: 'Deckkraft', roads: 'Strassen', regions: 'Regionen',
+        landmarks: 'Wahrzeichen', racelines: 'Rennlinien (Mitte)', ribbons: 'Streckenraender (hineinzoomen)', grids: 'Startaufstellungen', hover: 'Maus ueber die Karte bewegen',
+        surf_hint: 'Namen sind von UNS (die Spieltabelle ist verschluesselt): confirmed = im Spiel geprueft, seen = nur gesehen, reasoned = Vermutung. Zeile anklicken zum Isolieren.',
+        map: 'Karte', terrain: 'Gelaende', signs: 'Tempolimit-Schilder', limit: 'Limit-Schild', high: 'Highspeed-Schild', end: 'Limit-Ende', variant: 'Variante', kmh_unknown: 'km/h nicht in den Dateien',
+        cls4: 'Strassen Klasse Autobahn (Vermutung)', cls5: 'Normale Strassen', cls6: 'Feldwege / Pisten (Vermutung)', cls8: 'Andere Strassenklasse (1 Strasse)',
+        region: 'Region', landmark: 'Wahrzeichen', radius: 'Radius', area: 'Flaeche', route: 'Route', circuit: 'Rundkurs', p2p: 'Punkt-zu-Punkt', length: 'Laenge', heading: 'Richtung',
+        facing: 'Zeigt nach', width: 'Halbbreite', roadd: 'Abstand zur Strasse', cell: 'Quellzelle', surface: 'Untergrund', elev: 'Gelaendehoehe', layers: 'Ebenen', model: 'Modell', ctx: 'Position',
+        grid_hint: 'Startaufstellungen', goto: 'springe zu', nores: 'keine Treffer', basis_guess: 'Symbol geraten', basis_ours: 'Symbol von uns gewaehlt', unreachable: 'nur gesehen' },
+};
+const GROUP_EXTRA = { map: ['Map', 'Karte'], signs: ['Speed-limit signs', 'Tempolimit-Schilder'], terrain: ['Terrain', 'Gelaende'] };
+const state = { lang: store.get('lang', 'EN'), season: store.get('season', null), on: store.get('on', {}), op: store.get('op', {}), iso: null };
+const isDE = () => state.lang === 'DE';
+const t = (k) => (UI[isDE() ? 'de' : 'en'][k] || UI.en[k] || k);
+const nameOf = (names) => (names && (names[state.lang] || names.EN)) || '';
+const catLabel = (k) => { const m = META.cats[k]; return m ? (isDE() ? m.de : m.en) : k; };
+
+// ------------------------------------------------------------------------------------------------------------------- map
+const CRS = L.extend({}, L.CRS.Simple, { scale: (z) => Math.pow(2, z - 3), zoom: (s) => Math.log(s) / Math.LN2 + 3 });   // zoom 3 = 1 unit per px of the 8192 map
+const MAPB = L.latLngBounds([-8192, 0], [0, 8192]);
+const map = L.map('map', { crs: CRS, minZoom: -1, maxZoom: 7, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90, preferCanvas: true, attributionControl: false, zoomControl: true });
+map.createPane('over'); map.getPane('over').style.zIndex = 250;                     // overlays above tiles, below vectors
+const seasons = META.seasons && META.seasons.length ? META.seasons : [];
+if (!seasons.length) msg('No map tiles were built - the base map is empty.');
+if (!state.season || seasons.indexOf(state.season) < 0) state.season = seasons.indexOf('Summer') >= 0 ? 'Summer' : seasons[0];
+const base = L.tileLayer('tiles/{s}/{z}/{x}/{y}.jpg', { s: state.season, tileSize: 1024, minNativeZoom: 0, maxNativeZoom: 3, minZoom: -1, maxZoom: 7, bounds: MAPB, noWrap: true, keepBuffer: 4 });
+base.getTileUrl = function (c) { return 'tiles/' + state.season + '/' + c.z + '/' + c.x + '/' + c.y + '.jpg'; };
+base.addTo(map);
+const saved = store.get('view', null);
+if (saved && isFinite(saved.lat) && isFinite(saved.lng) && isFinite(saved.z)) map.setView([saved.lat, saved.lng], saved.z); else map.fitBounds(MAPB);
+const zcls = () => { const z = map.getZoom(), c = document.getElementById('map').classList; c.toggle('zlow', z < 1.5); c.toggle('zhigh', z >= 4.5); };
+map.on('zoomend', zcls); zcls();
+map.on('moveend', () => { const c = map.getCenter(); store.set('view', { lat: c.lat, lng: c.lng, z: map.getZoom() }); });
+
+// ---------------------------------------------------------------------------------------------------- terrain grids (hover)
+async function inflate(b64) {
+  const bin = atob(b64), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  const ds = new Blob([u]).stream().pipeThrough(new DecompressionStream('deflate'));
+  return new Uint8Array(await new Response(ds).arrayBuffer());
+}
+const GRID = { surf: null, elev: null };
+async function loadGrids() {
+  try {
+    if (D.surfaces) { const s = D.surfaces; GRID.surf = { s, a: await inflate(s.data) }; }
+    if (D.elevation) { const g = D.elevation.grid, u = await inflate(g.data); GRID.elev = { g, a: new Int16Array(u.buffer, u.byteOffset, u.byteLength >> 1) }; }
+  } catch (e) { console.warn('terrain lookup grids unavailable (DecompressionStream?)', e); }
+}
+function lookup(x, z) {
+  const r = {};
+  if (GRID.surf) { const s = GRID.surf.s, c = Math.floor((x - s.x0) / s.res), rr = Math.floor((s.z1 - z) / s.res);
+    if (c >= 0 && rr >= 0 && c < s.w && rr < s.h) { const k = GRID.surf.a[rr * s.w + c]; if (k !== 255) r.surf = { id: s.ids[k], name: s.names[k], status: s.status[k] }; } }
+  if (GRID.elev) { const g = GRID.elev.g, c = Math.floor((x - g.x0) / g.res), rr = Math.floor((g.z1 - z) / g.res);
+    if (c >= 0 && rr >= 0 && c < g.w && rr < g.h) { const v = GRID.elev.a[rr * g.w + c]; if (v !== -32768) r.elev = v / 10; } }
+  return r;
+}
+const surfTxt = (s) => s ? (s.status === 'reasoned' ? '~' : '') + s.name + ' [' + s.id + ', ' + s.status + ']' : '-';
+
+// ------------------------------------------------------------------------------------------------------------------ coords
+const cbox = document.getElementById('coords');
+map.on('mousemove', (e) => {
+  const w = world(e.latlng), k = lookup(w.x, w.z);
+  cbox.innerHTML = 'x <b>' + w.x.toFixed(1) + '</b>   z <b>' + w.z.toFixed(1) + '</b>' + (k.elev != null ? '   y~ <b>' + k.elev.toFixed(0) + '</b> m' : '') +
+    (k.surf ? '\n' + esc(surfTxt(k.surf)) : '');
+});
+map.on('mouseout', () => { cbox.textContent = t('hover'); });
+map.on('contextmenu', (e) => {
+  const w = world(e.latlng), k = lookup(w.x, w.z);
+  L.popup().setLatLng(e.latlng).setContent('<h3>' + t('ctx') + '</h3><table><tr><td>x, z</td><td>' + w.x.toFixed(1) + ', ' + w.z.toFixed(1) + '</td></tr>' +
+    (k.elev != null ? '<tr><td>' + t('elev') + '</td><td>' + k.elev.toFixed(1) + ' m</td></tr>' : '') + '<tr><td>' + t('surface') + '</td><td>' + esc(surfTxt(k.surf)) + '</td></tr></table>').openOn(map);
+});
+
+// ---------------------------------------------------------------------------------------------------------------- popups
+function popupHtml(o) {
+  let h = '<h3>' + esc(o.title) + '</h3><div class="typ">' + esc(o.type) + '</div><table>';
+  const row = (a, b) => { if (b != null && b !== '') h += '<tr><td>' + esc(a) + '</td><td>' + b + '</td></tr>'; };
+  if (o.x != null) {
+    row(t('pos'), o.x.toFixed(1) + ', ' + o.z.toFixed(1) + (o.y != null ? ', ' + Number(o.y).toFixed(1) : ''));
+    const k = lookup(o.x, o.z);
+    if (k.surf) row(t('surface'), esc(surfTxt(k.surf)));
+  }
+  (o.rows || []).forEach((r) => row(r[0], r[2] ? r[1] : esc(r[1])));
+  if (o.src) row(t('src'), esc(o.src));
+  h += '</table><div style="margin-top:6px">';
+  if (o.x != null) h += '<a class="act" data-copy="' + o.x.toFixed(1) + ', ' + o.z.toFixed(1) + '">' + t('copy') + '</a>';
+  (o.actions || []).forEach((a) => { h += '<a class="act" data-act="' + esc(a[1]) + '">' + esc(a[0]) + '</a>'; });
+  return h + '</div>';
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a.act'); if (!a) return;
+  if (a.dataset.copy) { try { navigator.clipboard.writeText(a.dataset.copy); a.textContent = t('ok'); } catch (err) { /* ignore */ } }
+  if (a.dataset.act) { const [fn, arg] = a.dataset.act.split(':'); if (fn === 'route') showRoute(Number(arg)); }
+});
+const EXTRA_SKIP = { grid: 1, left: 1, right: 1, polyline: 1, heading_zaxis: 1 };
+function extraRows(ex) {
+  const rows = [];
+  if (!ex) return rows;
+  Object.keys(ex).forEach((k) => {
+    if (EXTRA_SKIP[k]) return;
+    let v = ex[k];
+    if (Array.isArray(v)) v = v.length > 6 ? '[' + v.length + ' items]' : JSON.stringify(v);
+    else if (v && typeof v === 'object') v = JSON.stringify(v);
+    rows.push([k.replace(/_/g, ' '), String(v)]);
+  });
+  return rows;
+}
+function poiPopup(cat, r) {
+  const ex = r[5] || {}, srcs = D.poi.sources;
+  const rows = extraRows(ex), actions = [];
+  if (ex.left && ex.right) rows.push([t('width'), (ex.width != null ? (ex.width / 2).toFixed(1) : '?') + ' m (gate half-width)']);
+  if (ex.grid) rows.push(['grid slots', String(ex.grid.length)]);
+  if (ex.heading_zaxis) rows.push([t('heading'), 'z-axis ' + JSON.stringify(ex.heading_zaxis)]);
+  const rid = ex.route_id != null ? ex.route_id : (cat === 'race_pin' ? ex.route : null);
+  if (rid != null && (D.racelines || []).some((q) => q.id === rid)) actions.push([t('route_line'), 'route:' + rid]);
+  const m = META.cats[cat];
+  if (m && m.icon_basis && m.icon_basis !== 'derived') rows.push(['icon', t(m.icon_basis === 'guessed' ? 'basis_guess' : 'basis_ours')]);
+  return popupHtml({ title: r[3] || catLabel(cat), type: catLabel(cat), x: r[0], z: r[1], y: r[2], src: srcs[r[4]], rows, actions });
+}
+
+// ------------------------------------------------------------------------------------------------------------- layer registry
+const ENTRIES = [];
+const LABELS = [];      // {m, fn, cls} divIcon labels re-rendered on language change
+function entry(e) { ENTRIES.push(e); return e; }
+const labelIcon = (txt, cls) => L.divIcon({ className: '', html: '<span class="lbl ' + cls + '">' + esc(txt) + '</span>', iconSize: [0, 0] });
+function addLabel(group, pos, fn, cls) { const m = L.marker(pos, { icon: labelIcon(fn(), cls), interactive: false, keyboard: false }); LABELS.push({ m, fn, cls }); group.addLayer(m); return m; }
+
+// ---- map group: roads, regions, landmarks
+const ROAD_COL = { 4: '#ff9f43', 5: '#dfe3ea', 6: '#c98b55', 8: '#f472b6' };
+if (D.roads) {
+  [4, 5, 6, 8].forEach((c) => {
+    const idx = []; D.roads.cls.forEach((v, i) => { if ((v & 0xffff) === c) idx.push(i); });
+    if (!idx.length) return;
+    entry({ id: 'roads' + c, group: 'map', label: () => t('cls' + c), line: ROAD_COL[c], n: idx.length, on: c === 5 || c === 4, back: true,
+      make: () => { const g = L.featureGroup(); idx.forEach((i) => { const a = D.roads.lines[i], pts = []; for (let j = 0; j < a.length; j += 2) pts.push(ll(a[j], a[j + 1]));
+        L.polyline(pts, { color: ROAD_COL[c], weight: c === 5 ? 1.5 : 2, opacity: 0.85, interactive: false }).addTo(g); }); return g; } });
+  });
+}
+if (D.names) {
+  const RCOL = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#fb923c', '#2dd4bf', '#f87171', '#a3e635', '#e879f9'];
+  entry({ id: 'regions', group: 'map', label: () => t('regions'), color: '#60a5fa', n: D.names.regions.length, on: true,
+    make: () => { const g = L.featureGroup(); D.names.regions.forEach((r, i) => {
+      const pts = r.outline.map((p) => ll(p[0], p[1])), col = RCOL[i % RCOL.length];
+      const pg = L.polygon(pts, { color: col, weight: 2, fillColor: col, fillOpacity: 0.05, dashArray: '6 4', interactive: true }).addTo(g);
+      pg.bindPopup(() => popupHtml({ title: nameOf(r.names), type: t('region'), rows: [[t('area'), (r.km2 != null ? r.km2 + ' km2' : '-')], ['id', r.id], ['long form', nameOf(r.long)]], src: r.src }));
+      pg.bindTooltip(() => nameOf(r.names), { sticky: true });
+      const c = pg.getBounds().getCenter(); addLabel(g, c, () => nameOf(r.names), 'rg'); }); return g; } });
+  entry({ id: 'landmarks', group: 'map', label: () => t('landmarks'), color: '#fbbf24', n: D.names.landmarks.length, on: true,
+    make: () => { const g = L.featureGroup(); D.names.landmarks.forEach((l) => {
+      const c = ll(l.x, l.z);
+      const dot = L.circleMarker(c, { radius: 4, color: '#000', weight: 1, fillColor: '#fbbf24', fillOpacity: 1 }).addTo(g);
+      dot.bindTooltip(() => nameOf(l.names)); dot.bindPopup(() => popupHtml({ title: nameOf(l.names), type: t('landmark'), x: l.x, z: l.z,
+        rows: [['slug', l.slug], [t('radius'), l.r + ' m'], ['EN / DE', esc((l.names.EN || '') + ' / ' + (l.names.DE || '')), 1]].concat(l.parent ? [['note', 'no name of its own - parent name shown']] : []), src: l.src }));
+      L.circle(c, { radius: l.r * SC, color: '#fbbf24', weight: 1, opacity: 0.5, fill: false, dashArray: '3 5', interactive: false }).addTo(g);
+      addLabel(g, c, () => nameOf(l.names), 'lm'); }); return g; } });
+}
+
+// ---- POI categories
+function catIcon(cat, r) {
+  const m = META.cats[cat];
+  let key = m.icon;
+  if (cat === 'race_start' && META.race_icons) key = (r[5] && r[5].circuit ? META.race_icons.circuit : META.race_icons.p2p) || key;
+  if (!key || !META.icons[key]) return null;
+  return L.icon({ iconUrl: META.icons[key], iconSize: [26, 26], iconAnchor: [13, 13], popupAnchor: [0, -12], className: 'poi-ic' });
+}
+function makeCat(cat) {
+  const m = META.cats[cat], rows = D.poi.cats[cat];
+  const g = (m.cluster && MC) ? L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 48, disableClusteringAtZoom: 6, showCoverageOnHover: false }) : L.featureGroup();
+  rows.forEach((r) => {
+    const p = ll(r[0], r[1]), ic = catIcon(cat, r);
+    const mk = ic ? L.marker(p, { icon: ic }) : L.circleMarker(p, { radius: 5, color: '#000', weight: 1, fillColor: m.color, fillOpacity: 0.95 });
+    mk.bindTooltip(() => (r[3] ? r[3] : catLabel(cat)) + (r[3] ? '  (' + catLabel(cat) + ')' : ''));
+    mk.bindPopup(() => poiPopup(cat, r));
+    g.addLayer(mk);
+    const ex = r[5];
+    if (ex && ex.left && ex.right) g.addLayer(L.polyline([ll(ex.left[0], ex.left[2]), ll(ex.right[0], ex.right[2])], { color: m.color, weight: 3, opacity: 0.9, interactive: false }));
+  });
+  if (cat === 'train_line' && D.poi.lines.train_line) g.addLayer(L.polyline(D.poi.lines.train_line.map((q) => ll(q[0], q[1])), { color: m.color, weight: 2, dashArray: '8 4', interactive: false }));
+  return g;
+}
+if (D.poi) {
+  Object.keys(META.cats).forEach((cat) => {
+    const m = META.cats[cat];
+    entry({ id: 'poi_' + cat, group: m.group, label: () => catLabel(cat), icon: m.icon && META.icons[m.icon], color: m.color, n: m.n, on: m.on, make: () => makeCat(cat) });
+  });
+}
+
+// ---- race lines
+const RL = {}; (D.racelines || []).forEach((r) => { RL[r.id] = r; });
+const racePts = (r) => { const a = r.p, o = []; for (let i = 0; i < a.length; i += 2) o.push(ll(a[i], a[i + 1])); return o; };
+function ribbon(r) {
+  if (r._rib) return r._rib;
+  const a = r.p, l = r.l, L1 = [], R1 = [];
+  for (let i = 0; i < a.length; i += 2) { L1.push(ll(l[i], l[i + 1])); R1.push(ll(2 * a[i] - l[i], 2 * a[i + 1] - l[i + 1])); }
+  r._rib = L.polygon(L1.concat(R1.reverse()), { color: r.circuit ? '#38bdf8' : '#fb7185', weight: 1, fillOpacity: 0.28, interactive: false });
+  return r._rib;
+}
+function routePopup(r) {
+  const st = (D.poi && D.poi.cats.race_start || []).find((q) => q[5] && q[5].route_id === r.id);
+  return popupHtml({ title: (st && st[3] && st[3].indexOf('route') !== 0 ? st[3] : t('route') + ' ' + r.id), type: t('route') + ' ' + r.id + ' - ' + (r.circuit ? t('circuit') : t('p2p')),
+    x: st ? st[0] : null, z: st ? st[1] : null, y: st ? st[2] : null,
+    rows: [[t('length'), (r.len / 1000).toFixed(2) + ' km'], [t('heading'), r.hdg != null ? r.hdg + ' deg' : '-'], [t('width'), r.hw ? r.hw[0] + '..' + r.hw[1] + ' m' : '-'], ['points', String(r.p.length / 2)]],
+    src: 'OpenWorld/Brio/AITracks/Route' + r.id + '.owt' });
+}
+if (D.racelines) {
+  entry({ id: 'racelines', group: 'races', label: () => t('racelines'), line: '#38bdf8', n: D.racelines.length, on: false,
+    make: () => { const g = L.featureGroup();
+      D.racelines.forEach((r) => { const pl = L.polyline(racePts(r), { color: r.circuit ? '#38bdf8' : '#fb7185', weight: 2.5, opacity: 0.9 });
+        pl.bindTooltip(() => t('route') + ' ' + r.id + ' (' + (r.circuit ? t('circuit') : t('p2p')) + ', ' + (r.len / 1000).toFixed(1) + ' km)', { sticky: true });
+        pl.bindPopup(() => routePopup(r)); g.addLayer(pl); }); return g; } });
+  const Rib = L.LayerGroup.extend({
+    onAdd(m) { this._m = m; m.on('moveend', this._upd, this); this._upd(); },
+    onRemove(m) { m.off('moveend', this._upd, this); this.clearLayers(); },
+    _upd() {
+      const m = this._m; if (!m) return;
+      if (m.getZoom() < 4) { this.clearLayers(); return; }
+      const b = m.getBounds().pad(0.15);
+      D.racelines.forEach((r) => {
+        if (!r._bb) { const a = r.p; let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9; for (let i = 0; i < a.length; i += 2) { x0 = Math.min(x0, a[i]); x1 = Math.max(x1, a[i]); y0 = Math.min(y0, a[i + 1]); y1 = Math.max(y1, a[i + 1]); }
+          r._bb = L.latLngBounds(ll(x0 - 15, y0 - 15), ll(x1 + 15, y1 + 15)); }
+        const pg = ribbon(r), has = this.hasLayer(pg), vis = b.intersects(r._bb);
+        if (vis && !has) this.addLayer(pg); else if (!vis && has) this.removeLayer(pg);
+      });
+    } });
+  entry({ id: 'ribbons', group: 'races', label: () => t('ribbons'), line: '#7dd3fc', n: D.racelines.length, on: false, make: () => new Rib() });
+}
+if (D.poi && D.poi.cats.race_start) {
+  entry({ id: 'grids', group: 'races', label: () => t('grids'), color: '#ff5a4d', n: D.poi.cats.race_start.length, on: false,
+    make: () => { const g = L.featureGroup(); D.poi.cats.race_start.forEach((r) => { const ex = r[5]; if (!ex || !ex.grid) return;
+      ex.grid.forEach((q, i) => L.circleMarker(ll(q[0], q[1]), { radius: 3, color: '#000', weight: 1, fillColor: i === 0 ? '#fff' : '#ff5a4d', fillOpacity: 1 }).bindTooltip('grid slot ' + (i + 1) + ' / route ' + ex.route_id).addTo(g));
+      if (ex.heading_deg != null) { const h = ex.heading_deg * Math.PI / 180, e = [r[0] + Math.sin(h) * 40, r[1] + Math.cos(h) * 40];
+        L.polyline([ll(r[0], r[1]), ll(e[0], e[1])], { color: '#fff', weight: 2, dashArray: '4 3', interactive: false }).addTo(g); } }); return g; } });
+}
+let HL = null;
+function showRoute(id) {
+  const r = RL[id]; if (!r) return;
+  if (HL) map.removeLayer(HL);
+  HL = L.featureGroup([ribbon({ ...r, _rib: null }), L.polyline(racePts(r), { color: '#facc15', weight: 3 })]).addTo(map);
+  map.fitBounds(HL.getBounds().pad(0.15));
+}
+
+// ---- speed-limit signs
+const VCOL = ['#38bdf8', '#34d399', '#facc15', '#fb923c', '#f472b6', '#a78bfa'];
+function signIcon(kind, v, hdg) {
+  const c = VCOL[v % VCOL.length];
+  const shape = kind === 1 ? '<rect x="3" y="3" width="16" height="16" rx="3" fill="#10151d" stroke="' + c + '" stroke-width="2"/>'
+              : kind === 2 ? '<circle cx="11" cy="11" r="8" fill="#10151d" stroke="#9ca3af" stroke-width="2"/><line x1="5" y1="17" x2="17" y2="5" stroke="#9ca3af" stroke-width="2"/>'
+              : '<circle cx="11" cy="11" r="8" fill="#10151d" stroke="' + c + '" stroke-width="2.5"/>';
+  const arrow = kind === 2 ? '' : '<path d="M11 4 L15 11 L11 9.5 L7 11 Z" fill="' + c + '"/>';
+  return L.divIcon({ className: 'sgn', iconSize: [22, 22], iconAnchor: [11, 11], html: '<svg width="22" height="22" viewBox="0 0 22 22" style="transform:rotate(' + hdg + 'deg)">' + shape + arrow + '</svg>' });
+}
+if (D.signs) {
+  const rows = D.signs.rows, KN = ['limit', 'high', 'end'];
+  const sel = (f) => rows.filter(f);
+  const mk = (list) => () => { const g = L.featureGroup(); list.forEach((s) => {
+    const mkr = L.marker(ll(s[0], s[1]), { icon: signIcon(s[4], s[5], s[3]) });
+    const lab = s[4] === 0 ? t('limit') : s[4] === 1 ? t('high') : t('end');
+    mkr.bindTooltip(() => lab + ' - ' + t('variant') + ' ' + s[5]);
+    mkr.bindPopup(() => popupHtml({ title: lab, type: t('signs') + ' - ' + t('variant') + ' ' + s[5], x: s[0], z: s[1], y: s[2],
+      rows: [[t('variant'), String(s[5])], ['km/h', s[6] != null ? String(s[6]) : t('kmh_unknown')], [t('facing'), s[3] + ' deg (towards oncoming traffic)'], [t('roadd'), s[7] != null ? s[7] + ' m' : '-'],
+             ['road class', s[8] != null ? String(s[8]) : '-'], [t('model'), s[9]]], src: 'GeoChunk0.minizip#' + s[10] }));
+    g.addLayer(mkr); }); return g; };
+  for (let v = 0; v < 6; v++) { const l = sel((s) => s[4] === 0 && s[5] === v); if (l.length) entry({ id: 'sign_l' + v, group: 'signs', label: () => t('limit') + ' - ' + t('variant') + ' ' + v, color: VCOL[v], n: l.length, on: false, make: mk(l) }); }
+  const hi = sel((s) => s[4] === 1); if (hi.length) entry({ id: 'sign_h', group: 'signs', label: () => t('high'), color: '#38bdf8', n: hi.length, on: false, make: mk(hi) });
+  const en = sel((s) => s[4] === 2); if (en.length) entry({ id: 'sign_e', group: 'signs', label: () => t('end'), color: '#9ca3af', n: en.length, on: false, make: mk(en) });
+}
+
+// ---- terrain overlays
+let surfOverlay = null;
+function surfBounds(s) { return L.latLngBounds(ll(s.x0, s.z1), ll(s.x0 + s.w * s.res, s.z1 - s.h * s.res)); }
+function renderSurf() {
+  const G = GRID.surf; if (!G) return null;
+  const s = G.s, cv = document.createElement('canvas'); cv.width = s.w; cv.height = s.h;
+  const ctx = cv.getContext('2d'), im = ctx.createImageData(s.w, s.h), d = im.data, a = G.a;
+  const lut = s.colors.map((c, k) => [c[0], c[1], c[2], state.iso == null ? 255 : (k === state.iso ? 255 : 40)]);
+  for (let i = 0; i < a.length; i++) { const k = a[i]; if (k === 255) continue; const c = lut[k], o = i * 4; d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = c[3]; }
+  ctx.putImageData(im, 0, 0);
+  return new Promise((res) => cv.toBlob((b) => res(URL.createObjectURL(b))));
+}
+if (D.surfaces) {
+  entry({ id: 'surfaces', group: 'terrain', label: () => t('surfaces'), color: '#4ade80', n: D.surfaces.ids.length, on: false, opacity: 0.6, legend: 'surf',
+    make: () => { const s = D.surfaces, ov = L.imageOverlay('data:image/gif;base64,R0lGODlhAQABAAAAACw=', surfBounds(s), { pane: 'over', opacity: state.op.surfaces != null ? state.op.surfaces : 0.6, className: 'pix' });
+      surfOverlay = ov; (async () => { if (!GRID.surf) await loadGridsP; const u = await renderSurf(); if (u) ov.setUrl(u); })(); return ov; } });
+}
+if (D.elevation) {
+  entry({ id: 'elevation', group: 'terrain', label: () => t('elevation'), color: '#b9a468', n: 0, on: false, opacity: 0.7, legend: 'elev',
+    make: () => { const e = D.elevation.img; return L.imageOverlay(e.file, L.latLngBounds(ll(e.x0, e.z1), ll(e.x0 + e.w * e.res, e.z1 - e.h * e.res)), { pane: 'over', opacity: state.op.elevation != null ? state.op.elevation : 0.7 }); } });
+}
+
+// -------------------------------------------------------------------------------------------------------------------- panel
+const plist = document.getElementById('plist');
+const GORDER = ['map'].concat((META.groups || []).map((g) => g[0]), ['signs', 'terrain']);
+const GNAME = (g) => { const m = (META.groups || []).find((q) => q[0] === g); const p = m ? [m[1], m[2]] : GROUP_EXTRA[g]; return p ? (isDE() ? p[1] : p[0]) : g; };
+const openGroups = store.get('open', { map: 1, races: 1 });
+function layerOf(e) { return e.layer; }
+function setOn(e, on) {
+  state.on[e.id] = on ? 1 : 0; store.set('on', state.on);
+  if (on) { if (!e.layer) { try { e.layer = e.make(); } catch (err) { console.warn('layer failed', e.id, err); return; } } e.layer.addTo(map); if (e.back && e.layer.bringToBack) e.layer.bringToBack(); }
+  else if (e.layer && map.hasLayer(e.layer)) map.removeLayer(e.layer);
+  const sub = document.getElementById('sub_' + e.id); if (sub) sub.classList.toggle('show', on);
+}
+function legendHtml(e) {
+  if (e.legend === 'surf' && D.surfaces) {
+    const s = D.surfaces;
+    return '<div class="small">' + esc(t('surf_hint')) + '</div><div class="legend">' + s.ids.map((id, k) => '<div class="lg ' + s.status[k] + (state.iso === k ? ' sel' : '') + '" data-k="' + k + '">' +
+      '<i style="background:rgb(' + s.colors[k].join(',') + ')"></i><span class="t">' + esc(s.names[k]) + '</span><span class="k">' + id + ' &middot; ' + s.km2[k] + ' km2<span class="tag ' + s.status[k] + '">' + s.status[k] + '</span></span></div>').join('') + '</div>';
+  }
+  if (e.legend === 'elev' && D.elevation) {
+    const el = D.elevation, lo = el.ramp[0][0], hi = el.ramp[el.ramp.length - 1][0];
+    const stops = el.ramp.map((r) => 'rgb(' + r[1].join(',') + ') ' + ((r[0] - lo) / (hi - lo) * 100).toFixed(0) + '%').join(',');
+    return '<div class="grad" style="background:linear-gradient(90deg,' + stops + ')"></div><div class="small" style="display:flex;justify-content:space-between"><span>' + lo + ' m (sea)</span><span>' + hi + ' m</span></div>' +
+      '<div class="small">' + el.zmin.toFixed(0) + '..' + el.zmax.toFixed(0) + ' m in the data. Terrain mesh only (no buildings); bridges win over the ground below.</div>';
+  }
+  return '';
+}
+function renderPanel() {
+  const keep = plist.scrollTop;
+  plist.innerHTML = '';
+  GORDER.forEach((g) => {
+    const es = ENTRIES.filter((e) => e.group === g); if (!es.length) return;
+    const d = document.createElement('details'); d.open = !!openGroups[g];
+    d.innerHTML = '<summary>' + esc(GNAME(g)) + '</summary>';
+    d.addEventListener('toggle', () => { openGroups[g] = d.open ? 1 : 0; store.set('open', openGroups); });
+    es.forEach((e) => {
+      const it = document.createElement('div'); it.className = 'item';
+      const sw = e.icon ? '<img src="' + esc(e.icon) + '" alt="">' : e.line ? '<i class="ln" style="background:' + e.line + '"></i>' : '<i style="background:' + (e.color || '#999') + '"></i>';
+      it.innerHTML = '<label style="display:contents"><input type="checkbox" ' + (map.hasLayer(e.layer || L.layerGroup()) ? 'checked' : '') + '><span class="sw">' + sw + '</span><span class="nm" title="' + esc(e.label()) + '">' + esc(e.label()) + '</span></label><span class="n">' + (e.n || '') + '</span>';
+      it.querySelector('input').addEventListener('change', (ev) => setOn(e, ev.target.checked));
+      d.appendChild(it);
+      if (e.legend) {
+        const sub = document.createElement('div'); sub.className = 'sub' + (e.layer && map.hasLayer(e.layer) ? ' show' : ''); sub.id = 'sub_' + e.id;
+        sub.innerHTML = '<div class="row"><label>' + esc(t('opacity')) + '</label><input type="range" min="0.1" max="1" step="0.05" value="' + (state.op[e.id] != null ? state.op[e.id] : e.opacity) + '"></div>' + legendHtml(e);
+        sub.querySelector('input').addEventListener('input', (ev) => { state.op[e.id] = Number(ev.target.value); store.set('op', state.op); if (e.layer) e.layer.setOpacity(state.op[e.id]); });
+        sub.querySelectorAll('.lg').forEach((row) => row.addEventListener('click', async () => {
+          const k = Number(row.dataset.k); state.iso = state.iso === k ? null : k;
+          sub.querySelectorAll('.lg').forEach((r2) => r2.classList.toggle('sel', Number(r2.dataset.k) === state.iso));
+          const u = await renderSurf(); if (u && surfOverlay) surfOverlay.setUrl(u);
+        }));
+        d.appendChild(sub);
+      }
+    });
+    plist.appendChild(d);
+  });
+  plist.scrollTop = keep;
+}
+
+// ------------------------------------------------------------------------------------------------------------- controls
+const selSeason = document.getElementById('season'), selLang = document.getElementById('lang');
+seasons.forEach((s) => { const o = document.createElement('option'); o.value = s; o.textContent = s; selSeason.appendChild(o); });
+selSeason.value = state.season;
+selSeason.addEventListener('change', () => { state.season = selSeason.value; store.set('season', state.season); base.redraw(); });
+const langs = (D.names && D.names.languages) || ['EN', 'DE'];
+['EN', 'DE'].concat(langs.filter((l) => l !== 'EN' && l !== 'DE')).forEach((l) => { const o = document.createElement('option'); o.value = l; o.textContent = l === 'EN' ? 'English' : l === 'DE' ? 'Deutsch' : l + ' (names only)'; selLang.appendChild(o); });
+selLang.value = state.lang;
+function applyLang() {
+  document.documentElement.lang = isDE() ? 'de' : 'en';
+  document.querySelectorAll('[data-t]').forEach((el) => { el.textContent = t(el.dataset.t); });
+  LABELS.forEach((q) => q.m.setIcon(labelIcon(q.fn(), q.cls)));
+  map.closePopup(); renderPanel(); cbox.textContent = t('hover');
+}
+selLang.addEventListener('change', () => { state.lang = selLang.value; store.set('lang', state.lang); applyLang(); });
+document.getElementById('baseop').addEventListener('input', (e) => base.setOpacity(Number(e.target.value)));
+const panel = document.getElementById('panel'), pt = document.getElementById('ptoggle');
+pt.addEventListener('click', () => { panel.classList.toggle('hidden'); pt.classList.toggle('shifted', panel.classList.contains('hidden')); });
+document.getElementById('ver').textContent = META.built || '';
+
+// search / jump
+const sbox = document.getElementById('search'), sres = document.getElementById('results');
+let SIDX = null;
+function buildIdx() {
+  SIDX = [];
+  if (D.names) { D.names.landmarks.forEach((l) => SIDX.push({ key: Object.values(l.names).join('|').toLowerCase() + '|' + l.slug, lab: () => nameOf(l.names), sub: () => t('landmark'), x: l.x, z: l.z, pop: () => popupHtml({ title: nameOf(l.names), type: t('landmark'), x: l.x, z: l.z, src: l.src }) }));
+    D.names.regions.forEach((r) => { const c = r.outline.reduce((a, p) => [a[0] + p[0] / r.outline.length, a[1] + p[1] / r.outline.length], [0, 0]); SIDX.push({ key: Object.values(r.names).join('|').toLowerCase(), lab: () => nameOf(r.names), sub: () => t('region'), x: c[0], z: c[1], zoom: 1.5, pop: null }); }); }
+  if (D.poi) Object.keys(D.poi.cats).forEach((cat) => { if (cat === 'parking_area' || cat === 'pinata' || cat === 'drift_zone_post') return;
+    D.poi.cats[cat].forEach((r) => { if (r[3]) SIDX.push({ key: (r[3] + '|' + cat).toLowerCase(), lab: () => r[3], sub: () => catLabel(cat), x: r[0], z: r[1], pop: () => poiPopup(cat, r) }); }); });
+}
+function goto(x, z, zoom, pop) {
+  const p = ll(x, z); map.flyTo(p, zoom || 5, { duration: 0.6 });
+  const k = lookup(x, z);
+  L.popup().setLatLng(p).setContent(pop ? pop() : popupHtml({ title: t('ctx'), type: 'x, z', x, z, rows: k.elev != null ? [[t('elev'), k.elev.toFixed(1) + ' m']] : [] })).openOn(map);
+}
+sbox.addEventListener('input', () => {
+  const q = sbox.value.trim().toLowerCase(); sres.innerHTML = ''; sres.style.display = 'none'; if (q.length < 2) return;
+  const m = q.match(/^(-?\d+(?:\.\d+)?)[\s,;]+(-?\d+(?:\.\d+)?)$/);
+  const out = [];
+  if (m) out.push({ lab: () => t('goto') + ' x ' + m[1] + ', z ' + m[2], sub: () => '', x: Number(m[1]), z: Number(m[2]), pop: null });
+  else { if (!SIDX) buildIdx(); for (const it of SIDX) { if (it.key.indexOf(q) >= 0) { out.push(it); if (out.length >= 14) break; } } }
+  if (!out.length) { sres.innerHTML = '<div class="small" style="padding:6px">' + esc(t('nores')) + '</div>'; sres.style.display = 'block'; return; }
+  out.forEach((it) => { const d = document.createElement('div'); d.innerHTML = esc(it.lab()) + '<small>' + esc(it.sub()) + '</small>'; d.addEventListener('click', () => { goto(it.x, it.z, it.zoom, it.pop); sres.style.display = 'none'; }); sres.appendChild(d); });
+  sres.style.display = 'block';
+});
+
+// ------------------------------------------------------------------------------------------------------------------ start
+const loadGridsP = loadGrids();
+ENTRIES.forEach((e) => { const on = state.on[e.id] != null ? !!state.on[e.id] : e.on; if (on) setOn(e, true); else state.on[e.id] = 0; });
+applyLang();
+window.FH6V = { map, ll, world, showRoute, state, ENTRIES };      // handy in the browser console
+})();
+</script>
+</body>
+</html>
