@@ -13,6 +13,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Rebinding no longer triggers the action**: while you are binding a key or controller button (Setup → Hotkey / Controller, Overlay → Hide HUD), no hotkey or controller action fires, and the key or button you just pressed (or its release) stays silent for a moment afterwards. Before, rebinding Backfire to B while it was already on B toggled Backfire.
 - **Setup layout**: the Controller card's bind buttons now all line up at the same position and size in every row (before, each row sat a few pixels further right than the one above), the x clear buttons are gone (press Backspace or Delete while binding instead), and the Network card moved above Game Install in the right column.
 - **Controller stick deadzone** now defaults to 0.27 (was 0.15), which ignores the drift of worn sticks. Existing settings keep their saved value.
+- **HUD Pill gear position**: the gear indicator in the Pill style of the Drive cluster sat 1 px too low and now sits 1 px higher.
 
 ### Added
 - **Solo trail (white)**: your own trail now also shows on the Dashboard map and the HUD minimap when you are not in a co-op session, in white like your arrow, with the same fade settings (Mini-Settings → Dashboard → Map → Co-Op "Tracer fade"; the HUD's Co-Op trail fade). In a session it turns your co-op colour as before; the trail you already drove is kept when a session starts or ends. On the HUD, **Show trails** switches it off together with the co-op trails.
@@ -30,10 +31,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Automatic Gearbox: Manual mode**: a new first entry in the Gearbox mode dropdown. In Manual the gearbox never shifts and the in-game HUD shows it exactly as if the gearbox were off. With *Auto Race mode in races* on, it still switches to Race mode in an actual race and goes back to Manual afterwards, so you can drive free roam by hand and use the gearbox only in races.
 - **Automatic Gearbox: Disable in drift events**: a new checkbox under *Auto Race mode in races*. While a drift event is detected (the same detection the HUD uses to show the drift counter) the gearbox turns off, HUD included, and comes back when the event ends. It applies with *Auto Race mode in races* on or with Race mode selected.
 
-### Fixed
-- **HUD Pill gear position**: the gear indicator in the Pill style of the Drive cluster sat 1 px too low and now sits 1 px higher.
-
 ### Info
+- **Dashboard modules fit any cell size**: Session Stats, Position, Co-Op, Boost and the Boost / Power Graph now work like the other modules: they draw inside their own cell and shrink their text to fit instead of needing a minimum size, so nothing overflows or wraps letter by letter in a small cell. Titles cut off with "…" instead of wrapping. Session Stats flows into several columns in a wide, short cell and stacks values under their labels in a narrow one; Co-Op drops the distance and gear columns (then uses two lines per player) when narrow; Position stacks its two blocks when narrow; the graphs switch to the Compact look on their own when the cell is too small for axes.
 - **Dashboard Boost Graph matches the Power Graph**: same small blue title (no more big wrapping heading), same axis padding, grid and RPM range, and it follows the same Mini-Settings → Dashboard → Power Graph options: *Compact* (title over the plot, no axes, peak marked with a line and value) and *Show grid*. Without detected boost it shows "No boost detected" instead of an empty chart.
 - **Dashboard map compass**: the Dashboard map now uses the same compass as the in-game minimap (disc with a red/white needle pointing north) instead of the old circle with an "N".
 - **Overlay: "Only when game window is focused" moved** from Setup → Window Detection to the Overlay tab (General). Hover it for a note that it uses the Window Detection method from Setup. The setting itself is unchanged.

@@ -287,6 +287,12 @@ These describe a state, not an option.
 particular). Tooltips keep the layout compact and the explanation is one hover away.
 Tooltips everywhere are noise too, so only what needs explaining gets one.
 
+## Dashboard modules
+
+Dashboard modules don't use cards or rows: each fits its cell. Paint text (no wrapping
+labels), scale all fonts uniformly to the pane, no minimum size, title truncates. Helpers
+and the rationale: `docs/features/dashboard.md` → *Module sizing standard*.
+
 ## Fonts
 
 The app renders in Geist Mono. Values/readouts stay monospace so columns line up;
