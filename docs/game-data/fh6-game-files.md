@@ -658,6 +658,7 @@ extract_cars.py --out DIR [--lang EN,DE|all] [--ordinal N ..] # cars.json (671 o
 extract_names.py --out DIR                                    # names.json (75 landmarks, 24 languages, stunt name tables), regions.json (10 outlines)
 extract_icons.py --out DIR; build_icon_mapping.py DIR         # png/ (1074 icons), icons.json, xml_symbols.json; mapping.json (POI category -> icon)
 roaddist.py / plot_pois.py                                    # validation helpers
+build_viewer.py --out DIR_OUTSIDE_REPO                         # local Leaflet map viewer of all of the above (runs the extractors itself; opens from file://)
 ```
 
 Library modules: `fh6common.py` (install detection, case-insensitive paths, `.nt`/`.tz` readers), `pgzp.py` + `lz4b.py` (PGZP reader, u32 **and** u64 table),

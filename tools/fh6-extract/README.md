@@ -33,6 +33,30 @@ Steam's `libraryfolders.vdf`, see `fh6common.py`) and `--out DIR` (default `./fh
 | `roaddist.py` | stdout | Per-type distance to nearest road (needs `roads.json` + `pois.json` in `--out`). |
 | `plot_pois.py --map IMG` | `pois_on_map.png`, `pois_dense_on_map.png` | Needs `pois.json` in `--out`. |
 
+## Map viewer (`build_viewer.py`)
+
+A local, interactive Leaflet map of everything above — for browsing what the install gives us before deciding what goes into the app.
+
+```
+python3 -B build_viewer.py --out /some/dir/outside/the/repo      # then open  /some/dir/outside/the/repo/index.html
+```
+
+- **Self-sufficient:** runs the extractors itself into `--work` (default `<out>-work`; steps whose output already exists are skipped, `--force` redoes
+  them). First run ≈ 5 min (terrain reads the 40 GB GeoChunk0; measured 270 s with one season), later runs ≈ 10–20 s. `--no-terrain` skips elevation/surfaces,
+  `--seasons Summer` builds one season only. A layer whose extractor fails is skipped with a `WARNING` line; the rest is still built.
+- **Output is Playground Games' imagery/data** (~100 MB): keep it outside the repo, do not publish or commit it. The script refuses `--out`/`--work` inside the repo.
+- **Opens from `file://`** (data is `<script src="data/*.js">`, no `fetch`). It needs internet for the Leaflet + markercluster CDN scripts (unpkg).
+  Elevation/surface hover lookups use `DecompressionStream` (Chrome/Edge 80+, Firefox 113+, Safari 16.4+).
+- **What it shows:** the game's own tile pyramid as base map (4 seasons, JPEG; zoom 0–3 = levels L0–L3, overzoom to 7), roads by class, regions (outline + names), landmarks (75),
+  every POI category with the game's own icon where `mapping.json` has one (coloured circle otherwise; dense layers clustered and off by default), race starts (+ 12-slot grids),
+  170 race lines with track edges (ribbons appear from zoom 4), speed-limit signs by variant with a heading arrow, stunt gates, surfaces raster (54 ids, our names with
+  confirmed / seen / reasoned status; click a legend row to isolate one id), elevation hillshade. EN/DE (and the other 22 languages for landmark / region names) toggle;
+  click = popup (type, name, x/z/y, source file, extras); the mouse readout (bottom left) shows telemetry-space x/z, terrain height and surface under the cursor;
+  right-click = coordinates popup; the search box finds names or jumps to `x z`.
+- Design notes: Leaflet CRS units = pixels of the 8192 map (`lat = -py`, `lng = px`), custom `scale = 2^(zoom-3)` so Leaflet zoom 3 is native 1:1 and the 1024 px game tiles
+  are used as-is (`tileSize 1024`). Everything vector shares one canvas renderer (several canvases would swallow each other's clicks). Race names are English only
+  (no German source in the files).
+
 Library modules (imported, not run): `fh6common.py` (install detection, case-insensitive paths, `.nt` / `.tz`
 readers), `pgzp.py` + `lz4b.py` (reader for the 40 GB `GeoChunk*.minizip` PGZP containers — seek-reads single
 entries), `fh6str.py` (string-table reader + key hash), `fh6owt.py` (`.owt` racing-line reader + `RVAN` start/finish block), `fh6surfaces.py` (terrain
