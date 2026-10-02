@@ -328,9 +328,16 @@ pub fn ease_yaw(current: f32, target: f32, dt: f32) -> f32 {
     lerp_angle(current, target, lerp_t)
 }
 
-/// "Look-around": the view-yaw offset (radians, added to the map's yaw) for a right-stick
-/// vector (x right, y up, post-deadzone). Stick up = 0 (no change), right = +90° (the map
-/// turns so what is to the right of the view is at the top). `(0, 0)` = no offset.
+/// Wrap an angle into (-PI, PI].
+pub fn wrap_angle(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let w = (a + PI).rem_euclid(TAU) - PI;
+    if w <= -PI { w + TAU } else { w }
+}
+
+/// "Look-around": the right-stick angle (radians) for a stick vector (x right, y up,
+/// post-deadzone), measured clockwise from stick-up. Up = 0, right = +90 deg, down = 180 deg.
+/// `(0, 0)` = no look.
 /// Angle only, not scaled by deflection: the deadzone already gates it, and scaling the angle
 /// by magnitude would make a half-pushed stick point at the wrong direction.
 pub fn look_offset(stick: (f32, f32)) -> f32 {
@@ -341,11 +348,26 @@ pub fn look_offset(stick: (f32, f32)) -> f32 {
     }
 }
 
-/// One frame of the eased look-around offset: toward the stick's offset while `enabled`, back
-/// to 0 when released or the option is off. Same easing as the map rotation ([`ease_yaw`]).
-pub fn ease_look(current: f32, stick: (f32, f32), enabled: bool, dt: f32) -> f32 {
-    let target = if enabled { look_offset(stick) } else { 0.0 };
-    ease_yaw(current, target, dt)
+/// The look-around target: the offset to add to the map's current yaw (`map_yaw`, what the
+/// view would show without the stick) so the view yaw becomes `heading + look_offset(stick)`,
+/// i.e. the direction the stick points **relative to the car** (like the game's camera) comes
+/// to the top. `heading` is the heading-up yaw ([`target_yaw`]). In heading-up `map_yaw` is
+/// (about) `heading`, so this is just the stick angle; in north-up (`map_yaw` 0) it adds the
+/// car's heading. Wrapped to (-PI, PI]. `(0, 0)` = 0 (back to the map's own orientation).
+pub fn look_target(stick: (f32, f32), heading: f32, map_yaw: f32) -> f32 {
+    if stick.0 == 0.0 && stick.1 == 0.0 {
+        0.0
+    } else {
+        wrap_angle(heading + look_offset(stick) - map_yaw)
+    }
+}
+
+/// One frame of the eased look-around offset (added to `map_yaw` to get the view yaw): toward
+/// [`look_target`] while `enabled`, back to 0 when released or the option is off. Same easing
+/// as the map rotation ([`ease_yaw`]); the result is wrapped so it can't wind up over laps.
+pub fn ease_look(current: f32, stick: (f32, f32), enabled: bool, heading: f32, map_yaw: f32, dt: f32) -> f32 {
+    let target = if enabled { look_target(stick, heading, map_yaw) } else { 0.0 };
+    wrap_angle(ease_yaw(current, target, dt))
 }
 
 /// One frame of smooth zoom toward `target_m`. `dt` in seconds.
@@ -472,21 +494,93 @@ mod tests {
         assert_eq!(look_offset((0.1, 0.1)), look_offset((0.9, 0.9)));
     }
 
+    /// Ease the look offset for `secs` at 60 fps against a fixed base / heading.
+    fn settle(mut off: f32, stick: (f32, f32), heading: f32, base: f32, secs: f32) -> f32 {
+        for _ in 0..(secs * 60.0) as usize {
+            off = ease_look(off, stick, true, heading, base, 1.0 / 60.0);
+        }
+        off
+    }
+
+    fn ang_close(a: f32, b: f32) -> bool {
+        wrap_angle(a - b).abs() < 1e-2
+    }
+
     #[test]
     fn ease_look_returns_to_zero_and_respects_enabled() {
-        let mut off = 0.0;
-        for _ in 0..120 {
-            off = ease_look(off, (1.0, 0.0), true, 1.0 / 60.0);
-        }
-        assert!((off - FRAC_PI_2).abs() < 1e-2, "{off}");
-        // Combined with the base yaw: the view yaw is just the sum.
-        assert!((0.8 + off - (0.8 + FRAC_PI_2)).abs() < 1e-2);
-        for _ in 0..120 {
-            off = ease_look(off, (0.0, 0.0), true, 1.0 / 60.0); // released
-        }
+        // Heading-up (base = heading): the offset is just the stick angle.
+        let off = settle(0.0, (1.0, 0.0), 0.8, 0.8, 2.0);
+        assert!(ang_close(off, FRAC_PI_2), "{off}");
+        let off = settle(off, (0.0, 0.0), 0.8, 0.8, 2.0); // released
         assert!(off.abs() < 1e-2, "{off}");
         // Option off: the stick is ignored.
-        assert_eq!(ease_look(0.0, (1.0, 0.0), false, 0.016), 0.0);
+        assert_eq!(ease_look(0.0, (1.0, 0.0), false, 0.8, 0.0, 0.016), 0.0);
+    }
+
+    /// The reported bug: in north-up the stick turned the view by its angle from *north*
+    /// (stick right = east at the top), so the result was off by the car's heading. Now the
+    /// stick picks a direction relative to the car in both modes, and the views agree.
+    #[test]
+    fn look_is_car_relative_in_north_up_and_heading_up() {
+        use std::f32::consts::PI;
+        let (car_x, car_z) = (1000.0, -500.0);
+        for heading in [0.0, FRAC_PI_2, 2.5, -1.2, PI] {
+            for stick in [(1.0, 0.0), (0.0, 1.0), (-0.7, -0.7), (0.0, -1.0), (-1.0, 0.2)] {
+                let theta = look_offset(stick);
+                let mut views = Vec::new();
+                for base in [0.0 /* north-up */, heading /* heading-up */] {
+                    let off = settle(0.0, stick, heading, base, 3.0);
+                    let view = MapView::new(car_x, car_z, base + off, 400.0, 200.0);
+                    // View yaw = car heading + stick angle.
+                    assert!(ang_close(view.yaw, heading + theta), "h {heading} s {stick:?} base {base}: {}", view.yaw);
+                    // The car stays at the view centre (the pivot).
+                    assert!(close(view.world_to_offset(car_x, car_z), [0.0, 0.0], 1e-3));
+                    // The world direction the stick points at, relative to the car, is at the top.
+                    let d = heading + theta;
+                    let [sx, sy] = view.world_to_offset(car_x + 100.0 * d.sin(), car_z + 100.0 * d.cos());
+                    assert!(sx.abs() < 1.0 && sy < 0.0, "h {heading} s {stick:?} base {base}: ({sx}, {sy})");
+                    // The car arrow is turned by minus the stick angle (stick right: car points left).
+                    assert!(ang_close(view.arrow_angle(heading), -theta), "{}", view.arrow_angle(heading));
+                    // The compass points at world north: a point due north lies along north_dir.
+                    let [nx, ny] = view.world_to_offset(car_x, car_z + 100.0);
+                    let [cx, cy] = view.north_dir();
+                    let len = (nx * nx + ny * ny).sqrt();
+                    assert!((nx / len - cx).abs() < 1e-3 && (ny / len - cy).abs() < 1e-3);
+                    views.push(view.yaw);
+                }
+                assert!(ang_close(views[0], views[1]), "north-up and heading-up look views differ: {views:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn look_north_up_release_eases_back_to_north() {
+        // Car heading east, north-up, stick right: the car's right (south) comes to the top.
+        let off = settle(0.0, (1.0, 0.0), FRAC_PI_2, 0.0, 3.0);
+        assert!(ang_close(off, std::f32::consts::PI), "{off}");
+        assert!(close(MapView::new(0.0, 0.0, off, 50.0, 100.0).world_to_offset(0.0, -10.0), [0.0, -10.0], 0.2));
+        // Released: back to north-up.
+        let off = settle(off, (0.0, 0.0), FRAC_PI_2, 0.0, 3.0);
+        assert!(off.abs() < 1e-2, "{off}");
+    }
+
+    #[test]
+    fn look_offset_stays_wrapped_while_the_car_circles() {
+        // North-up, stick held up while the heading winds through several turns.
+        let mut off = 0.0;
+        for i in 0..2000 {
+            let heading = i as f32 * 0.02; // ~6.4 turns
+            off = ease_look(off, (0.0, 1.0), true, heading, 0.0, 1.0 / 60.0);
+            assert!(off.abs() <= std::f32::consts::PI + 1e-4, "{off}");
+        }
+    }
+
+    #[test]
+    fn wrap_angle_range() {
+        use std::f32::consts::PI;
+        for (a, w) in [(0.0, 0.0), (PI, PI), (-PI, PI), (3.0 * PI, PI), (2.0 * PI + 0.5, 0.5), (-0.5, -0.5)] {
+            assert!((wrap_angle(a) - w).abs() < 1e-5, "{a} -> {}", wrap_angle(a));
+        }
     }
 
     #[test]

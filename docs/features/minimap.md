@@ -110,18 +110,52 @@ auto-zooms in while driving and back out once parked.
 
 Option **Rotate with right stick** (`minimap_look_stick`, off; Mini-Settings -> Dashboard -> Map; the
 HUD Minimap has `OverlayConfig::map_look_stick`, see [[overlay]]). While the right stick
-(`Gamepad::right_stick`, post-deadzone, see [[gamepad]]) is deflected, an offset
-`minimap::look_offset((x, y)) = atan2(x, y)` is **added to the map's yaw**: up = 0, right = +90 deg
-(the view turns right), down = 180 deg. Released = 0, and the offset **eases** back/forward with the
-same `ease_yaw` as the rotation (`ease_look`).
-Why: *angle only, not scaled by deflection* - the deadzone already gates it, and scaling the angle
-by magnitude would make a half-pushed stick point at the wrong direction. *Why a separate eased
-offset* (`ForzaApp::minimap_look_off`, `MapAnim::look`) rather than folded into the target yaw:
-it eases even with "Smooth rotation" off, and works with north-up / ease-to-north unchanged.
-The offset is part of the `MapView` yaw, so the compass (`north_dir`), car arrow, trails and
-teammates stay consistent. It is independent of right-stick *button bindings*: a bound direction
-still fires its action and still rotates the map. HUD plumbing: `HudSink::with_stick` stamps
-`HudSnapshot::look_stick` at publish time (the listener thread has no gamepad), so it updates per packet.
+(`Gamepad::right_stick`, post-deadzone, see [[gamepad]]) is deflected, the view turns to look where the
+stick points **relative to the car**, like the game's camera.
+
+**Intended behaviour (both modes, both maps):** stick angle `θ = minimap::look_offset((x, y)) =
+atan2(x, y)` (up = 0, right = +90 deg, down = 180 deg; clockwise, matching the map yaw). With the stick
+held, the view yaw becomes `heading + θ`, where `heading` is the heading-up yaw
+(`minimap::target_yaw`, i.e. the car's yaw or movement direction). So stick right puts the car's right
+at the top, stick down looks behind it, stick up shows "ahead" (in north-up that turns the map
+heading-up for as long as it is held). The car stays at the view centre (the rotation pivot); the car
+arrow (`arrow_angle` = `raw yaw - view yaw` = `-θ` in raw-yaw heading) and the compass (`north_dir`)
+follow from the same `MapView` yaw, so they stay geometrically correct. Released (or option off), the
+view eases back to the mode's own orientation (north, or heading).
+
+**Implementation:** the eased offset `look` (`ForzaApp::minimap_look_off`, `MapAnim::look`) is added
+to the map's base yaw (`ForzaApp::minimap_base_yaw()`: 0 when north-up, else the smoothed heading-up
+yaw; the HUD's eased `MapAnim::yaw`). Each frame `minimap::ease_look(look, stick, enabled, heading,
+base, dt)` eases it (same `ease_yaw`, rate 6/s, shortest arc) toward `minimap::look_target(stick,
+heading, base) = wrap(heading + θ - base)`, or 0 when released, and wraps the result to (-PI, PI] so it
+can't wind up over laps. Both maps call this one function; only `heading`/`base` come from their own
+state (Dashboard: `minimap_cached_yaw` / `minimap_base_yaw()`, HUD: `target_yaw(pkt,
+map_use_movement_dir)` / its eased yaw). The HUD's "still animating" check compares against the same
+`look_target`, wrapped.
+
+**Fixed bug (north-up offset):** the first version added `θ` straight onto the base yaw
+(`view yaw = base + θ`). In heading-up `base ≈ heading`, so that was car-relative; but in north-up
+`base = 0`, so the stick turned the map relative to *north* (stick right = east at the top whatever the
+car's heading): the result was off by the car's heading, which reads as a "weird offset". The geometry
+(pivot, arrow, compass) was always consistent; the reference direction was wrong. Tests:
+`minimap::tests::look_is_car_relative_in_north_up_and_heading_up` (view yaw, car at centre, the
+stick's world direction at the top, arrow angle, compass, and north-up == heading-up views) and
+`hud::minimap::tests::map_anim_look_is_car_relative_in_north_up`.
+
+Why:
+- *Car-relative in every mode*: the right stick is the game's camera stick, which looks relative to
+  the car; matching it makes the stick mean the same thing in north-up and heading-up (the user
+  reported the north-relative version as "weirdly offset").
+- *Angle only, not scaled by deflection*: the deadzone already gates it, and scaling the angle by
+  magnitude would make a half-pushed stick point at the wrong direction.
+- *A separate eased offset* rather than folded into the target yaw: it eases even with "Smooth
+  rotation" off, and leaves north-up / ease-to-north unchanged once released. Known trade-off: in
+  north-up the held look view follows heading changes through the look easing (rate 6/s), so it lags
+  a little while turning, like heading-up with "Smooth rotation" on.
+
+It is independent of right-stick *button bindings*: a bound direction still fires its action and still
+rotates the map. HUD plumbing: `HudSink::with_stick` stamps `HudSnapshot::look_stick` at publish time
+(the listener thread has no gamepad), so it updates per packet.
 
 ## Shared drawing (`hud/map_shared.rs`)
 

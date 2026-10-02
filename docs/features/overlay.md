@@ -181,7 +181,7 @@ tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 | `map_north_up_when_stopped` | off | Heading-up only: ease to north once stopped. |
 | `map_smooth_rotation` | on | Ease rotation; off snaps (ease-to-north still eases). |
 | `map_use_movement_dir` | off | Heading-up only: rotate to the velocity direction. |
-| `map_look_stick` | off | Rotate the map by the right stick (look-around, see [[minimap]]). |
+| `map_look_stick` | off | Rotate the map by the right stick: look relative to the car in north-up and heading-up alike (look-around, see [[minimap]]; the reference heading honours `map_use_movement_dir`). |
 | `map_mirror_edges` | on | **Mirror map at edges**: past the image edge the map continues mirrored; off = the plate shows outside the image. |
 | `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 1500 / 3000 | Compass and the two zoom radii. |
 | `coop_use_dashboard` | off | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
