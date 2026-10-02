@@ -499,7 +499,230 @@ fn commit_drag(
 /// sizes to `available_rect_before_wrap`.
 fn widget_title(ui: &mut Ui, app: &ForzaApp, text: &str) {
     if !app.config.hide_widget_titles {
-        ui.label(crate::theme::section_label(text));
+        // Truncate, never wrap: a wrapping title in a narrow cell broke letter-by-letter
+        // ("BOO / ST") and ate the content's height.
+        ui.add(egui::Label::new(crate::theme::section_label(text)).truncate());
+    }
+}
+
+// ── Fit-to-pane helpers (the module sizing standard) ───────────────
+//
+// A module draws inside its own pane (the cell below its title), paints its text with
+// the painter (so nothing wraps), and scales every font uniformly so the content fits the
+// pane in both axes — shrinking as far as the pane demands, never growing past the base
+// size. There is no minimum module size: a tiny cell just gets tiny text.
+// Why: the older modules laid text out with labels/columns at fixed sizes, which forced a
+// de-facto minimum cell size and overflowed or wrapped below it.
+
+/// Inset between a module's content and its pane edge (matches `SPRINT_EDGE`).
+const PANE_EDGE: f32 = 3.0;
+/// A fitted font below this many points isn't worth painting — the pane is too small.
+const MIN_PAINT_FONT: f32 = 4.0;
+
+/// Claim everything left in the cell (below the title) as the module's pane and return it
+/// inset by [`PANE_EDGE`]. `None` when nothing usable is left.
+fn module_pane(ui: &mut Ui) -> Option<Rect> {
+    let full = ui.available_rect_before_wrap();
+    if full.width() <= 0.0 || full.height() <= 0.0 {
+        return None;
+    }
+    ui.allocate_rect(full, egui::Sense::hover());
+    let pane = full.shrink(PANE_EDGE);
+    (pane.width() > 0.0 && pane.height() > 0.0).then_some(pane)
+}
+
+/// Uniform scale that fits `natural` into `avail`, capped at 1 (no floor).
+fn fit_scale(natural: Vec2, avail: Vec2) -> f32 {
+    if natural.x <= 0.0 || natural.y <= 0.0 {
+        return 1.0;
+    }
+    // 2% slack: glyph advances don't scale perfectly linearly with the font size.
+    ((avail.x / natural.x).min(avail.y / natural.y) * 0.98).clamp(0.0, 1.0)
+}
+
+/// Unwrapped text width at `font`.
+fn text_w(painter: &egui::Painter, text: &str, font: &egui::FontId) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    painter.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size().x
+}
+
+/// One row of a fitted two-column text block. Either side may be empty.
+struct FitRow {
+    left: String,
+    left_col: Color32,
+    right: String,
+    right_col: Color32,
+}
+
+impl FitRow {
+    fn new(left: impl Into<String>, left_col: Color32, right: impl Into<String>, right_col: Color32) -> Self {
+        Self { left: left.into(), left_col, right: right.into(), right_col }
+    }
+}
+
+/// Where a [`FitRow`]'s right text goes.
+#[derive(Clone, Copy, PartialEq)]
+enum RightCol {
+    /// Right-aligned to the pane's right edge (label … value).
+    Edge,
+    /// Left-aligned in a second column (at the pane's middle when there's room).
+    Column,
+}
+
+/// Natural (scale 1) geometry of a row block at `base` pt.
+struct RowsMetrics {
+    size: Vec2,
+    line_h: f32,
+    row_gap: f32,
+    col_gap: f32,
+    left_w: f32,
+    right_w: f32,
+}
+
+fn fit_rows_metrics(painter: &egui::Painter, rows: &[FitRow], base: f32, right: RightCol) -> RowsMetrics {
+    let font = egui::FontId::proportional(base);
+    let line_h = painter.layout_no_wrap("0".to_owned(), font.clone(), Color32::WHITE).size().y;
+    let row_gap = base * 0.3;
+    let col_gap = base * 0.8;
+    let left_w = rows.iter().map(|r| text_w(painter, &r.left, &font)).fold(0.0, f32::max);
+    let right_w = rows.iter().map(|r| text_w(painter, &r.right, &font)).fold(0.0, f32::max);
+    let w = match right {
+        RightCol::Edge => rows.iter().map(|r| {
+            let (a, b) = (text_w(painter, &r.left, &font), text_w(painter, &r.right, &font));
+            if a > 0.0 && b > 0.0 { a + col_gap + b } else { a + b }
+        }).fold(0.0, f32::max),
+        RightCol::Column => {
+            if left_w > 0.0 && right_w > 0.0 { left_w + col_gap + right_w } else { left_w + right_w }
+        }
+    };
+    let n = rows.len() as f32;
+    let h = n * line_h + (n - 1.0).max(0.0) * row_gap;
+    RowsMetrics { size: vec2(w, h), line_h, row_gap, col_gap, left_w, right_w }
+}
+
+/// Largest font size ≤ `base` at which the block `measure(size)` fits `avail`.
+/// Re-measured at each candidate size: glyph advances snap to pixels and don't scale
+/// linearly, so a single proportional shrink can still overflow by a pixel.
+fn fit_font(base: f32, avail: Vec2, measure: impl Fn(f32) -> Vec2) -> f32 {
+    if avail.x <= 0.0 || avail.y <= 0.0 {
+        return 0.0;
+    }
+    let mut size = base;
+    for _ in 0..6 {
+        let k = fit_scale(measure(size), avail);
+        if k >= 0.999 || size < MIN_PAINT_FONT {
+            break;
+        }
+        size *= k;
+    }
+    size
+}
+
+/// A way to lay a row list out: the rows, where their right text goes, and how many
+/// side-by-side columns the list flows into (top-to-bottom, then the next column).
+#[derive(Clone, Copy)]
+struct FitLayout<'a> {
+    rows: &'a [FitRow],
+    right: RightCol,
+    cols: usize,
+}
+
+impl<'a> FitLayout<'a> {
+    fn new(rows: &'a [FitRow], right: RightCol, cols: usize) -> Self {
+        Self { rows, right, cols: cols.max(1) }
+    }
+
+    fn chunks(&self) -> std::slice::Chunks<'a, FitRow> {
+        self.rows.chunks(self.rows.len().div_ceil(self.cols).max(1))
+    }
+
+    /// Gutter between flowed columns at font size `sz`.
+    fn gutter(sz: f32) -> f32 {
+        sz * 1.5
+    }
+
+    /// Natural block size at font size `sz`.
+    fn measure(&self, painter: &egui::Painter, sz: f32) -> Vec2 {
+        let ms: Vec<RowsMetrics> = self.chunks().map(|c| fit_rows_metrics(painter, c, sz, self.right)).collect();
+        let n = ms.len() as f32;
+        let w = ms.iter().map(|m| m.size.x).fold(0.0, f32::max);
+        let h = ms.iter().map(|m| m.size.y).fold(0.0, f32::max);
+        vec2(n * w + (n - 1.0) * Self::gutter(sz), h)
+    }
+
+    /// Font size this layout fits `rect` at.
+    fn size(&self, painter: &egui::Painter, rect: Rect, base: f32) -> f32 {
+        if self.rows.is_empty() {
+            return 0.0;
+        }
+        fit_font(base, rect.size(), |sz| self.measure(painter, sz))
+    }
+
+    /// Paint at the size that fits `rect`, the block vertically centred.
+    fn paint(&self, painter: &egui::Painter, rect: Rect, base: f32) {
+        let size = self.size(painter, rect, base);
+        if size < MIN_PAINT_FONT {
+            return;
+        }
+        let block_h = self.measure(painter, size).y;
+        let top = rect.top() + (rect.height() - block_h) * 0.5;
+        let chunks: Vec<&[FitRow]> = self.chunks().collect();
+        let n = chunks.len() as f32;
+        let col_w = (rect.width() - (n - 1.0) * Self::gutter(size)) / n;
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            let x = rect.left() + i as f32 * (col_w + Self::gutter(size));
+            let col = Rect::from_min_size(pos2(x, top), vec2(col_w, block_h));
+            paint_rows_sized(painter, col, chunk, size, self.right);
+        }
+    }
+}
+
+/// Paint `rows` at font `size` from the top of `rect` (which they are known to fit).
+fn paint_rows_sized(painter: &egui::Painter, rect: Rect, rows: &[FitRow], size: f32, right: RightCol) {
+    let m = fit_rows_metrics(painter, rows, size, right);
+    let font = egui::FontId::proportional(size);
+    // Second column: at the middle when there's room, else right after the widest left.
+    let x2 = rect.left()
+        + (m.left_w + m.col_gap)
+            .max(rect.width() * 0.5)
+            .min(rect.width() - m.right_w)
+            .max(0.0);
+    for (i, r) in rows.iter().enumerate() {
+        let y = rect.top() + i as f32 * (m.line_h + m.row_gap);
+        if !r.left.is_empty() {
+            painter.text(pos2(rect.left(), y), egui::Align2::LEFT_TOP, &r.left, font.clone(), r.left_col);
+        }
+        if !r.right.is_empty() {
+            let (x, align) = match right {
+                RightCol::Edge => (rect.right(), egui::Align2::RIGHT_TOP),
+                RightCol::Column => (x2, egui::Align2::LEFT_TOP),
+            };
+            painter.text(pos2(x, y), align, &r.right, font.clone(), r.right_col);
+        }
+    }
+}
+
+/// Paint `rows` as one uniformly sized block that fits `rect`, vertically centred.
+fn paint_fit_rows(painter: &egui::Painter, rect: Rect, rows: &[FitRow], base: f32, right: RightCol) {
+    FitLayout::new(rows, right, 1).paint(painter, rect, base);
+}
+
+/// Paint whichever candidate layout fits `rect` at the largest font — e.g. side-by-side
+/// columns in a wide pane, stacked in a narrow one, flowed into several columns in a
+/// wide, short one. Candidates are in order of preference: a later one must beat the
+/// best so far by 15% to be picked, so the layout doesn't flip on a pixel of difference.
+fn paint_best_fit(painter: &egui::Painter, rect: Rect, base: f32, candidates: &[FitLayout]) {
+    let mut best: Option<(f32, usize)> = None;
+    for (i, c) in candidates.iter().enumerate() {
+        let sz = c.size(painter, rect, base);
+        if best.is_none_or(|(b, _)| sz > b * 1.15) {
+            best = Some((sz, i));
+        }
+    }
+    if let Some((_, i)) = best {
+        candidates[i].paint(painter, rect, base);
     }
 }
 
@@ -528,9 +751,10 @@ fn render_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket, kind: &WidgetKi
 }
 
 /// Per-car session maxima (reset on car change) — a quick run-review summary.
+/// Label … value rows fitted to the pane; a narrow pane stacks each value under its label.
 fn show_session_stats(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     widget_title(ui, app, tr("Session Stats"));
-    ui.add_space(4.0);
+    let Some(pane) = module_pane(ui) else { return };
 
     let use_mph = app.config.use_mph;
     let use_bar = app.config.use_bar;
@@ -544,192 +768,231 @@ fn show_session_stats(ui: &mut Ui, app: &ForzaApp, _pkt: &ForzaPacket) {
     } else {
         (app.max_boost_psi, "PSI")
     };
-    let val_col = Color32::from_rgb(230, 200, 90);
-
-    let mut stat = |label: &str, value: String| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(label).color(crate::theme::TEXT_DIM));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(value).strong().color(val_col));
-            });
-        });
-    };
-
-    stat(tr("Top Speed"), format!("{spd:.0} {spd_u}"));
-    stat(tr("Peak Power"), format!("{:.0} PS", app.max_power_ps));
-    stat(tr("Peak Torque"), format!("{:.0} Nm", app.max_torque_nm));
-    stat(tr("Peak Boost"), format!("{boost:.2} {boost_u}"));
-    stat(tr("Peak Lat G"), format!("{:.2} g", app.gforce_stats.max_lateral));
-    stat(tr("Peak Long G"), format!("{:.2} g", app.gforce_stats.max_longitudinal));
     // Cached max, not pkt.engine_max_rpm — the packet field zeroes while paused.
     let max_rpm = app.dynamic_max_rpm.max(app.cached_engine_max_rpm as f32);
-    stat(tr("Max RPM"), format!("{max_rpm:.0}"));
+
+    let stats: [(&str, String); 7] = [
+        (tr("Top Speed"), format!("{spd:.0} {spd_u}")),
+        (tr("Peak Power"), format!("{:.0} PS", app.max_power_ps)),
+        (tr("Peak Torque"), format!("{:.0} Nm", app.max_torque_nm)),
+        (tr("Peak Boost"), format!("{boost:.2} {boost_u}")),
+        (tr("Peak Lat G"), format!("{:.2} g", app.gforce_stats.max_lateral)),
+        (tr("Peak Long G"), format!("{:.2} g", app.gforce_stats.max_longitudinal)),
+        (tr("Max RPM"), format!("{max_rpm:.0}")),
+    ];
+    let base = egui::TextStyle::Body.resolve(ui.style()).size;
+    paint_session_stats(ui.painter(), pane, &stats, base);
+}
+
+/// Session Stats body: label … value rows; each value stacked under its label in a
+/// narrow, tall pane; or the rows flowed into 2-4 columns in a wide, short one —
+/// whichever fits the pane biggest.
+fn paint_session_stats(painter: &egui::Painter, pane: Rect, stats: &[(&str, String)], base: f32) {
+    let dim = crate::theme::TEXT_DIM;
+    let val_col = Color32::from_rgb(230, 200, 90);
+    let side: Vec<FitRow> = stats.iter()
+        .map(|(l, v)| FitRow::new(*l, dim, v.clone(), val_col))
+        .collect();
+    let stacked: Vec<FitRow> = stats.iter()
+        .flat_map(|(l, v)| [FitRow::new(*l, dim, "", val_col), FitRow::new("", dim, v.clone(), val_col)])
+        .collect();
+    paint_best_fit(painter, pane, base, &[
+        FitLayout::new(&side, RightCol::Edge, 1),
+        FitLayout::new(&stacked, RightCol::Edge, 1),
+        // Wide, short panes: flow the rows into 2-4 columns.
+        FitLayout::new(&side, RightCol::Edge, 2),
+        FitLayout::new(&side, RightCol::Edge, 3),
+        FitLayout::new(&side, RightCol::Edge, 4),
+    ]);
 }
 
 /// Turbo/supercharger boost gauge — current value + a bar with the session-peak tick.
 /// Adapts to its cell: taller-than-wide renders a vertical (bottom-up) gauge,
-/// square or wider keeps the default horizontal bar.
+/// square or wider keeps the default horizontal bar. Every text is fitted to the pane
+/// (no fixed minimum bar/text size), see [`fit_scale`].
 fn show_boost_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     let full = ui.available_rect_before_wrap();
     let vertical = full.height() > full.width();
     widget_title(ui, app, tr("Boost"));
+    let Some(pane) = module_pane(ui) else { return };
 
     let use_bar = app.config.use_bar;
     let conv = |psi: f32| if use_bar { psi * 0.068_947_6 } else { psi };
-    let unit = if use_bar { "bar" } else { "PSI" };
     let cur = conv(pkt.boost);
     let peak = conv(app.max_boost_psi);
     // Colour ramps green→orange→red with boost pressure.
     let level = (pkt.boost / 20.0).clamp(0.0, 1.0);
-    let bar_col = Color32::from_rgb(
-        (70.0 + 160.0 * level) as u8,
-        (200.0 - 120.0 * level) as u8,
-        70,
-    );
-    let scale = peak.max(cur).max(conv(7.0)) * 1.15;
-    let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
-
-    // Compact: the peak in parens on top, then a vertical bar (fills bottom-up)
-    // filling the rest of the widget, with the value drawn inside it. The unit is
-    // dropped (it's a global setting — no need to repeat it).
+    let g = BoostGauge {
+        cur,
+        peak,
+        scale: peak.max(cur).max(conv(7.0)) * 1.15,
+        unit: if use_bar { "bar" } else { "PSI" },
+        color: Color32::from_rgb((70.0 + 160.0 * level) as u8, (200.0 - 120.0 * level) as u8, 70),
+    };
+    let painter = ui.painter();
     if app.config.boost_in_bar {
-        let area = ui.available_rect_before_wrap();
-        let sp = ui.spacing().item_spacing.y;
-        let peak_font = egui::FontId::proportional(12.0);
-        let peak_text = format!("({peak:.2})");
-        let peak_h = ui.painter()
-            .layout_no_wrap(peak_text.clone(), peak_font.clone(), crate::theme::TEXT_DIM).size().y;
-        let bar_h = (area.height() - peak_h - sp - 3.0).max(20.0); // 3px bottom margin
-        // Bar sits below the peak line, with a 3px margin on the left, right, and bottom.
-        let bar = egui::Rect::from_min_size(
-            pos2(area.left(), area.top() + peak_h + sp),
-            egui::vec2(area.width(), bar_h),
-        )
-        .shrink2(vec2(3.0, 0.0));
-        ui.allocate_rect(
-            egui::Rect::from_min_size(area.min, egui::vec2(area.width(), peak_h + sp + bar_h)),
-            egui::Sense::hover(),
-        );
+        paint_boost_in_bar(painter, pane, &g);
+    } else if vertical {
+        paint_boost_vertical(painter, pane, &g);
+    } else {
+        paint_boost_horizontal(painter, pane, &g);
+    }
+}
 
-        let painter = ui.painter();
-        let round = 4.0;
-        painter.rect_filled(bar, round, Color32::from_rgb(22, 24, 27));
-        if scale > 0.0 {
-            let frac = (cur / scale).clamp(0.0, 1.0);
-            if frac > 0.001 {
-                let fh = bar.height() * frac;
-                let fill = egui::Rect::from_min_max(pos2(bar.left(), bar.bottom() - fh), bar.max);
-                painter.rect_filled(fill, round, bar_col);
-            }
-            // Peak tick — a horizontal line across the bar.
-            let pf = (peak / scale).clamp(0.0, 1.0);
-            if pf > 0.001 {
-                let y = bar.bottom() - bar.height() * pf;
-                painter.line_segment([pos2(bar.left() + 2.0, y), pos2(bar.right() - 2.0, y)], tick);
-            }
-        }
+/// Values the Boost module draws, already in the display unit.
+struct BoostGauge {
+    cur: f32,
+    peak: f32,
+    /// Bar full-scale value.
+    scale: f32,
+    unit: &'static str,
+    color: Color32,
+}
 
-        // Value inside the bar, shrunk to fit the width.
-        let val_text = format!("{cur:+.2}");
-        let mut vsize = (bar_h * 0.5).clamp(12.0, 24.0);
-        let vw = painter
-            .layout_no_wrap(val_text.clone(), egui::FontId::proportional(vsize), Color32::WHITE).size().x;
-        if vw > bar.width() - 8.0 { vsize = (vsize * (bar.width() - 8.0) / vw).max(8.0); }
-        painter.text(bar.center(), egui::Align2::CENTER_CENTER, val_text,
-            egui::FontId::proportional(vsize), Color32::WHITE);
-        // Peak in parens, centered above the bar at the top of the area.
-        painter.text(pos2(area.center().x, area.top() + peak_h * 0.5),
-            egui::Align2::CENTER_CENTER, peak_text, peak_font, crate::theme::TEXT_DIM);
+/// Bar track + fill + session-peak tick. `vertical` fills bottom-up, else left-to-right.
+fn paint_boost_bar(painter: &egui::Painter, bar: Rect, g: &BoostGauge, vertical: bool) {
+    if bar.width() <= 0.0 || bar.height() <= 0.0 {
         return;
     }
-
+    let round = 4.0_f32.min(bar.width() * 0.5).min(bar.height() * 0.5);
+    painter.rect_filled(bar, round, Color32::from_rgb(22, 24, 27));
+    if g.scale <= 0.0 {
+        return;
+    }
+    let tick = Stroke::new(2.0, Color32::from_rgb(240, 220, 90));
+    let frac = (g.cur / g.scale).clamp(0.0, 1.0);
+    let pf = (g.peak / g.scale).clamp(0.0, 1.0);
+    let inset = 2.0_f32.min(bar.width().min(bar.height()) * 0.25);
     if vertical {
-        // Bottom-up bar on top, stacked readout underneath it. Measure the two
-        // readout lines (unwrapped galleys, not a magic constant), reserve them
-        // first, and give the bar whatever truly remains.
-        let rect = ui.available_rect_before_wrap();
-        let spacing = ui.spacing().item_spacing.y;
-        let value_galley = ui.painter().layout_no_wrap(
-            format!("{cur:+.2}"), egui::FontId::proportional(22.0), bar_col);
-        let small_galley = ui.painter().layout_no_wrap(
-            format!("{unit} · {} {peak:.2}", tr("peak")),
-            egui::FontId::proportional(11.0), crate::theme::TEXT_DIM);
-        let bottom_margin = 2.0;
-        let min_bar_h = 10.0;
-        // Value line + unit·peak line + the spacing between them; drop the
-        // small line when the cell is too short for both plus a minimum bar.
-        let mut text_h = value_galley.size().y + spacing + small_galley.size().y;
-        let mut show_small = true;
-        if rect.height() - spacing - min_bar_h - bottom_margin < text_h {
-            show_small = false;
-            text_h = value_galley.size().y;
-        }
-        let w = rect.width().min(26.0);
-        let bar = egui::Rect::from_min_size(
-            pos2(rect.center().x - w * 0.5, rect.top()),
-            egui::vec2(w, (rect.height() - text_h - spacing - bottom_margin).max(min_bar_h)),
-        );
-        ui.allocate_rect(bar, egui::Sense::hover());
-        let painter = ui.painter_at(bar);
-        painter.rect_filled(bar, 4.0, Color32::from_rgb(22, 24, 27));
-
-        if scale > 0.0 {
-            let frac = (cur / scale).clamp(0.0, 1.0);
-            if frac > 0.001 {
-                let h = bar.height() * frac;
-                let fill = egui::Rect::from_min_max(pos2(bar.left(), bar.bottom() - h), bar.max);
-                painter.rect_filled(fill, 4.0, bar_col);
-            }
-            // Peak tick
-            let pf = (peak / scale).clamp(0.0, 1.0);
-            if pf > 0.001 {
-                let y = bar.bottom() - bar.height() * pf;
-                painter.line_segment([pos2(bar.left() + 2.0, y), pos2(bar.right() - 2.0, y)], tick);
-            }
-        }
-
-        // Readout, centred under the bar (painted, so it never wraps).
-        let painter = ui.painter();
-        let cx = rect.center().x;
-        let text_top = bar.bottom() + spacing;
-        let value_size = value_galley.size();
-        painter.galley(pos2(cx - value_size.x * 0.5, text_top), value_galley, bar_col);
-        if show_small {
-            painter.galley(
-                pos2(cx - small_galley.size().x * 0.5, text_top + value_size.y + spacing),
-                small_galley, crate::theme::TEXT_DIM);
-        }
-        return;
-    }
-
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{cur:+.2}")).size(22.0).strong().color(bar_col));
-        ui.label(RichText::new(unit).size(12.0).color(crate::theme::TEXT_DIM));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{} {peak:.2}", tr("peak"))).size(11.0).color(crate::theme::TEXT_DIM));
-        });
-    });
-    ui.add_space(4.0);
-
-    let rect = ui.available_rect_before_wrap();
-    let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height().min(26.0)));
-    ui.allocate_rect(bar, egui::Sense::hover());
-    let painter = ui.painter_at(bar);
-    painter.rect_filled(bar, 4.0, Color32::from_rgb(22, 24, 27));
-
-    if scale > 0.0 {
-        let frac = (cur / scale).clamp(0.0, 1.0);
         if frac > 0.001 {
-            let fill = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * frac, bar.height()));
-            painter.rect_filled(fill, 4.0, bar_col);
+            let h = bar.height() * frac;
+            painter.rect_filled(Rect::from_min_max(pos2(bar.left(), bar.bottom() - h), bar.max), round, g.color);
         }
-        // Peak tick
-        let pf = (peak / scale).clamp(0.0, 1.0);
+        if pf > 0.001 {
+            let y = bar.bottom() - bar.height() * pf;
+            painter.line_segment([pos2(bar.left() + inset, y), pos2(bar.right() - inset, y)], tick);
+        }
+    } else {
+        if frac > 0.001 {
+            painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar.height())), round, g.color);
+        }
         if pf > 0.001 {
             let x = bar.left() + bar.width() * pf;
-            painter.line_segment([pos2(x, bar.top() + 2.0), pos2(x, bar.bottom() - 2.0)], tick);
+            painter.line_segment([pos2(x, bar.top() + inset), pos2(x, bar.bottom() - inset)], tick);
         }
     }
+}
+
+/// Compact: the peak in parens on top, then a bottom-up bar filling the rest of the pane
+/// with the value inside it. The unit is dropped (it's a global setting).
+fn paint_boost_in_bar(painter: &egui::Painter, pane: Rect, g: &BoostGauge) {
+    let galley_size = |text: &str, size: f32| {
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), Color32::WHITE).size()
+    };
+    let peak_text = format!("({:.2})", g.peak);
+    // The peak line may take at most a quarter of the pane's height.
+    let psize = fit_font(12.0, vec2(pane.width(), pane.height() * 0.25), |sz| galley_size(&peak_text, sz));
+    let show_peak = psize >= MIN_PAINT_FONT;
+    let peak_h = if show_peak { galley_size(&peak_text, psize).y } else { 0.0 };
+    let sp = 3.0 * psize / 12.0;
+    let bar = Rect::from_min_max(pos2(pane.left(), pane.top() + peak_h + sp), pane.max);
+    paint_boost_bar(painter, bar, g, true);
+
+    // Value inside the bar: at most half the bar's height, shrunk to its width.
+    let val_text = format!("{:+.2}", g.cur);
+    let vsize = fit_font(24.0, vec2(bar.width() * 0.9, bar.height() * 0.5), |sz| galley_size(&val_text, sz));
+    if vsize >= MIN_PAINT_FONT {
+        painter.text(bar.center(), egui::Align2::CENTER_CENTER, val_text,
+            egui::FontId::proportional(vsize), Color32::WHITE);
+    }
+    if show_peak {
+        painter.text(pos2(pane.center().x, pane.top() + peak_h * 0.5), egui::Align2::CENTER_CENTER,
+            peak_text, egui::FontId::proportional(psize), crate::theme::TEXT_DIM);
+    }
+}
+
+/// Tall pane: a bottom-up bar (≤ 26 px wide) with the value and a "unit · peak" line
+/// centred under it. The text block takes at most ~45% of the height; the small line is
+/// dropped when keeping it would shrink the value too much.
+fn paint_boost_vertical(painter: &egui::Painter, pane: Rect, g: &BoostGauge) {
+    let galley_size = |text: &str, size: f32| {
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), Color32::WHITE).size()
+    };
+    let value_text = format!("{:+.2}", g.cur);
+    let small_text = format!("{} · {} {:.2}", g.unit, tr("peak"), g.peak);
+    // Sizes are driven by the value font `v` (base 22); the small line is v/2, gap v/5.5.
+    let block = |v: f32, small: bool| {
+        let a = galley_size(&value_text, v);
+        if small {
+            let b = galley_size(&small_text, v * 0.5);
+            vec2(a.x.max(b.x), a.y + v / 5.5 + b.y)
+        } else {
+            a
+        }
+    };
+    let text_box = vec2(pane.width(), pane.height() * 0.45);
+    let v_both = fit_font(22.0, text_box, |v| block(v, true));
+    let v_value = fit_font(22.0, text_box, |v| block(v, false));
+    let show_small = v_both >= v_value * 0.7;
+    let v = if show_small { v_both } else { v_value };
+    let text_h = if v >= MIN_PAINT_FONT { block(v, show_small).y } else { 0.0 };
+    let sp = v / 5.5;
+
+    let w = pane.width().min(26.0);
+    let bar = Rect::from_min_size(
+        pos2(pane.center().x - w * 0.5, pane.top()),
+        vec2(w, (pane.height() - text_h - sp).max(0.0)),
+    );
+    paint_boost_bar(painter, bar, g, true);
+
+    if v >= MIN_PAINT_FONT {
+        let text_top = bar.bottom() + sp;
+        let vh = galley_size(&value_text, v).y;
+        painter.text(pos2(pane.center().x, text_top), egui::Align2::CENTER_TOP, value_text,
+            egui::FontId::proportional(v), g.color);
+        if show_small && v * 0.5 >= MIN_PAINT_FONT {
+            painter.text(pos2(pane.center().x, text_top + vh + sp), egui::Align2::CENTER_TOP,
+                small_text, egui::FontId::proportional(v * 0.5), crate::theme::TEXT_DIM);
+        }
+    }
+}
+
+/// Wide/square pane: "value unit … peak X" readout over a horizontal bar (≤ 26 px tall),
+/// the pair centred vertically. The readout takes at most ~55% of the height.
+fn paint_boost_horizontal(painter: &egui::Painter, pane: Rect, g: &BoostGauge) {
+    let galley_size = |text: &str, size: f32| {
+        painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), Color32::WHITE).size()
+    };
+    let value_text = format!("{:+.2}", g.cur);
+    let peak_text = format!("{} {:.2}", tr("peak"), g.peak);
+    // Driven by the value font `v` (base 22): unit 12/22·v, peak 11/22·v, gaps scale too.
+    let k = |v: f32| v / 22.0;
+    let readout = |v: f32| {
+        let a = galley_size(&value_text, v);
+        let u = galley_size(g.unit, 12.0 * k(v)).x;
+        let p = galley_size(&peak_text, 11.0 * k(v)).x;
+        vec2(a.x + 4.0 * k(v) + u + 10.0 * k(v) + p, a.y)
+    };
+    let v = fit_font(22.0, vec2(pane.width(), pane.height() * 0.55), readout);
+    let show_text = v >= MIN_PAINT_FONT;
+    let read_h = if show_text { readout(v).y } else { 0.0 };
+    let sp = 4.0 * k(v);
+    let bar_h = (pane.height() - read_h - sp).clamp(0.0, 26.0);
+    let top = pane.top() + (pane.height() - (read_h + sp + bar_h)) * 0.5;
+
+    if show_text {
+        let cy = top + read_h * 0.5;
+        let vx = pane.left();
+        let vw = galley_size(&value_text, v).x;
+        painter.text(pos2(vx, cy), egui::Align2::LEFT_CENTER, value_text,
+            egui::FontId::proportional(v), g.color);
+        painter.text(pos2(vx + vw + 4.0 * k(v), cy), egui::Align2::LEFT_CENTER, g.unit,
+            egui::FontId::proportional(12.0 * k(v)), crate::theme::TEXT_DIM);
+        painter.text(pos2(pane.right(), cy), egui::Align2::RIGHT_CENTER, peak_text,
+            egui::FontId::proportional(11.0 * k(v)), crate::theme::TEXT_DIM);
+    }
+    let bar = Rect::from_min_size(pos2(pane.left(), top + read_h + sp), vec2(pane.width(), bar_h));
+    paint_boost_bar(painter, bar, g, false);
 }
 
 /// Rolling speed (km/h) + RPM sparkline over the last ~30 s, hand-drawn to match
@@ -811,54 +1074,123 @@ fn show_trace_widget(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     use crate::coop::Role;
     widget_title(ui, app, tr("Co-Op"));
+    let Some(pane) = module_pane(ui) else { return };
+    let base = egui::TextStyle::Monospace.resolve(ui.style()).size;
 
     if app.coop.role() == Role::Off {
-        ui.add_space(4.0);
-        ui.label(RichText::new(tr("Not in a session.")).size(12.0).color(crate::theme::TEXT_DIM));
-        ui.label(RichText::new(tr("Host or join from the Co-Op tab."))
-            .size(11.0).color(crate::theme::TEXT_FAINT));
+        let rows = [
+            FitRow::new(tr("Not in a session."), crate::theme::TEXT_DIM, "", Color32::WHITE),
+            FitRow::new(tr("Host or join from the Co-Op tab."), crate::theme::TEXT_FAINT, "", Color32::WHITE),
+        ];
+        paint_fit_rows(ui.painter(), pane, &rows, base, RightCol::Edge);
         return;
     }
 
     let use_mph = app.config.use_mph;
-    let unit = if use_mph { "mph" } else { "km/h" };
-
-    // Collect (name, hue, speed m/s, gear, is_self, distance_m). Self first, then remotes.
-    let mut rows: Vec<(String, f32, f32, u8, bool, f32)> = Vec::new();
-    rows.push((app.config.coop_name.clone(), app.config.coop_hue, pkt.speed, pkt.gear, true, 0.0));
+    let mut rows: Vec<CoopRow> = Vec::new();
+    rows.push(CoopRow {
+        name: app.config.coop_name.clone(),
+        hue: app.config.coop_hue,
+        speed_ms: pkt.speed,
+        gear: pkt.gear,
+        is_self: true,
+        dist_m: 0.0,
+    });
     for (info, rp) in app.coop.remote_players() {
         let dist = ((rp.position_x - pkt.position_x).powi(2)
             + (rp.position_z - pkt.position_z).powi(2)).sqrt();
-        rows.push((info.name.clone(), info.hue, rp.speed, rp.gear, false, dist));
+        rows.push(CoopRow {
+            name: info.name.clone(),
+            hue: info.hue,
+            speed_ms: rp.speed,
+            gear: rp.gear,
+            is_self: false,
+            dist_m: dist,
+        });
     }
-    rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| b.speed_ms.partial_cmp(&a.speed_ms).unwrap_or(std::cmp::Ordering::Equal));
+    paint_coop_rows(ui.painter(), pane, &rows, use_mph, base);
+}
 
+/// One player in the Co-Op module.
+struct CoopRow {
+    name: String,
+    hue: f32,
+    speed_ms: f32,
+    gear: u8,
+    is_self: bool,
+    dist_m: f32,
+}
+
+/// Co-Op module body. Columns in monospace character cells — dot, rank + name (15),
+/// distance (6), speed bar (flexible, ≥ 6), speed (8), gear (3) — so the layout never
+/// shifts as values change. The whole table scales to fit the pane; when the width is the
+/// limit, the distance and then the gear column are dropped first (if that lets the text
+/// grow noticeably), and a narrow, tall pane gives each player two lines (dot + name, then
+/// bar + speed), so names and speeds stay readable in a narrow pane.
+fn paint_coop_rows(painter: &egui::Painter, pane: Rect, rows: &[CoopRow], use_mph: bool, base: f32) {
+    if rows.is_empty() {
+        return;
+    }
+    let unit = if use_mph { "mph" } else { "km/h" };
     // Bar scale: fixed reference top speed so bars are comparable frame-to-frame.
     let max_kmh = 320.0_f32;
+    let (name_c, dist_c, bar_c, speed_c, gear_c) = (15.0, 6.0, 6.0, 8.0, 3.0);
+    let n = rows.len() as f32;
 
-    // Static column widths (in monospace character cells) so the row layout never
-    // shifts as names/speeds change — only the speed bar in the middle flexes.
-    // Monospace advance ≈ 0.6 em; exact value doesn't matter, only that it's constant.
-    let mono = egui::TextStyle::Monospace.resolve(ui.style());
-    let ch = (mono.size * 0.6).max(6.0);
-    let name_w = 15.0 * ch; // rank prefix + 12-char name
-    let dist_w = 6.0 * ch;
-    let speed_w = 8.0 * ch; // "207 km/h"
-    let gear_w = 3.0 * ch;  // "G10"
-    let spacing = ui.spacing().item_spacing.x;
-
-    // Fixed-width text cell (min-width forces the reserved space even when empty).
-    let cell = |ui: &mut Ui, w: f32, text: RichText, right: bool| {
-        let layout = if right {
-            egui::Layout::right_to_left(egui::Align::Center)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Center)
-        };
-        ui.allocate_ui_with_layout(egui::vec2(w, 18.0), layout, |ui| {
-            ui.set_min_width(w);
-            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
-        });
+    // Geometry at font size `sz`: (char width, row height, row gap, column gap, dot).
+    let geom = |sz: f32| {
+        let font = egui::FontId::monospace(sz);
+        let ch = text_w(painter, "0", &font);
+        let line_h = painter.layout_no_wrap("0".to_owned(), font, Color32::WHITE).size().y;
+        (ch, line_h * 1.2, sz * 0.25, ch * 0.6, ch * 1.4)
     };
+    let natural = |sz: f32, dist: bool, gear: bool, stacked: bool| {
+        let (ch, row_h, row_gap, gap, dot) = geom(sz);
+        if stacked {
+            let w = (dot + gap + name_c * ch).max(bar_c * ch + gap + speed_c * ch);
+            return vec2(w, n * 2.0 * row_h + (n - 1.0) * row_gap);
+        }
+        let mut w = dot + gap + name_c * ch + gap + bar_c * ch + gap + speed_c * ch;
+        if dist { w += gap + dist_c * ch; }
+        if gear { w += gap + gear_c * ch; }
+        vec2(w, n * row_h + (n - 1.0) * row_gap)
+    };
+
+    // (show distance, show gear, two lines per player) — fullest first.
+    let variants = [(true, true, false), (false, true, false), (false, false, false), (false, false, true)];
+    let sizes: Vec<f32> = variants
+        .iter()
+        .map(|&(d, g, st)| fit_font(base, pane.size(), |sz| natural(sz, d, g, st)))
+        .collect();
+    let best = sizes.iter().copied().fold(0.0, f32::max);
+    // Fullest variant within 85% of the best size: drop columns only when it pays.
+    let vi = sizes.iter().position(|&s| s >= best * 0.85).unwrap_or(0);
+    let (show_dist, show_gear, stacked) = variants[vi];
+    let size = sizes[vi];
+    if size < MIN_PAINT_FONT {
+        return;
+    }
+
+    let font = egui::FontId::monospace(size);
+    let (ch, row_h, row_gap, gap, dot) = geom(size);
+    let top = pane.top() + (pane.height() - natural(size, show_dist, show_gear, stacked).y) * 0.5;
+    // Right-hand fixed cells, measured from the pane's right edge.
+    let right_w = speed_c * ch + if show_gear { gap + gear_c * ch } else { 0.0 };
+    let left_w = dot + gap + name_c * ch + if show_dist { gap + dist_c * ch } else { 0.0 };
+    let bar_w = (pane.width() - left_w - right_w - 2.0 * gap).max(0.0);
+    let speed_bar = |left: f32, w: f32, cy: f32, kmh: f32, col: Color32| {
+        if w > 0.0 {
+            let bar = Rect::from_center_size(pos2(left + w * 0.5, cy), vec2(w, row_h * 0.6));
+            let rounding = bar.height() * 0.5;
+            painter.rect_filled(bar, rounding, crate::theme::TRACK);
+            let frac = (kmh / max_kmh).clamp(0.0, 1.0);
+            if frac > 0.0 {
+                painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar.height())), rounding, col);
+            }
+        }
+    };
+
     // Truncate to n chars with an ellipsis (monospace ⇒ n cells wide).
     let fit = |s: &str, n: usize| -> String {
         let c: Vec<char> = s.chars().collect();
@@ -869,38 +1201,54 @@ fn show_coop_players(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
         }
     };
 
-    ui.add_space(4.0);
-    for (rank, (name, hue, speed_ms, gear, is_self, dist_m)) in rows.iter().enumerate() {
-        let col = crate::ui::coop::hue_color(*hue);
-        let kmh = speed_ms * 3.6;
-        let disp = if use_mph { speed_ms * 2.236_94 } else { kmh };
-        let gear_str = match gear { 0 => "N".to_string(), g => g.to_string() };
-        ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
-            ui.painter().circle_filled(dot.center(), 5.0, col);
+    for (rank, r) in rows.iter().enumerate() {
+        let col = crate::ui::coop::hue_color(r.hue);
+        let kmh = r.speed_ms * 3.6;
+        let disp = if use_mph { r.speed_ms * 2.236_94 } else { kmh };
+        let gear_str = match r.gear { 0 => "N".to_string(), g => g.to_string() };
+        let name_col = if r.is_self { Color32::WHITE } else { crate::theme::TEXT };
+        let name = fit(&format!("{}. {}", rank + 1, r.name), name_c as usize);
+        let speed_txt = format!("{disp:>3.0} {unit}");
+        if stacked {
+            let cy1 = top + rank as f32 * (2.0 * row_h + row_gap) + row_h * 0.5;
+            let cy2 = cy1 + row_h;
+            painter.circle_filled(pos2(pane.left() + dot * 0.5, cy1), dot * 0.35, col);
+            painter.text(pos2(pane.left() + dot + gap, cy1), egui::Align2::LEFT_CENTER, name, font.clone(), name_col);
+            speed_bar(pane.left(), pane.width() - speed_c * ch - gap, cy2, kmh, col);
+            painter.text(pos2(pane.right(), cy2), egui::Align2::RIGHT_CENTER, speed_txt, font.clone(), crate::theme::TEXT);
+            continue;
+        }
+        let cy = top + rank as f32 * (row_h + row_gap) + row_h * 0.5;
+        let mut x = pane.left();
 
-            let name_rt = RichText::new(fit(&format!("{}. {}", rank + 1, name), 15)).monospace();
-            cell(ui, name_w, if *is_self { name_rt.strong() } else { name_rt }, false);
+        painter.circle_filled(pos2(x + dot * 0.5, cy), dot * 0.35, col);
+        x += dot + gap;
 
-            let dtxt = if *is_self {
+        painter.text(pos2(x, cy), egui::Align2::LEFT_CENTER, name, font.clone(), name_col);
+        x += name_c * ch + gap;
+
+        if show_dist {
+            let dtxt = if r.is_self {
                 String::new()
-            } else if *dist_m >= 1000.0 {
-                format!("{:.1}km", dist_m / 1000.0)
+            } else if r.dist_m >= 1000.0 {
+                format!("{:.1}km", r.dist_m / 1000.0)
             } else {
-                format!("{:.0}m", dist_m)
+                format!("{:.0}m", r.dist_m)
             };
-            cell(ui, dist_w, RichText::new(dtxt).monospace().size(11.0).color(crate::theme::TEXT_FAINT), true);
+            painter.text(pos2(x + dist_c * ch, cy), egui::Align2::RIGHT_CENTER, dtxt,
+                egui::FontId::monospace(size * 0.9), crate::theme::TEXT_FAINT);
+            x += dist_c * ch + gap;
+        }
 
-            // The one flexible element: fill what's left after the fixed speed+gear cells.
-            let bar_w = (ui.available_width() - speed_w - gear_w - 2.0 * spacing).max(20.0);
-            ui.add(egui::ProgressBar::new((kmh / max_kmh).clamp(0.0, 1.0))
-                .fill(col)
-                .desired_width(bar_w));
+        // The one flexible element: the speed bar fills what the fixed cells leave.
+        speed_bar(x, bar_w, cy, kmh, col);
 
-            cell(ui, speed_w, RichText::new(format!("{disp:>3.0} {unit}")).monospace(), true);
-            cell(ui, gear_w, RichText::new(format!("G{gear_str}")).monospace().color(crate::theme::TEXT_DIM), true);
-        });
-        ui.add_space(2.0);
+        let speed_right = if show_gear { pane.right() - gear_c * ch - gap } else { pane.right() };
+        painter.text(pos2(speed_right, cy), egui::Align2::RIGHT_CENTER, speed_txt, font.clone(), crate::theme::TEXT);
+        if show_gear {
+            painter.text(pos2(pane.right(), cy), egui::Align2::RIGHT_CENTER,
+                format!("G{gear_str}"), font.clone(), crate::theme::TEXT_DIM);
+        }
     }
 }
 
@@ -1245,17 +1593,49 @@ fn show_engine_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
 
 fn show_position_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
     widget_title(ui, app, tr("Position"));
-    ui.add_space(4.0);
-    ui.columns(2, |cols| {
-        cols[0].label(RichText::new(tr("Position")).size(11.0).color(crate::theme::TEXT_DIM));
-        cols[0].label(format!("X: {:>10.2} m", pkt.position_x));
-        cols[0].label(format!("Y: {:>10.2} m", pkt.position_y));
-        cols[0].label(format!("Z: {:>10.2} m", pkt.position_z));
-        cols[1].label(RichText::new(tr("Rotation")).size(11.0).color(crate::theme::TEXT_DIM));
-        cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Yaw")), pkt.yaw.to_degrees()));
-        cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Pitch")), pkt.pitch.to_degrees()));
-        cols[1].label(format!("{:<7}{:>6.2}°", format!("{}:", tr("Roll")), pkt.roll.to_degrees()));
-    });
+    let Some(pane) = module_pane(ui) else { return };
+    let base = egui::TextStyle::Body.resolve(ui.style()).size;
+    paint_position(
+        ui.painter(),
+        pane,
+        [pkt.position_x, pkt.position_y, pkt.position_z],
+        [pkt.yaw, pkt.pitch, pkt.roll],
+        base,
+    );
+}
+
+/// Position body: world X/Y/Z beside Yaw/Pitch/Roll (wide pane) or the rotation block
+/// stacked under the position block (narrow pane) — whichever fits bigger.
+fn paint_position(painter: &egui::Painter, pane: Rect, pos: [f32; 3], rot: [f32; 3], base: f32) {
+    let dim = crate::theme::TEXT_DIM;
+    let txt = crate::theme::TEXT;
+    let pos_lines = [
+        format!("X: {:>10.2} m", pos[0]),
+        format!("Y: {:>10.2} m", pos[1]),
+        format!("Z: {:>10.2} m", pos[2]),
+    ];
+    let rot_lines: Vec<String> = [tr("Yaw"), tr("Pitch"), tr("Roll")]
+        .iter()
+        .zip(rot)
+        .map(|(l, r)| format!("{:<7}{:>7.2}°", format!("{l}:"), r.to_degrees()))
+        .collect();
+
+    let mut side = vec![FitRow::new(tr("Position"), dim, tr("Rotation"), dim)];
+    for (p, r) in pos_lines.iter().zip(&rot_lines) {
+        side.push(FitRow::new(p.clone(), txt, r.clone(), txt));
+    }
+    let mut stacked = vec![FitRow::new(tr("Position"), dim, "", dim)];
+    stacked.extend(pos_lines.iter().map(|p| FitRow::new(p.clone(), txt, "", txt)));
+    stacked.push(FitRow::new(tr("Rotation"), dim, "", dim));
+    stacked.extend(rot_lines.iter().map(|r| FitRow::new(r.clone(), txt, "", txt)));
+
+    // Wide, short pane: the headers go, leaving three value rows.
+    let bare = &side[1..];
+    paint_best_fit(painter, pane, base, &[
+        FitLayout::new(&side, RightCol::Column, 1),
+        FitLayout::new(&stacked, RightCol::Column, 1),
+        FitLayout::new(bare, RightCol::Column, 1),
+    ]);
 }
 
 fn show_race_block(ui: &mut Ui, app: &ForzaApp, pkt: &ForzaPacket) {
@@ -2455,15 +2835,26 @@ const GRAPH_BOOST: Color32 = Color32::from_rgb(180, 80, 220);
 /// PSI → bar.
 const PSI_TO_BAR: f64 = 0.0689476;
 
-/// Title row (normal mode only) and the rect the plot gets. Non-compact: the rotated y-axis
-/// label overhangs the plot's left edge (egui_plot draws it at rect.left() - gap), so the
-/// plot gets 8px left/right padding or the module cell clips the label. Compact has no axis
-/// labels, so it uses the full width — its title is painted over the plot afterwards by
-/// [`paint_compact_graph_title`], costing no vertical space.
-fn graph_module_rect(ui: &mut Ui, app: &ForzaApp, title: &str) -> egui::Rect {
-    let compact = app.config.power_graph_compact;
+/// Smallest module cell that still draws a graph with axes, title row and legend. Below
+/// it the graph switches to the Compact look on its own (title over the plot, no axes,
+/// peak lines + labels), so a small cell gets a readable plot instead of tick labels
+/// squeezing the plot area to nothing.
+const GRAPH_AXES_MIN: Vec2 = vec2(200.0, 120.0);
+
+/// Title row (normal mode only) and the rect the plot gets, plus whether the graph draws
+/// compact — the Compact option, or forced by a cell smaller than [`GRAPH_AXES_MIN`].
+/// Non-compact: the rotated y-axis label overhangs the plot's left edge (egui_plot draws
+/// it at rect.left() - gap), so the plot gets 8px left/right padding or the module cell
+/// clips the label. Compact has no axis labels, so it uses the full width — its title is
+/// painted over the plot afterwards by [`paint_compact_graph_title`], costing no vertical
+/// space.
+fn graph_module_rect(ui: &mut Ui, app: &ForzaApp, title: &str) -> (egui::Rect, bool) {
+    let cell = ui.available_rect_before_wrap();
+    let compact = app.config.power_graph_compact
+        || cell.width() < GRAPH_AXES_MIN.x
+        || cell.height() < GRAPH_AXES_MIN.y;
     if !compact && !app.config.hide_widget_titles {
-        ui.label(crate::theme::section_label(title));
+        ui.add(egui::Label::new(crate::theme::section_label(title)).truncate());
         ui.add_space(4.0);
     }
     let mut plot_rect = ui.available_rect_before_wrap();
@@ -2471,15 +2862,18 @@ fn graph_module_rect(ui: &mut Ui, app: &ForzaApp, title: &str) -> egui::Rect {
         plot_rect.min.x += 8.0;
         plot_rect.max.x -= 8.0;
     }
-    plot_rect
+    (plot_rect, compact)
 }
 
 /// The plot base both graph modules share: 0 RPM flush on the left edge, a static
 /// (non-interactive) view, the grid toggle, axes hidden in Compact, and the right edge
 /// 1000 RPM past the highest recorded point (the full rev range before any data).
-fn graph_plot(app: &ForzaApp, id: &str, data_max_rpm: f64) -> Plot<'static> {
+fn graph_plot(app: &ForzaApp, id: &str, data_max_rpm: f64, compact: bool) -> Plot<'static> {
     let g = app.config.power_graph_show_grid;
     let mut plot = Plot::new(id)
+        // egui_plot's default min size is 64×64, which overflowed small cells; the plot
+        // takes exactly the rect it is given.
+        .min_size(vec2(1.0, 1.0))
         // Zero x-margin so 0 RPM sits exactly on the left edge (no auto-padding).
         .set_margin_fraction(egui::vec2(0.0, 0.05))
         .include_x(0.0)
@@ -2490,7 +2884,7 @@ fn graph_plot(app: &ForzaApp, id: &str, data_max_rpm: f64) -> Plot<'static> {
         .allow_boxed_zoom(false)
         // Grid lines toggle applies regardless of compact/normal mode.
         .show_grid([g, g]);
-    if app.config.power_graph_compact {
+    if compact {
         // No legend or axis ticks/labels — but keep the grid lines for reference.
         plot = plot.show_axes([false, false]);
     } else {
@@ -2538,16 +2932,19 @@ fn paint_peak_labels(ui: &Ui, transform: &egui_plot::PlotTransform, mut labels: 
 }
 
 /// Compact mode's title, painted over the plot's top-left corner (no vertical space cost).
-fn paint_compact_graph_title(ui: &Ui, app: &ForzaApp, plot_rect: egui::Rect, title: &str) {
-    if !app.config.power_graph_compact || app.config.hide_widget_titles {
+fn paint_compact_graph_title(ui: &Ui, app: &ForzaApp, plot_rect: egui::Rect, title: &str, compact: bool) {
+    if !compact || app.config.hide_widget_titles {
         return;
     }
     let pos = plot_rect.min + vec2(4.0, 2.0);
-    let galley = ui.painter().layout_no_wrap(
-        title.to_uppercase(),
-        egui::FontId::proportional(12.0),
-        crate::theme::ACCENT,
-    );
+    // Shrink to the plot's width (minus the 4px inset each side), never grow past 12.
+    let text = title.to_uppercase();
+    let w12 = text_w(ui.painter(), &text, &egui::FontId::proportional(12.0));
+    let size = 12.0 * fit_scale(vec2(w12, 1.0), vec2(plot_rect.width() - 8.0, 1.0));
+    if size < MIN_PAINT_FONT {
+        return;
+    }
+    let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(size), crate::theme::ACCENT);
     if app.config.power_graph_show_grid {
         // Gridlines run under the title — back it with a small filled box so it
         // stays readable. Only drawn when the grid is on.
@@ -2579,9 +2976,8 @@ fn dashboard_boost_series(app: &ForzaApp) -> (&[[f64; 2]], bool) {
 }
 
 fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
-    let compact = app.config.power_graph_compact;
     let title = tr("Power Graph");
-    let plot_rect = graph_module_rect(ui, app, title);
+    let (plot_rect, compact) = graph_module_rect(ui, app, title);
 
     // Live capture, falling back to the saved reference curve (same data as the
     // Power Curve tab).
@@ -2649,7 +3045,7 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     let peak_boost = series_peak(&boost_series);
 
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
-    let mut plot = graph_plot(app, "dash_power_graph", data_max_rpm);
+    let mut plot = graph_plot(app, "dash_power_graph", data_max_rpm, compact);
     if !compact {
         // The default left axis, plus a dedicated right-side scale for the boost
         // line (tick marks converted back to bar/PSI via the scale factor).
@@ -2714,13 +3110,12 @@ fn show_power_graph_widget(ui: &mut Ui, app: &ForzaApp) {
         if let Some([rpm, v]) = peak_boost  { labels.push((rpm, GRAPH_BOOST, format!("{:.2}", v))); }
         paint_peak_labels(&plot_ui, &resp.transform, labels);
     }
-    paint_compact_graph_title(ui, app, plot_rect, title);
+    paint_compact_graph_title(ui, app, plot_rect, title, compact);
 }
 
 fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
-    let compact = app.config.power_graph_compact;
     let title = tr("Boost Graph");
-    let plot_rect = graph_module_rect(ui, app, title);
+    let (plot_rect, compact) = graph_module_rect(ui, app, title);
 
     // Forced-induction detection controls only whether bars are plotted; the plot itself
     // (axes/grid) always renders, with a dim note in place of the bars.
@@ -2751,7 +3146,7 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
 
     let boost_label = if use_bar { tr("Boost (bar)") } else { tr("Boost (PSI)") };
     let mut plot_ui = ui.new_child(egui::UiBuilder::new().max_rect(plot_rect).layout(*ui.layout()));
-    let mut plot = graph_plot(app, "dash_boost_graph", data_max_rpm).include_y(boost_top);
+    let mut plot = graph_plot(app, "dash_boost_graph", data_max_rpm, compact).include_y(boost_top);
     if !compact {
         plot = plot.custom_y_axes(vec![AxisHints::new_y().label(boost_label)]);
     }
@@ -2773,16 +3168,18 @@ fn show_boost_graph_widget(ui: &mut Ui, app: &ForzaApp) {
     }
     if !plot_bars {
         // Naturally aspirated (or nothing captured yet) — say so instead of an empty chart.
+        // Fitted to the plot frame like every module text (no fixed 12 pt overflow).
         let frame = *resp.transform.frame();
-        plot_ui.painter().with_clip_rect(frame).text(
-            frame.center(),
-            egui::Align2::CENTER_CENTER,
-            tr("No boost detected"),
-            egui::FontId::proportional(12.0),
-            crate::theme::TEXT_DIM,
-        );
+        let painter = plot_ui.painter().with_clip_rect(frame);
+        let note = tr("No boost detected");
+        let nsz = painter.layout_no_wrap(note.to_owned(), egui::FontId::proportional(12.0), Color32::WHITE).size();
+        let size = 12.0 * fit_scale(nsz, frame.shrink(4.0).size());
+        if size >= MIN_PAINT_FONT {
+            painter.text(frame.center(), egui::Align2::CENTER_CENTER, note,
+                egui::FontId::proportional(size), crate::theme::TEXT_DIM);
+        }
     }
-    paint_compact_graph_title(ui, app, plot_rect, title);
+    paint_compact_graph_title(ui, app, plot_rect, title, compact);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -2907,4 +3304,263 @@ fn fmt_lap(secs: f32) -> String {
     let m = (secs / 60.0) as u32;
     let s = secs % 60.0;
     format!("{m}:{s:06.3}")
+}
+
+/// Fit-to-pane checks for the migrated modules (Session Stats, Position, Co-Op, Boost):
+/// render each body into panes from tiny to large on a real egui context with the app's
+/// fonts and theme, and assert every painted shape stays inside its pane.
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    const SIZES: [(f32, f32); 8] = [
+        (24.0, 14.0), (60.0, 30.0), (60.0, 300.0), (400.0, 36.0),
+        (140.0, 90.0), (200.0, 150.0), (420.0, 200.0), (900.0, 600.0),
+    ];
+
+    fn ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "geist_mono".to_owned(),
+            egui::FontData::from_static(include_bytes!("../../assets/fonts/GeistMono-Regular.ttf")).into(),
+        );
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().insert(0, "geist_mono".to_owned());
+        }
+        ctx.set_fonts(fonts);
+        crate::theme::apply(&ctx);
+        ctx
+    }
+
+    /// Bounding rects of everything `paint` draws into `pane` (panel background excluded),
+    /// and the largest font size used.
+    fn render(pane: Rect, paint: impl Fn(&egui::Painter, Rect)) -> (Vec<Rect>, f32) {
+        let ctx = ctx();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 2000.0))),
+            ..Default::default()
+        };
+        let mut out = None;
+        for _ in 0..2 {
+            // Second pass: fonts are installed at the start of the first.
+            out = Some(ctx.run(input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let p = ui.painter().clone();
+                    paint(&p, pane);
+                });
+            }));
+        }
+        let mut rects = Vec::new();
+        let mut max_font = 0.0_f32;
+        for cs in out.unwrap().shapes {
+            let r = cs.shape.visual_bounding_rect();
+            if !r.is_positive() || (r.width() >= 1000.0 && r.height() >= 1000.0) {
+                continue; // panel background
+            }
+            if let egui::Shape::Text(t) = &cs.shape {
+                for row in &t.galley.rows {
+                    for g in &row.glyphs {
+                        max_font = max_font.max(g.font_height);
+                    }
+                }
+            }
+            rects.push(r);
+        }
+        (rects, max_font)
+    }
+
+    fn check(name: &str, paint: impl Fn(&egui::Painter, Rect)) {
+        for (w, h) in SIZES {
+            let pane = Rect::from_min_size(pos2(100.0, 100.0), vec2(w, h));
+            let (rects, font) = render(pane, &paint);
+            for r in &rects {
+                // Glyph meshes carry ~1px of antialias padding past the galley's logical
+                // rect; that stays inside the cell thanks to PANE_EDGE.
+                assert!(pane.expand(PANE_EDGE * 0.5).contains_rect(*r),
+                    "{name} {w}×{h} (font {font}): shape {r:?} overflows pane {pane:?}");
+            }
+            if w >= 140.0 && h >= 90.0 {
+                assert!(!rects.is_empty(), "{name} {w}×{h}: drew nothing");
+            }
+        }
+    }
+
+    fn stats() -> Vec<(&'static str, String)> {
+        vec![
+            ("Top Speed", "312 km/h".into()), ("Peak Power", "1203 PS".into()),
+            ("Peak Torque", "1408 Nm".into()), ("Peak Boost", "24.37 PSI".into()),
+            ("Peak Lat G", "1.84 g".into()), ("Peak Long G", "1.21 g".into()),
+            ("Max RPM", "8450".into()),
+        ]
+    }
+
+    #[test]
+    fn session_stats_fit() {
+        check("stats", |p, r| paint_session_stats(p, r, &stats(), 13.0));
+    }
+
+    #[test]
+    fn session_stats_full_size_in_a_large_pane() {
+        let (_, f) = render(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)),
+            |p, r| paint_session_stats(p, r, &stats(), 13.0));
+        assert!(f >= 12.0, "large pane should reach the base size, got {f}");
+    }
+
+    #[test]
+    fn position_fits() {
+        check("position", |p, r| paint_position(p, r, [-12345.67, 210.5, 9876.54], [3.0, -0.2, 0.1], 13.0));
+    }
+
+    fn coop_rows() -> Vec<CoopRow> {
+        (0..4).map(|i| CoopRow {
+            name: format!("Player with a long name {i}"),
+            hue: i as f32 * 0.25,
+            speed_ms: 80.0 - i as f32 * 10.0,
+            gear: i as u8 + 3,
+            is_self: i == 0,
+            dist_m: 1234.0 * i as f32,
+        }).collect()
+    }
+
+    #[test]
+    fn coop_fits() {
+        check("coop", |p, r| paint_coop_rows(p, r, &coop_rows(), false, 12.0));
+    }
+
+    fn gauge() -> BoostGauge {
+        BoostGauge { cur: 18.25, peak: 22.5, scale: 30.0, unit: "PSI", color: Color32::from_rgb(200, 120, 70) }
+    }
+
+    #[test]
+    fn boost_gauge_fits_in_every_style() {
+        check("boost in-bar", |p, r| paint_boost_in_bar(p, r, &gauge()));
+        check("boost vertical", |p, r| paint_boost_vertical(p, r, &gauge()));
+        check("boost horizontal", |p, r| paint_boost_horizontal(p, r, &gauge()));
+    }
+
+    /// Software-rasterise one module tile (cell outline, title, body) to a PNG under
+    /// `target/dashboard_png/` for eyeballing — CPU triangle fill of egui's tessellated
+    /// meshes, sampling the font atlas. Run:
+    /// `cargo test dashboard_module_pngs -- --ignored`
+    fn tile_png(name: &str, cell: Vec2, title: &str, paint: &dyn Fn(&egui::Painter, Rect)) {
+        let margin = 8.0;
+        let screen = vec2(cell.x + 2.0 * margin, cell.y + 2.0 * margin);
+        let ctx = ctx();
+        let mut textures: std::collections::HashMap<egui::TextureId, egui::ColorImage> = Default::default();
+        let mut prims = Vec::new();
+        for _ in 0..2 {
+            let out = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        let p = ui.painter().clone();
+                        let cell_r = Rect::from_min_size(pos2(margin, margin), cell);
+                        p.rect_stroke(cell_r, 2.0, Stroke::new(1.5, crate::theme::BORDER), egui::StrokeKind::Middle);
+                        let content = cell_r.shrink(2.0);
+                        let p = p.with_clip_rect(content);
+                        // Title as widget_title draws it (section_label, truncated).
+                        let tg = p.layout_no_wrap(title.to_uppercase(), egui::FontId::proportional(12.0), crate::theme::ACCENT);
+                        let th = tg.size().y + 3.0;
+                        p.galley(content.min, tg, crate::theme::ACCENT);
+                        let body = Rect::from_min_max(pos2(content.left(), content.top() + th), content.max);
+                        if body.height() > 2.0 * PANE_EDGE {
+                            paint(&p, body.shrink(PANE_EDGE));
+                        }
+                    });
+                },
+            );
+            for (id, delta) in out.textures_delta.set {
+                let egui::ImageData::Color(img) = delta.image;
+                match delta.pos {
+                    None => { textures.insert(id, (*img).clone()); }
+                    Some([x0, y0]) => {
+                        if let Some(t) = textures.get_mut(&id) {
+                            for y in 0..img.size[1] {
+                                for x in 0..img.size[0] {
+                                    t.pixels[(y0 + y) * t.size[0] + x0 + x] = img.pixels[y * img.size[0] + x];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            prims = ctx.tessellate(out.shapes, 1.0);
+        }
+
+        let (w, h) = (screen.x as usize, screen.y as usize);
+        let bg = crate::theme::PANEL;
+        let mut buf: Vec<[f32; 4]> = vec![
+            [bg.r() as f32 / 255.0, bg.g() as f32 / 255.0, bg.b() as f32 / 255.0, 1.0]; w * h
+        ];
+        for cp in prims {
+            let egui::epaint::Primitive::Mesh(mesh) = cp.primitive else { continue };
+            let Some(tex) = textures.get(&mesh.texture_id) else { continue };
+            let clip = cp.clip_rect;
+            let sample = |u: f32, v: f32| {
+                let x = ((u * tex.size[0] as f32) as usize).min(tex.size[0] - 1);
+                let y = ((v * tex.size[1] as f32) as usize).min(tex.size[1] - 1);
+                tex.pixels[y * tex.size[0] + x]
+            };
+            for tri in mesh.indices.chunks_exact(3) {
+                let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| mesh.vertices[i as usize]);
+                let area = (b.pos - a.pos).x * (c.pos - a.pos).y - (b.pos - a.pos).y * (c.pos - a.pos).x;
+                if area.abs() < 1e-6 { continue; }
+                let minx = a.pos.x.min(b.pos.x).min(c.pos.x).max(clip.left()).max(0.0).floor() as usize;
+                let maxx = a.pos.x.max(b.pos.x).max(c.pos.x).min(clip.right()).min(w as f32 - 1.0).ceil() as usize;
+                let miny = a.pos.y.min(b.pos.y).min(c.pos.y).max(clip.top()).max(0.0).floor() as usize;
+                let maxy = a.pos.y.max(b.pos.y).max(c.pos.y).min(clip.bottom()).min(h as f32 - 1.0).ceil() as usize;
+                for py in miny..=maxy.min(h - 1) {
+                    for px in minx..=maxx.min(w - 1) {
+                        let p = pos2(px as f32 + 0.5, py as f32 + 0.5);
+                        if !clip.contains(p) { continue; }
+                        let w0 = ((b.pos - p).x * (c.pos - p).y - (b.pos - p).y * (c.pos - p).x) / area;
+                        let w1 = ((c.pos - p).x * (a.pos - p).y - (c.pos - p).y * (a.pos - p).x) / area;
+                        let w2 = 1.0 - w0 - w1;
+                        if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+                        let u = a.uv.x * w0 + b.uv.x * w1 + c.uv.x * w2;
+                        let v = a.uv.y * w0 + b.uv.y * w1 + c.uv.y * w2;
+                        let t = sample(u, v);
+                        let col = [0, 1, 2, 3].map(|i| {
+                            let vc = [a.color, b.color, c.color].map(|cc| cc.to_array()[i] as f32 / 255.0);
+                            (vc[0] * w0 + vc[1] * w1 + vc[2] * w2) * t.to_array()[i] as f32 / 255.0
+                        });
+                        let d = &mut buf[py * w + px];
+                        for i in 0..4 {
+                            d[i] = col[i] + d[i] * (1.0 - col[3]);
+                        }
+                    }
+                }
+            }
+        }
+        let raw: Vec<u8> = buf.iter()
+            .flat_map(|c| [c[0], c[1], c[2], 1.0].map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8))
+            .collect();
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("dashboard_png");
+        std::fs::create_dir_all(&dir).unwrap();
+        image::save_buffer(dir.join(format!("{name}.png")), &raw, w as u32, h as u32, image::ExtendedColorType::Rgba8)
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "writes PNGs for eyeballing; run with --ignored"]
+    fn dashboard_module_pngs() {
+        let cells = [(90.0, 50.0), (130.0, 110.0), (70.0, 260.0), (420.0, 60.0), (300.0, 200.0), (700.0, 320.0)];
+        for (w, h) in cells {
+            let c = vec2(w, h);
+            let tag = format!("{w}x{h}");
+            tile_png(&format!("stats_{tag}"), c, "Session Stats", &|p, r| paint_session_stats(p, r, &stats(), 13.0));
+            tile_png(&format!("position_{tag}"), c, "Position",
+                &|p, r| paint_position(p, r, [-12345.67, 210.5, 9876.54], [3.0, -0.2, 0.1], 13.0));
+            tile_png(&format!("coop_{tag}"), c, "Co-Op", &|p, r| paint_coop_rows(p, r, &coop_rows(), false, 12.0));
+            tile_png(&format!("boost_inbar_{tag}"), c, "Boost", &|p, r| paint_boost_in_bar(p, r, &gauge()));
+            let vertical = h > w;
+            tile_png(&format!("boost_{tag}"), c, "Boost", &|p, r| {
+                if vertical { paint_boost_vertical(p, r, &gauge()) } else { paint_boost_horizontal(p, r, &gauge()) }
+            });
+        }
+    }
 }
