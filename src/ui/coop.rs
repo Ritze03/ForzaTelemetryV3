@@ -251,8 +251,10 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
             ui.columns(2, |c| {
                 crate::theme::row_label(&mut c[0], tr("Host port"));
                 c[1].horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535))
-                        .on_hover_text(tr("Local port the tunnel points at. Change only if it clashes with another app."));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535))
+                            .on_hover_text(tr("Local port the tunnel points at. Change only if it clashes with another app."));
+                    });
                 });
             });
         });
