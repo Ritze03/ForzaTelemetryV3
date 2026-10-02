@@ -851,6 +851,7 @@ fn de(s: &str) -> Option<&'static str> {
         "not capturing" => "erfasst nicht",
         "Race on" => "Rennen läuft",
         "Engine power" => "Motorleistung",
+        "ignored" => "ignoriert",
         "Handbrake released" => "Handbremse gelöst",
         "Tyre slip" => "Reifenschlupf",
         "Max RPM so far" => "Max-Drehzahl bisher",

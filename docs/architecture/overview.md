@@ -300,6 +300,7 @@ might produce.
 | `notify.rs` | D26 `Notifier`: queue of HUD messages + `watch` (diffs gearbox/backfire/calibration state each loop pass). See [[overlay]]. |
 | `lap_trace.rs` | Best-lap trace keyed by distance → the HUD's live lap delta. |
 | `backfire.rs` | Synthetic anti-lag / throttle-blip; echo-window bookkeeping. See [[backfire]]. |
+| `calib.rs` | Calibration check structs (`MaxRpmChecks`, `EngageChecks`, `GearMapChecks`) shared by the real calibration logic in `dsg.rs` and the Debug tab's calibration panel, so the panel shows exactly what gates the logic. |
 | `dsg.rs` | DSG-style auto-shifter with per-car calibration. See [[gearbox]]. |
 | `perf_test.rs` | Configurable accel/decel timers. |
 | `power_capture.rs` | Captures RPM vs power/torque/boost during full-throttle runs. See [[power-curve]]. |

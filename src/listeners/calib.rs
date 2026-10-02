@@ -98,7 +98,13 @@ impl MaxRpmChecks {
 
     /// The real capture condition.
     pub fn all(&self) -> bool {
-        self.race_on && self.power_positive && self.handbrake_off && self.slip_ok.iter().all(|&b| b)
+        // `power_positive` is deliberately NOT required: cars with a very fast rev limiter report
+        // power == 0 while bouncing off the limiter, which blocked max-RPM capture for them. It
+        // originally guarded against mis-shift over-revs, which the current calibration protocol
+        // (engage only on a manual upshift, gear-map median) makes practically impossible.
+        // Still computed for the Debug panel (informational).
+        // && self.power_positive
+        self.race_on && self.handbrake_off && self.slip_ok.iter().all(|&b| b)
     }
 }
 
@@ -240,7 +246,7 @@ mod tests {
         assert!(!c.race_on && !c.all());
 
         let mut p = good();
-        p.power = 0.0; // boundary: must be strictly > 0
+        p.power = 0.0; // informational only: still reported, never blocks capture
         assert!(!MaxRpmChecks::eval(&p).power_positive);
         p.power = 0.01;
         assert!(MaxRpmChecks::eval(&p).power_positive);
@@ -249,6 +255,16 @@ mod tests {
         p.hand_brake = 1;
         let c = MaxRpmChecks::eval(&p);
         assert!(!c.handbrake_off && !c.all());
+    }
+
+    #[test]
+    fn max_rpm_still_captures_with_zero_power_at_the_limiter() {
+        let mut p = good();
+        p.power = 0.0; // fast rev limiter: power reads 0
+        let c = MaxRpmChecks::eval(&p);
+        assert!(!c.power_positive && c.all());
+        p.power = -5.0;
+        assert!(MaxRpmChecks::eval(&p).all());
     }
 
     #[test]

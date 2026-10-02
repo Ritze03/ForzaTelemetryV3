@@ -138,6 +138,14 @@ fn check_row(ui: &mut egui::Ui, ok: bool, name: &str, detail: String) {
     ui.end_row();
 }
 
+/// An informational row: neutral dim dot, never red/green, not part of any group's result.
+fn info_row(ui: &mut egui::Ui, name: &str, detail: String) {
+    ui.label(egui::RichText::new("\u{25CF}").color(crate::theme::TEXT_DIM));
+    ui.label(egui::RichText::new(name).color(crate::theme::TEXT_DIM));
+    ui.label(egui::RichText::new(detail).monospace().color(crate::theme::TEXT_DIM));
+    ui.end_row();
+}
+
 /// A per-wheel check on one row: the dot is "all four pass", each wheel's value is coloured by
 /// its own result. Wheel order FL FR RL RR.
 fn wheels_row(ui: &mut egui::Ui, ok: [bool; 4], name: &str, vals: [f32; 4], threshold: &str) {
@@ -184,7 +192,8 @@ fn calibration_section(ui: &mut egui::Ui, app: &crate::app::ForzaApp) {
     group_heading(ui, tr("1. Max RPM capture"), m.all(), if m.all() { tr("capturing now") } else { tr("not capturing") });
     grid("debug_calib_maxrpm").show(ui, |ui| {
         check_row(ui, m.race_on, tr("Race on"), "is_race_on != 0".into());
-        check_row(ui, m.power_positive, tr("Engine power"), format!("power {:.0} > 0", r.power));
+        // Informational only (not part of `m.all()`): fast rev limiters report power 0.
+        info_row(ui, tr("Engine power"), format!("power {:.0} ({})", r.power, tr("ignored")));
         check_row(ui, m.handbrake_off, tr("Handbrake released"), format!("hand_brake {} = 0", r.hand_brake));
         wheels_row(ui, m.slip_ok, tr("Tyre slip"), r.slip, &format!("|slip| <= {MAX_RPM_SLIP}"));
         let cal = app.dynamic_max_rpm;

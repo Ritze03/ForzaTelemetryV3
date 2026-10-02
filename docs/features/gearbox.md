@@ -21,7 +21,11 @@ gear-ratio table.
   fails; the **Debug tab → Derived from telemetry → Calibration checks** shows each one
   live with its raw value and a green/red dot, see [[debug]]):
   1. *Max-RPM capture* (`worker.rs`, `dynamic_max_rpm = max(.., rpm)`): `is_race_on != 0`,
-     `power > 0`, `hand_brake == 0`, and `|slip| <= 0.5` on all four wheels.
+     `hand_brake == 0`, and `|slip| <= 0.5` on all four wheels. `power > 0` is deliberately
+     **not** required (commented out in `calib.rs`). Why: cars with a very fast rev limiter
+     report power 0 while bouncing off the limiter, which blocked capture; the check only
+     guarded against mis-shift over-revs, which the current protocol (engage on a manual
+     upshift, gear-map median) makes practically impossible.
   2. *Engage* (`dsg.rs`): the first manual upshift between two forward gears: not yet
      engaged, previous forward gear in 1..=9, current gear in 2..=10, gear > previous.
   3. *Gear-map sample* (`dsg.rs`): race on, gear 1..=10, a redline is known, `kmh > 5`,
