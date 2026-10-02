@@ -316,11 +316,17 @@ fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::Inpu
         status_dot(ui, Dot::Bad, tr("Gearbox / Backfire key input: cannot write /dev/uinput"));
     }
     ui.add_space(4.0);
-    for (i, cmd) in report.commands.iter().enumerate() {
+    for (i, (label, cmd)) in report.commands.iter().enumerate() {
+        ui.label(RichText::new(format!("{}. {}", i + 1, tr(label))).size(12.0));
         command_box(ui, app, i, cmd);
     }
     ui.add_space(2.0);
-    ui.label(RichText::new(tr("Log out and back in for it to take effect.")).size(11.0).color(crate::theme::TEXT_DIM));
+    let note = if report.commands.len() >= 2 {
+        tr("Run all commands above, then log out and back in.")
+    } else {
+        tr("Log out and back in for it to take effect.")
+    };
+    ui.label(RichText::new(note).size(11.0).color(crate::theme::TEXT_DIM));
 }
 
 /// The "Input Permissions" category (Linux): one status light per requirement, plus the

@@ -416,6 +416,9 @@ impl Default for InputProbe {
     }
 }
 
+pub const LBL_USERMOD: &str = "Add yourself to the input group (hotkeys and key input)";
+pub const LBL_MODPROBE: &str = "Load the uinput kernel module";
+pub const LBL_UDEV: &str = "Let the input group write /dev/uinput (key input)";
 pub const CMD_USERMOD: &str = "sudo usermod -aG input $USER";
 pub const CMD_MODPROBE: &str = "sudo modprobe uinput";
 pub const CMD_UDEV: &str = "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/99-uinput.rules && sudo udevadm control --reload && sudo udevadm trigger";
@@ -425,7 +428,8 @@ pub const CMD_UDEV: &str = "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"06
 pub struct InputReport {
     pub hotkeys_missing: bool,
     pub uinput_missing: bool,
-    pub commands: Vec<&'static str>,
+    /// `(label, command)` pairs; the label is an English `tr()` key.
+    pub commands: Vec<(&'static str, &'static str)>,
 }
 
 impl InputReport {
@@ -437,13 +441,13 @@ pub fn evaluate(p: &InputProbe) -> InputReport {
     let mut r = InputReport { hotkeys_missing: !p.hotkeys_ok, uinput_missing: !p.uinput_ok, commands: Vec::new() };
     if r.uinput_missing {
         if !p.uinput_exists {
-            r.commands.push(CMD_MODPROBE);
+            r.commands.push((LBL_MODPROBE, CMD_MODPROBE));
         } else if !p.uinput_group_input {
-            r.commands.push(CMD_UDEV);
+            r.commands.push((LBL_UDEV, CMD_UDEV));
         }
     }
     if r.any_missing() && !p.in_input_group {
-        r.commands.insert(0, CMD_USERMOD);
+        r.commands.insert(0, (LBL_USERMOD, CMD_USERMOD));
     }
     r
 }
@@ -500,15 +504,15 @@ mod tests {
         let p = InputProbe { hotkeys_ok: false, uinput_ok: false, in_input_group: false, ..Default::default() };
         let r = evaluate(&p);
         assert!(r.hotkeys_missing && r.uinput_missing);
-        assert_eq!(r.commands, vec![CMD_USERMOD]);
+        assert_eq!(r.commands, vec![(LBL_USERMOD, CMD_USERMOD)]);
     }
 
     #[test]
     fn evaluate_uinput_module_and_udev() {
         let p = InputProbe { uinput_ok: false, uinput_exists: false, ..Default::default() };
-        assert_eq!(evaluate(&p).commands, vec![CMD_MODPROBE]);
+        assert_eq!(evaluate(&p).commands, vec![(LBL_MODPROBE, CMD_MODPROBE)]);
         let p = InputProbe { uinput_ok: false, uinput_group_input: false, in_input_group: false, ..Default::default() };
-        assert_eq!(evaluate(&p).commands, vec![CMD_USERMOD, CMD_UDEV]);
+        assert_eq!(evaluate(&p).commands, vec![(LBL_USERMOD, CMD_USERMOD), (LBL_UDEV, CMD_UDEV)]);
     }
 
     #[test]
