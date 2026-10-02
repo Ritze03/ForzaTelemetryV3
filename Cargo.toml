@@ -32,6 +32,7 @@ aes-gcm = "0.11"
 getrandom = "0.4"
 base64 = "0.22"
 async-channel = "2"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
 # HUD overlay (src/overlay/): wlr-layer-shell surface + EGL + egui_glow. All already built by
