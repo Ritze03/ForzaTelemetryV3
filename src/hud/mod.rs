@@ -11,6 +11,7 @@ pub mod cluster;
 pub mod drift;
 pub mod fonts;
 pub mod layout;
+pub mod map_shared;
 pub mod minimap;
 pub mod notify;
 pub mod prims;

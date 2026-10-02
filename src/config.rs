@@ -412,7 +412,24 @@ pub struct OverlayConfig {
     pub map_use_movement_dir: bool,
     /// Look-around: rotate the map by the right stick (`minimap::look_offset`).
     pub map_look_stick: bool,
+    /// Mirror the map past its edges (the Dashboard's "Mirror map at edges"); off = the plain
+    /// backing shows outside the image.
+    pub map_mirror_edges: bool,
+    /// "Use Dashboard map settings": the map options above (and the two zooms and the compass)
+    /// follow the Dashboard map's; their controls are hidden. See [`OverlayConfig::effective`].
+    pub map_use_dashboard: bool,
     pub coop_teammates: bool,
+    /// Draw co-op trails behind each player (own included), like the Dashboard map.
+    pub coop_trails: bool,
+    /// Trail fade by age (s) and by distance behind the player (m); the Dashboard's
+    /// `coop_trail_fade_*`, kept independent.
+    pub coop_trail_fade_secs: f32,
+    pub coop_trail_fade_m: f32,
+    /// Draw the session's shared waypoints (the diamond + distance).
+    pub coop_waypoints: bool,
+    /// "Use Dashboard co-op settings": teammates, trails, trail fade and waypoints follow the
+    /// Dashboard map's. See [`OverlayConfig::effective`].
+    pub coop_use_dashboard: bool,
     // ── Race block ──
     pub lap_delta: bool,
     /// D15 green/red backdrop on a place gained/lost.
@@ -444,6 +461,36 @@ impl OverlayConfig {
     pub const DEFAULT_CLUSTER_CELL: HudCell = HudCell::BottomCenter;
     pub const DEFAULT_MINIMAP_CELL: HudCell = HudCell::BottomLeft;
     pub const DEFAULT_RACE_CELL: HudCell = HudCell::TopLeft;
+
+    /// The settings the HUD actually draws with: `self`, with the map group (`map_use_dashboard`)
+    /// and/or the co-op group (`coop_use_dashboard`) replaced by the Dashboard map's values from
+    /// `app`. The listener builds the snapshot's `cfg` from this, so the renderer reads one
+    /// config and never branches on the two flags.
+    /// Why: one tick mirrors the Dashboard, separately for the map view and for co-op.
+    /// The Dashboard has no "show teammates / waypoints" switch (always drawn) and always
+    /// records trails in a session, so those follow as `true`.
+    pub fn effective(&self, app: &AppConfig) -> OverlayConfig {
+        let mut c = self.clone();
+        if self.map_use_dashboard {
+            c.compass = app.minimap_show_compass;
+            c.zoom_driving_m = app.minimap_zoom_driving_m;
+            c.zoom_stopped_m = app.minimap_zoom_stopped_m;
+            c.map_north_up = app.minimap_north_up;
+            c.map_north_up_when_stopped = app.minimap_north_up_when_stopped;
+            c.map_smooth_rotation = app.minimap_smooth_rotation;
+            c.map_use_movement_dir = app.minimap_use_movement_dir;
+            c.map_look_stick = app.minimap_look_stick;
+            c.map_mirror_edges = app.minimap_mirror_edges;
+        }
+        if self.coop_use_dashboard {
+            c.coop_teammates = true;
+            c.coop_trails = true;
+            c.coop_waypoints = true;
+            c.coop_trail_fade_secs = app.coop_trail_fade_secs;
+            c.coop_trail_fade_m = app.coop_trail_fade_m;
+        }
+        c
+    }
 
     /// Layout card's Reset: put every module back in its default slot.
     pub fn reset_layout(&mut self) {
@@ -492,7 +539,15 @@ impl Default for OverlayConfig {
             map_smooth_rotation: true,
             map_use_movement_dir: false,
             map_look_stick: false,
+            // Dashboard default.
+            map_mirror_edges: true,
+            map_use_dashboard: false,
             coop_teammates: true,
+            coop_trails: true,
+            coop_trail_fade_secs: 10.0,
+            coop_trail_fade_m: 500.0,
+            coop_waypoints: true,
+            coop_use_dashboard: false,
             lap_delta: true,
             place_colour: true,
             drift_style: DriftStyle::PositionGain,
@@ -1879,5 +1934,46 @@ mod tests {
         inject_missing_widget_kinds(&mut ws);
         assert_eq!(ws.len(), after_once, "idempotent");
         assert!(ws.len() > before);
+    }
+
+    #[test]
+    fn effective_overlay_config_follows_dashboard_per_group() {
+        let app = AppConfig {
+            minimap_show_compass: false,
+            minimap_zoom_driving_m: 777.0,
+            minimap_zoom_stopped_m: 4000.0,
+            minimap_north_up: true,
+            minimap_smooth_rotation: false,
+            minimap_use_movement_dir: true,
+            minimap_look_stick: true,
+            minimap_mirror_edges: false,
+            coop_trail_fade_secs: 33.0,
+            coop_trail_fade_m: 1234.0,
+            ..Default::default()
+        };
+        let own = OverlayConfig {
+            compass: true,
+            zoom_driving_m: 100.0,
+            coop_teammates: false,
+            coop_trails: false,
+            coop_trail_fade_secs: 5.0,
+            ..Default::default()
+        };
+        // Both off (default): the HUD's own values, untouched.
+        assert_eq!(own.effective(&app), own);
+
+        // Map group only: map fields come from the Dashboard, co-op fields stay the HUD's.
+        let e = OverlayConfig { map_use_dashboard: true, ..own.clone() }.effective(&app);
+        assert!(!e.compass && e.map_north_up && !e.map_smooth_rotation && e.map_use_movement_dir);
+        assert!(e.map_look_stick && !e.map_mirror_edges);
+        assert_eq!((e.zoom_driving_m, e.zoom_stopped_m), (777.0, 4000.0));
+        assert!(!e.coop_teammates && !e.coop_trails && e.coop_trail_fade_secs == 5.0);
+
+        // Co-op group only: fade comes from the Dashboard, teammates/trails/waypoints on, the
+        // map fields stay the HUD's.
+        let e = OverlayConfig { coop_use_dashboard: true, ..own.clone() }.effective(&app);
+        assert!(e.coop_teammates && e.coop_trails && e.coop_waypoints);
+        assert_eq!((e.coop_trail_fade_secs, e.coop_trail_fade_m), (33.0, 1234.0));
+        assert!(e.compass && e.zoom_driving_m == 100.0 && !e.map_north_up);
     }
 }

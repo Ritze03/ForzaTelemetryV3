@@ -2244,138 +2244,61 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let painter = ui.painter_at(rect);
     painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 
+    // Markers (trails, teammates, own arrow, waypoints) come from `hud::map_shared`, the same
+    // code the HUD Minimap draws with.
+    let cv = crate::hud::map_shared::MapCanvas {
+        p: &painter,
+        view: &view,
+        centre: rect.center(),
+        rect,
+        s: 1.0,
+        a: 1.0,
+        pause_glyph: crate::icons::PAUSE,
+    };
+
     // Co-op breadcrumb trails (drawn behind the car arrows). Each player's recent
     // path fades from faint (old) to solid (recent) in their identity colour.
+    let remotes = app.coop.remote_players();
     if !app.minimap_trails.is_empty() {
         let now = std::time::Instant::now();
-        let fade_secs = cfg.coop_trail_fade_secs.max(0.5);
-        let fade_m = cfg.coop_trail_fade_m.max(1.0);
-        let draw_trail = |pts: &std::collections::VecDeque<(f32, f32, std::time::Instant)>, col: Color32| {
-            let n = pts.len();
-            if n < 2 { return; }
-            let (hx, hz, _) = pts[n - 1]; // head = player's current position
-            for i in 1..n {
-                let (ax, az, _) = pts[i - 1];
-                let (bx, bz, bt) = pts[i];
-                // Fade the segment out by whichever hits first: age or distance behind.
-                let age = now.duration_since(bt).as_secs_f32();
-                let dist = (ax - hx).hypot(az - hz);
-                let tf = (1.0 - age / fade_secs).clamp(0.0, 1.0);
-                let df = (1.0 - dist / fade_m).clamp(0.0, 1.0);
-                let alpha = (tf.min(df) * 220.0) as u8;
-                if alpha < 4 { continue; }
-                let c = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
-                painter.line_segment([to_screen(ax, az), to_screen(bx, bz)], Stroke::new(2.0, c));
-            }
-        };
+        let fade = crate::hud::map_shared::TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
         if let Some(tr) = app.minimap_trails.get("local") {
-            draw_trail(tr, crate::ui::coop::hue_color(app.config.coop_hue));
+            crate::hud::map_shared::draw_trail(&cv, tr, crate::ui::coop::hue_color(app.config.coop_hue), fade, now);
         }
-        for (info, pkt) in app.coop.remote_players() {
+        for (info, pkt) in &remotes {
             if pkt.is_paused() {
                 continue; // paused teammate — don't draw their line
             }
             if let Some(tr) = app.minimap_trails.get(&info.id) {
-                draw_trail(tr, crate::ui::coop::hue_color(info.hue));
+                crate::hud::map_shared::draw_trail(&cv, tr, crate::ui::coop::hue_color(info.hue), fade, now);
             }
         }
     }
 
-    let s = 7.0_f32;
-
-    // Remote co-op players: place each on the map relative to the local car using
-    // the same world→screen rotation, with their identity colour + name.
-    let remotes = app.coop.remote_players();
-    if !remotes.is_empty() {
-        // Names are drawn in a second pass so labels of cars close together (e.g. racing
-        // side-by-side) can be nudged apart instead of stacking illegibly.
-        let mut labels: Vec<(Pos2, String, Color32)> = Vec::new();
-        for (info, pkt) in remotes {
+    // Remote co-op players: identity colour + name. Paused players stop broadcasting a valid
+    // position; show them at their last-known spot in grey instead of at the world origin.
+    let mates: Vec<crate::hud::map_shared::Remote> = remotes
+        .iter()
+        .filter_map(|(info, pkt)| {
             let paused = pkt.is_paused();
-            // Paused players stop broadcasting a valid position; show them at their
-            // last-known spot in grey instead of drawing them at the world origin.
-            let (px, pz, pyaw) = if paused {
-                match app.coop_last_pos.get(&info.id) {
-                    Some(s) => (s.x, s.z, s.yaw),
-                    None => continue, // never seen at a valid spot — nothing to show
-                }
+            let (x, z, yaw) = if paused {
+                let s = app.coop_last_pos.get(&info.id)?; // never seen at a valid spot — nothing to show
+                (s.x, s.z, s.yaw)
             } else {
                 (pkt.position_x, pkt.position_z, pkt.yaw)
             };
-            let dx = px - car_x;
-            let dz = pz - car_z;
-            let Pos2 { x: sx, y: sy } = to_screen(px, pz);
-            let col = if paused {
-                crate::theme::steel(170)
-            } else {
-                crate::ui::coop::hue_color(info.hue)
-            };
-
-            if rect.shrink(8.0).contains(pos2(sx, sy)) {
-                // On-screen: full heading arrow; name deferred to the 2nd pass.
-                let (sa, ca) = (pyaw - yaw).sin_cos();
-                let rr = |vx: f32, vy: f32| pos2(sx + vx * ca - vy * sa, sy + vx * sa + vy * ca);
-                painter.add(egui::Shape::convex_polygon(
-                    vec![rr(0.0, -s * 1.4), rr(s, s * 0.6), rr(-s, s * 0.6)],
-                    col,
-                    Stroke::new(1.5, Color32::BLACK),
-                ));
-                let label = if paused {
-                    format!("{} {}", crate::icons::PAUSE, info.name)
-                } else {
-                    info.name.clone()
-                };
-                labels.push((pos2(sx, sy - s * 1.9), label, col));
-            } else {
-                // Off-screen: clamp to the map edge and point a marker toward them,
-                // so you always know which way your teammates are.
-                let c = rect.center();
-                let d = pos2(sx, sy) - c;
-                let half = rect.size() * 0.5 - Vec2::splat(10.0);
-                let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
-                let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
-                let edge = c + d * kx.min(ky).min(1.0);
-                let (sa, ca) = d.y.atan2(d.x).sin_cos();
-                let m = 6.5_f32;
-                let rr = |vx: f32, vy: f32| pos2(edge.x + vx * ca - vy * sa, edge.y + vx * sa + vy * ca);
-                painter.add(egui::Shape::convex_polygon(
-                    vec![rr(m, 0.0), rr(-m * 0.7, m * 0.7), rr(-m * 0.7, -m * 0.7)],
-                    col,
-                    Stroke::new(1.0, Color32::BLACK),
-                ));
-                // Distance to the teammate, nudged inward from the edge marker.
-                let dist_m = (dx * dx + dz * dz).sqrt();
-                let dist_txt = if dist_m >= 1000.0 {
-                    format!("{:.1}km", dist_m / 1000.0)
-                } else {
-                    format!("{:.0}m", dist_m)
-                };
-                let dpos = edge - d.normalized() * 14.0;
-                let dfont = egui::FontId::proportional(10.0);
-                for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                    painter.text(dpos + vec2(off.0, off.1), egui::Align2::CENTER_CENTER,
-                        &dist_txt, dfont.clone(), Color32::from_black_alpha(200));
-                }
-                painter.text(dpos, egui::Align2::CENTER_CENTER, &dist_txt, dfont, col);
-            }
-        }
-
-        // 2nd pass: draw names, nudging each down while it collides with a placed one.
-        let name_font = egui::FontId::proportional(11.0);
-        let shadow = Color32::from_black_alpha(200);
-        let mut placed: Vec<Pos2> = Vec::new();
-        for (mut pos, name, col) in labels {
-            while placed.iter().any(|p| (p.x - pos.x).abs() < 46.0 && (p.y - pos.y).abs() < 13.0) {
-                pos.y += 13.0;
-            }
-            placed.push(pos);
-            for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                painter.text(pos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM,
-                    &name, name_font.clone(), shadow);
-            }
-            painter.text(pos, egui::Align2::CENTER_BOTTOM, &name, name_font.clone(), col);
-        }
-    }
+            Some(crate::hud::map_shared::Remote {
+                id: info.id.clone(),
+                name: info.name.clone(),
+                x,
+                z,
+                yaw,
+                colour: crate::ui::coop::hue_color(info.hue),
+                paused,
+            })
+        })
+        .collect();
+    crate::hud::map_shared::draw_remotes(&cv, &mates, (car_x, car_z), yaw);
 
     // Local car indicator: triangle rotated to show heading relative to map orientation.
     // Uses the player's co-op colour (colour only, no name) when in a session.
@@ -2384,19 +2307,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     } else {
         Color32::WHITE
     };
-    let arrow_angle = view.arrow_angle(app.minimap_cached_raw_yaw);
-    let (sin_a, cos_a) = arrow_angle.sin_cos();
-    let rot = |vx: f32, vy: f32| -> Pos2 {
-        pos2(cx + vx * cos_a - vy * sin_a, cy + vx * sin_a + vy * cos_a)
-    };
-    let tip   = rot(0.0,      -s * 1.4);
-    let left  = rot(-s,        s * 0.6);
-    let right = rot( s,        s * 0.6);
-    painter.add(egui::Shape::convex_polygon(
-        vec![tip, right, left],
-        local_col,
-        Stroke::new(1.5, Color32::BLACK),
-    ));
+    crate::hud::map_shared::draw_own_arrow(&cv, view.arrow_angle(app.minimap_cached_raw_yaw), local_col);
 
     // ── Co-op shared waypoint ──────────────────────────────────────
     // Left-click drops/moves a waypoint everyone in the session sees; right-click clears.
@@ -2411,37 +2322,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             app.coop.set_waypoint(None, 0.0);
         }
     }
+    let time = ui.input(|i| i.time) as f32;
     for (_pid, wx, wz, hue) in app.coop.waypoints() {
-        let dx = wx - car_x;
-        let dz = wz - car_z;
-        let Pos2 { x: mut mx, y: mut my } = to_screen(wx, wz);
-        let col = crate::ui::coop::hue_color(hue);
-        if !rect.shrink(6.0).contains(pos2(mx, my)) {
-            let d = pos2(mx, my) - rect.center();
-            let half = rect.size() * 0.5 - Vec2::splat(8.0);
-            let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
-            let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
-            let e = rect.center() + d * kx.min(ky).min(1.0);
-            mx = e.x;
-            my = e.y;
-        }
-        let c = pos2(mx, my);
-        // Gentle pulse to draw the eye to the destination.
-        let p = 1.0 + 0.16 * (ui.input(|i| i.time) as f32 * 4.0).sin();
-        painter.add(egui::Shape::convex_polygon(
-            vec![c + vec2(0.0, -9.0 * p), c + vec2(7.0 * p, 0.0), c + vec2(0.0, 9.0 * p), c + vec2(-7.0 * p, 0.0)],
-            col,
-            Stroke::new(1.5, Color32::BLACK),
-        ));
-        painter.circle_filled(c, 2.5, Color32::WHITE);
-        let dist = (dx * dx + dz * dz).sqrt();
-        let dtxt = if dist >= 1000.0 { format!("{:.1}km", dist / 1000.0) } else { format!("{:.0}m", dist) };
-        let dfont = egui::FontId::proportional(10.0);
-        let dpos = c + vec2(0.0, -12.0);
-        for off in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-            painter.text(dpos + vec2(off.0, off.1), egui::Align2::CENTER_BOTTOM, &dtxt, dfont.clone(), Color32::from_black_alpha(200));
-        }
-        painter.text(dpos, egui::Align2::CENTER_BOTTOM, &dtxt, dfont, col);
+        crate::hud::map_shared::draw_waypoint(&cv, (wx, wz), crate::ui::coop::hue_color(hue), (car_x, car_z), time);
     }
 
     // North compass: shared with the HUD Minimap (`hud::minimap::draw_compass`), scaled

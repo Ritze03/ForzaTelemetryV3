@@ -576,7 +576,7 @@ pub struct ForzaApp {
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
-    pub minimap_trails: HashMap<String, VecDeque<(f32, f32, Instant)>>,
+    pub minimap_trails: HashMap<String, crate::minimap::Trail>,
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
     pub coop_last_pos: HashMap<String, CoopSeen>,
@@ -1312,10 +1312,6 @@ impl ForzaApp {
     /// co-op session (local + remotes); cleared otherwise so solo behaviour is unchanged.
     fn update_minimap_trails(&mut self) {
         use std::collections::HashSet;
-        const MIN_MOVE: f32 = 4.0; // metres between recorded points
-        const MAX_PTS: usize = 400;
-        const TELEPORT: f32 = 300.0; // jump this far in one packet ⇒ clear the trail
-
         if self.coop.role() == crate::coop::Role::Off {
             if !self.minimap_trails.is_empty() {
                 self.minimap_trails.clear();
@@ -1329,33 +1325,17 @@ impl ForzaApp {
         // Drop points older than the fade window so trails stay bounded by time too.
         let max_age = Duration::from_secs_f32(self.config.coop_trail_fade_secs.max(0.5));
         let now = Instant::now();
+        // Recording rules (spacing, teleport reset, cap) live in `minimap::trail_push`, shared
+        // with the HUD Minimap's own trail buffer.
         fn push(
-            trails: &mut HashMap<String, VecDeque<(f32, f32, Instant)>>,
+            trails: &mut HashMap<String, crate::minimap::Trail>,
             key: String,
             x: f32,
             z: f32,
             now: Instant,
             max_age: Duration,
         ) {
-            let dq = trails.entry(key).or_default();
-            match dq.back() {
-                Some(&(px, pz, _)) => {
-                    let moved = (px - x).hypot(pz - z);
-                    if moved >= TELEPORT {
-                        dq.clear(); // teleport (fast-travel / reset) — drop the stale line
-                        dq.push_back((x, z, now));
-                    } else if moved >= MIN_MOVE {
-                        dq.push_back((x, z, now));
-                    }
-                }
-                None => dq.push_back((x, z, now)),
-            }
-            while dq.front().is_some_and(|&(_, _, t)| now.duration_since(t) > max_age) {
-                dq.pop_front();
-            }
-            if dq.len() > MAX_PTS {
-                dq.pop_front();
-            }
+            crate::minimap::trail_push(trails.entry(key).or_default(), x, z, now, max_age);
         }
 
         // Remember each player's last useful telemetry: position only from

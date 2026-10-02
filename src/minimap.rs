@@ -5,7 +5,8 @@
 //! `&ForzaApp`. The overlay thread can call it with a `ForzaPacket` on its own `egui::Context`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ── Season detection ──────────────────────────────────────────────
 
@@ -154,7 +155,7 @@ pub const OVERLAY_MAP_QUALITY: f32 = 50.0;
 pub const OVERLAY_MAP_TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptions {
     magnification: egui::TextureFilter::Linear,
     minification: egui::TextureFilter::Linear,
-    wrap_mode: egui::TextureWrapMode::ClampToEdge,
+    wrap_mode: egui::TextureWrapMode::MirroredRepeat,
     mipmap_mode: Some(egui::TextureFilter::Linear),
 };
 
@@ -351,6 +352,39 @@ pub fn ease_look(current: f32, stick: (f32, f32), enabled: bool, dt: f32) -> f32
 pub fn ease_zoom(current_m: f32, target_m: f32, dt: f32) -> f32 {
     let lerp_t = (3.0 * dt.min(0.1)).min(1.0);
     current_m * (1.0 - lerp_t) + target_m * lerp_t
+}
+
+// ── Co-op trails (shared by the Dashboard map and the HUD Minimap) ─────────
+
+/// One player's recent world path: `(x, z, recorded_at)`, oldest first. Drawn by
+/// `hud::map_shared::draw_trail`.
+pub type Trail = VecDeque<(f32, f32, Instant)>;
+
+/// Append `(x, z)` to `trail` the way both maps record it: only after `MIN_MOVE` metres of
+/// travel, a jump of `TELEPORT` metres (fast-travel / reset) starts a fresh trail, points
+/// older than `max_age` are dropped and the length is capped.
+pub fn trail_push(trail: &mut Trail, x: f32, z: f32, now: Instant, max_age: Duration) {
+    const MIN_MOVE: f32 = 4.0;
+    const MAX_PTS: usize = 400;
+    const TELEPORT: f32 = 300.0;
+    match trail.back() {
+        Some(&(px, pz, _)) => {
+            let moved = (px - x).hypot(pz - z);
+            if moved >= TELEPORT {
+                trail.clear();
+                trail.push_back((x, z, now));
+            } else if moved >= MIN_MOVE {
+                trail.push_back((x, z, now));
+            }
+        }
+        None => trail.push_back((x, z, now)),
+    }
+    while trail.front().is_some_and(|&(_, _, t)| now.duration_since(t) > max_age) {
+        trail.pop_front();
+    }
+    if trail.len() > MAX_PTS {
+        trail.pop_front();
+    }
 }
 
 #[cfg(test)]
