@@ -62,25 +62,17 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
             app.coop.update_identity(&n, h);
         }
 
-        ui.label(
-            RichText::new(tr("Others see this name + colour; your own map arrow uses the colour only."))
-                .size(11.0)
-                .color(Color32::GRAY),
-        );
     });
 
     crate::theme::card(ui, tr("Pacing"), |ui| {
-        if crate::theme::slider_row(ui, tr("Packet Buffer Size"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms").changed() {
-            app.coop.set_buffer_ms(app.config.coop_buffer_ms);
-        }
-        ui.label(
-            RichText::new(tr(
+        let r = crate::theme::slider_row(ui, tr("Packet Buffer Size"), &mut app.config.coop_buffer_ms, 0..=500, 10.0, 0, " ms")
+            .on_hover_text(tr(
                 "Delays remote players by this much to smooth out network jitter.\n\
                  0 = lowest latency; raise it if other cars stutter on the map.",
-            ))
-            .size(11.0)
-            .color(Color32::GRAY),
-        );
+            ));
+        if r.changed() {
+            app.coop.set_buffer_ms(app.config.coop_buffer_ms);
+        }
     });
 }
 

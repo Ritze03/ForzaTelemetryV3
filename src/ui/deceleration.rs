@@ -4,11 +4,6 @@ use crate::app::ForzaApp;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     ui.heading("Deceleration Test");
-    ui.label(
-        RichText::new("Measure stopping time over a configurable speed range.")
-            .color(Color32::GRAY),
-    );
-    ui.add_space(8.0);
 
     let current_kmh = app
         .telemetry
@@ -42,12 +37,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     });
 
     ui.horizontal(|ui| {
-        crate::theme::styled_checkbox(ui, &mut app.config.decel_dynamic_mode, "Dynamic mode");
-        ui.label(
-            RichText::new("(auto-starts on deceleration, aborts if re-accelerating for >500 ms)")
-                .size(11.0)
-                .color(Color32::GRAY),
-        );
+        crate::theme::styled_checkbox(ui, &mut app.config.decel_dynamic_mode, "Dynamic mode")
+            .on_hover_text(crate::i18n::tr("Auto-starts on deceleration, aborts if re-accelerating for >500 ms."));
     });
 
     ui.add_space(12.0);

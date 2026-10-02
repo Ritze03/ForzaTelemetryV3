@@ -18,28 +18,18 @@ pub fn options_ui(ui: &mut Ui, config: &mut AppConfig) {
         );
     });
     ui.add_space(8.0);
-    crate::theme::styled_checkbox(ui, &mut config.power_curve_forced_induction, tr("Forced induction detection"));
-    ui.add_space(4.0);
-    ui.label(
-        RichText::new(tr(
+    crate::theme::styled_checkbox(ui, &mut config.power_curve_forced_induction, tr("Forced induction detection"))
+        .on_hover_text(tr(
             "ON: hide boost graph if no positive pressure was captured.\n\
              OFF: always show the boost graph.",
-        ))
-        .size(11.0)
-        .color(Color32::GRAY),
-    );
+        ));
     if config.power_curve_forced_induction {
         ui.add_space(8.0);
-        crate::theme::styled_checkbox(ui, &mut config.power_curve_save_fi_state, tr("Save Forced Induction State"));
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(tr(
+        crate::theme::styled_checkbox(ui, &mut config.power_curve_save_fi_state, tr("Save Forced Induction State"))
+            .on_hover_text(tr(
                 "Keep the boost graph visible after clearing data,\n\
                  if FI was detected at least once for this car.",
-            ))
-            .size(11.0)
-            .color(Color32::GRAY),
-        );
+            ));
     }
 }
 
