@@ -94,8 +94,12 @@ follow the app theme.
 
 RPM, gear and speed in one super-compact widget (D9), in two styles:
 
-- **D1a Pill** — 184×46 pill with a 16-segment level rev bar.
-- **D3a′ Halo** — 112×112 disc with a thick 24-sector ring on a 260° arc (idle → max). Each
+Picked in a **Style** dropdown on the Overlay tab, labelled **Pill** / **Halo** (the D1a / D3a′
+codes are the mockup's spec names, not shown in the UI). *Why a dropdown:* the user asked
+for it; it also avoids the cryptic spec codes in the label.
+
+- **Pill** (D1a) — 184×46 pill with a 16-segment level rev bar.
+- **Halo** (D3a′) — 112×112 disc with a thick 24-sector ring on a 260° arc (idle → max). Each
   sector gets thicker with the rpm it stands for (inner radius 47 → 40, outer 52); redline
   is shown by colour only (D14).
 
@@ -249,9 +253,10 @@ visible = enabled && !hud_hidden && (!focus_only || game_focused)
     (user-observed), while the pause menu keeps the car's real rotation. A driven car is
     never exactly 0 on all three axes, so an exact compare has no false positives.
 - **No packets for 2 s** → hidden (same 2 s as the rest of the app's "connected").
-- **Focus-only** (optional, `overlay.focus_only`): the checkbox lives in **Setup → Window
-  Detection** ("Only when game window is focused"), not on the Overlay tab (D5), because it
-  uses that card's detection method. Turning the overlay on enables the focus detector (an
+- **Focus-only** (optional, `overlay.focus_only`): the checkbox lives in the Overlay tab's
+  **General** card ("Only when game window is focused"); its tooltip says it uses the Window
+  Detection method set in Setup. *Why here (supersedes the old D5 choice to keep it in
+  Setup):* the user looked for it on the Overlay tab and didn't find it in Setup. Turning the overlay on enables the focus detector (an
   idle detector fails open, i.e. reports "focused").
 - **Hide HUD hotkey** (default **H**, global scope, rebindable in either the Overlay tab or
   Setup → Hotkey; it is the one binding `hotkeys.bindings[HideHud]`). It toggles
@@ -332,7 +337,7 @@ push apply every change to the running HUD, so there's no Apply button.
   settings.
 - **General:** Enable overlay, the status line (off / starting / running / disabled reason /
   stopped), the Hide HUD binding row, scale (50–200 %), plate opacity (scales plate, halo
-  disc and cap), fade, and a pointer to Setup → Window Detection. There's no "hide when
+  disc and cap), fade, and **Only when game window is focused** (tooltip points to Setup → Window Detection). There's no "hide when
   paused" option: that's automatic.
 - **Layout:** one shared 3×3 grid; drag a module chip onto a cell, or select one and click a
   cell / use the arrow keys; **Reset layout**. The selection drops after a cell-click move,

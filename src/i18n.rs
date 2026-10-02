@@ -807,13 +807,13 @@ fn de(s: &str) -> Option<&'static str> {
         "The HUD is hidden. Press the Hide HUD key again to show it."
             => "Das HUD ist ausgeblendet. Drücke die „HUD ausblenden“-Taste erneut, um es zu zeigen.",
         "Only when game window is focused" => "Nur wenn das Spielfenster im Fokus ist",
-        "Hides the in-game overlay while another window is focused. Uses the detection method above."
-            => "Blendet das Ingame-Overlay aus, solange ein anderes Fenster im Fokus ist. Nutzt die Erkennungsmethode oben.",
+        "Hides the HUD while another window is focused. Uses the Window Detection method set in Setup."
+            => "Blendet das HUD aus, solange ein anderes Fenster im Fokus ist. Nutzt die in Setup eingestellte Fenster-Erkennung.",
         "Scale" => "Skalierung",
         "Plate opacity" => "Hintergrund-Deckkraft",
         "Fade on show / hide" => "Beim Ein-/Ausblenden überblenden",
-        "\"Only when game window is focused\" is in Setup → Window Detection. The HUD hides by itself while the game is paused."
-            => "„Nur wenn das Spielfenster im Fokus ist“ findest du unter Setup → Fenster-Erkennung. Während das Spiel pausiert ist, blendet sich das HUD von selbst aus.",
+        "The HUD hides by itself while the game is paused."
+            => "Während das Spiel pausiert ist, blendet sich das HUD von selbst aus.",
         "Monitor Detection" => "Monitor-Erkennung",
         "Method" => "Methode",
         "Hyprland (built in)" => "Hyprland (integriert)",
@@ -849,8 +849,8 @@ fn de(s: &str) -> Option<&'static str> {
             => "In Pixeln bei 1080p. Beide skalieren mit der Auflösung und der HUD-Skalierung.",
         "Reset layout" => "Layout zurücksetzen",
         "Drive Cluster" => "Fahranzeige",
-        "D1a Pill" => "D1a Pill",
-        "D3a′ Halo" => "D3a′ Halo",
+        "Pill" => "Pill",
+        "Halo" => "Halo",
         "Show engine RPM instead of KM/H label" => "Motordrehzahl statt KM/H-Beschriftung zeigen",
         "Show engine RPM instead of MPH label" => "Motordrehzahl statt MPH-Beschriftung zeigen",
         "The speed stays. Only the unit text changes." => "Die Geschwindigkeit bleibt. Nur die Einheit wird ersetzt.",

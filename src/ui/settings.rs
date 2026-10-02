@@ -165,15 +165,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
                 hint(ui, tr("Avoid ports 5200–5300 (used by the game)."));
             });
 
-            crate::theme::card(right, tr("Co-Op"), |ui| {
-                control_row(ui, tr("Host port"), |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535));
-                    });
-                });
-                hint(ui, tr("Local port the tunnel points at. Change only if it clashes with another app."));
-            });
-
             crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));
         });
     });
@@ -968,11 +959,6 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
             status_dot(ui, Dot::Warn, tr("Game window not focused"));
         }
     }
-
-    // ── Overlay ── (read live by `ForzaApp::sync_overlay`; no hotkey re-sync needed)
-    sub_heading(ui, tr("Overlay"));
-    crate::theme::checkbox_row(ui, &mut app.config.overlay.focus_only, tr("Only when game window is focused"));
-    hint(ui, tr("Hides the in-game overlay while another window is focused. Uses the detection method above."));
 
     // ── Send Input ──
     sub_heading(ui, tr("Send Input"));

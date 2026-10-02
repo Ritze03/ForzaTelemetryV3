@@ -10,6 +10,10 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **HUD Pill gear position**: the gear indicator in the Pill style of the Drive cluster sat 1 px too low and now sits 1 px higher.
 
 ### Info
+- **Overlay: "Only when game window is focused" moved** from Setup → Window Detection to the Overlay tab (General). Hover it for a note that it uses the Window Detection method from Setup. The setting itself is unchanged.
+- **Co-Op: Host port moved** from the Setup page to the Co-Op tab, in a Cloudflare card under the Session card (shown while Cloudflare is selected), since only that transport uses it.
+- **Co-Op: long room IDs fit**: the Room ID hint shows a full-length example and the shown room code shrinks so the whole ID is visible next to Copy.
+- **Overlay: Drive cluster style** is now a dropdown with the entries **Pill** and **Halo** instead of two radio buttons.
 - **Status bar connection indicator**: in icon-only mode the packet rate now shows just the number (no "pps"), in the connection icon's colour and right next to the icon. Hovering the icon or the number (or the whole icon + text group with text labels on) shows the connection state and the rate as "N packets per second".
 - **Longer Co-Op room IDs**: generated Trystero Room IDs are now 32 characters (8 groups of 4) so shared public rooms practically never collide. Older, shorter IDs keep working.
 

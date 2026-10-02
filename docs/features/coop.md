@@ -62,7 +62,7 @@ e.g. `k7f2-9qzm-x4pd-...`; older 12-char IDs still work, `normalize_room` is unc
 session. While connected the card shows "Room" + ID with Copy. The ID is persisted as
 `coop_room`; it is normalised (`normalize_room`: lowercase, all whitespace stripped) in
 `start_trystero`, so the UI and auto-connect agree on the room (it is hashed into the topics and
-key, so any difference is a different room). *Why 32 chars:* generated IDs should be >= 32 chars so shared public rooms practically never collide (the ID is also the encryption secret). Enter in the Room ID field joins. Hint shown: "Anyone with this ID can join. Treat it like a password."
+key, so any difference is a different room). *Why 32 chars:* generated IDs should be >= 32 chars so shared public rooms practically never collide (the ID is also the encryption secret). Enter in the Room ID field joins. The field fills the card width (no char limit, hint shows a full-length example); the shown room code in the session card drops to 12 px for IDs over 24 chars so all 39 chars (incl. dashes) fit beside Copy. Hint shown: "Anyone with this ID can join. Treat it like a password."
 **Auto-connect on startup** (`coop_autoconnect`, Trystero only) rejoins the last room at launch
 (`ForzaApp::new` in `app.rs`, right after `CoopState::new`). **Why Trystero only:** Cloudflare
 slugs are random per host session, so auto-rejoin would nearly always fail.
@@ -152,7 +152,11 @@ on the HUD.
 
 - **Packet Buffer Size (ms)** — jitter buffer that delays remote players slightly for smoother pacing.
   0 = lowest latency; raise it if other cars stutter.
-- **coop_port** — local port the tunnel points at (config only).
+- **Host port** (`coop_port`, default 7071) — local port the cloudflared tunnel points at.
+  A **Cloudflare** card directly under the Session card, shown only while the Cloudflare
+  transport is selected; change it only if it clashes with another app (the hint is a
+  tooltip). *Why here (was Setup → Co-Op):* it only concerns the Cloudflare transport
+  (`start_host(coop_port, …)` is the tunnel's local WebSocket server; Trystero never uses it).
 
 ## Bandwidth
 

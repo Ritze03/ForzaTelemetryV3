@@ -8,7 +8,7 @@ bordered category cards laid out per the [styling guide](../ui/STYLING-GUIDE.md)
 see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]].
 
 Cards: **Profiles**, **Hotkey** (left column); **Repository / Credits**, **Display**,
-**Network**, **Co-Op**, **Window Detection** (right column). Hotkeys and window detection get
+**Network**, **Window Detection** (right column). Hotkeys and window detection get
 their own doc — see [[hotkeys]]; the Profiles card gets its own doc too — see [[profiles]].
 
 ## Profiles
@@ -41,10 +41,8 @@ Bottom bar, left side (`src/app.rs`). Governed by *Status bar: show text labels*
 *Why:* dropping the unit saves space, so the tooltip is where the unit is spelled out; one
 zone for the group avoids dead gaps between icon and number.
 
-## Co-Op
-
-- **Host port** — the local port the cloudflared tunnel points at when you host.
-  Change only if it clashes with another app. See [[coop]].
+The **Co-Op** category (Host port) also moved off this page — it is Cloudflare-only, so it
+now lives on the Co-Op tab under the Session card; see [[coop]].
 
 ## Display
 
@@ -79,9 +77,10 @@ sub-heading is gone) holds the focus detection that several features share:
   focused* (a normal waiting state, not an error), red *Focus detection failed*. It shows
   while the detector runs (including whenever the overlay is enabled). The colours are the
   theme's `GOOD` / `WARN` / `DANGER` tokens.
-- **Overlay → Only when game window is focused** (`overlay.focus_only`): hides the in-game
-  HUD while another window is focused. It lives here rather than on the Overlay tab because
-  it uses this card's detection method (D5); the Overlay tab points here.
+- **Overlay → Only when game window is focused** (`overlay.focus_only`) is **not** here any
+  more: it lives on the Overlay tab (General card), with a tooltip saying it uses this card's
+  detection method. *Why:* the user looked for it on the Overlay tab and didn't find it in
+  Setup (supersedes D5).
 - **Send Input → Only send inputs when game focused** (the synthetic-input gate).
 
 Full detail in [[hotkeys]].
