@@ -2444,18 +2444,12 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         painter.text(dpos, egui::Align2::CENTER_BOTTOM, &dtxt, dfont, col);
     }
 
-    // North compass — the map is heading-up (rotates with the car), so show where
-    // north is. `yaw` is the map rotation; screen-north is the up vector rotated by it.
+    // North compass: shared with the HUD Minimap (`hud::minimap::draw_compass`), scaled
+    // with the widget (HUD design size = 1.0) and clamped so it stays proportionate.
     if cfg.minimap_show_compass {
-        let cc = rect.min + vec2(22.0, 22.0);
-        let r = 12.0_f32;
-        painter.circle_filled(cc, r + 2.0, Color32::from_black_alpha(130));
-        painter.circle_stroke(cc, r, Stroke::new(1.0, crate::theme::steel(150)));
-        let [nx, ny] = view.north_dir();
-        let north = vec2(nx, ny); // screen direction of world-north
-        painter.line_segment([cc, cc + north * r], Stroke::new(2.0, Color32::from_rgb(230, 80, 80)));
-        painter.text(cc + north * (r + 6.0), egui::Align2::CENTER_CENTER, "N",
-            egui::FontId::proportional(11.0), Color32::WHITE);
+        let s = (rect.width().min(rect.height()) / 200.0).clamp(0.8, 1.6);
+        let xf = crate::hud::prims::Xf { o: rect.min, s, a: 1.0 };
+        crate::hud::minimap::draw_compass(&painter, &xf, view.north_dir());
     }
 
     // On-map co-op player list. Fixed-width, space-padded columns so the panel
