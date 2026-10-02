@@ -394,8 +394,16 @@ fn de(s: &str) -> Option<&'static str> {
             "Schaltcharakter. Street/Sport fahren sparsam (frühes Hochschalten, träges \
              Herunterschalten); Race nutzt das volle Drehzahlband und ignoriert die \
              Cruise-/Totzonen-Einstellungen.",
-        "Street = relaxed, Sport = balanced, Race = aggressive/track." =>
-            "Street = entspannt, Sport = ausgewogen, Race = aggressiv/Rennstrecke.",
+        "Manual = you shift (box off), Street = relaxed, Sport = balanced, Race = aggressive/track." =>
+            "Manual = du schaltest (Getriebe aus), Street = entspannt, Sport = ausgewogen, Race = aggressiv/Rennstrecke.",
+        "Manual" => "Manuell",
+        "Disable in drift events" => "In Drift-Events deaktivieren",
+        "Turns the gearbox off for as long as a drift event is detected, then back on. \
+                     Applies with Auto Race mode in races on, or with Race mode selected." =>
+            "Schaltet das Getriebe aus, solange ein Drift-Event erkannt wird, und danach wieder ein. \
+             Gilt bei aktivem Auto-Race-Modus in Rennen oder wenn Race-Modus gewählt ist.",
+        "Tick it if the gearbox fights you while drifting." =>
+            "Aktivieren, wenn das Getriebe beim Driften stört.",
         "Auto Race mode in races" => "Auto-Race-Modus in Rennen",
         "Forces Race mode whenever you're in an actual race (position P1+), and \
                      reverts to your chosen mode in free-roam." =>

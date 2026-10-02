@@ -330,7 +330,9 @@ impl HudTracker {
             // = race_position != 0, as dsg.rs uses it.
             auto_gear: app
                 .dsg_enabled
-                .then(|| app.dsg_effective_mode(self.pkt.race_position != 0).into()),
+                .then(|| app.dsg_resolved_mode(self.pkt.race_position != 0, drifting))
+                .flatten()
+                .map(Into::into),
             minimap: MinimapCalib {
                 px_per_m: app.minimap_px_per_m,
                 origin_x: app.minimap_world_origin_x,
