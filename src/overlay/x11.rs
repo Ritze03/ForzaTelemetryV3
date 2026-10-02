@@ -32,26 +32,13 @@ use x11rb::xcb_ffi::XCBConnection;
 
 use super::gl::{Gl, WinSurface};
 use super::render::Renderer;
+use super::pacing::next_wake;
 use super::snapshot::{HudSnapshot, SnapshotSlot};
 use super::{capability_x11, DisabledReason, OverlayCmd, OverlayOptions};
 
 /// `WM_NAME`, so `xwininfo -tree` shows which window is ours.
 const NAME: &[u8] = b"forza-telemetry-hud";
-// Pacing constants and `next_wake` mirror `wayland.rs` (see there for the why).
-// ponytail: hoist `next_wake` into mod.rs and share it once wayland.rs is next edited.
-const PING_STALE: Duration = Duration::from_millis(40);
-const ANIM_FRAME: Duration = Duration::from_millis(16);
 const MAX_EGL_FAILURES: u8 = 3;
-
-fn next_wake(animating: bool, since_ping: Option<Duration>) -> Option<Duration> {
-    if !animating {
-        return None;
-    }
-    match since_ping {
-        Some(t) if t < PING_STALE => Some(PING_STALE - t),
-        _ => Some(ANIM_FRAME),
-    }
-}
 
 /// One XRandR monitor (RandR 1.5 `GetMonitors`), in root coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]

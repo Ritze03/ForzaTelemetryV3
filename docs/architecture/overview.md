@@ -46,7 +46,7 @@ described below.
   *forwarded* packets. Everything else — stats, the three read-only listeners, Co-Op's
   incoming side (jitter buffers, roster, minimap), widgets — still happens here,
   single-threaded. Co-Op's *outgoing* relay runs on the listener thread (see [[coop]]).
-- **Overlay thread** (Linux, only while `overlay.enabled`) — `overlay/wayland.rs:run`: its own
+- **Overlay thread** (Linux and, experimentally, Windows via `overlay/win32.rs:run`, only while `overlay.enabled`) — `overlay/wayland.rs:run`: its own
   Wayland connection, calloop loop, layer-shell surface, glutin EGL context, `egui::Context`
   and `egui_glow` painter. Draws the HUD from the listener's `HudSnapshot` mailbox, one frame
   per packet. Owned by `overlay::OverlayHandle`, held in `app.rs:OverlayRuntime`. By default
@@ -255,7 +255,7 @@ might produce.
 | `coop.rs` (+ `coop/{nostr,rtc,mesh}.rs`) | `CoopState` — WebSocket relay over a cloudflared quick tunnel, or a Trystero-style P2P WebRTC mesh signalled over Nostr relays (`start_trystero`); roster, remote players. `CoopReader` is the cross-thread handle (the listener sends through it, the overlay reads teammates through it). See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
 
-### `src/overlay/` (in-game HUD runtime; Linux only, except `snapshot.rs`) — see [[overlay]]
+### `src/overlay/` (in-game HUD runtime; Linux + Windows, `snapshot.rs` everywhere) — see [[overlay]]
 
 | File | What it does |
 | --- | --- |
@@ -263,6 +263,10 @@ might produce.
 | `wayland.rs` | The overlay thread: calloop loop, sctk layer surface on `Layer::Overlay` (empty input region), surface create/destroy following `snapshot.visible`, output selection, frame-callback pacing (`next_wake`). |
 | `x11.rs` | X11/XWayland fallback backend (tested on GNOME 50.4) (auto when layer-shell is missing, or `FORZA_OVERLAY_BACKEND=x11`): override-redirect 32-bit ARGB window per RandR monitor (name → primary → first), empty XShape input region, ping/timer pacing, destroyed on hide. |
 | `gl.rs` | glutin EGL: `Gl` (display + context, current surfaceless between surfaces) and `Headless` (for the PNG harness); the teardown order. |
+| `win32.rs` | Windows backend (experimental, blind): `OverlayHandle` / `Waker` / `OverlaySender` on an event + command queue, the message-loop thread, the click-through layered window + DIB section, `UpdateLayeredWindow` present, monitor enumeration. |
+| `wgl.rs` | Windows only: WGL context on a hidden helper window, offscreen FBO, BGRA readback into the DIB. |
+| `monitors.rs` | Pure Windows monitor choice (`pick`), unit-tested on Linux. |
+| `pacing.rs` | `next_wake` / `wait_ms`: the D17 animation-timer rule shared by Wayland and Windows. |
 | `render.rs` | `Renderer`: the overlay's own `egui::Context` + `egui_glow::Painter`, one frame per call, the map texture, co-op teammates; the dev test pattern. |
 | `snapshot.rs` | `HudSnapshot`, `SnapshotSlot`, `HudSink`, `hud_clock()`. Platform-neutral, since the listener compiles everywhere. |
 

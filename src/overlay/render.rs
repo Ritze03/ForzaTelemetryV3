@@ -156,6 +156,6 @@ fn draw_test_pattern(p: &Painter, screen: Rect, frame: u64) {
 /// The offscreen PNG harness (`cargo test render_spec_states -- --ignored`). The file lives
 /// with the HUD code but is compiled here, as a child of this module, so it can reach the
 /// private `Renderer` internals and `gl::Headless` (a binary crate has no `examples/` access).
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "../hud/png.rs"]
 mod png;

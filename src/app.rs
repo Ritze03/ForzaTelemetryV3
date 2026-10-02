@@ -609,9 +609,9 @@ pub struct ForzaApp {
     overlay: OverlayRuntime,
 }
 
-/// HUD overlay state for the Overlay tab (I9). Linux-only; elsewhere always `Off`.
+/// HUD overlay state for the Overlay tab (I9). Linux and Windows; elsewhere always `Off`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 pub enum OverlayStatus {
     /// `overlay.enabled` is off (or the `FORZA_OVERLAY_TEST` dev pattern owns the overlay).
     #[default]
@@ -633,20 +633,26 @@ struct OverlayRuntime {
     /// Focus-detector params last pushed; the overlay settings are part of them.
     focus_params: Option<FocusParams>,
     /// `overlay.enabled` as last acted on (false while the dev pattern runs).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     wanted: bool,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     handle: Option<crate::overlay::OverlayHandle>,
     /// Result of an in-flight `OverlayHandle::spawn` on its helper thread.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pending: Option<Receiver<Result<crate::overlay::OverlayHandle, DisabledReason>>>,
 }
 
 /// Drop (= shut down + join) the overlay off the UI thread: the join waits for its current
 /// frame, which must not stall ours. If the thread can't spawn, the handle drops here.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn drop_overlay_async(h: crate::overlay::OverlayHandle) {
     let _ = std::thread::Builder::new().name("overlay-drop".into()).spawn(move || drop(h));
+}
+
+/// The reason shown when the overlay thread itself can't start (the platform's own variant).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn overlay_thread_error(e: String) -> DisabledReason {
+    if cfg!(target_os = "windows") { DisabledReason::Win32(e) } else { DisabledReason::Wayland(e) }
 }
 
 /// The focus detector's params. It runs for the hotkey/input gates, and whenever the
@@ -662,7 +668,7 @@ fn focus_params(cfg: &AppConfig) -> FocusParams {
         enabled: cfg.hotkeys.input_focus_gate
             || cfg.hotkeys.gate_mode == crate::config::GateMode::WindowFocus
             || o.enabled,
-        monitor: (cfg!(target_os = "linux") && o.enabled).then(|| MonitorParams {
+        monitor: (cfg!(any(target_os = "linux", target_os = "windows")) && o.enabled).then(|| MonitorParams {
             method: o.monitor_method,
             cmd: o.monitor_cmd.clone(),
             fixed: o.monitor_fixed.clone(),
@@ -1032,14 +1038,14 @@ impl ForzaApp {
             self.focus.set_params(p.clone());
             self.overlay.focus_params = Some(p);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         self.sync_overlay_thread();
     }
 
     /// Start on enable, stop on disable, collect the spawn result, notice a dead thread.
     /// Failures aren't retried until the next off → on, so a missing layer-shell costs one
     /// probe, not one per frame.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn sync_overlay_thread(&mut self) {
         use std::sync::mpsc::TryRecvError;
         // The dev test pattern (main.rs) owns the overlay while it's requested.
@@ -1060,7 +1066,7 @@ impl ForzaApp {
                 Ok(r) => r,
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
-                    Err(DisabledReason::Wayland("overlay thread didn't start".into()))
+                    Err(overlay_thread_error("overlay thread didn't start".into()))
                 }
             };
             self.overlay.pending = None;
@@ -1079,7 +1085,7 @@ impl ForzaApp {
 
     /// `OverlayHandle::spawn` blocks for up to 5 s waiting for the compositor, so it runs on
     /// a helper thread and [`Self::sync_overlay_thread`] polls the result.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn start_overlay(&mut self) {
         let opts = crate::overlay::OverlayOptions {
             output: self.focus.monitor_output(),
@@ -1096,14 +1102,14 @@ impl ForzaApp {
                 self.overlay.pending = Some(rx);
                 OverlayStatus::Starting
             }
-            Err(e) => OverlayStatus::Disabled(DisabledReason::Wayland(e.to_string())),
+            Err(e) => OverlayStatus::Disabled(overlay_thread_error(e.to_string())),
         };
     }
 
     /// Feed the running overlay: snapshots + wakes from the listener thread, output changes
     /// from the focus thread's monitor detection (which re-sends the current output to a
     /// new sink on its next tick).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn attach_overlay(&mut self, h: crate::overlay::OverlayHandle) {
         let waker = h.waker();
         self.listener.set_hud_sink(Some(crate::overlay::snapshot::HudSink::new(h.slot(), move || waker.wake()).with_stick(self.gamepad.clone())));
@@ -1116,7 +1122,7 @@ impl ForzaApp {
     }
 
     /// Unhook the feeds first, so nothing targets the overlay as it shuts down, then drop it.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn detach_overlay(&mut self) {
         if let Some(h) = self.overlay.handle.take() {
             self.listener.set_hud_sink(None);
@@ -2720,7 +2726,7 @@ impl eframe::App for ForzaApp {
         // The listener thread owns the per-car calibrations — let it flush them and stop.
         self.listener.shutdown();
         // Blocking this time: the join tears the layer surface down cleanly before exit.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Some(h) = self.overlay.handle.take() {
             self.focus.set_output_sink(None);
             drop(h);

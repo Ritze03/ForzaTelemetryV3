@@ -901,6 +901,8 @@ fn de(s: &str) -> Option<&'static str> {
         "The X11 overlay needs an X display (DISPLAY is not set)."
             => "Das X11-Overlay braucht ein X-Display (DISPLAY ist nicht gesetzt).",
         "Couldn't use the X display for the overlay:" => "Das X-Display konnte für das Overlay nicht genutzt werden:",
+        "Couldn't set up OpenGL (WGL) for the overlay:" => "OpenGL (WGL) für das Overlay konnte nicht eingerichtet werden:",
+        "Couldn't create the overlay window:" => "Das Overlay-Fenster konnte nicht erstellt werden:",
 
         // ── Overlay tab ────────────────────────────────────────────────
         "Enable overlay" => "Overlay aktivieren",

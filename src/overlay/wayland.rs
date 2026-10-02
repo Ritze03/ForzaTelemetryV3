@@ -27,35 +27,16 @@ use smithay_client_toolkit::{delegate_compositor, delegate_layer, delegate_outpu
 
 use super::gl::{Gl, WinSurface};
 use super::render::Renderer;
+use super::pacing::next_wake;
 use super::snapshot::{HudSnapshot, SnapshotSlot};
 use super::{capability, DisabledReason, OverlayCmd, OverlayOptions};
 
 /// Layer namespace, for compositor rules (e.g. Hyprland `no_anim`).
 const NAMESPACE: &str = "forza-telemetry-hud";
 
-/// No ping for this long means packets stopped (2.5 frames at FH6's ~60 Hz), so a running
-/// animation must be driven by our own timer instead.
-const PING_STALE: Duration = Duration::from_millis(40);
-/// Animation step when no packets drive frames: ~60 Hz, like packets, never the monitor's
-/// rate (DP-1 is 280 Hz VRR; extra commits there cause judder).
-const ANIM_FRAME: Duration = Duration::from_millis(16);
 /// Consecutive make_current/swap failures before the overlay gives up (lost context or GPU
 /// reset: every swap fails, so recreating the surface forever would only spam stderr).
 const MAX_EGL_FAILURES: u8 = 3;
-
-/// D17 pacing: after a frame, when must the next one come without a new packet? `None` =
-/// only on the next ping. While packets flow the timer is a fallback that the next ping
-/// cancels, so it only fires if packets stop mid-animation (then frames step at
-/// [`ANIM_FRAME`]). A frame is never scheduled per frame callback, i.e. at the monitor's rate.
-fn next_wake(animating: bool, since_ping: Option<Duration>) -> Option<Duration> {
-    if !animating {
-        return None;
-    }
-    match since_ping {
-        Some(t) if t < PING_STALE => Some(PING_STALE - t),
-        _ => Some(ANIM_FRAME),
-    }
-}
 
 /// The mapped surface. Field order is drop order: the EGL surface (and its
 /// `wl_egl_window`) must go before the `wl_surface` the layer surface owns.
@@ -464,30 +445,3 @@ delegate_compositor!(Overlay);
 delegate_output!(Overlay);
 delegate_layer!(Overlay);
 delegate_registry!(Overlay);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn next_wake_idle_when_not_animating() {
-        assert_eq!(next_wake(false, None), None);
-        assert_eq!(next_wake(false, Some(Duration::ZERO)), None);
-        assert_eq!(next_wake(false, Some(Duration::from_secs(5))), None);
-    }
-
-    #[test]
-    fn next_wake_packets_flowing_only_arms_the_stale_fallback() {
-        // Frame drawn right on a ping: the next ping (~16.7 ms) comes before the fallback.
-        assert_eq!(next_wake(true, Some(Duration::ZERO)), Some(PING_STALE));
-        assert_eq!(next_wake(true, Some(Duration::from_millis(10))), Some(Duration::from_millis(30)));
-        assert!(next_wake(true, Some(Duration::ZERO)).is_some_and(|d| d > Duration::from_micros(16_667)));
-    }
-
-    #[test]
-    fn next_wake_packets_stopped_steps_at_anim_frame() {
-        assert_eq!(next_wake(true, None), Some(ANIM_FRAME));
-        assert_eq!(next_wake(true, Some(PING_STALE)), Some(ANIM_FRAME));
-        assert_eq!(next_wake(true, Some(Duration::from_secs(3))), Some(ANIM_FRAME));
-    }
-}
