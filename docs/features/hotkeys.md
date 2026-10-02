@@ -124,7 +124,10 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   input $USER` (not in the group), `sudo modprobe uinput` (no `/dev/uinput`), or a udev rule
   (`KERNEL=="uinput", GROUP="input", MODE="0660"` into `/etc/udev/rules.d/99-uinput.rules`,
   then `udevadm control --reload && udevadm trigger`) when the node exists but isn't
-  group-`input` writable. If anything is missing a **modal** opens once per launch (X = closed
+  group-`input` writable. `evaluate()` returns `(label, cmd)` pairs; each command sits under a
+  numbered label (1., 2., 3. by position shown) saying what it does, and with two or more the
+  closing line is "Run all commands above, then log out and back in." (Why: users couldn't tell
+  whether they needed both.) If anything is missing a **modal** opens once per launch (X = closed
   for this session; *Don't remind me again* sets `input_perm_dont_remind`). Setup has an
   **Input Permissions** category below *Window Detection* (a light per requirement, the same
   copyable commands, a *Remind me on startup* checkbox = inverse of the flag, *Re-check*).
