@@ -61,8 +61,10 @@ pub enum DisabledReason {
     /// X11 backend: connecting failed or a needed extension is missing.
     X11(String),
     /// Windows backend: OpenGL (WGL) context, pixel format or driver unusable.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     Wgl(String),
     /// Windows backend: the window, class, event or DIB couldn't be created.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     Win32(String),
 }
 
