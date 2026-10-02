@@ -374,6 +374,7 @@ impl HudTracker {
                 origin_x: app.minimap_world_origin_x,
                 origin_z: app.minimap_world_origin_z,
             },
+            coop_hue: app.coop_hue,
             look_stick: (0.0, 0.0), // stamped by `HudSink::publish`
             // Filled by the worker (it owns the notifier).
             notifications: Vec::new(),

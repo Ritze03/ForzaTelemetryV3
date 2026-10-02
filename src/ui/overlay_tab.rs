@@ -626,11 +626,17 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
 fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
     module_card(ui, app, tr("Minimap"), |o| &mut o.minimap_on, None, |ui, app| {
         let o = &mut app.config.overlay;
-        theme::checkbox_row(ui, &mut o.compass, tr("Compass"));
-        // 5000 m, not the mockup's 2000: the defaults (3000 / 1500 m) must fit the range.
-        theme::slider_row(ui, tr("Zoom when stopped"), &mut o.zoom_stopped_m, 100.0..=5000.0, 50.0, 0, " m");
-        theme::slider_row(ui, tr("Zoom when driving"), &mut o.zoom_driving_m, 100.0..=5000.0, 50.0, 0, " m");
-        theme::checkbox_row(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
+        // Greyed while the Dashboard's values are in use (Mini-Settings → Overlay ticks).
+        let (map_own, coop_own) = (!o.map_use_dashboard, !o.coop_use_dashboard);
+        ui.add_enabled_ui(map_own, |ui| {
+            theme::checkbox_row(ui, &mut o.compass, tr("Compass"));
+            // 5000 m, not the mockup's 2000: the defaults (3000 / 1500 m) must fit the range.
+            theme::slider_row(ui, tr("Zoom when stopped"), &mut o.zoom_stopped_m, 100.0..=5000.0, 50.0, 0, " m");
+            theme::slider_row(ui, tr("Zoom when driving"), &mut o.zoom_driving_m, 100.0..=5000.0, 50.0, 0, " m");
+        });
+        ui.add_enabled_ui(coop_own, |ui| {
+            theme::checkbox_row(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
+        });
     });
 }
 

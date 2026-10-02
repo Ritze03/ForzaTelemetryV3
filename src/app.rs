@@ -576,7 +576,7 @@ pub struct ForzaApp {
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// Only maintained/drawn while in a co-op session.
-    pub minimap_trails: HashMap<String, VecDeque<(f32, f32, Instant)>>,
+    pub minimap_trails: HashMap<String, crate::minimap::Trail>,
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
     pub coop_last_pos: HashMap<String, CoopSeen>,
@@ -1312,10 +1312,6 @@ impl ForzaApp {
     /// co-op session (local + remotes); cleared otherwise so solo behaviour is unchanged.
     fn update_minimap_trails(&mut self) {
         use std::collections::HashSet;
-        const MIN_MOVE: f32 = 4.0; // metres between recorded points
-        const MAX_PTS: usize = 400;
-        const TELEPORT: f32 = 300.0; // jump this far in one packet ⇒ clear the trail
-
         if self.coop.role() == crate::coop::Role::Off {
             if !self.minimap_trails.is_empty() {
                 self.minimap_trails.clear();
@@ -1329,33 +1325,17 @@ impl ForzaApp {
         // Drop points older than the fade window so trails stay bounded by time too.
         let max_age = Duration::from_secs_f32(self.config.coop_trail_fade_secs.max(0.5));
         let now = Instant::now();
+        // Recording rules (spacing, teleport reset, cap) live in `minimap::trail_push`, shared
+        // with the HUD Minimap's own trail buffer.
         fn push(
-            trails: &mut HashMap<String, VecDeque<(f32, f32, Instant)>>,
+            trails: &mut HashMap<String, crate::minimap::Trail>,
             key: String,
             x: f32,
             z: f32,
             now: Instant,
             max_age: Duration,
         ) {
-            let dq = trails.entry(key).or_default();
-            match dq.back() {
-                Some(&(px, pz, _)) => {
-                    let moved = (px - x).hypot(pz - z);
-                    if moved >= TELEPORT {
-                        dq.clear(); // teleport (fast-travel / reset) — drop the stale line
-                        dq.push_back((x, z, now));
-                    } else if moved >= MIN_MOVE {
-                        dq.push_back((x, z, now));
-                    }
-                }
-                None => dq.push_back((x, z, now)),
-            }
-            while dq.front().is_some_and(|&(_, _, t)| now.duration_since(t) > max_age) {
-                dq.pop_front();
-            }
-            if dq.len() > MAX_PTS {
-                dq.pop_front();
-            }
+            crate::minimap::trail_push(trails.entry(key).or_default(), x, z, now, max_age);
         }
 
         // Remember each player's last useful telemetry: position only from
@@ -2552,27 +2532,52 @@ impl eframe::App for ForzaApp {
                             }
                         }
                         PageSettingsTab::Tab(Tab::Overlay) => {
-                            // HUD minimap (M2′) view options: the Dashboard map's General
-                            // section, minus what doesn't apply on the HUD (see overlay.md).
+                            // HUD minimap (M2′) options: the Dashboard map's General and Co-Op
+                            // sections, minus what doesn't apply on the HUD (see overlay.md). Each
+                            // group has a "use Dashboard settings" tick that hides its own controls
+                            // (`OverlayConfig::effective` swaps the values in).
                             let o = &mut self.config.overlay;
                             ui.label(crate::theme::section_label(tr("Minimap")));
                             ui.add_space(4.0);
-                            crate::theme::styled_checkbox(ui, &mut o.map_north_up, tr("Lock map north-up"));
-                            if !o.map_north_up {
-                                crate::theme::styled_checkbox(ui, &mut o.map_north_up_when_stopped, tr("North up when stopped"))
-                                    .on_hover_text(tr("Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves."));
-                                crate::theme::styled_checkbox(ui, &mut o.map_smooth_rotation, tr("Smooth rotation"));
-                                crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
-                                    .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
+                            crate::theme::styled_checkbox(ui, &mut o.map_use_dashboard, tr("Use Dashboard map settings"));
+                            if !o.map_use_dashboard {
+                                ui.add_space(4.0);
+                                crate::theme::styled_checkbox(ui, &mut o.map_north_up, tr("Lock map north-up"));
+                                if !o.map_north_up {
+                                    crate::theme::styled_checkbox(ui, &mut o.map_north_up_when_stopped, tr("North up when stopped"))
+                                        .on_hover_text(tr("Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves."));
+                                    crate::theme::styled_checkbox(ui, &mut o.map_smooth_rotation, tr("Smooth rotation"));
+                                    crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
+                                        .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
+                                }
+                                crate::theme::styled_checkbox(ui, &mut o.map_mirror_edges, tr("Mirror map at edges"));
+                                crate::theme::styled_checkbox(ui, &mut o.map_look_stick, tr("Rotate with right stick"));
+                                crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
+                                ui.add_space(4.0);
+                                ui.label(tr("Zoom when driving (radius, metres)"));
+                                ui.add(egui::Slider::new(&mut o.zoom_driving_m, 50.0..=3000.0).suffix(" m"));
+                                ui.add_space(4.0);
+                                ui.label(tr("Zoom when stopped (radius, metres)"));
+                                ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
                             }
-                            crate::theme::styled_checkbox(ui, &mut o.map_look_stick, tr("Rotate with right stick"));
-                            crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
+                            ui.add_space(10.0);
+                            ui.label(crate::theme::section_label(tr("Co-Op")));
                             ui.add_space(4.0);
-                            ui.label(tr("Zoom when driving (radius, metres)"));
-                            ui.add(egui::Slider::new(&mut o.zoom_driving_m, 50.0..=3000.0).suffix(" m"));
-                            ui.add_space(4.0);
-                            ui.label(tr("Zoom when stopped (radius, metres)"));
-                            ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
+                            crate::theme::styled_checkbox(ui, &mut o.coop_use_dashboard, tr("Use Dashboard co-op settings"));
+                            if !o.coop_use_dashboard {
+                                ui.add_space(4.0);
+                                crate::theme::styled_checkbox(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
+                                crate::theme::styled_checkbox(ui, &mut o.coop_waypoints, tr("Show shared waypoints"));
+                                crate::theme::styled_checkbox(ui, &mut o.coop_trails, tr("Show trails"));
+                                ui.add_enabled_ui(o.coop_trails, |ui| {
+                                    ui.add_space(4.0);
+                                    ui.label(tr("Fade after (time)"));
+                                    ui.add(egui::Slider::new(&mut o.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
+                                    ui.add_space(4.0);
+                                    ui.label(tr("Fade after (distance)"));
+                                    ui.add(egui::Slider::new(&mut o.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
+                                });
+                            }
                             ui.add_space(10.0);
                             ui.label(crate::theme::section_label(tr("Notifications")));
                             ui.add_space(4.0);

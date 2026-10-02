@@ -132,11 +132,12 @@ Code: `src/coop.rs` (`start_trystero`, `generate_room_id`), `src/coop/{nostr,rtc
 
 ## On the in-game HUD overlay
 
-With **Show co-op teammates** on (Overlay tab → Minimap, default on), teammates also appear on
-the HUD overlay's minimap ([[overlay]]) as arrows in their identity colour with their name,
-while they're inside the map pill. Paused teammates are skipped there (their packet sits at
-the world origin; the last-known spot is UI-side state). No trails, waypoints or edge markers
-on the HUD.
+The HUD overlay's minimap ([[overlay]]) draws the co-op layer with the Dashboard map's own drawing
+code: teammate arrows with names, edge pointers with distance, grey + pause glyph when paused, each
+player's fading trail (the own one in your colour too) and the shared waypoints. Show/hide them and
+set the trail fade in Mini-Settings -> Overlay -> Co-Op, or tick **Use Dashboard co-op settings** to
+take the Dashboard's. Placing a waypoint needs the Dashboard map (the HUD isn't clickable). No
+player list on the HUD.
 
 - The overlay thread reads them through a `CoopReader` (`OverlayOptions::coop`), not through
   the HUD snapshot and not through the UI thread.

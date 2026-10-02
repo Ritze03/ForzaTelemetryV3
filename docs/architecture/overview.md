@@ -272,7 +272,8 @@ might produce.
 | --- | --- |
 | `mod.rs` | `Hud` (global fade, count-ups, speed hold, map easing) and `Hud::draw`; `modules()` decides which slots show; HUD colours (`col`). |
 | `cluster.rs` | Drive cluster: D1a Pill and D3a′ Halo; gear label with the drive-mode letter. |
-| `minimap.rs` | M2′ minimap, `MapLoader` (`hud-map` thread), co-op teammate markers. |
+| `minimap.rs` | M2′ minimap, `MapLoader` (`hud-map` thread), `CoopLayer` (teammates, trails, waypoints), mirror-at-edges clip. |
+| `map_shared.rs` | Marker drawing shared with the Dashboard map: own arrow, teammates, trails, waypoints (`MapCanvas`). |
 | `race.rs` | R1′ race block; the position cap shared with the drift counter. |
 | `drift.rs` | X1′ drift counter, Position + Gain and Total styles. |
 | `notify.rs` | D26 notification pills: pure `stack_layout`, fade curve, `draw`. |

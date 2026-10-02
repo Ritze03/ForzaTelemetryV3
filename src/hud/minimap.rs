@@ -4,15 +4,22 @@
 //!
 //! The season image is loaded on a helper thread ([`MapLoader`]); until it arrives the frame
 //! draws over a plain backing.
+//!
+//! The own arrow, co-op teammates, trails and waypoints are drawn by `hud::map_shared`, the
+//! same code as the Dashboard map. The co-op state they need (teammates at their last known
+//! spot, per-player trail buffers) lives in [`CoopLayer`], fed on the overlay thread.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 use egui::epaint::Vertex;
 use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, TextureHandle, TextureId, Vec2};
 
-use super::{col, fonts};
+use super::col;
+use super::map_shared::{self, MapCanvas, Remote, TrailFade};
 use super::prims::{self, Xf};
-use crate::minimap::{self as mm, MapCalibration, MapView, Season};
+use crate::minimap::{self as mm, MapCalibration, MapView, Season, Trail};
 use crate::overlay::snapshot::HudSnapshot;
 
 pub const SIZE: Vec2 = vec2(208.0, 136.0);
@@ -158,76 +165,92 @@ fn map_target_yaw(pkt: &crate::packet::ForzaPacket, cfg: &crate::config::Overlay
     }
 }
 
-/// A co-op teammate on the map: world position, raw heading (`pkt.yaw`), name and identity
-/// colour (the Dashboard map's `hue_color`).
-#[derive(Clone, Debug)]
-pub struct Teammate {
-    pub x: f32,
-    pub z: f32,
-    pub yaw: f32,
-    pub name: String,
-    pub colour: Color32,
+/// What the overlay thread reads from the co-op session each frame (see
+/// `overlay::render::coop_input`). Plain data so [`CoopLayer::update`] is testable.
+pub struct CoopInput {
+    pub in_session: bool,
+    pub remotes: Vec<(crate::coop::PlayerInfo, crate::packet::ForzaPacket)>,
+    /// `(world_x, world_z, hue)` of the shared waypoints.
+    pub waypoints: Vec<(f32, f32, f32)>,
 }
 
-/// Teammate arrow (spec "Co-op marker", 12 × 14, apex up at 0): a chevron, as two triangles
-/// sharing the (tip, notch) edge.
-const MATE_ARROW: [[f32; 2]; 4] = [[0.0, -8.0], [6.0, 6.0], [0.0, 3.0], [-6.0, 6.0]];
-const MATE_EDGE: Color32 = prims::rgba(0, 0, 0, 0.7);
-/// A teammate is drawn only while its arrow centre is this far (design px) inside the pill,
-/// so the whole arrow stays within the frame. Off-map teammates are skipped (the spec has
-/// no edge clamp).
-const MATE_MARGIN: f32 = 11.0;
-
-/// `off` (screen px from the pill centre) is at least `margin` inside a rounded rect of
-/// `half` extents and corner `radius` (a rounded-box signed distance).
-fn inside_pill(off: [f32; 2], half: Vec2, radius: f32, margin: f32) -> bool {
-    let q = vec2(off[0].abs(), off[1].abs()) - (half - Vec2::splat(radius));
-    let dist = q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - radius;
-    dist <= -margin
+/// The co-op layer of the Minimap: who to draw, their trails, the shared waypoints.
+///
+/// **Why the HUD keeps its own trail buffers** (instead of the Dashboard's
+/// `ForzaApp::minimap_trails`, which the UI thread fills): the UI loop stops while the game
+/// covers the window, which is exactly when the HUD is in use, so the overlay thread records
+/// them itself from the snapshot's packet and `CoopReader::remote_players`, with the same
+/// recording rules (`minimap::trail_push`) as the Dashboard.
+#[derive(Default)]
+pub struct CoopLayer {
+    pub in_session: bool,
+    /// Teammates to draw (paused ones at their last known spot).
+    pub teammates: Vec<Remote>,
+    pub waypoints: Vec<(f32, f32, f32)>,
+    /// Trails by player: `"local"` or the co-op player id.
+    pub trails: HashMap<String, Trail>,
+    /// Last position/heading from an unpaused packet, per player id.
+    last_pos: HashMap<String, (f32, f32, f32)>,
+    /// When `update` last ran (the trail fade's "now").
+    now: Option<Instant>,
 }
 
-/// `MATE_ARROW` rotated by `angle` (radians, clockwise on screen, 0 = up), same rotation as
-/// the Dashboard's remote arrows.
-fn mate_arrow(angle: f32) -> [[f32; 2]; 4] {
-    let (sa, ca) = angle.sin_cos();
-    MATE_ARROW.map(|[x, y]| [x * ca - y * sa, x * sa + y * ca])
-}
+impl CoopLayer {
+    /// Refresh from this frame's co-op state. Anything the effective config turns off, or a
+    /// session that isn't running, leaves the matching part empty (and forgets its history).
+    pub fn update(&mut self, input: Option<CoopInput>, snap: &HudSnapshot, now: Instant) {
+        let cfg = &*snap.cfg;
+        self.now = Some(now);
+        let Some(input) = input.filter(|i| i.in_session && cfg.minimap_on) else {
+            *self = Self { now: self.now, ..Self::default() };
+            return;
+        };
+        self.in_session = true;
+        let max_age = Duration::from_secs_f32(cfg.coop_trail_fade_secs.max(0.5));
+        let mut present: HashSet<String> = HashSet::new();
 
-/// The spec's co-op markers: an arrow at each teammate's position turned to their heading,
-/// then the name 10 px to its right (Barlow 600 9.5 px, mapped to [`fonts::W800`]) with a
-/// dark outline. Clipped to the pill's inner rect.
-fn draw_teammates(p: &Painter, xf: &Xf, view: &MapView, centre: Pos2, teammates: &[Teammate]) {
-    let p = p.with_clip_rect(xf.rect(3.0, 3.0, SIZE.x - 6.0, SIZE.y - 6.0));
-    let (half, radius, margin) = (SIZE * xf.s / 2.0, xf.l(RADIUS), xf.l(MATE_MARGIN));
-    let edge = xf.c(MATE_EDGE);
-    let font = egui::FontId::new(xf.l(9.5), egui::FontFamily::Name(fonts::W800.into()));
-    for t in teammates {
-        let off = view.world_to_offset(t.x, t.z);
-        if !inside_pill(off, half, radius, margin) {
-            continue;
+        // Own trail: only while driving (not paused, game connected), like the Dashboard.
+        let pkt = &snap.pkt;
+        if cfg.coop_trails {
+            if snap.connected && pkt.is_race_on != 0 && !pkt.is_paused() {
+                mm::trail_push(self.trails.entry("local".into()).or_default(), pkt.position_x, pkt.position_z, now, max_age);
+            }
+            present.insert("local".into());
         }
-        let at = centre + vec2(off[0], off[1]);
-        let pts: Vec<Pos2> = mate_arrow(view.arrow_angle(t.yaw)).iter().map(|&[x, y]| at + vec2(x, y) * xf.s).collect();
-        // Concave, so a plain (unfeathered) mesh; the 1.5 px stroke on top anti-aliases the edge.
-        let mut mesh = Mesh::default();
-        let fill = xf.c(t.colour);
-        for &pt in &pts {
-            mesh.colored_vertex(pt, fill);
-        }
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(0, 2, 3);
-        p.add(mesh);
-        p.add(egui::Shape::closed_line(pts, egui::Stroke::new(xf.l(1.5), edge)));
 
-        // ponytail: the 3 px text stroke is 8 offset copies at 1.5 px, so their overlap
-        // reads darker than the spec's .7. Upgrade: an SDF/outline text pass if it matters.
-        let g = p.layout_no_wrap(t.name.clone(), font.clone(), fill);
-        let pos = at + vec2(xf.l(10.0), -g.size().y / 2.0);
-        for i in 0..8 {
-            let a = i as f32 * std::f32::consts::FRAC_PI_4;
-            p.galley_with_override_text_color(pos + xf.l(1.5) * Vec2::angled(a), g.clone(), edge);
+        self.teammates.clear();
+        if cfg.coop_teammates {
+            for (info, rp) in &input.remotes {
+                let paused = rp.is_paused();
+                if !paused {
+                    self.last_pos.insert(info.id.clone(), (rp.position_x, rp.position_z, rp.yaw));
+                    if cfg.coop_trails {
+                        mm::trail_push(self.trails.entry(info.id.clone()).or_default(), rp.position_x, rp.position_z, now, max_age);
+                    }
+                }
+                if cfg.coop_trails {
+                    present.insert(info.id.clone()); // a paused player keeps their trail (undrawn)
+                }
+                // A paused packet sits at the world origin; draw their last known spot, or
+                // nothing if they were never seen at a valid one.
+                let pos = if paused { self.last_pos.get(&info.id).copied() } else { Some((rp.position_x, rp.position_z, rp.yaw)) };
+                if let Some((x, z, yaw)) = pos {
+                    self.teammates.push(Remote {
+                        id: info.id.clone(),
+                        name: info.name.clone(),
+                        x,
+                        z,
+                        yaw,
+                        colour: crate::ui::coop::hue_color(info.hue),
+                        paused,
+                    });
+                }
+            }
         }
-        p.galley(pos, g, fill);
+        self.trails.retain(|k, _| present.contains(k));
+        let alive: HashSet<&String> = input.remotes.iter().map(|(i, _)| &i.id).collect();
+        self.last_pos.retain(|k, _| alive.contains(k));
+        self.waypoints = if cfg.coop_waypoints { input.waypoints } else { Vec::new() };
     }
 }
 
@@ -244,8 +267,35 @@ pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
     p.add(egui::Shape::convex_polygon(vec![c - tip, c - side, c + side], xf.c(col::INK), egui::Stroke::NONE));
 }
 
+/// Sutherland–Hodgman: `subject` clipped to the convex polygon `clip` (either winding).
+/// Used to cut the pill to the map image when edges aren't mirrored.
+fn clip_convex(subject: &[Pos2], clip: &[Pos2]) -> Vec<Pos2> {
+    let cross = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    let area: f32 = (0..clip.len()).map(|i| cross(Pos2::ZERO, clip[i], clip[(i + 1) % clip.len()])).sum();
+    let sign = if area >= 0.0 { 1.0 } else { -1.0 };
+    let mut out = subject.to_vec();
+    for i in 0..clip.len() {
+        let (a, b) = (clip[i], clip[(i + 1) % clip.len()]);
+        let input = std::mem::take(&mut out);
+        for j in 0..input.len() {
+            let (cur, prev) = (input[j], input[(j + input.len() - 1) % input.len()]);
+            let (dc, dp) = (cross(a, b, cur) * sign, cross(a, b, prev) * sign);
+            if (dc >= 0.0) != (dp >= 0.0) {
+                out.push(prev + (cur - prev) * (dp / (dp - dc)));
+            }
+            if dc >= 0.0 {
+                out.push(cur);
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
 /// Draw M2′. Returns true while the view is still easing.
-pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, teammates: &[Teammate]) -> bool {
+pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
     let (yaw, zoom) = (anim.yaw.unwrap_or(0.0) + anim.look, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
     let (w, h) = (SIZE.x, SIZE.y);
@@ -255,42 +305,76 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     // The map: fan over the frame's rounded rect, inset 0.5 px so the 3 px border (drawn
     // after, feathered) covers the mesh's hard edge.
     let outline = prims::rounded_points(xf.rect(0.5, 0.5, w - 1.0, h - 1.0), [xf.l(RADIUS - 0.5); 4]);
+    let plate = |p: &Painter| {
+        p.add(egui::Shape::convex_polygon(outline.clone(), xf.c(col::plate(snap.cfg.plate_opacity)), egui::Stroke::NONE));
+    };
     match map {
         Some(tex) => {
             let cal = calibration(snap);
-            let mut mesh = Mesh::with_texture(tex.id);
-            let white = xf.c(Color32::WHITE);
-            let uv = |pt: Pos2| {
-                let [u, v] = view.uv_at_offset(&cal, tex.orig_size, pt.x - centre.x, pt.y - centre.y);
-                pos2(u, v)
+            // Mirror on: the texture wraps (MirroredRepeat), so the whole pill is textured and
+            // the reflected continuation shows past the edge. Off: the pill is cut to the image
+            // and the plate shows outside it, like the Dashboard.
+            let (shape, hub) = if snap.cfg.map_mirror_edges {
+                (outline.clone(), centre)
+            } else {
+                plate(p);
+                let quad: Vec<Pos2> = cal
+                    .image_corners(tex.orig_size)
+                    .iter()
+                    .map(|&(wx, wz, _)| {
+                        let [ox, oy] = view.world_to_offset(wx, wz);
+                        centre + vec2(ox, oy)
+                    })
+                    .collect();
+                let cut = clip_convex(&outline, &quad);
+                let hub = cut.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / cut.len().max(1) as f32;
+                (cut, hub.to_pos2())
             };
-            fan(&mut mesh, centre, &outline, |pt| Vertex { pos: pt, uv: uv(pt), color: white });
-            p.add(mesh);
+            if shape.len() >= 3 {
+                let mut mesh = Mesh::with_texture(tex.id);
+                let white = xf.c(Color32::WHITE);
+                let uv = |pt: Pos2| {
+                    let [u, v] = view.uv_at_offset(&cal, tex.orig_size, pt.x - centre.x, pt.y - centre.y);
+                    pos2(u, v)
+                };
+                fan(&mut mesh, hub, &shape, |pt| Vertex { pos: pt, uv: uv(pt), color: white });
+                p.add(mesh);
+            }
             // Darken so the white marker reads over bright maps (winter more).
             let tint = xf.c(if tex.winter { col::MAP_TINT_WINTER } else { col::MAP_TINT });
             p.add(egui::Shape::convex_polygon(outline.clone(), tint, egui::Stroke::NONE));
         }
-        None => {
-            p.add(egui::Shape::convex_polygon(outline.clone(), xf.c(col::plate(snap.cfg.plate_opacity)), egui::Stroke::NONE));
+        None => plate(p),
+    }
+
+    // Markers: the Dashboard map's drawing code (`map_shared`), clipped to the pill's inner rect.
+    let inner = xf.rect(3.0, 3.0, w - 6.0, h - 6.0);
+    let mp = p.with_clip_rect(inner);
+    let cv = MapCanvas { p: &mp, view: &view, centre, rect: inner, s: xf.s, a: xf.a, pause_glyph: "||" };
+    let (car, cfg) = ((snap.pkt.position_x, snap.pkt.position_z), &*snap.cfg);
+    let hue = |h: f32| crate::ui::coop::hue_color(h);
+    let at = coop.now.unwrap_or_else(Instant::now);
+    let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
+    if let Some(tr) = coop.trails.get("local") {
+        map_shared::draw_trail(&cv, tr, hue(snap.coop_hue), fade, at);
+    }
+    for t in coop.teammates.iter().filter(|t| !t.paused) {
+        if let Some(tr) = coop.trails.get(&t.id) {
+            map_shared::draw_trail(&cv, tr, t.colour, fade, at);
         }
     }
+    map_shared::draw_remotes(&cv, &coop.teammates, car, view.yaw);
 
-    draw_teammates(p, xf, &view, centre, teammates);
-
-    if snap.cfg.compass {
-        draw_compass(p, xf, view.north_dir());
+    // Own arrow: the player's co-op colour in a session, white otherwise (as the Dashboard).
+    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
+    map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
+    for &(x, z, hue_deg) in &coop.waypoints {
+        map_shared::draw_waypoint(&cv, (x, z), hue(hue_deg), car, now as f32);
     }
 
-    // Car marker: 14 × 17, white over a 2.2 px dark stroke (canvas strokes first and fills
-    // over it, so only the outer 1.1 px of the stroke shows). Apex up while the map follows
-    // the heading; turned by `arrow_angle` when north-up (or easing / movement-direction).
-    let (sa, ca) = view.arrow_angle(snap.pkt.yaw).sin_cos();
-    let pts: Vec<Pos2> = [[0.0, -9.0], [7.0, 8.0], [-7.0, 8.0]]
-        .iter()
-        .map(|&[x, y]: &[f32; 2]| centre + vec2(x * ca - y * sa, x * sa + y * ca) * xf.s)
-        .collect();
-    p.add(egui::Shape::convex_polygon(pts.clone(), xf.c(col::MARKER_EDGE), egui::Stroke::new(xf.l(2.2), xf.c(col::MARKER_EDGE))));
-    p.add(egui::Shape::convex_polygon(pts, xf.c(Color32::WHITE), egui::Stroke::NONE));
+    if cfg.compass {
+        draw_compass(p, xf, view.north_dir());
+    }
 
     prims::rounded_border(p, xf, [0.0, 0.0, w, h], RADIUS, 3.0, col::FRAME);
     animating
@@ -320,8 +404,6 @@ fn fan(mesh: &mut Mesh, centre: Pos2, outline: &[Pos2], vertex: impl Fn(Pos2) ->
 mod tests {
     use super::*;
 
-    const HALF: Vec2 = vec2(104.0, 68.0);
-
     #[test]
     fn compass_north_follows_map_rotation() {
         let up = MapView::new(0.0, 0.0, 0.0, 400.0, 136.0).north_dir();
@@ -329,24 +411,6 @@ mod tests {
         // Map turned a quarter clockwise: north swings to the left of the screen.
         let q = MapView::new(0.0, 0.0, std::f32::consts::FRAC_PI_2, 400.0, 136.0).north_dir();
         assert!((q[0] + 1.0).abs() < 1e-6 && q[1].abs() < 1e-6, "{q:?}");
-    }
-
-    #[test]
-    fn teammate_ahead_is_above_the_car_and_inside_the_pill() {
-        // Heading-up at yaw 0.6 rad (clockwise from +Z), 400 m to the nearest edge of a
-        // 136 px-tall view = 0.17 px/m. A teammate 100 m along the car's heading sits 17 px
-        // straight above the car; 100 m to its right, 17 px to the right.
-        let (yaw, car) = (0.6_f32, (1200.0, -800.0));
-        let view = MapView::new(car.0, car.1, yaw, 400.0, 136.0);
-        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
-        let ahead = view.world_to_offset(car.0 + 100.0 * yaw.sin(), car.1 + 100.0 * yaw.cos());
-        assert!(close(ahead, [0.0, -17.0]), "{ahead:?}");
-        assert!(inside_pill(ahead, HALF, RADIUS, MATE_MARGIN));
-        let right = view.world_to_offset(car.0 + 100.0 * yaw.cos(), car.1 - 100.0 * yaw.sin());
-        assert!(close(right, [17.0, 0.0]), "{right:?}");
-        // 1 km ahead is off the map (skipped, not clamped).
-        let far = view.world_to_offset(car.0 + 1000.0 * yaw.sin(), car.1 + 1000.0 * yaw.cos());
-        assert!(!inside_pill(far, HALF, RADIUS, MATE_MARGIN));
     }
 
     #[test]
@@ -371,28 +435,83 @@ mod tests {
     }
 
     #[test]
-    fn pill_bounds_and_rounded_corners() {
-        assert!(inside_pill([0.0, 0.0], HALF, RADIUS, MATE_MARGIN));
-        // Beyond the margin on the long and short axes.
-        assert!(inside_pill([104.0 - 12.0, 0.0], HALF, RADIUS, MATE_MARGIN));
-        assert!(!inside_pill([104.0 - 10.0, 0.0], HALF, RADIUS, MATE_MARGIN));
-        assert!(!inside_pill([0.0, 68.0 - 10.0], HALF, RADIUS, MATE_MARGIN));
-        assert!(!inside_pill([500.0, -500.0], HALF, RADIUS, MATE_MARGIN));
-        // Inside the bounding rect by the margin but cut off by the corner rounding.
-        assert!(!inside_pill([104.0 - 12.0, 68.0 - 12.0], HALF, RADIUS, MATE_MARGIN));
-        assert!(inside_pill([104.0 - 22.0, 68.0 - 12.0], HALF, RADIUS, MATE_MARGIN));
+    fn clip_convex_cuts_a_square_to_the_overlap_either_winding() {
+        let sq = |x0: f32, y0: f32, x1: f32, y1: f32| vec![pos2(x0, y0), pos2(x1, y0), pos2(x1, y1), pos2(x0, y1)];
+        let area = |p: &[Pos2]| (0..p.len()).map(|i| p[i].x * p[(i + 1) % p.len()].y - p[(i + 1) % p.len()].x * p[i].y).sum::<f32>().abs() / 2.0;
+        let subject = sq(0.0, 0.0, 10.0, 10.0);
+        let clip = sq(5.0, 5.0, 20.0, 20.0);
+        assert!((area(&clip_convex(&subject, &clip)) - 25.0).abs() < 1e-3);
+        let mut rev = clip.clone();
+        rev.reverse();
+        assert!((area(&clip_convex(&subject, &rev)) - 25.0).abs() < 1e-3);
+        // Fully inside: unchanged; disjoint: empty.
+        assert!((area(&clip_convex(&subject, &sq(-5.0, -5.0, 50.0, 50.0))) - 100.0).abs() < 1e-3);
+        assert!(clip_convex(&subject, &sq(20.0, 20.0, 30.0, 30.0)).is_empty());
+    }
+
+    fn input(in_session: bool, remotes: Vec<(f32, f32, bool)>) -> CoopInput {
+        let remotes = remotes
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, z, paused))| {
+                let mut p = crate::packet::ForzaPacket::default();
+                p.position_x = x;
+                p.position_z = z;
+                p.position_y = if paused { 0.0 } else { 1.0 };
+                p.is_race_on = if paused { 0 } else { 1 };
+                p.engine_max_rpm = if paused { 0.0 } else { 8000.0 };
+                (crate::coop::PlayerInfo { id: format!("p{i}"), name: format!("P{i}"), hue: 100.0 }, p)
+            })
+            .collect();
+        CoopInput { in_session, remotes, waypoints: vec![(1.0, 2.0, 30.0)] }
+    }
+
+    fn driving_snap(cfg: crate::config::OverlayConfig, x: f32, z: f32) -> HudSnapshot {
+        let mut s = HudSnapshot { cfg: std::sync::Arc::new(cfg), connected: true, ..Default::default() };
+        s.pkt.position_x = x;
+        s.pkt.position_z = z;
+        s.pkt.position_y = 1.0; // not the all-zero "paused" packet
+        s.pkt.is_race_on = 1;
+        s.pkt.engine_max_rpm = 8000.0;
+        s
     }
 
     #[test]
-    fn teammate_arrow_turns_with_their_heading_relative_to_the_view() {
-        let view = MapView::new(0.0, 0.0, 0.6, 400.0, 136.0);
-        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
-        // Same heading as the car: apex straight up, unrotated.
-        assert!(close(mate_arrow(view.arrow_angle(0.6))[0], [0.0, -8.0]));
-        // A quarter turn clockwise: apex points right; the notch stays behind it.
-        let a = mate_arrow(view.arrow_angle(0.6 + std::f32::consts::FRAC_PI_2));
-        assert!(close(a[0], [8.0, 0.0]) && close(a[2], [-3.0, 0.0]), "{a:?}");
-        // Opposite heading: apex down.
-        assert!(close(mate_arrow(view.arrow_angle(0.6 + std::f32::consts::PI))[0], [0.0, 8.0]));
+    fn coop_layer_records_own_and_teammate_trails_only_in_a_session() {
+        let cfg = crate::config::OverlayConfig::default();
+        let mut layer = CoopLayer::default();
+        let t0 = Instant::now();
+        // Not in a session: nothing is recorded or drawn.
+        layer.update(Some(input(false, vec![(0.0, 0.0, false)])), &driving_snap(cfg.clone(), 0.0, 0.0), t0);
+        assert!(!layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty() && layer.waypoints.is_empty());
+
+        // In a session: own + teammate trails grow with movement (4 m spacing), waypoint kept.
+        for i in 0..3 {
+            let x = i as f32 * 10.0;
+            layer.update(Some(input(true, vec![(x, 5.0, false)])), &driving_snap(cfg.clone(), x, 0.0), t0);
+        }
+        assert!(layer.in_session);
+        assert_eq!(layer.trails["local"].len(), 3);
+        assert_eq!(layer.trails["p0"].len(), 3);
+        assert_eq!((layer.teammates.len(), layer.waypoints.len()), (1, 1));
+
+        // The teammate pauses (packet at the origin): drawn at the last spot, no new trail point.
+        layer.update(Some(input(true, vec![(0.0, 0.0, true)])), &driving_snap(cfg.clone(), 20.0, 0.0), t0);
+        let t = &layer.teammates[0];
+        assert!(t.paused && (t.x, t.z) == (20.0, 5.0), "{t:?}");
+        assert_eq!(layer.trails["p0"].len(), 3);
+
+        // Session ends: everything is forgotten.
+        layer.update(None, &driving_snap(cfg, 20.0, 0.0), t0);
+        assert!(!layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty());
+    }
+
+    #[test]
+    fn coop_layer_follows_the_effective_toggles() {
+        let mut layer = CoopLayer::default();
+        let t0 = Instant::now();
+        let cfg = crate::config::OverlayConfig { coop_trails: false, coop_teammates: false, coop_waypoints: false, ..Default::default() };
+        layer.update(Some(input(true, vec![(0.0, 0.0, false)])), &driving_snap(cfg, 0.0, 0.0), t0);
+        assert!(layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty() && layer.waypoints.is_empty());
     }
 }

@@ -21,7 +21,7 @@ fn frame(ctx: &egui::Context, hud: &mut Hud, snap: &HudSnapshot, now: f64) -> bo
     let mut animating = false;
     let _ = ctx.run(raw, |ctx| {
         let p = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
-        animating = hud.draw(&p, ctx.content_rect(), snap, now, None, &[]);
+        animating = hud.draw(&p, ctx.content_rect(), snap, now, None, &Default::default());
     });
     animating
 }
@@ -262,7 +262,7 @@ fn fills(ctx: &egui::Context, hud: &mut Hud, snap: &HudSnapshot, now: f64) -> Ve
     let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0))), ..Default::default() };
     let out = ctx.run(raw, |ctx| {
         let p = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
-        hud.draw(&p, ctx.content_rect(), snap, now, None, &[]);
+        hud.draw(&p, ctx.content_rect(), snap, now, None, &Default::default());
     });
     out.shapes
         .iter()

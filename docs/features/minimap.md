@@ -48,11 +48,12 @@ takes `&ForzaApp`, so the overlay thread can call it.
   The Dashboard camera in `app.rs` uses these too.
 - **The overlay's copy:** `overlay_map_image(season)` is the **q50 (4096²)** cache file,
   uploaded with `OVERLAY_MAP_TEXTURE_OPTIONS`: linear filtering with **trilinear mipmaps**
-  (egui_glow builds the chain on upload) and **ClampToEdge**. *Why mipmaps:* the HUD map is
+  (egui_glow builds the chain on upload) and **MirroredRepeat** wrapping. *Why mipmaps:* the HUD map is
   heavily minified and rotates, which shimmers without them. The Dashboard map has no
   mipmaps (it aliases; out of scope so far) and its texture wraps with MirroredRepeat
-  (visible when **Mirror map at edges** lets UVs past the edge); the HUD map doesn't mirror.
-  Switch `OVERLAY_MAP_TEXTURE_OPTIONS.wrap_mode` if it ever should. The q50 file is shared with a Dashboard set
+  (visible when **Mirror map at edges** lets UVs past the edge).
+  The overlay texture now wraps with `MirroredRepeat` too, so **Mirror map at edges** works on both
+(the HUD cuts the pill to the image when mirroring is off, see [[overlay]]). The q50 file is shared with a Dashboard set
   to 50 % quality. The overlay keeps no RAM copy: it uploads, then drops the image.
 
 ## Calibration
@@ -121,6 +122,17 @@ The offset is part of the `MapView` yaw, so the compass (`north_dir`), car arrow
 teammates stay consistent. It is independent of right-stick *button bindings*: a bound direction
 still fires its action and still rotates the map. HUD plumbing: `HudSink::with_stick` stamps
 `HudSnapshot::look_stick` at publish time (the listener thread has no gamepad), so it updates per packet.
+
+## Shared drawing (`hud/map_shared.rs`)
+
+The Dashboard map and the HUD Minimap draw their markers with the same functions: `draw_own_arrow`,
+`draw_remotes` (teammate arrows, edge pointers, names, paused grey), `draw_trail` (+ `TrailFade`),
+`draw_waypoint`, and `draw_compass` (in `hud/minimap.rs`). Each takes a `MapCanvas` (painter,
+`MapView`, centre, bounds rect, size factor `s`, fade alpha `a`): the Dashboard passes `s = 1`,
+`a = 1`, the HUD its design scale and show/hide fade. Trail recording (`Trail`, `trail_push`) is
+shared in `src/minimap.rs`. *Why:* the user wants the HUD map to match the Dashboard's, and one
+implementation means a tweak to an arrow, label or trail lands on both. The buffers differ: the
+Dashboard's is `ForzaApp::minimap_trails` (UI thread), the HUD's is `CoopLayer` (overlay thread).
 
 ## Co-Op integration
 

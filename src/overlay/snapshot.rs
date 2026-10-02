@@ -184,6 +184,9 @@ pub struct HudSnapshot {
     /// race).
     pub auto_gear: Option<DriveMode>,
     pub minimap: MinimapCalib,
+    /// `AppConfig::coop_hue`: the own identity colour (hue, degrees) the Minimap draws the own
+    /// arrow and trail in while in a co-op session, as the Dashboard map does.
+    pub coop_hue: f32,
     /// Right-stick vector (x right, y up, post-deadzone) for the Minimap's look-around; set
     /// by [`HudSink::publish`], `(0, 0)` without a pad. Only used with `map_look_stick`.
     pub look_stick: (f32, f32),

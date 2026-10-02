@@ -17,7 +17,8 @@ use egui_glow::glow::{self, HasContext};
 use super::super::gl::Headless;
 use super::{paint, Renderer};
 use crate::config::{ClusterStyle, DriftStyle, OverlayConfig};
-use crate::hud::minimap::{MapAnim, MapTex, Teammate};
+use crate::hud::map_shared::Remote;
+use crate::hud::minimap::{CoopLayer, MapAnim, MapTex};
 use crate::hud::prims::Xf;
 use crate::hud::{cluster, drift, minimap, race};
 use crate::minimap::{MapCalibration, Season, OVERLAY_MAP_TEXTURE_OPTIONS};
@@ -105,11 +106,29 @@ fn pg_state(pos: u8, gain: Option<f32>, shown: f32, scoring: bool, place: Option
 /// "ahead" is screen-up): one ahead-left turning right, one right-behind heading back. At the
 /// default driving zoom (1500 m, 0.045 px/m) they land about (−18, −36) and (54, 23) px from
 /// the car.
-fn coop_mates(snap: &HudSnapshot) -> Vec<Teammate> {
+fn coop_mates(snap: &HudSnapshot) -> CoopLayer {
     let (x, z, yaw) = (snap.pkt.position_x, snap.pkt.position_z, snap.pkt.yaw);
     let at = |ahead: f32, right: f32| (x + ahead * yaw.sin() + right * yaw.cos(), z + ahead * yaw.cos() - right * yaw.sin());
-    let mate = |(x, z): (f32, f32), dyaw: f32, name: &str, hue: f32| Teammate { x, z, yaw: yaw + dyaw, name: name.into(), colour: crate::ui::coop::hue_color(hue) };
-    vec![mate(at(800.0, -400.0), 0.4, "Kai", 36.0), mate(at(-500.0, 1200.0), -2.0, "Mo", 200.0)]
+    let mate = |id: &str, (x, z): (f32, f32), dyaw: f32, name: &str, hue: f32| Remote {
+        id: id.into(),
+        x,
+        z,
+        yaw: yaw + dyaw,
+        name: name.into(),
+        colour: crate::ui::coop::hue_color(hue),
+        paused: false,
+    };
+    // A short trail behind the car and behind "Kai", in the same coordinates the arrows use.
+    let now = std::time::Instant::now();
+    let trail = |from: (f32, f32), back: (f32, f32)| -> crate::minimap::Trail {
+        (0..8).map(|i| (from.0 + back.0 * (7 - i) as f32 * 40.0, from.1 + back.1 * (7 - i) as f32 * 40.0, now)).collect()
+    };
+    let mut layer = CoopLayer::default();
+    layer.in_session = true;
+    layer.teammates = vec![mate("kai", at(800.0, -400.0), 0.4, "Kai", 36.0), mate("mo", at(-500.0, 1200.0), -2.0, "Mo", 200.0)];
+    layer.trails.insert("local".into(), trail((x, z), (-yaw.sin(), -yaw.cos())));
+    layer.trails.insert("kai".into(), trail(at(800.0, -400.0), (-yaw.sin(), -yaw.cos())));
+    layer
 }
 
 fn synthetic_map(winter: bool) -> ColorImage {
@@ -275,11 +294,12 @@ fn render_spec_states() -> Result<(), String> {
     let mut driving = base(OverlayConfig::default());
     driving.pkt.speed = 20.0;
     let mates = coop_mates(&driving);
+    let none = CoopLayer::default();
     let maps = [
-        ("summer", driving.clone(), map_s, &[][..]),
-        ("winter", driving.clone(), map_w, &[][..]),
-        ("compass_off", compass_off, map_s, &[][..]),
-        ("coop", driving, map_s, &mates[..]),
+        ("summer", driving.clone(), map_s, &none),
+        ("winter", driving.clone(), map_w, &none),
+        ("compass_off", compass_off, map_s, &none),
+        ("coop", driving, map_s, &mates),
     ];
 
     let mut failures = Vec::new();
@@ -393,7 +413,14 @@ fn render_spec_states() -> Result<(), String> {
             });
             let id = format!("m2_{name}_{sfx}");
             if s == 1.0 {
-                check(&mut failures, &img, &id, (104, 70), [255, 255, 255], "car marker");
+                // The own arrow is white solo, in the co-op colour (`coop_hue`) in a session.
+                let own = if *name == "coop" {
+                    let [r, g, b, _] = crate::ui::coop::hue_color(snap.coop_hue).to_array();
+                    [r, g, b]
+                } else {
+                    [255, 255, 255]
+                };
+                check(&mut failures, &img, &id, (104, 70), own, "car marker");
                 if *name == "coop" {
                     let [r, g, b, _] = crate::ui::coop::hue_color(36.0).to_array();
                     check(&mut failures, &img, &id, (87, 30), [r, g, b], "teammate arrow fill");
