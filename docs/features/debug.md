@@ -45,6 +45,34 @@ right" before the app relies on these values anywhere.
 | Season | `minimap::current_season()` (wall clock) |
 | Car block | `CarDbState` (in `debug_tab.rs`, held in `app.debug_cars`): ordinal, language + whether served from cache, install path + car count, name (`display`), make, media name. |
 
+### Calibration checks
+
+A section of the Derived card (above the Car block, `debug_tab::calibration_section`) that shows
+every condition behind RPM calibration as its own row: a green/red `●`, the name, and the raw
+value next to its threshold (e.g. `Tyre slip  FL 0.12 FR 0.10 RL 0.92 RR 0.09  |slip| < 0.8`).
+Per-wheel checks (slip, suspension travel) are one row with the four wheels coloured
+individually; the row's dot is "all four pass". Three groups, each with an overall dot
+(`capturing now` / `engaged` / `sampling now`):
+
+1. **Max RPM capture**: race on, power > 0, handbrake released, slip <= 0.5 per wheel; plus
+   the max RPM captured so far.
+2. **Calibrated (box engages)**: engaged yes/no, previous forward gear in 1..=9, current gear
+   in 2..=10, upshift. (These three are per-packet, so they only light up on the shift itself;
+   the *Engaged* row is the sticky result.)
+3. **Gear-map sample**: race on, forward gear, redline known, speed > 5 km/h, RPM >= 60 % of
+   redline, slip < 0.8, suspension >= 0.1, moving straight; then a compact per-gear table
+   (samples in the rolling window of 10, and the median redline speed) for gears that have data.
+
+Flow: pure check fns in `listeners/calib.rs` (`MaxRpmChecks`, `EngageChecks`, `GearMapChecks`,
+bundled with the raw values as `CalibChecks`) -> `DsgListener.calib` (refreshed every packet,
+also while paused) -> `DsgView.calib` / `gear_sample_counts` -> `ListenerView.dsg` ->
+`ForzaApp.dsg` (read as `app.dsg.calib`). The real logic (`worker.rs` max-RPM capture,
+`dsg.rs` engage and sampling) gates on the same fns' `all()` / `triggers()`.
+*Why:* "RPM calibration isn't working for some cars" was undiagnosable; showing each check
+separately says exactly which one fails, and routing the real logic through the same fns means
+the panel can't disagree with the code. The gear-map checks are evaluated against the *captured*
+redline, so before step 1 has succeeded the "Redline known" row is the failing one.
+
 **Car DB loading.** `gamedata::cars::CarDb::load` blocks (~0.4-1 s cold, ~4 ms warm), so
 `CarDbState::poll` (called each frame from `show`) spawns a thread on the first open of the tab and
 collects the result through an `mpsc` channel (same pattern as the minimap loader), asking for a

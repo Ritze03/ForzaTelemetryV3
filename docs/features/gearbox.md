@@ -17,6 +17,19 @@ gear-ratio table.
   loaded, and moving in a straight line, it extrapolates that gear's
   speed-at-full-redline and keeps a rolling median of the last 10 samples — so a
   bad sample self-corrects instead of locking in.
+- **The exact calibration conditions** (a car "just doesn't calibrate" = one of these
+  fails; the **Debug tab → Derived from telemetry → Calibration checks** shows each one
+  live with its raw value and a green/red dot, see [[debug]]):
+  1. *Max-RPM capture* (`worker.rs`, `dynamic_max_rpm = max(.., rpm)`): `is_race_on != 0`,
+     `power > 0`, `hand_brake == 0`, and `|slip| <= 0.5` on all four wheels.
+  2. *Engage* (`dsg.rs`): the first manual upshift between two forward gears: not yet
+     engaged, previous forward gear in 1..=9, current gear in 2..=10, gear > previous.
+  3. *Gear-map sample* (`dsg.rs`): race on, gear 1..=10, a redline is known, `kmh > 5`,
+     `rpm >= 0.60 * redline`, `|slip| < 0.8` and suspension travel `>= 0.1` on all four
+     wheels, and moving straight (`speed > 0.1` and `velocity_z >= 0.95 * speed`).
+  All three are pure fns in `listeners/calib.rs` (`MaxRpmChecks`, `EngageChecks`,
+  `GearMapChecks`); the real logic and the Debug panel both call them, so the display
+  cannot drift from what actually gates calibration.
 - **Calibration messages on the HUD** (when notifications are on): `Calibration
   started` whenever you are driving a car that is not calibrated yet (first car
   after starting the app and leaving the pause menu, a car change, a Clear RPM

@@ -8,6 +8,7 @@ use crate::config::{app_data_dir, AppConfig, GearboxMode};
 use crate::listeners::hud::{hud_paused, ModeClassifier};
 use crate::overlay::snapshot::HudMode;
 use crate::input::{char_to_key, InputSender};
+use crate::listeners::calib::{CalibChecks, EngageChecks};
 use crate::packet::ForzaPacket;
 
 /// Minimum settle time after a confirmed shift before another may be commanded.
@@ -25,11 +26,6 @@ const KICKDOWN_THROTTLE: f32 = 0.95;
 const STANDSTILL_KMH: f32 = 5.0;
 /// Number of valid samples kept per gear for the median calibration.
 const CALIB_WINDOW: usize = 10;
-/// Calibrate a gear only once the engine is past this fraction of the detected redline — high
-/// enough that the kmh/rpm extrapolation is accurate, low enough to lock in within one pull.
-const CALIB_RPM_FRAC: f32 = 0.60;
-/// Tyre slip (abs) above which a calibration sample is rejected (wheelspin corrupts kmh/rpm).
-const CALIB_SLIP: f32 = 0.8;
 /// Tyre slip (abs) at or above which an upshift is suppressed (don't shift on a redline spike).
 const UPSHIFT_SLIP: f32 = 1.0;
 /// Cruise hysteresis: the cruise downshift point sits this fraction of the shift point below the
@@ -90,6 +86,8 @@ pub struct DsgListener {
     drift: ModeClassifier,
     /// Latest result of `drift`, mirrored to the UI via `ListenerView::hud_mode` (Debug tab).
     pub hud_mode: HudMode,
+    /// Per-condition calibration checks for the latest packet (Debug tab, via `DsgView::calib`).
+    pub calib: CalibChecks,
     // ── Debug telemetry (read by the Fun-tab debug panel) ──
     pub dbg_desired_gear: i32,
     pub dbg_effective_max_rpm: f32,
@@ -126,6 +124,7 @@ impl DsgListener {
             pending_log: None,
             drift: ModeClassifier::default(),
             hud_mode: HudMode::default(),
+            calib: CalibChecks::default(),
             dbg_desired_gear: 0,
             dbg_effective_max_rpm: 0.0,
             dbg_shift_threshold: 0.0,
@@ -181,6 +180,9 @@ impl DsgListener {
         let in_drift = self.hud_mode == HudMode::Drift;
 
         if pkt.is_race_on == 0 {
+            // Paused / menus: nothing runs, but keep the Debug tab's checks current (race_on fails).
+            let engage = EngageChecks::eval(self.engaged, self.prev_gear, pkt.gear as i32);
+            self.calib = CalibChecks::eval(pkt, engage, dynamic_max_rpm);
             return;
         }
 
@@ -200,8 +202,8 @@ impl DsgListener {
         // used from then on. The trigger is a gear increase between two forward gears — so
         // spawning already in a high gear, or 1→Reverse through Neutral (gear 10+, R is 0),
         // must NOT count. `prev_gear` only tracks forward gears, so those glitches can't fake it.
-        let prev = self.prev_gear;
-        if !self.engaged && (1..=9).contains(&prev) && (2..=10).contains(&gear) && gear > prev {
+        let engage = EngageChecks::eval(self.engaged, self.prev_gear, gear);
+        if engage.triggers() {
             self.engaged = true;
         }
         if in_drive_gear {
@@ -214,32 +216,18 @@ impl DsgListener {
         // slip (<0.8), springs loaded (≥0.1), and moving straight (velocity aligned with heading
         // within ~5%) so the road-speed magnitude reflects what the wheels are doing. Any gear the
         // driver pulls out is recorded — no gear-1-first requirement — against the detected redline.
-        if in_drive_gear && effective_max_rpm > 0.0 && kmh > 5.0 {
-            let gear_idx = gear as usize;
-
-            let no_slip = pkt.tire_slip_ratio_fl.abs() < CALIB_SLIP
-                && pkt.tire_slip_ratio_fr.abs() < CALIB_SLIP
-                && pkt.tire_slip_ratio_rl.abs() < CALIB_SLIP
-                && pkt.tire_slip_ratio_rr.abs() < CALIB_SLIP;
-
-            let springs_loaded = pkt.normalized_suspension_travel_fl >= 0.1
-                && pkt.normalized_suspension_travel_fr >= 0.1
-                && pkt.normalized_suspension_travel_rl >= 0.1
-                && pkt.normalized_suspension_travel_rr >= 0.1;
-
-            let speed_ms = pkt.speed.abs();
-            let moving_straight = speed_ms > 0.1 && pkt.velocity_z >= 0.95 * speed_ms;
-
-            if rpm >= CALIB_RPM_FRAC * effective_max_rpm && no_slip && springs_loaded && moving_straight {
-                // Rolling median of the last 10 valid redline-speed estimates. Never "locked":
-                // a wrong value is corrected as the window slides, and the median rejects outliers.
-                let buf = &mut self.gear_samples[gear_idx];
-                buf.push_back(kmh * effective_max_rpm / rpm);
-                while buf.len() > CALIB_WINDOW {
-                    buf.pop_front();
-                }
-                self.gear_redline_speeds[gear_idx] = median(buf).floor();
+        // Every condition is a separate bool (`listeners/calib.rs`) so the Debug tab can show
+        // which one is failing; `all()` is the real gate.
+        self.calib = CalibChecks::eval(pkt, engage, effective_max_rpm);
+        if self.calib.gear_map.all() {
+            // Rolling median of the last 10 valid redline-speed estimates. Never "locked":
+            // a wrong value is corrected as the window slides, and the median rejects outliers.
+            let buf = &mut self.gear_samples[gear as usize];
+            buf.push_back(kmh * effective_max_rpm / rpm);
+            while buf.len() > CALIB_WINDOW {
+                buf.pop_front();
             }
+            self.gear_redline_speeds[gear as usize] = median(buf).floor();
         }
 
         // Hands off until enabled, engaged (driver shifted out of 1st), and a redline is known.
@@ -378,6 +366,8 @@ impl DsgListener {
             dbg_rule: self.dbg_rule,
             desync_count: self.desync_count,
             last_desync: self.last_desync,
+            calib: self.calib,
+            gear_sample_counts: std::array::from_fn(|i| self.gear_samples[i].len()),
         }
     }
 
@@ -623,6 +613,10 @@ pub struct DsgView {
     pub dbg_rule: &'static str,
     pub desync_count: u32,
     pub last_desync: Option<Instant>,
+    /// Latest per-condition calibration checks (Debug tab).
+    pub calib: CalibChecks,
+    /// Valid samples currently in each gear's rolling window (0..=`CALIB_WINDOW`).
+    pub gear_sample_counts: [usize; 11],
 }
 
 impl Default for DsgView {
@@ -643,6 +637,8 @@ impl Default for DsgView {
             dbg_rule: "\u{2014}",
             desync_count: 0,
             last_desync: None,
+            calib: CalibChecks::default(),
+            gear_sample_counts: [0; 11],
         }
     }
 }
