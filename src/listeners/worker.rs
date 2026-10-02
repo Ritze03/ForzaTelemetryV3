@@ -99,6 +99,9 @@ pub struct ListenerView {
     /// UI pushes can overwrite it, so it needs no `toggle_gen` protection, and it resets to
     /// shown on restart.
     pub hud_hidden: bool,
+    /// Race-vs-drift mode from the DSG listener's classifier (always running, unlike the
+    /// HUD's own copy which only runs while the overlay is on). Shown in the Debug tab.
+    pub hud_mode: crate::overlay::snapshot::HudMode,
 }
 
 /// What the UI hands the thread each frame.
@@ -531,6 +534,7 @@ fn run(ctx: Ctx) {
                 backfire_enabled: cfg.backfire_enabled,
                 toggle_gen,
                 hud_hidden,
+                hud_mode: dsg.hud_mode,
             };
         }
     }

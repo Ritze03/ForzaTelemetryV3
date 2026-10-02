@@ -39,7 +39,8 @@ right" before the app relies on these values anywhere.
 | Experimental pause detection | `config.experimental_pause_detection` |
 | Paused / Pause reason | `debug_tab::pause_reasons`: the same checks as `listeners::hud::hud_paused` (race off, `engine_max_rpm <= 0`, zero yaw/pitch/roll, and `garage_paused` only when experimental is on), one line per rule that fired. A `debug_assert` keeps it equal to `hud_paused`. |
 | In race | `race_position != 0` (the gearbox's own in-race test) |
-| Gearbox selected / effective / resolved | `config.dsg_gearbox_mode`, `dsg_effective_mode(in_race)`, `dsg_resolved_mode(in_race, false)` (`off` = None). **Drift is not shown**: the HUD mode classifier lives on the listener thread and is not in app state, so resolved assumes "not drifting". |
+| HUD mode | `app.hud_mode` (Race / Drift; `HudMode` has no separate free-roam variant, so non-drift reads "Race / free roam"). Flow: `DsgListener.hud_mode` (its own `ModeClassifier`) → `ListenerView::hud_mode` → `ForzaApp::adopt_listener_view`. *Why the DSG's classifier:* it is fed every packet whether or not the overlay is on; the HUD tracker's copy only runs while the overlay is enabled. |
+| Gearbox selected / effective / resolved | `config.dsg_gearbox_mode`, `dsg_effective_mode(in_race)`, `dsg_resolved_mode(in_race, in_drift)` with the real drift flag (`off` = None). |
 | Calibrated max RPM | `app.dynamic_max_rpm` (the listener's per-car calibration, mirrored into the UI) |
 | Season | `minimap::current_season()` (wall clock) |
 | Car block | `CarDbState` (in `debug_tab.rs`, held in `app.debug_cars`): ordinal, language + whether served from cache, install path + car count, name (`display`), make, media name. |
