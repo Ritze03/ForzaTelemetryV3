@@ -7,6 +7,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ## [0.4.1] – 2026-10-02
 
 ### Fixed
+- **Rebinding no longer triggers the action**: while you are binding a key or controller button (Setup → Hotkey / Controller, Overlay → Hide HUD), no hotkey or controller action fires, and the key or button you just pressed (or its release) stays silent for a moment afterwards. Before, rebinding Backfire to B while it was already on B toggled Backfire.
 - **Setup layout**: the Controller card's bind buttons now all line up (the clear button's slot is always reserved, and it shows a proper icon), and the Network card moved above Game Install in the right column.
 
 ### Added

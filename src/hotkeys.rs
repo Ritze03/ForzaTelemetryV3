@@ -3,8 +3,10 @@
 //! pushes the matched HotkeyAction down an mpsc channel drained on the listener
 //! thread. Match-only: no other keystroke is stored, sent, or logged. See spec.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::config::HotkeyAction;
 use crate::keymap::{HotKey, HotkeyBinding, Mods};
@@ -15,6 +17,43 @@ pub type Bindings = Arc<Mutex<Vec<(HotkeyBinding, HotkeyAction)>>>;
 /// Pure match: a combo matches when its key was pressed and modifiers match exactly.
 pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods) -> Option<HotkeyAction> {
     binds.iter().find(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a)
+}
+
+/// How long input sources stay muted after a rebind capture ends (see [`RebindGuard`]).
+pub const REBIND_GRACE: Duration = Duration::from_millis(300);
+
+/// "A rebind capture is active" — shared by the keyboard backend, the gamepad backend and the
+/// UI. While [`blocked`](Self::blocked), no hotkey / pad action may be sent to the consumer.
+///
+/// The UI mirrors "any rebind armed" into it once per frame ([`set_active`](Self::set_active)).
+/// When the capture ends, input stays blocked for a short [`REBIND_GRACE`] on top.
+///
+/// Why: the backends read the raw device (evdev / `GetAsyncKeyState` / XInput) on their own
+/// threads and are always *ahead* of the UI: the key that completes a capture reaches them
+/// before egui processes it and ends the capture, and the listener thread drains the queued
+/// action later still. Without this, rebinding Backfire to B (its current key) fired
+/// Backfire; the grace also covers the capture key being released and a pad press whose
+/// capture the UI had not committed yet.
+#[derive(Default)]
+pub struct RebindGuard {
+    active: AtomicBool,
+    /// Muted until this instant after the capture ended.
+    until: Mutex<Option<Instant>>,
+}
+
+impl RebindGuard {
+    /// Mirror "a capture is armed" (call every frame; only the true→false edge starts the grace).
+    pub fn set_active(&self, active: bool) { self.set_active_at(active, Instant::now()); }
+    fn set_active_at(&self, active: bool, now: Instant) {
+        if self.active.swap(active, Ordering::SeqCst) && !active {
+            *self.until.lock().unwrap() = Some(now + REBIND_GRACE);
+        }
+    }
+    /// True while capturing or inside the grace period after one.
+    pub fn blocked(&self) -> bool { self.blocked_at(Instant::now()) }
+    fn blocked_at(&self, now: Instant) -> bool {
+        self.active.load(Ordering::SeqCst) || self.until.lock().unwrap().is_some_and(|t| now < t)
+    }
 }
 
 /// Whether the capture backend can work here — drives the Setup "Input Permissions" light.
@@ -46,6 +85,7 @@ pub fn probe_status() -> HotkeyStatus {
 pub struct HotkeyListener {
     binds: Bindings,
     tx: std::sync::mpsc::Sender<HotkeyAction>,
+    guard: Arc<RebindGuard>,
 }
 
 impl HotkeyListener {
@@ -56,12 +96,16 @@ impl HotkeyListener {
     pub fn new(initial: Vec<(HotkeyBinding, HotkeyAction)>) -> (Self, Receiver<HotkeyAction>) {
         let binds: Bindings = Arc::new(Mutex::new(initial));
         let (tx, rx) = std::sync::mpsc::channel();
-        backend::spawn(binds.clone(), tx.clone());
-        (HotkeyListener { binds, tx }, rx)
+        let guard = Arc::new(RebindGuard::default());
+        backend::spawn(binds.clone(), tx.clone(), guard.clone());
+        (HotkeyListener { binds, tx, guard }, rx)
     }
     /// A sender into the same action channel, for other input sources (the gamepad), so
     /// they pass through the listener thread's focus gate exactly like keyboard hotkeys.
     pub fn action_sender(&self) -> std::sync::mpsc::Sender<HotkeyAction> { self.tx.clone() }
+    /// The shared rebind guard: the UI sets it while any rebind capture is armed; the gamepad
+    /// backend gets a clone so pad actions are muted too.
+    pub fn rebind_guard(&self) -> Arc<RebindGuard> { self.guard.clone() }
     pub fn set_bindings(&self, b: Vec<(HotkeyBinding, HotkeyAction)>) { *self.binds.lock().unwrap() = b; }
 }
 
@@ -70,11 +114,12 @@ mod backend {
     use std::sync::mpsc::Sender;
     use std::thread;
     use evdev::{Device, EventType, Key};
-    use super::{Bindings, match_combo};
+    use std::sync::Arc;
+    use super::{Bindings, RebindGuard, match_combo};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
-    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>) {
+    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>, guard: Arc<RebindGuard>) {
         thread::spawn(move || {
             let keyboards: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
                 .filter(|(_, d)| d.supported_keys().map_or(false, |k| k.contains(Key::KEY_A)))
@@ -86,6 +131,7 @@ mod backend {
             for (_, mut dev) in keyboards {
                 let binds = binds.clone();
                 let tx = tx.clone();
+                let guard = guard.clone();
                 thread::spawn(move || {
                     let mut mods = Mods::default();
                     loop {
@@ -103,7 +149,8 @@ mod backend {
                                     if let Some(hk) = HotKey::from_evdev(key) {
                                         let list = binds.lock().unwrap();
                                         if let Some(action) = match_combo(&list, hk, mods) {
-                                            let _ = tx.send(action);
+                                            // Muted while a rebind capture runs (and just after).
+                                            if !guard.blocked() { let _ = tx.send(action); }
                                         }
                                         // Non-matching keys are dropped here — never stored/logged.
                                     }
@@ -121,10 +168,11 @@ mod backend {
 #[cfg(target_os = "windows")]
 mod backend {
     use std::sync::mpsc::Sender;
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use super::{Bindings, match_combo};
+    use super::{Bindings, RebindGuard, match_combo};
     use crate::config::HotkeyAction;
     use crate::keymap::Mods;
 
@@ -135,23 +183,27 @@ mod backend {
 
     fn down(vk: i32) -> bool { (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0 }
 
-    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>) {
+    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>, guard: Arc<RebindGuard>) {
         thread::spawn(move || {
-            // Per-action previous key-down state for rising-edge detection.
-            let mut prev: std::collections::HashMap<HotkeyAction, bool> = std::collections::HashMap::new();
+            // Previous key-down state per virtual key (not per action): the state is tracked
+            // even while a rebind capture mutes sending, so a key that was held down when the
+            // capture ended (the one just bound) has no rising edge afterwards.
+            let mut prev: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
             loop {
                 let mods = Mods { ctrl: down(VK_CONTROL), alt: down(VK_MENU), shift: down(VK_SHIFT), sup: down(VK_LWIN) };
                 let list = binds.lock().unwrap().clone();
+                let muted = guard.blocked();
                 for (b, action) in &list {
-                    let key_down = down(b.key.to_vk());
-                    let was = *prev.get(action).unwrap_or(&false);
+                    let vk = b.key.to_vk();
+                    let key_down = down(vk);
+                    let was = *prev.get(&vk).unwrap_or(&false);
                     // Rising edge of the base key, with modifiers matching now.
-                    if key_down && !was {
+                    if key_down && !was && !muted {
                         if match_combo(&list, b.key, mods) == Some(*action) {
                             let _ = tx.send(*action);
                         }
                     }
-                    prev.insert(*action, key_down);
+                    prev.insert(vk, key_down);
                 }
                 thread::sleep(Duration::from_millis(8));
             }
@@ -162,9 +214,10 @@ mod backend {
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod backend {
     use std::sync::mpsc::Sender;
-    use super::Bindings;
+    use std::sync::Arc;
+    use super::{Bindings, RebindGuard};
     use crate::config::HotkeyAction;
-    pub fn spawn(_b: Bindings, _tx: Sender<HotkeyAction>) {}
+    pub fn spawn(_b: Bindings, _tx: Sender<HotkeyAction>, _g: Arc<RebindGuard>) {}
 }
 
 #[cfg(test)]
@@ -189,5 +242,23 @@ mod tests {
         assert_eq!(match_combo(&binds, HotKey::G, Mods { ctrl: true, ..Default::default() }), None);
         // Ctrl+E → dashboard.
         assert_eq!(match_combo(&binds, HotKey::E, Mods { ctrl: true, ..Default::default() }), Some(HotkeyAction::DashboardEdit));
+    }
+
+    #[test]
+    fn rebind_guard_blocks_during_capture_and_through_the_grace() {
+        let g = RebindGuard::default();
+        let t0 = Instant::now();
+        assert!(!g.blocked_at(t0), "idle: actions flow");
+        g.set_active_at(true, t0);
+        assert!(g.blocked_at(t0 + Duration::from_secs(60)), "blocked for as long as the capture lasts");
+        g.set_active_at(true, t0 + Duration::from_secs(1)); // per-frame re-assert changes nothing
+        let end = t0 + Duration::from_secs(2);
+        g.set_active_at(false, end);
+        assert!(g.blocked_at(end), "the capturing key is still down the moment the capture ends");
+        assert!(g.blocked_at(end + REBIND_GRACE - Duration::from_millis(1)));
+        assert!(!g.blocked_at(end + REBIND_GRACE), "grace over: actions flow again");
+        // Idle frames (false → false) must not restart the grace.
+        g.set_active_at(false, end + Duration::from_secs(10));
+        assert!(!g.blocked_at(end + Duration::from_secs(10)));
     }
 }

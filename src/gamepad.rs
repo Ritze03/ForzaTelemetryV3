@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::config::HotkeyAction;
+use crate::hotkeys::RebindGuard;
 
 /// A physical control on an Xbox-style pad. Serde-stable (variant names).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -179,6 +180,9 @@ struct Shared {
     capture: AtomicBool,
     captured: Mutex<Option<PadControl>>,
     tx: Mutex<Sender<HotkeyAction>>,
+    /// Set by the UI while *any* rebind capture (pad or keyboard) is armed, plus a grace after
+    /// it: no action is sent then. See [`RebindGuard`].
+    guard: Arc<RebindGuard>,
 }
 
 impl Shared {
@@ -196,6 +200,9 @@ impl Shared {
             }
             return;
         }
+        // A capture is running (or just ended and the UI hasn't committed it yet): the press
+        // is not an action — rebinding to the control it already has must not trigger it.
+        if self.guard.blocked() { return; }
         let tx = self.tx.lock().unwrap();
         for c in controls_in(pressed) {
             for (_, a) in params.bindings.iter().filter(|(p, _)| *p == c) {
@@ -216,7 +223,7 @@ pub struct Gamepad { shared: Arc<Shared> }
 
 impl Gamepad {
     /// Start the backend. Actions go into `tx` — the hotkey channel the listener thread drains.
-    pub fn spawn(tx: Sender<HotkeyAction>, params: PadParams) -> Gamepad {
+    pub fn spawn(tx: Sender<HotkeyAction>, guard: Arc<RebindGuard>, params: PadParams) -> Gamepad {
         let shared = Arc::new(Shared {
             params: Mutex::new(params),
             sticks: Mutex::new(HashMap::new()),
@@ -224,6 +231,7 @@ impl Gamepad {
             capture: AtomicBool::new(false),
             captured: Mutex::new(None),
             tx: Mutex::new(tx),
+            guard,
         });
         backend::spawn(shared.clone());
         Gamepad { shared }
@@ -670,6 +678,7 @@ mod tests {
         let shared = Shared {
             params: Mutex::new(params), sticks: Mutex::new(HashMap::new()), devices: Mutex::new(vec![]),
             capture: AtomicBool::new(false), captured: Mutex::new(None), tx: Mutex::new(tx),
+            guard: Arc::default(),
         };
         let mut proc = Processor::default();
         let y = PadInput { buttons: PadControl::Y.bit(), ..Default::default() };
@@ -680,6 +689,63 @@ mod tests {
         shared.feed(1, &mut proc, &y);
         assert!(rx.try_recv().is_err(), "capture must not also fire the action");
         assert_eq!(*shared.captured.lock().unwrap(), Some(PadControl::Y));
+    }
+
+    fn shared_with(binding: (PadControl, HotkeyAction), capture: bool) -> (Shared, std::sync::mpsc::Receiver<HotkeyAction>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let params = PadParams { enabled: true, stick_deadzone: 0.15, trigger_deadzone: 0.1, bindings: vec![binding] };
+        let shared = Shared {
+            params: Mutex::new(params), sticks: Mutex::new(HashMap::new()), devices: Mutex::new(vec![]),
+            capture: AtomicBool::new(capture), captured: Mutex::new(None), tx: Mutex::new(tx),
+            guard: Arc::default(),
+        };
+        (shared, rx)
+    }
+
+    #[test]
+    fn rebind_guard_mutes_actions_during_and_just_after_a_capture() {
+        let (shared, rx) = shared_with((PadControl::B, HotkeyAction::ToggleBackfire), false);
+        let mut proc = Processor::default();
+        let b = PadInput { buttons: PadControl::B.bit(), ..Default::default() };
+        let none = PadInput::default();
+
+        // The UI armed a rebind (guard active) and the pad capture swallowed B ...
+        shared.guard.set_active(true);
+        shared.capture.store(true, Ordering::Relaxed);
+        shared.feed(1, &mut proc, &b);
+        assert_eq!(*shared.captured.lock().unwrap(), Some(PadControl::B));
+        assert!(rx.try_recv().is_err());
+        // ... but the UI has not committed yet: pad capture is off, guard still on. B released
+        // and pressed again must still not act.
+        shared.feed(1, &mut proc, &none);
+        shared.feed(1, &mut proc, &b);
+        assert!(rx.try_recv().is_err(), "uncommitted capture: no action");
+        shared.feed(1, &mut proc, &none);
+        // The UI commits: guard ends, grace begins. A press inside the grace: nothing.
+        shared.guard.set_active(false);
+        shared.feed(1, &mut proc, &b);
+        shared.feed(1, &mut proc, &none);
+        assert!(rx.try_recv().is_err(), "grace: no action");
+    }
+
+    #[test]
+    fn bound_control_works_again_once_the_guard_is_idle() {
+        let (shared, rx) = shared_with((PadControl::B, HotkeyAction::ToggleBackfire), false);
+        let mut proc = Processor::default();
+        let b = PadInput { buttons: PadControl::B.bit(), ..Default::default() };
+        shared.feed(1, &mut proc, &b);
+        assert_eq!(rx.try_recv().ok(), Some(HotkeyAction::ToggleBackfire));
+    }
+
+    #[test]
+    fn held_capture_button_does_not_fire_while_held_or_on_release() {
+        let (shared, rx) = shared_with((PadControl::B, HotkeyAction::ToggleBackfire), true);
+        let mut proc = Processor::default();
+        let b = PadInput { buttons: PadControl::B.bit(), ..Default::default() };
+        shared.feed(1, &mut proc, &b); // captured
+        for _ in 0..3 { shared.feed(1, &mut proc, &b); } // still held, capture over, guard idle
+        shared.feed(1, &mut proc, &PadInput::default()); // release
+        assert!(rx.try_recv().is_err(), "held + release after a capture is never an action");
     }
 
     #[test]
