@@ -292,9 +292,8 @@ fn monitors() -> Vec<MonitorInfo> {
 }
 
 /// GDI name (`\\.\DISPLAY2`) of the monitor the foreground window is on: the monitor the game
-/// is on while it is focused. For the focus thread's monitor detection (`focus::query_monitor`),
-/// which doesn't call it yet. `None` when there is no foreground window.
-#[allow(dead_code)]
+/// is on while it is focused. Used by the focus thread's monitor detection
+/// (`focus::query_monitor`). `None` when there is no foreground window.
 pub fn foreground_monitor_name() -> Option<String> {
     // SAFETY: plain queries; a stale HWND just yields the nearest monitor or `None`.
     unsafe {

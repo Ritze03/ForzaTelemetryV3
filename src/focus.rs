@@ -125,7 +125,7 @@ impl FocusDetector {
 
     /// Attach (`Some`) or detach the overlay's output sink. A new sink is sent the last
     /// known output on the next poll tick.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay exists on Linux and Windows only
     pub fn set_output_sink(&self, sink: Option<OutputSink>) {
         let mut m = lock(&self.monitor);
         m.sink = sink;
@@ -133,7 +133,7 @@ impl FocusDetector {
     }
 
     /// Last detected overlay output (`None` = none yet, or the first output).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
     pub fn monitor_output(&self) -> Option<String> {
         lock(&self.monitor).detected.clone().flatten()
     }
@@ -249,7 +249,8 @@ pub fn trim_monitor_name(out: &str) -> Option<String> {
     out.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
 }
 
-/// Run the Hyprland/Custom monitor query (Fixed never gets here). Also the Overlay tab's
+/// Run the built-in/Custom monitor query (Fixed never gets here). Linux: `hyprctl` or the
+/// custom command; Windows: the foreground window's monitor. Also the Overlay tab's
 /// synchronous Test / Detect.
 pub fn query_monitor(method: MonitorMethod, cmd: &str) -> Result<String, String> {
     #[cfg(target_os = "linux")]
@@ -274,7 +275,14 @@ pub fn query_monitor(method: MonitorMethod, cmd: &str) -> Result<String, String>
         };
         name.ok_or_else(|| format!("no monitor name in {:?}", text.lines().next().unwrap_or("")))
     }
-    #[cfg(not(target_os = "linux"))]
+    // Windows has no Hyprland/Custom: every non-Fixed method means the built-in query, the
+    // monitor the foreground window is on (the Overlay tab only offers that one + Fixed).
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (method, cmd);
+        crate::overlay::foreground_monitor_name().ok_or_else(|| "no foreground window".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = (method, cmd);
         Err("unsupported platform".into())

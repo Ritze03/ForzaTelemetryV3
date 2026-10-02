@@ -248,7 +248,7 @@ impl CoopReader {
     /// Advance the jitter buffers, then snapshot the remote players (as
     /// [`CoopState::remote_players`]). It advances them itself because the UI's `tick` stops
     /// while the game covers the window. Empty while co-op is off (`stop` clears them).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay exists on Linux and Windows only
     pub fn remote_players(&self) -> Vec<(PlayerInfo, ForzaPacket)> {
         tick(&self.0);
         remote_players(&self.0)
@@ -256,7 +256,7 @@ impl CoopReader {
 
     /// Whether a session is running (role ≠ `Off`): the Minimap's own arrow takes the co-op
     /// colour and trails are recorded only then, as on the Dashboard map.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
     pub fn in_session(&self) -> bool {
         self.0.lock().unwrap().role != Role::Off
     }
