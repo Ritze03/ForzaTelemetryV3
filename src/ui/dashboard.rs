@@ -2200,8 +2200,8 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let car_x = app.minimap_cached_car_x;
     let car_z = app.minimap_cached_car_z;
     // North-up locks the map (yaw 0); otherwise it's heading-up (rotates with the car). The
-    // look-around offset (right stick) is relative to that base, see `minimap::look_target`.
-    let yaw   = app.minimap_base_yaw() + app.minimap_look_off;
+    // right-stick look-around sits on top of that base, see `minimap::LookAround`.
+    let yaw   = app.minimap_look.view_yaw(app.minimap_base_yaw());
 
     // Metres visible from widget centre to nearest edge (zoom); rotates world displacement
     // into car-relative screen space (see `minimap::MapView` for the conventions).
@@ -2257,14 +2257,17 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         pause_glyph: crate::icons::PAUSE,
     };
 
-    // Co-op breadcrumb trails (drawn behind the car arrows). Each player's recent
-    // path fades from faint (old) to solid (recent) in their identity colour.
+    // Breadcrumb trails (drawn behind the car arrows). Each player's recent path fades from
+    // faint (old) to solid (recent) in their identity colour; the own trail is recorded solo
+    // too and is then white, like the own arrow.
+    let in_session = app.coop.role() != crate::coop::Role::Off;
+    let local_col = if in_session { crate::ui::coop::hue_color(app.config.coop_hue) } else { Color32::WHITE };
     let remotes = app.coop.remote_players();
     if !app.minimap_trails.is_empty() {
         let now = std::time::Instant::now();
         let fade = crate::hud::map_shared::TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
         if let Some(tr) = app.minimap_trails.get("local") {
-            crate::hud::map_shared::draw_trail(&cv, tr, crate::ui::coop::hue_color(app.config.coop_hue), fade, now);
+            crate::hud::map_shared::draw_trail(&cv, tr, local_col, fade, now);
         }
         for (info, pkt) in &remotes {
             if pkt.is_paused() {
@@ -2302,12 +2305,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     crate::hud::map_shared::draw_remotes(&cv, &mates, (car_x, car_z), yaw);
 
     // Local car indicator: triangle rotated to show heading relative to map orientation.
-    // Uses the player's co-op colour (colour only, no name) when in a session.
-    let local_col = if app.coop.role() != crate::coop::Role::Off {
-        crate::ui::coop::hue_color(app.config.coop_hue)
-    } else {
-        Color32::WHITE
-    };
+    // Uses the player's co-op colour (colour only, no name) when in a session, else white.
     crate::hud::map_shared::draw_own_arrow(&cv, view.arrow_angle(app.minimap_cached_raw_yaw), local_col);
 
     // ── Co-op shared waypoint ──────────────────────────────────────

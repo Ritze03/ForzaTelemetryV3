@@ -155,8 +155,11 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   clamped to the edge with the distance when off the map, grey + pause glyph at the last known
   spot when paused. (The first HUD version skipped off-map and paused teammates.)
 - **Trails:** each player's breadcrumb trail in their colour, fading by age or distance behind
-  them, whichever first (`TrailFade`; `minimap::trail_push` records them). Only during a co-op
-  session, like the Dashboard (its trail fade lives on the Co-Op tab).
+  them, whichever first (`TrailFade`; `minimap::trail_push` records them). Teammates' trails only
+  during a co-op session; **your own trail is drawn solo too, in white** (like the arrow), kept
+  across a session starting or ending (only its colour changes), and switched off with **Show
+  trails** (`coop_trails`) in and out of a session alike. Same as the Dashboard, see [[minimap]]
+  "Solo trail" (the Dashboard's trail fade lives on the map's Co-Op sub-tab).
 - **Shared waypoints:** the pulsing diamond with the distance (set by clicking the Dashboard map;
   the HUD cannot be clicked, it only shows them).
 - **Trail transport:** the overlay thread records trails itself (`CoopLayer` in
@@ -186,7 +189,7 @@ tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 | `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 1500 / 3000 | Compass and the two zoom radii. |
 | `coop_use_dashboard` | off | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
 | `coop_teammates` | on | Draw teammates (and their trails). |
-| `coop_trails` | on | Trails behind each player, own included. |
+| `coop_trails` | on | Trails behind each player, own included (the own one solo too, white). |
 | `coop_trail_fade_secs`, `coop_trail_fade_m` | 10 s / 500 m | Trail fade (Dashboard: Co-Op tab "Tracer fade"). |
 | `coop_waypoints` | on | Shared waypoints. |
 

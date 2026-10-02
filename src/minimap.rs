@@ -324,8 +324,12 @@ pub fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
 
 /// One frame of smooth map rotation toward `target` (shortest arc). `dt` in seconds.
 pub fn ease_yaw(current: f32, target: f32, dt: f32) -> f32 {
-    let lerp_t = (6.0 * dt.min(0.1)).min(1.0);
-    lerp_angle(current, target, lerp_t)
+    lerp_angle(current, target, ease_t(dt))
+}
+
+/// The map rotation's per-frame lerp factor (rate 6/s, `dt` capped at 0.1 s).
+fn ease_t(dt: f32) -> f32 {
+    (6.0 * dt.min(0.1)).min(1.0)
 }
 
 /// Wrap an angle into (-PI, PI].
@@ -348,26 +352,81 @@ pub fn look_offset(stick: (f32, f32)) -> f32 {
     }
 }
 
-/// The look-around target: the offset to add to the map's current yaw (`map_yaw`, what the
-/// view would show without the stick) so the view yaw becomes `heading + look_offset(stick)`,
-/// i.e. the direction the stick points **relative to the car** (like the game's camera) comes
-/// to the top. `heading` is the heading-up yaw ([`target_yaw`]). In heading-up `map_yaw` is
-/// (about) `heading`, so this is just the stick angle; in north-up (`map_yaw` 0) it adds the
-/// car's heading. Wrapped to (-PI, PI]. `(0, 0)` = 0 (back to the map's own orientation).
-pub fn look_target(stick: (f32, f32), heading: f32, map_yaw: f32) -> f32 {
-    if stick.0 == 0.0 && stick.1 == 0.0 {
-        0.0
-    } else {
-        wrap_angle(heading + look_offset(stick) - map_yaw)
-    }
+/// Right-stick look-around: owns the map's **view yaw** while the stick is in play, on top of
+/// the map's own rotation (its "base" yaw: 0 in north-up, the eased heading-up yaw otherwise).
+/// Both maps keep one of these and draw with the yaw [`LookAround::step`] returns.
+///
+/// - **Held** (option on, stick deflected): the view is `heading + eased θ`, `θ =
+///   look_offset(stick)`, `heading` the heading-up yaw ([`target_yaw`]), i.e. the direction
+///   the stick points **relative to the car** comes to the top (like the game's camera). The
+///   offset is kept *relative to the heading*, so the base yaw doesn't enter at all: "north up
+///   when stopped", "Smooth rotation" or the north-up lock can do what they like underneath
+///   and the view doesn't move (it follows the car's heading, exactly, and the stick).
+/// - **Released** (or option off): the offset is kept *relative to the base yaw* and decays
+///   to 0 at the map-rotation rate (6/s), so the view eases from wherever it is to the mode's
+///   own orientation and then simply *is* the base yaw again (no added lag once settled).
+///
+/// On each switch the offset is re-referenced from the previous frame's view, so the view is
+/// continuous. On release it is split so the total turn takes the short way to the base's
+/// target (`base_target`): the base eases there by its own shortest arc, the offset carries the
+/// rest (unwrapped, up to ±2π) and decays linearly, not by shortest arc.
+///
+/// Why one view state instead of the first version's `base + eased offset toward (heading +
+/// θ − base)`: when the base moved (north-up-when-stopped easing it to 0, or a snap with
+/// "Smooth rotation" off), the offset's target moved by minus that change in the same frame,
+/// but the offset only chased it at 6/s, so the sum swung toward north and then back to the
+/// stick (the reported "jolt", up to ~37 % of the base's swing). The held view never reads the
+/// base now.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LookAround {
+    /// Held: offset from the heading (wrapped). Released: offset from the base yaw (decaying).
+    off: f32,
+    held: bool,
+    /// The offset's goal: θ while held, 0 released.
+    goal: f32,
+    /// The view yaw of the last step (None before the first).
+    view: Option<f32>,
 }
 
-/// One frame of the eased look-around offset (added to `map_yaw` to get the view yaw): toward
-/// [`look_target`] while `enabled`, back to 0 when released or the option is off. Same easing
-/// as the map rotation ([`ease_yaw`]); the result is wrapped so it can't wind up over laps.
-pub fn ease_look(current: f32, stick: (f32, f32), enabled: bool, heading: f32, map_yaw: f32, dt: f32) -> f32 {
-    let target = if enabled { look_target(stick, heading, map_yaw) } else { 0.0 };
-    wrap_angle(ease_yaw(current, target, dt))
+impl LookAround {
+    /// One frame. `heading` = the heading-up yaw ([`target_yaw`]); `base` = the map's own yaw
+    /// this frame (what it shows without the stick); `base_target` = where that base is easing
+    /// to (0 north-up / stopped-north, else the heading). Returns the view yaw, wrapped.
+    pub fn step(&mut self, stick: (f32, f32), enabled: bool, heading: f32, base: f32, base_target: f32, dt: f32) -> f32 {
+        let held = enabled && !(stick.0 == 0.0 && stick.1 == 0.0);
+        let prev = self.view.unwrap_or(base);
+        if held {
+            if !self.held {
+                self.off = wrap_angle(prev - heading);
+            }
+            self.goal = look_offset(stick);
+            self.off = wrap_angle(ease_yaw(self.off, self.goal, dt));
+        } else {
+            if self.held {
+                self.off = wrap_angle(prev - base_target) - wrap_angle(base - base_target);
+            }
+            self.goal = 0.0;
+            self.off -= self.off * ease_t(dt);
+            if self.off.abs() < 1e-4 {
+                self.off = 0.0;
+            }
+        }
+        self.held = held;
+        let view = wrap_angle(if held { heading + self.off } else { base + self.off });
+        self.view = Some(view);
+        view
+    }
+
+    /// The view yaw of the last [`Self::step`], or `base` before the first.
+    pub fn view_yaw(&self, base: f32) -> f32 {
+        self.view.unwrap_or(base)
+    }
+
+    /// True while the look offset is still easing (the HUD redraws while animating).
+    pub fn easing(&self) -> bool {
+        let left = if self.held { wrap_angle(self.goal - self.off) } else { self.off };
+        left.abs() > 1e-3
+    }
 }
 
 /// One frame of smooth zoom toward `target_m`. `dt` in seconds.
@@ -494,32 +553,68 @@ mod tests {
         assert_eq!(look_offset((0.1, 0.1)), look_offset((0.9, 0.9)));
     }
 
-    /// Ease the look offset for `secs` at 60 fps against a fixed base / heading.
-    fn settle(mut off: f32, stick: (f32, f32), heading: f32, base: f32, secs: f32) -> f32 {
+    const DT: f32 = 1.0 / 60.0;
+
+    /// Step a look for `secs` at 60 fps against a fixed heading / base (the base settled at its
+    /// target). Returns the last view yaw.
+    fn settle(look: &mut LookAround, stick: (f32, f32), heading: f32, base: f32, secs: f32) -> f32 {
+        let mut view = look.view_yaw(base);
         for _ in 0..(secs * 60.0) as usize {
-            off = ease_look(off, stick, true, heading, base, 1.0 / 60.0);
+            view = look.step(stick, true, heading, base, base, DT);
         }
-        off
+        view
     }
 
     fn ang_close(a: f32, b: f32) -> bool {
         wrap_angle(a - b).abs() < 1e-2
     }
 
-    #[test]
-    fn ease_look_returns_to_zero_and_respects_enabled() {
-        // Heading-up (base = heading): the offset is just the stick angle.
-        let off = settle(0.0, (1.0, 0.0), 0.8, 0.8, 2.0);
-        assert!(ang_close(off, FRAC_PI_2), "{off}");
-        let off = settle(off, (0.0, 0.0), 0.8, 0.8, 2.0); // released
-        assert!(off.abs() < 1e-2, "{off}");
-        // Option off: the stick is ignored.
-        assert_eq!(ease_look(0.0, (1.0, 0.0), false, 0.8, 0.0, 0.016), 0.0);
+    /// A map like the Dashboard's / HUD's: the base-yaw rule (north-up lock, "north up when
+    /// stopped", "Smooth rotation") under a [`LookAround`].
+    struct Sim {
+        north_up: bool,
+        smooth: bool,
+        north_when_stopped: bool,
+        base: f32,
+        look: LookAround,
     }
 
-    /// The reported bug: in north-up the stick turned the view by its angle from *north*
-    /// (stick right = east at the top), so the result was off by the car's heading. Now the
-    /// stick picks a direction relative to the car in both modes, and the views agree.
+    impl Sim {
+        fn new(north_up: bool, smooth: bool, north_when_stopped: bool, heading: f32) -> Self {
+            Self { north_up, smooth, north_when_stopped, base: if north_up { 0.0 } else { heading }, look: LookAround::default() }
+        }
+        fn frame(&mut self, heading: f32, stopped: bool, stick: (f32, f32)) -> f32 {
+            let stopped_north = self.north_when_stopped && stopped;
+            let target = if self.north_up || stopped_north { 0.0 } else { heading };
+            self.base = if self.north_up {
+                0.0
+            } else if self.smooth || stopped_north {
+                ease_yaw(self.base, target, DT)
+            } else {
+                heading
+            };
+            self.look.step(stick, true, heading, self.base, target, DT)
+        }
+    }
+
+    #[test]
+    fn look_returns_to_base_and_respects_enabled() {
+        let mut look = LookAround::default();
+        // Heading-up (base = heading): the view is heading + stick angle.
+        let v = settle(&mut look, (1.0, 0.0), 0.8, 0.8, 2.0);
+        assert!(ang_close(v, 0.8 + FRAC_PI_2), "{v}");
+        assert!(!look.easing());
+        let v = settle(&mut look, (0.0, 0.0), 0.8, 0.8, 2.0); // released
+        assert!(ang_close(v, 0.8), "{v}");
+        assert_eq!(look.off, 0.0, "a settled release must hand the view back to the base exactly");
+        // Option off: the stick is ignored, the view is the base.
+        let mut look = LookAround::default();
+        assert!((look.step((1.0, 0.0), false, 0.8, 0.3, 0.3, 0.016) - 0.3).abs() < 1e-6);
+    }
+
+    /// The first north-up bug: the stick turned the view by its angle from *north* (stick
+    /// right = east at the top), so the result was off by the car's heading. Now the stick
+    /// picks a direction relative to the car in both modes, and the views agree.
     #[test]
     fn look_is_car_relative_in_north_up_and_heading_up() {
         use std::f32::consts::PI;
@@ -529,8 +624,8 @@ mod tests {
                 let theta = look_offset(stick);
                 let mut views = Vec::new();
                 for base in [0.0 /* north-up */, heading /* heading-up */] {
-                    let off = settle(0.0, stick, heading, base, 3.0);
-                    let view = MapView::new(car_x, car_z, base + off, 400.0, 200.0);
+                    let yaw = settle(&mut LookAround::default(), stick, heading, base, 3.0);
+                    let view = MapView::new(car_x, car_z, yaw, 400.0, 200.0);
                     // View yaw = car heading + stick angle.
                     assert!(ang_close(view.yaw, heading + theta), "h {heading} s {stick:?} base {base}: {}", view.yaw);
                     // The car stays at the view centre (the pivot).
@@ -556,23 +651,130 @@ mod tests {
     #[test]
     fn look_north_up_release_eases_back_to_north() {
         // Car heading east, north-up, stick right: the car's right (south) comes to the top.
-        let off = settle(0.0, (1.0, 0.0), FRAC_PI_2, 0.0, 3.0);
-        assert!(ang_close(off, std::f32::consts::PI), "{off}");
-        assert!(close(MapView::new(0.0, 0.0, off, 50.0, 100.0).world_to_offset(0.0, -10.0), [0.0, -10.0], 0.2));
+        let mut look = LookAround::default();
+        let v = settle(&mut look, (1.0, 0.0), FRAC_PI_2, 0.0, 3.0);
+        assert!(ang_close(v, std::f32::consts::PI), "{v}");
+        assert!(close(MapView::new(0.0, 0.0, v, 50.0, 100.0).world_to_offset(0.0, -10.0), [0.0, -10.0], 0.2));
         // Released: back to north-up.
-        let off = settle(off, (0.0, 0.0), FRAC_PI_2, 0.0, 3.0);
-        assert!(off.abs() < 1e-2, "{off}");
+        let v = settle(&mut look, (0.0, 0.0), FRAC_PI_2, 0.0, 3.0);
+        assert!(v.abs() < 1e-2, "{v}");
     }
 
     #[test]
-    fn look_offset_stays_wrapped_while_the_car_circles() {
+    fn look_stays_wrapped_while_the_car_circles() {
         // North-up, stick held up while the heading winds through several turns.
-        let mut off = 0.0;
+        let mut look = LookAround::default();
         for i in 0..2000 {
             let heading = i as f32 * 0.02; // ~6.4 turns
-            off = ease_look(off, (0.0, 1.0), true, heading, 0.0, 1.0 / 60.0);
-            assert!(off.abs() <= std::f32::consts::PI + 1e-4, "{off}");
+            let v = look.step((0.0, 1.0), true, heading, 0.0, 0.0, DT);
+            let pi = std::f32::consts::PI + 1e-4;
+            assert!(v.abs() <= pi && look.off.abs() <= pi, "{v} {}", look.off);
         }
+    }
+
+    /// The reported jolt: stick held right while driving heading-up, then the car stops and
+    /// "north up when stopped" eases the base to north underneath. The view must stay at
+    /// heading + 90 deg the whole time (it used to swing toward north by up to ~37 % of the
+    /// base's turn, then back). Released while stopped: a monotone ease to north. Then
+    /// driving off with the stick held again: no jump either; released: eases to the heading.
+    #[test]
+    fn look_held_ignores_north_up_when_stopped() {
+        for smooth in [true, false] {
+            let heading = 0.8;
+            let right = (1.0, 0.0);
+            let want = wrap_angle(heading + FRAC_PI_2);
+            let mut sim = Sim::new(false, smooth, true, heading);
+            for _ in 0..180 {
+                sim.frame(heading, false, right); // settle while driving
+            }
+            assert!(ang_close(sim.look.view_yaw(0.0), want));
+            // Stops: the base eases to north; the held view doesn't move at all.
+            for i in 0..180 {
+                let v = sim.frame(heading, true, right);
+                assert!(wrap_angle(v - want).abs() < 1e-3, "smooth {smooth} frame {i}: view {v}, want {want}");
+            }
+            assert!(sim.base.abs() < 1e-2, "the base did go north underneath: {}", sim.base);
+            // Released while stopped: monotone ease to north, never overshooting.
+            let mut prev = sim.look.view_yaw(0.0);
+            for _ in 0..240 {
+                let v = sim.frame(heading, true, (0.0, 0.0));
+                assert!(v.abs() < 1e-4 || (v.abs() <= prev.abs() + 1e-6 && v.signum() == prev.signum()), "{prev} -> {v}");
+                prev = v;
+            }
+            assert!(prev.abs() < 1e-2, "{prev}");
+            // Stick held again, then the car drives off (the base eases or snaps back to the
+            // heading underneath): the held view stays put.
+            for _ in 0..180 {
+                sim.frame(heading, true, right);
+            }
+            for i in 0..120 {
+                let v = sim.frame(heading, false, right);
+                assert!(wrap_angle(v - want).abs() < 1e-3, "smooth {smooth} drive-off frame {i}: {v}");
+            }
+            // Released while driving: eases to the heading.
+            let mut prev = sim.look.view_yaw(0.0);
+            for _ in 0..240 {
+                let v = sim.frame(heading, false, (0.0, 0.0));
+                assert!(wrap_angle(v - heading).abs() <= wrap_angle(prev - heading).abs() + 1e-6, "{prev} -> {v}");
+                prev = v;
+            }
+            assert!(ang_close(prev, heading), "{prev}");
+        }
+    }
+
+    /// Every mode (north-up lock, heading-up, smooth on/off, north-up-when-stopped on/off),
+    /// stick held while the car turns, stops and drives off: once settled, the view is exactly
+    /// heading + θ every frame, and it never moves more than the heading did.
+    #[test]
+    fn look_held_follows_only_heading_in_every_mode() {
+        let left = (-1.0, 0.0);
+        let theta = look_offset(left);
+        for north_up in [false, true] {
+            for smooth in [false, true] {
+                for nws in [false, true] {
+                    let mut sim = Sim::new(north_up, smooth, nws, 0.3);
+                    for _ in 0..180 {
+                        sim.frame(0.3, false, left);
+                    }
+                    let mut prev = (0.3f32, sim.look.view_yaw(0.0));
+                    for i in 0..600 {
+                        // Turning for 4 s, stopped for 3 s, then off again.
+                        let heading = 0.3 + (i.min(240) as f32) * 0.01;
+                        let stopped = (240..420).contains(&i);
+                        let v = sim.frame(heading, stopped, left);
+                        let tag = format!("north_up {north_up} smooth {smooth} nws {nws} frame {i}");
+                        assert!(wrap_angle(v - (heading + theta)).abs() < 2e-3, "{tag}: {v}");
+                        let moved = wrap_angle(v - prev.1).abs();
+                        assert!(moved <= wrap_angle(heading - prev.0).abs() + 1e-3, "{tag}: moved {moved}");
+                        prev = (heading, v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Released mid-way through the base's ease to north (the base is still turning): the view
+    /// takes the short way to north, not base arc + offset arc round the long way.
+    #[test]
+    fn look_release_takes_the_short_way_while_the_base_still_turns() {
+        let heading = 2.6; // ~149 deg; stick right -> view ~ -121 deg
+        let mut sim = Sim::new(false, true, true, heading);
+        for _ in 0..180 {
+            sim.frame(heading, false, (1.0, 0.0));
+        }
+        for _ in 0..3 {
+            sim.frame(heading, true, (1.0, 0.0)); // the base has just started its ease to north
+        }
+        assert!(sim.base > 1.5, "base still far from north: {}", sim.base);
+        let start = sim.look.view_yaw(0.0);
+        let (mut prev, mut travelled) = (start, 0.0);
+        for _ in 0..300 {
+            let v = sim.frame(heading, true, (0.0, 0.0));
+            travelled += wrap_angle(v - prev);
+            prev = v;
+        }
+        assert!(prev.abs() < 1e-2, "{prev}");
+        assert!((travelled + start).abs() < 1e-2 && travelled.abs() <= std::f32::consts::PI, "start {start}, travelled {travelled}");
     }
 
     #[test]

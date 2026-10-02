@@ -123,15 +123,46 @@ arrow (`arrow_angle` = `raw yaw - view yaw` = `-θ` in raw-yaw heading) and the 
 follow from the same `MapView` yaw, so they stay geometrically correct. Released (or option off), the
 view eases back to the mode's own orientation (north, or heading).
 
-**Implementation:** the eased offset `look` (`ForzaApp::minimap_look_off`, `MapAnim::look`) is added
-to the map's base yaw (`ForzaApp::minimap_base_yaw()`: 0 when north-up, else the smoothed heading-up
-yaw; the HUD's eased `MapAnim::yaw`). Each frame `minimap::ease_look(look, stick, enabled, heading,
-base, dt)` eases it (same `ease_yaw`, rate 6/s, shortest arc) toward `minimap::look_target(stick,
-heading, base) = wrap(heading + θ - base)`, or 0 when released, and wraps the result to (-PI, PI] so it
-can't wind up over laps. Both maps call this one function; only `heading`/`base` come from their own
-state (Dashboard: `minimap_cached_yaw` / `minimap_base_yaw()`, HUD: `target_yaw(pkt,
-map_use_movement_dir)` / its eased yaw). The HUD's "still animating" check compares against the same
-`look_target`, wrapped.
+**Implementation:** `minimap::LookAround` (`ForzaApp::minimap_look`, `MapAnim::look`) owns the
+drawn **view yaw**. The map's own rotation stays as before, the **base** yaw
+(`ForzaApp::minimap_base_yaw()`: 0 when north-up, else the smoothed heading-up yaw; the HUD's eased
+`MapAnim::yaw`). Each frame `look.step(stick, enabled, heading, base, base_target, dt)` returns the
+view yaw (wrapped to (-PI, PI]):
+
+- **Held** (option on, stick past the deadzone): `view = heading + off`, with `off` kept *relative to
+  the heading* and eased (`ease_yaw`, rate 6/s, shortest arc) toward `θ`. The base is not read at
+  all, so north-up-when-stopped, smooth rotation or the north-up lock changing underneath can't move
+  the view; it follows the heading exactly and the stick with the easing.
+- **Released** (or option off): `view = base + off`, with `off` kept *relative to the base* and
+  decaying to 0 at the same rate; once 0 the view is the base yaw again, with no added lag.
+- **On each switch** `off` is re-referenced from the previous frame's view (continuous). On release
+  it is `wrap(view - base_target) - wrap(base - base_target)`, unwrapped (up to ±2π) and decayed
+  linearly: the base eases to its target (`base_target`: 0 north-up / stopped-north, else the heading)
+  by its own short arc and `off` carries the rest, so the view's total turn is the short way to the
+  target (a plain `wrap(view - base)` could add two short arcs into a long one while the base is
+  still turning).
+
+Both maps call this one type; only `heading` / `base` / `base_target` come from their own state
+(Dashboard: `minimap_cached_yaw` / `minimap_base_yaw()` / the `base_target` computed next to the
+smoothing in `app.rs`; HUD: `target_yaw(pkt, map_use_movement_dir)` / its eased yaw /
+`map_target_yaw`). The HUD's "still animating" check is `LookAround::easing()`.
+
+**Fixed bug (jolt with north-up-when-stopped):** the previous version eased an offset added to the
+base, `view = base + look`, with `look` chasing `wrap(heading + θ - base)` at 6/s. When the base
+moved, the target moved by minus that change in the same frame, but `look` only caught up at 6/s, so
+the view swung with the base and then back. For the base easing to north (`b(t) = b0·e^(-6t)`) the
+view error is `e(t) = -6·b0·t·e^(-6t)`, peaking at `-b0/e` (about 37 % of the base's turn) after 1/6 s:
+"jolts toward north, then smoothly back to the stick". A snapping base (smooth rotation off, driving
+off after a stop) jumped by the whole difference. *Why the new structure:* the user wants the held
+view to stay exactly where the stick points whatever the mode does underneath, and to ease from
+wherever it is to the mode's orientation on release; keeping the held offset relative to the heading
+makes the first true by construction instead of by compensation. Tests:
+`minimap::tests::look_held_ignores_north_up_when_stopped` (smooth on/off: held view constant while the
+base goes north, monotone release to north, no jump driving off, release to heading),
+`look_held_follows_only_heading_in_every_mode` (north-up / heading-up × smooth × stopped-north, turning
++ stop + drive-off: view = heading + θ every frame, never moves more than the heading),
+`look_release_takes_the_short_way_while_the_base_still_turns`, and
+`hud::minimap::tests::map_anim_held_look_ignores_north_up_when_stopped` (through the HUD's `MapAnim`).
 
 **Fixed bug (north-up offset):** the first version added `θ` straight onto the base yaw
 (`view yaw = base + θ`). In heading-up `base ≈ heading`, so that was car-relative; but in north-up
@@ -148,10 +179,10 @@ Why:
   reported the north-relative version as "weirdly offset").
 - *Angle only, not scaled by deflection*: the deadzone already gates it, and scaling the angle by
   magnitude would make a half-pushed stick point at the wrong direction.
-- *A separate eased offset* rather than folded into the target yaw: it eases even with "Smooth
-  rotation" off, and leaves north-up / ease-to-north unchanged once released. Known trade-off: in
-  north-up the held look view follows heading changes through the look easing (rate 6/s), so it lags
-  a little while turning, like heading-up with "Smooth rotation" on.
+- *Its own easing* rather than folded into the base's target yaw: it eases even with "Smooth
+  rotation" off, and leaves north-up / ease-to-north unchanged once released. While held, the view
+  follows heading changes exactly (no lag) in every mode, since the offset is relative to the
+  heading; only stick changes are eased.
 
 It is independent of right-stick *button bindings*: a bound direction still fires its action and still
 rotates the map. HUD plumbing: `HudSink::with_stick` stamps `HudSnapshot::look_stick` at publish time
@@ -168,12 +199,29 @@ shared in `src/minimap.rs`. *Why:* the user wants the HUD map to match the Dashb
 implementation means a tweak to an arrow, label or trail lands on both. The buffers differ: the
 Dashboard's is `ForzaApp::minimap_trails` (UI thread), the HUD's is `CoopLayer` (overlay thread).
 
+## Solo trail
+
+Outside a co-op session the map draws **your own breadcrumb trail in white** (the own arrow's
+outside-session colour, same rule), with the same fade settings as the co-op trails (Dashboard: Map →
+Co-Op "Tracer fade", `coop_trail_fade_secs` / `coop_trail_fade_m`; HUD: its trail fade). It is the
+`"local"` entry of the same trail buffers (`ForzaApp::minimap_trails`, the HUD's `CoopLayer::trails`),
+recorded with `trail_push` while driving (race on, not paused).
+
+- **Session start / end:** the own trail's points are kept; only its colour follows the current
+  state (co-op colour in a session, white outside). Teammates' trails, last-known spots and waypoints
+  are dropped when the session ends, as before. *Why:* simplest, and a trail that suddenly vanished
+  (or a gap) on joining a session would read as a glitch; its points still age out by the fade.
+- **Toggles:** the Dashboard has no trail switch (it never had one for co-op either), so the solo trail
+  is always on there. The HUD's **Show trails** (`coop_trails`, `true` under "Use Dashboard co-op
+  settings") gates the own trail in and out of a session alike: off = no solo trail either.
+- *Why:* the user asked for the trails "in solo too, but only in white".
+
 ## Co-Op integration
 
 When in a [[coop]] session, the map additionally draws:
 
-- **Breadcrumb trails** — each player's (including your own) recent path, drawn
-  in their identity colour, fading out by whichever comes first: age
+- **Breadcrumb trails** — each player's recent path (yours too, which is also drawn
+  solo, see above), in their identity colour, fading out by whichever comes first: age
   (**Fade after (time)**) or distance behind the player's current position
   (**Fade after (distance)**).
 - **Remote players** — coloured heading arrows with name labels when on-screen;

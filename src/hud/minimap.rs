@@ -107,8 +107,10 @@ pub struct MapAnim {
     last: Option<f64>,
     yaw: Option<f32>,
     zoom: Option<f32>,
-    /// Eased right-stick look-around offset, added to `yaw` when drawing.
-    look: f32,
+    /// Right-stick look-around; owns the drawn view yaw (`view`).
+    look: mm::LookAround,
+    /// The yaw the map is drawn with: `yaw` under the look-around.
+    view: f32,
     slow_since: Option<f64>,
 }
 
@@ -145,16 +147,15 @@ impl MapAnim {
             Some(z) if stopped || kmh >= mm::STOPPED_KMH => mm::ease_zoom(z, target_zoom, dt),
             Some(z) => z,
         };
-        // Look-around is relative to the car's heading (the heading-up yaw) in every mode.
+        // Look-around is relative to the car's heading (the heading-up yaw) in every mode, and
+        // while held it ignores the base yaw (see `minimap::LookAround`).
         let heading = mm::target_yaw(pkt, cfg.map_use_movement_dir);
-        self.look = mm::ease_look(self.look, snap.look_stick, cfg.map_look_stick, heading, yaw, dt);
+        self.view = self.look.step(snap.look_stick, cfg.map_look_stick, heading, yaw, target_yaw, dt);
         self.yaw = Some(yaw);
         self.zoom = Some(zoom);
-        let look_target = if cfg.map_look_stick { mm::look_target(snap.look_stick, heading, yaw) } else { 0.0 };
-        let look_left = (mm::lerp_angle(self.look, look_target, 1.0) - self.look).abs() > 1e-3;
         let yaw_left = (mm::lerp_angle(yaw, target_yaw, 1.0) - yaw).abs() > 1e-3;
         let zoom_left = (zoom - target_zoom).abs() > 0.5 && (stopped || kmh >= mm::STOPPED_KMH);
-        yaw_left || zoom_left || look_left
+        yaw_left || zoom_left || self.look.easing()
     }
 }
 
@@ -177,7 +178,8 @@ pub struct CoopInput {
     pub waypoints: Vec<(f32, f32, f32)>,
 }
 
-/// The co-op layer of the Minimap: who to draw, their trails, the shared waypoints.
+/// The co-op layer of the Minimap: who to draw, their trails, the shared waypoints. The own
+/// trail is kept without a session too (the solo trail, drawn white).
 ///
 /// **Why the HUD keeps its own trail buffers** (instead of the Dashboard's
 /// `ForzaApp::minimap_trails`, which the UI thread fills): the UI loop stops while the game
@@ -199,20 +201,21 @@ pub struct CoopLayer {
 }
 
 impl CoopLayer {
-    /// Refresh from this frame's co-op state. Anything the effective config turns off, or a
-    /// session that isn't running, leaves the matching part empty (and forgets its history).
+    /// Refresh from this frame's co-op state. Anything the effective config turns off leaves
+    /// the matching part empty (and forgets its history). Without a session only the own
+    /// trail is kept (solo trail, drawn white); it survives a session starting or ending.
     pub fn update(&mut self, input: Option<CoopInput>, snap: &HudSnapshot, now: Instant) {
         let cfg = &*snap.cfg;
         self.now = Some(now);
-        let Some(input) = input.filter(|i| i.in_session && cfg.minimap_on) else {
+        if !cfg.minimap_on {
             *self = Self { now: self.now, ..Self::default() };
             return;
-        };
-        self.in_session = true;
+        }
         let max_age = Duration::from_secs_f32(cfg.coop_trail_fade_secs.max(0.5));
         let mut present: HashSet<String> = HashSet::new();
 
-        // Own trail: only while driving (not paused, game connected), like the Dashboard.
+        // Own trail, in a session or solo: only while driving (not paused, game connected),
+        // like the Dashboard. "Show trails" off drops it in both cases.
         let pkt = &snap.pkt;
         if cfg.coop_trails {
             if snap.connected && pkt.is_race_on != 0 && !pkt.is_paused() {
@@ -220,6 +223,16 @@ impl CoopLayer {
             }
             present.insert("local".into());
         }
+
+        let Some(input) = input.filter(|i| i.in_session) else {
+            let own = self.trails.remove("local").filter(|_| cfg.coop_trails);
+            *self = Self { now: self.now, ..Self::default() };
+            if let Some(tr) = own {
+                self.trails.insert("local".into(), tr);
+            }
+            return;
+        };
+        self.in_session = true;
 
         self.teammates.clear();
         if cfg.coop_teammates {
@@ -300,7 +313,7 @@ fn clip_convex(subject: &[Pos2], clip: &[Pos2]) -> Vec<Pos2> {
 /// Draw M2′. Returns true while the view is still easing.
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
-    let (yaw, zoom) = (anim.yaw.unwrap_or(0.0) + anim.look, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
+    let (yaw, zoom) = (anim.view, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
     let (w, h) = (SIZE.x, SIZE.y);
     let centre = xf.p(w / 2.0, h / 2.0);
     let view = MapView::new(snap.pkt.position_x, snap.pkt.position_z, yaw, zoom, xf.l(w.min(h)));
@@ -358,8 +371,11 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let hue = |h: f32| crate::ui::coop::hue_color(h);
     let at = coop.now.unwrap_or_else(Instant::now);
     let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
+    // Own arrow and trail: the player's co-op colour in a session, white otherwise (as the
+    // Dashboard).
+    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
     if let Some(tr) = coop.trails.get("local") {
-        map_shared::draw_trail(&cv, tr, hue(snap.coop_hue), fade, at);
+        map_shared::draw_trail(&cv, tr, own, fade, at);
     }
     for t in coop.teammates.iter().filter(|t| !t.paused) {
         if let Some(tr) = coop.trails.get(&t.id) {
@@ -368,8 +384,6 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     }
     map_shared::draw_remotes(&cv, &coop.teammates, car, view.yaw);
 
-    // Own arrow: the player's co-op colour in a session, white otherwise (as the Dashboard).
-    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
     map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
     for &(x, z, hue_deg) in &coop.waypoints {
         map_shared::draw_waypoint(&cv, (x, z), hue(hue_deg), car, now as f32);
@@ -480,21 +494,26 @@ mod tests {
     }
 
     #[test]
-    fn coop_layer_records_own_and_teammate_trails_only_in_a_session() {
+    fn coop_layer_records_teammates_in_a_session_and_the_own_trail_always() {
         let cfg = crate::config::OverlayConfig::default();
         let mut layer = CoopLayer::default();
         let t0 = Instant::now();
-        // Not in a session: nothing is recorded or drawn.
-        layer.update(Some(input(false, vec![(0.0, 0.0, false)])), &driving_snap(cfg.clone(), 0.0, 0.0), t0);
-        assert!(!layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty() && layer.waypoints.is_empty());
+        // Not in a session: only the own (solo) trail is recorded; no teammates or waypoints.
+        layer.update(Some(input(false, vec![(0.0, 0.0, false)])), &driving_snap(cfg.clone(), -10.0, 0.0), t0);
+        assert!(!layer.in_session && layer.teammates.is_empty() && layer.waypoints.is_empty());
+        assert_eq!(layer.trails.keys().collect::<Vec<_>>(), ["local"]);
+        // No co-op handle at all: the same.
+        layer.update(None, &driving_snap(cfg.clone(), -20.0, 0.0), t0);
+        assert_eq!((layer.trails.len(), layer.trails["local"].len()), (1, 2));
 
         // In a session: own + teammate trails grow with movement (4 m spacing), waypoint kept.
+        // The solo points carry over into the session.
         for i in 0..3 {
             let x = i as f32 * 10.0;
             layer.update(Some(input(true, vec![(x, 5.0, false)])), &driving_snap(cfg.clone(), x, 0.0), t0);
         }
         assert!(layer.in_session);
-        assert_eq!(layer.trails["local"].len(), 3);
+        assert_eq!(layer.trails["local"].len(), 5);
         assert_eq!(layer.trails["p0"].len(), 3);
         assert_eq!((layer.teammates.len(), layer.waypoints.len()), (1, 1));
 
@@ -504,9 +523,20 @@ mod tests {
         assert!(t.paused && (t.x, t.z) == (20.0, 5.0), "{t:?}");
         assert_eq!(layer.trails["p0"].len(), 3);
 
-        // Session ends: everything is forgotten.
-        layer.update(None, &driving_snap(cfg, 20.0, 0.0), t0);
-        assert!(!layer.in_session && layer.trails.is_empty() && layer.teammates.is_empty());
+        // Session ends: teammates, their trails and waypoints are forgotten; the own trail stays.
+        layer.update(None, &driving_snap(cfg.clone(), 20.0, 0.0), t0);
+        assert!(!layer.in_session && layer.teammates.is_empty() && layer.waypoints.is_empty());
+        assert_eq!((layer.trails.len(), layer.trails["local"].len()), (1, 5));
+
+        // "Show trails" off: the solo trail goes too.
+        let off = crate::config::OverlayConfig { coop_trails: false, ..Default::default() };
+        layer.update(None, &driving_snap(off, 30.0, 0.0), t0);
+        assert!(layer.trails.is_empty());
+        // Minimap module off: nothing.
+        layer.update(None, &driving_snap(cfg.clone(), 40.0, 0.0), t0);
+        let hidden = crate::config::OverlayConfig { minimap_on: false, ..Default::default() };
+        layer.update(None, &driving_snap(hidden, 50.0, 0.0), t0);
+        assert!(layer.trails.is_empty());
     }
 
     /// The HUD runs the same look-around as the Dashboard: in north-up and heading-up alike the
@@ -514,7 +544,7 @@ mod tests {
     #[test]
     fn map_anim_look_is_car_relative_in_north_up() {
         use std::f32::consts::{FRAC_PI_2, PI};
-        let view_yaw = |a: &MapAnim| a.yaw.unwrap() + a.look;
+        let view_yaw = |a: &MapAnim| a.view;
         let ang = |a: f32, b: f32| mm::wrap_angle(a - b).abs() < 1e-2;
         for north_up in [true, false] {
             let cfg = crate::config::OverlayConfig { map_north_up: north_up, map_look_stick: true, map_smooth_rotation: false, ..Default::default() };
@@ -538,6 +568,44 @@ mod tests {
             }
             let rest = if north_up { 0.0 } else { FRAC_PI_2 };
             assert!(ang(view_yaw(&anim), rest), "north_up {north_up}: {}", view_yaw(&anim));
+        }
+    }
+
+    /// The reported jolt, through the HUD's own `MapAnim`: stick held right, the car stops and
+    /// "north up when stopped" engages after 1.5 s. The view must not move (it used to swing
+    /// toward north, then back); released, it eases monotonically to north.
+    #[test]
+    fn map_anim_held_look_ignores_north_up_when_stopped() {
+        use std::f32::consts::FRAC_PI_2;
+        for smooth in [true, false] {
+            let cfg = crate::config::OverlayConfig { map_north_up_when_stopped: true, map_look_stick: true, map_smooth_rotation: smooth, ..Default::default() };
+            let mut s = driving_snap(cfg, 0.0, 0.0);
+            s.pkt.speed = 30.0;
+            s.pkt.yaw = 0.8;
+            s.look_stick = (1.0, 0.0);
+            let want = mm::wrap_angle(0.8 + FRAC_PI_2);
+            let mut anim = MapAnim::default();
+            let mut t = 0.0;
+            for _ in 0..240 {
+                anim.step(&s, t);
+                t += 1.0 / 60.0;
+            }
+            s.pkt.speed = 0.0; // stops: after 1.5 s the base eases to north
+            for i in 0..300 {
+                anim.step(&s, t);
+                t += 1.0 / 60.0;
+                assert!(mm::wrap_angle(anim.view - want).abs() < 1e-3, "smooth {smooth} frame {i}: {}", anim.view);
+            }
+            assert!(anim.yaw.unwrap().abs() < 1e-2, "base went north underneath: {:?}", anim.yaw);
+            s.look_stick = (0.0, 0.0);
+            let mut prev = anim.view;
+            for _ in 0..300 {
+                anim.step(&s, t);
+                t += 1.0 / 60.0;
+                assert!(anim.view.abs() <= prev.abs() + 1e-6, "{prev} -> {}", anim.view);
+                prev = anim.view;
+            }
+            assert!(prev.abs() < 1e-2 && !anim.step(&s, t), "{prev}");
         }
     }
 
