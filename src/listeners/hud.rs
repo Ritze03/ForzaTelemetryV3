@@ -178,18 +178,20 @@ pub fn hud_paused(pkt: &ForzaPacket, experimental: bool) -> bool {
 /// Exposed for the Debug tab (D24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GarageMatch {
-    /// Level (|yaw|, |pitch|, |roll| < 0.01), handbrake 255, and no linear/angular velocity.
+    /// Level (|yaw|, |pitch|, |roll| < 0.01), handbrake 255, and no linear velocity.
     LevelHandbrakeStill,
 }
 
 /// Orientation magnitude below this (rad) counts as "level".
 const GARAGE_LEVEL_EPS: f32 = 0.01;
-/// Velocity / angular-velocity component magnitude below this counts as "motionless".
+/// Linear velocity component magnitude below this counts as "motionless".
 const GARAGE_STILL_EPS: f32 = 0.01;
 
 /// D29 experimental garage / menu detection. FH6 keeps `is_race_on = 1` and a normal max rpm in
 /// the garage, so the other pause rules miss it. A garage packet is level (yaw/pitch/roll ~ 0),
-/// has the handbrake fully on (255) and every velocity 0. Pure: no state, no debounce (the HUD
+/// has the handbrake fully on (255) and zero linear velocity. Angular velocity is deliberately
+/// NOT checked: it jumps when accelerating while standing still and when rotating the car in the
+/// garage. Pure: no state, no debounce (the HUD
 /// already waits [`PAUSE_HIDE_SECS`] before hiding). Limitation: a garage view with the car
 /// rotated (yaw far from 0) is missed.
 pub fn garage_paused(pkt: &ForzaPacket) -> Option<GarageMatch> {
@@ -198,7 +200,6 @@ pub fn garage_paused(pkt: &ForzaPacket) -> Option<GarageMatch> {
         && pkt.roll.abs() < GARAGE_LEVEL_EPS;
     let still = [
         pkt.velocity_x, pkt.velocity_y, pkt.velocity_z,
-        pkt.angular_velocity_x, pkt.angular_velocity_y, pkt.angular_velocity_z,
     ]
     .iter()
     .all(|v| v.abs() < GARAGE_STILL_EPS);
@@ -703,8 +704,9 @@ mod tests {
         // Level, handbrake on, but moving.
         let moving = ForzaPacket { velocity_z: 3.0, ..garage.clone() };
         assert!(garage_paused(&moving).is_none());
-        let spinning = ForzaPacket { angular_velocity_y: 1.0, ..garage.clone() };
-        assert!(garage_paused(&spinning).is_none());
+        let spinning = ForzaPacket { angular_velocity_x: 0.5, ..garage.clone() };
+        assert!(garage_paused(&spinning).is_some() && hud_paused(&spinning, true),
+            "angular velocity is ignored");
         // Handbrake not fully on.
         assert!(garage_paused(&ForzaPacket { hand_brake: 254, ..garage }).is_none());
     }
