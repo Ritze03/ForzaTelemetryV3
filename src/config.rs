@@ -1045,7 +1045,7 @@ impl Default for AppConfig {
             coop_last_code: String::new(),
             coop_transport: CoopTransport::Trystero,
             coop_room: String::new(),
-            coop_autoconnect: true,
+            coop_autoconnect: false,
             coop_trail_fade_secs: 10.0,
             coop_trail_fade_m: 500.0,
             coop_map_playerlist: false,
@@ -1656,7 +1656,7 @@ mod tests {
         // Trystero fields added later fill from defaults too.
         assert_eq!(cfg.coop_transport, CoopTransport::Trystero);
         assert!(cfg.coop_room.is_empty());
-        assert!(cfg.coop_autoconnect);
+        assert!(!cfg.coop_autoconnect);
     }
 
     #[test]

@@ -99,6 +99,8 @@ personal values are deliberately **not** copied: `fh6_install_dir`, `input_perm_
 last code), window geometry, port, profile selection. The per-feature docs list each value
 ([[overlay]], [[hotkeys]], [[gamepad]], [[backfire]], [[coop]]).
 
+**Auto-connect stays off by default** (`coop_autoconnect = false`). *Why:* it is opt-in; joining a room automatically on start should be the user's choice.
+
 ## The migration pattern (renaming/removing a config field or enum value)
 
 This is the sharp edge: because `load()` merges onto raw JSON and only migrates known

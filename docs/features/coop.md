@@ -63,7 +63,7 @@ session. While connected the card shows "Room" + ID with Copy. The ID is persist
 `coop_room`; it is normalised (`normalize_room`: lowercase, all whitespace stripped) in
 `start_trystero`, so the UI and auto-connect agree on the room (it is hashed into the topics and
 key, so any difference is a different room). *Why 32 chars:* generated IDs should be >= 32 chars so shared public rooms practically never collide (the ID is also the encryption secret). Enter in the Room ID field joins. The field fills the card width (no char limit, hint shows a full-length example); the shown room code in the session card drops to 12 px for IDs over 24 chars so all 39 chars (incl. dashes) fit beside Copy. Hint shown: "Anyone with this ID can join. Treat it like a password."
-**Auto-connect on startup** (`coop_autoconnect`, on by default; Trystero only; with no saved room it does nothing) rejoins the last room at launch
+**Auto-connect on startup** (`coop_autoconnect`, off by default (opt-in); Trystero only; with no saved room it does nothing) rejoins the last room at launch
 (`ForzaApp::new` in `app.rs`, right after `CoopState::new`). **Why Trystero only:** Cloudflare
 slugs are random per host session, so auto-rejoin would nearly always fail.
 `coop_transport`, `coop_room`, `coop_autoconnect` are in `COOP_KEYS` (profile export). The default transport is **Trystero** (the user's choice; was Cloudflare); `coop_room` stays empty (a personal room ID).
