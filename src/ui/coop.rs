@@ -244,6 +244,21 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
         }
     });
 
+    // Cloudflare-only setting, so it sits right under the session card that holds the
+    // transport switch and only shows while Cloudflare is selected.
+    if app.config.coop_transport == CoopTransport::Cloudflare {
+        crate::theme::card(ui, tr("Cloudflare"), |ui| {
+            ui.columns(2, |c| {
+                crate::theme::row_label(&mut c[0], tr("Host port"));
+                let ui = &mut c[1];
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(egui::DragValue::new(&mut app.config.coop_port).range(1024..=65535))
+                        .on_hover_text(tr("Local port the tunnel points at. Change only if it clashes with another app."));
+                });
+            });
+        });
+    }
+
     roster_panel(ui, app);
 }
 
@@ -261,7 +276,7 @@ fn trystero_join(ui: &mut Ui, app: &mut ForzaApp) {
             }
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut app.config.coop_room)
-                    .hint_text(crate::theme::placeholder("k7f2-9qzm-x4pd"))
+                    .hint_text(crate::theme::placeholder("k7f2-9qzm-x4pd-0a1b-c2d3-e4f5-g6h7-j8k9"))
                     .desired_width(ui.available_width()),
             );
             enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -302,6 +317,8 @@ fn trystero_join(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {
     use crate::icons;
+    // A 39-char Trystero room ID doesn't fit at 16 px beside the Copy button.
+    let code_size = if words.chars().count() > 24 { 12.0 } else { 16.0 };
     egui::Frame::new()
         .fill(crate::theme::FIELD)
         .inner_margin(egui::Margin::symmetric(8, 6))
@@ -310,7 +327,7 @@ fn share_code(ui: &mut Ui, app: &mut ForzaApp, words: &str) {
             ui.horizontal(|ui| {
                 // Selectable so it can be copied by hand if the button fails.
                 ui.add(
-                    egui::Label::new(RichText::new(words).monospace().size(16.0).strong())
+                    egui::Label::new(RichText::new(words).monospace().size(code_size).strong())
                         .selectable(true),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

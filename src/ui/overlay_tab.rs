@@ -115,7 +115,9 @@ fn general(ui: &mut Ui, app: &mut ForzaApp) {
         pct_row(ui, tr("Scale"), &mut o.scale, 50.0, 200.0, 5.0);
         pct_row(ui, tr("Plate opacity"), &mut o.plate_opacity, 0.0, 100.0, 1.0);
         theme::checkbox_row(ui, &mut o.fade, tr("Fade on show / hide"));
-        hint(ui, tr("\"Only when game window is focused\" is in Setup → Window Detection. The HUD hides by itself while the game is paused."));
+        theme::checkbox_row(ui, &mut o.focus_only, tr("Only when game window is focused"))
+            .on_hover_text(tr("Hides the HUD while another window is focused. Uses the Window Detection method set in Setup."));
+        hint(ui, tr("The HUD hides by itself while the game is paused."));
     });
 }
 
@@ -567,8 +569,18 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
         let use_mph = app.config.use_mph;
         let o = &mut app.config.overlay;
         control_row(ui, tr("Style"), |ui| {
-            theme::styled_radio(ui, &mut o.cluster_style, ClusterStyle::Pill, tr("D1a Pill"));
-            theme::styled_radio(ui, &mut o.cluster_style, ClusterStyle::Halo, tr("D3a′ Halo"));
+            let label = |s: ClusterStyle| match s {
+                ClusterStyle::Pill => tr("Pill"),
+                ClusterStyle::Halo => tr("Halo"),
+            };
+            egui::ComboBox::from_id_salt("overlay_cluster_style")
+                .selected_text(label(o.cluster_style))
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for s in [ClusterStyle::Pill, ClusterStyle::Halo] {
+                        ui.selectable_value(&mut o.cluster_style, s, label(s));
+                    }
+                });
         });
         let rpm_label = if use_mph {
             tr("Show engine RPM instead of MPH label")
