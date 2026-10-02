@@ -1,5 +1,8 @@
 # Debug
 
+The tab is split into two columns (`ui.columns(2)`): **left** the raw packet (below), **right** the
+"Derived from telemetry" card (see the end of this page).
+
 A top-level tab just left of Setup (bug icon, `icons::BUG` = fa-bug U+F188). It shows every field of
 the latest received `ForzaPacket` (`app.telemetry.latest`) raw, as a live, scrollable,
 monospaced **name → value** grid inside one "Raw Telemetry" card, plus a **Copy** button
@@ -24,3 +27,27 @@ names and stay untranslated (they're data).
 *Why:* the user asked for a "super simple" page with all raw readings. A hand-written list
 of ~85 fields would go stale the first time `packet.rs` changes; the Debug output can't
 drift. A unit test checks there's one row per field.
+
+
+## Derived from telemetry (right column, D24)
+
+Display only, nothing consumes it yet. *Why:* the user wanted to "easily see whether it gets it
+right" before the app relies on these values anywhere.
+
+| Row | Source |
+| --- | --- |
+| Experimental pause detection | `config.experimental_pause_detection` |
+| Paused / Pause reason | `debug_tab::pause_reasons`: the same checks as `listeners::hud::hud_paused` (race off, `engine_max_rpm <= 0`, zero yaw/pitch/roll, and `garage_paused` only when experimental is on), one line per rule that fired. A `debug_assert` keeps it equal to `hud_paused`. |
+| In race | `race_position != 0` (the gearbox's own in-race test) |
+| Gearbox selected / effective / resolved | `config.dsg_gearbox_mode`, `dsg_effective_mode(in_race)`, `dsg_resolved_mode(in_race, false)` (`off` = None). **Drift is not shown**: the HUD mode classifier lives on the listener thread and is not in app state, so resolved assumes "not drifting". |
+| Calibrated max RPM | `app.dynamic_max_rpm` (the listener's per-car calibration, mirrored into the UI) |
+| Season | `minimap::current_season()` (wall clock) |
+| Car block | `CarDbState` (in `debug_tab.rs`, held in `app.debug_cars`): ordinal, language + whether served from cache, install path + car count, name (`display`), make, media name. |
+
+**Car DB loading.** `gamedata::cars::CarDb::load` blocks (~0.4-1 s cold, ~4 ms warm), so
+`CarDbState::poll` (called each frame from `show`) spawns a thread on the first open of the tab and
+collects the result through an `mpsc` channel (same pattern as the minimap loader), asking for a
+repaint every 100 ms while loading. It reloads if the UI language changes (`i18n::language_code()`:
+EN/DE, the game's `<LANG>` codes; `load` itself falls back to EN when a zip is missing). States:
+loading / failed (install not found, with the error text) / ready. *Why lazy, not at startup:* most
+sessions never open the Debug tab, and the cold scan reads the whole install.
