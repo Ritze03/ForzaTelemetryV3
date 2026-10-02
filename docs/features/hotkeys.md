@@ -132,6 +132,10 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   backfire). *Why a probe, not the listener:* the backends run on worker threads and only
   `return` on failure, so the UI can't ask them; opening the nodes is cheap and exact.
   *Why the flag is `EXPORT_EXCLUDE`:* it's per-machine, not a tuning setting.
+  *Dev/testing aid:* `FORZA_FAKE_NO_INPUT_PERMS=1` makes `probe()` report hotkeys unreadable,
+  uinput not writable and not in the `input` group (node present but not group-writable, so the
+  udev-rule and `usermod` commands show). *Why:* a machine with every permission never shows
+  the modal, so it couldn't be reviewed.
 - Observe-only (a bound key still reaches the game); modifiers tracked per keyboard device;
   focus reads can be up to `1/Hz` stale; keyboards hot-plugged after launch need a restart.
   See spec §11.

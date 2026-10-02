@@ -460,6 +460,8 @@ pub struct ForzaApp {
     last_tab: Tab,
     /// Hide HUD hotkey state, copied from `ListenerView::hud_hidden` (Overlay tab hint).
     pub hud_hidden: bool,
+    /// Race / drift mode, copied from `ListenerView::hud_mode` (Debug tab).
+    pub hud_mode: crate::overlay::snapshot::HudMode,
     /// Detect-button countdown deadline (active-window auto-fill).
     pub detect_until: Option<std::time::Instant>,
     /// Last Custom-preview / Detect result for the settings page.
@@ -782,6 +784,7 @@ impl ForzaApp {
             rebind_button: None,
             last_tab: Tab::Dashboard,
             hud_hidden: false,
+            hud_mode: Default::default(),
             detect_until: None,
             focus_preview: String::new(),
             power_capture: PowerCapture::new(),
@@ -1113,6 +1116,7 @@ impl ForzaApp {
         self.backfire = view.backfire;
         self.dynamic_max_rpm = view.dynamic_max_rpm;
         self.hud_hidden = view.hud_hidden;
+        self.hud_mode = view.hud_mode;
         if view.toggle_gen != self.last_toggle_gen {
             self.last_toggle_gen = view.toggle_gen;
             self.config.dsg_enabled = view.dsg_enabled;

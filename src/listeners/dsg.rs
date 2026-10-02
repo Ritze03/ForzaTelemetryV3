@@ -88,6 +88,8 @@ pub struct DsgListener {
     /// The HUD's race-vs-drift classifier, fed every packet here too (the HUD's own copy only
     /// runs while the overlay is on). Drives *Disable in drift events*.
     drift: ModeClassifier,
+    /// Latest result of `drift`, mirrored to the UI via `ListenerView::hud_mode` (Debug tab).
+    pub hud_mode: HudMode,
     // ── Debug telemetry (read by the Fun-tab debug panel) ──
     pub dbg_desired_gear: i32,
     pub dbg_effective_max_rpm: f32,
@@ -123,6 +125,7 @@ impl DsgListener {
             resync_until: None,
             pending_log: None,
             drift: ModeClassifier::default(),
+            hud_mode: HudMode::default(),
             dbg_desired_gear: 0,
             dbg_effective_max_rpm: 0.0,
             dbg_shift_threshold: 0.0,
@@ -174,7 +177,8 @@ impl DsgListener {
     ) {
         // Race vs drift, shared with the HUD (`listeners/hud.rs`). Fed before the paused early-out
         // so its window restarts on a pause instead of measuring it.
-        let in_drift = self.drift.update(pkt.current_lap, pkt.timestamp_ms, !hud_paused(pkt, cfg.experimental_pause_detection)) == HudMode::Drift;
+        self.hud_mode = self.drift.update(pkt.current_lap, pkt.timestamp_ms, !hud_paused(pkt, cfg.experimental_pause_detection));
+        let in_drift = self.hud_mode == HudMode::Drift;
 
         if pkt.is_race_on == 0 {
             return;

@@ -452,6 +452,10 @@ pub fn evaluate(p: &InputProbe) -> InputReport {
 pub fn probe() -> InputProbe {
     #[cfg(target_os = "linux")]
     {
+        // Dev/testing aid: pretend nothing is permitted so the modal can be reviewed.
+        if std::env::var_os("FORZA_FAKE_NO_INPUT_PERMS").is_some_and(|v| v == "1") {
+            return InputProbe { hotkeys_ok: false, uinput_ok: false, uinput_exists: true, uinput_group_input: false, in_input_group: false };
+        }
         use std::os::unix::fs::MetadataExt;
         let input_gid = std::fs::read_to_string("/etc/group").ok().and_then(|g| {
             g.lines().find_map(|l| {

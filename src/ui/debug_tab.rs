@@ -140,10 +140,12 @@ fn derived_card(ui: &mut egui::Ui, app: &crate::app::ForzaApp) {
                     row(ui, tr("In race (race position set)"), yes_no(in_race));
                     row(ui, tr("Gearbox: selected mode"), app.config.dsg_gearbox_mode.label());
                     row(ui, tr("Gearbox: effective mode"), app.config.dsg_effective_mode(in_race).label());
+                    let in_drift = app.hud_mode == crate::overlay::snapshot::HudMode::Drift;
+                    row(ui, tr("HUD mode"), if in_drift { tr("Drift") } else { tr("Race / free roam") });
                     row(
                         ui,
-                        tr("Gearbox: resolved (drift ignored)"),
-                        app.config.dsg_resolved_mode(in_race, false).map_or(tr("off"), |m| m.label()),
+                        tr("Gearbox: resolved"),
+                        app.config.dsg_resolved_mode(in_race, in_drift).map_or(tr("off"), |m| m.label()),
                     );
                 } else {
                     row(ui, tr("Paused"), "-");

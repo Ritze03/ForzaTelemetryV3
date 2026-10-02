@@ -63,6 +63,10 @@ The **Hotkey** card lists every binding in two groups (Global / In-app), includi
 HUD** (default H, the same binding the Overlay tab edits). Click a button and press a key;
 **Esc** cancels, **Backspace** clears it to a faint **Not set**. Details in [[hotkeys]].
 
+The **Input Permissions** category (Linux only, below Window Detection) shows status dots for
+*hotkeys readable*, *uinput writable* and *in the input group*, the copyable fix commands, a
+*Remind me on startup* checkbox and *Re-check*. Details in [[hotkeys]].
+
 The **Window Detection** card (formerly **Input**; its duplicate "Window Detection"
 sub-heading is gone) holds the focus detection that several features share:
 
