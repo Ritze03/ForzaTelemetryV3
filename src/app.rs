@@ -928,18 +928,13 @@ impl ForzaApp {
         }
     }
 
-    /// Clear the RPM (redline) calibration + engagement (tab button; the Reset-RPM hotkey
-    /// does the same on the listener thread): forgets the detected redline and sets the box
-    /// hands-off until the driver's next manual upshift re-locks it. The per-gear speed map
-    /// is left intact. The listener thread owns the calibration, so this is a command — the
-    /// UI's copy catches up with the next snapshot.
-    pub fn clear_rpm_calibration(&self) {
-        self.listener.send(Command::ClearRpmCalibration);
-    }
-
-    /// Clear the per-gear speed map (tab button only). The detected redline is left intact.
-    pub fn clear_gear_map(&self) {
-        self.listener.send(Command::ClearGearMap);
+    /// Clear the whole gearbox calibration (tab button; the hotkey / controller action do
+    /// the same on the listener thread): forgets the per-gear speed map and the detected
+    /// redline, and sets the box hands-off until the driver's next manual upshift re-locks
+    /// it. The listener thread owns the calibration, so this is a command — the UI's copy
+    /// catches up with the next snapshot.
+    pub fn clear_gearbox_calibration(&self) {
+        self.listener.send(Command::ClearGearboxCalibration);
     }
 
     /// Push current hotkey config to the live backend + focus detector. Call

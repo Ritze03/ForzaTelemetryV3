@@ -425,8 +425,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Off to keep your selected mode everywhere." =>
             "Aus, um überall den gewählten Modus zu behalten.",
         " (race detected)" => " (Rennen erkannt)",
-        "Clear RPM calibration" => "Drehzahl-Kalibrierung löschen",
-        "Clear gear map" => "Gangkennfeld löschen",
+        "Clear gearbox calibration" => "Getriebe-Kalibrierung zurücksetzen",
+        "Forgets the learned gear map and max RPM for this car." => "Vergisst das gelernte Gangkennfeld und die max. Drehzahl für dieses Auto.",
         "Remember calibration per car" => "Kalibrierung pro Auto merken",
         "Saves each car's measured gear speeds and redline. When you get back into \
                      a saved car, the calibration loads automatically and the manual first-gear \
@@ -635,7 +635,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Press a key…" => "Taste drücken…",
         "Toggle Automatic Gearbox" => "Automatikgetriebe umschalten",
         "Toggle Backfire" => "Fehlzündung umschalten",
-        "Reset RPM Calibration" => "Drehzahl-Kalibrierung zurücksetzen",
         "Open mini-settings" => "Mini-Einstellungen öffnen",
         "Toggle dashboard edit" => "Dashboard-Bearbeitung umschalten",
         "Window Detection" => "Fenster-Erkennung",
@@ -959,8 +958,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Shift flash" => "Schaltblitz",
         "Gear-change pulse" => "Puls beim Gangwechsel",
         "Redline at (max rpm)" => "Roter Bereich ab (max. Drehzahl)",
-        "The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Reset RPM Calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\"."
-            => "Das Schaltsignal ist der Schaltpunkt des Getriebes (Getriebe → Schaltdrehzahl), berechnet aus der max. Drehzahl, die das Getriebe für jedes Auto kalibriert. Das funktioniert auch bei ausgeschaltetem Automatikgetriebe. Neu kalibrieren: Hotkey „Drehzahl-Kalibrierung zurücksetzen“ (Setup → Hotkey) oder Getriebe → „Drehzahl-Kalibrierung löschen“.",
+        "The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Clear gearbox calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear gearbox calibration\"."
+            => "Das Schaltsignal ist der Schaltpunkt des Getriebes (Getriebe → Schaltdrehzahl), berechnet aus der max. Drehzahl, die das Getriebe für jedes Auto kalibriert. Das funktioniert auch bei ausgeschaltetem Automatikgetriebe. Neu kalibrieren: Hotkey „Getriebe-Kalibrierung zurücksetzen“ (Setup → Hotkey) oder Getriebe → „Getriebe-Kalibrierung zurücksetzen“.",
         "Shift cue before calibration" => "Schaltsignal vor der Kalibrierung",
         "Until the first full pull and manual upshift in a car, both use the game's max rpm and this fallback."
             => "Bis zum ersten Ausdrehen mit manuellem Hochschalten in einem Auto nutzen beide die max. Drehzahl des Spiels und diesen Ersatzwert.",

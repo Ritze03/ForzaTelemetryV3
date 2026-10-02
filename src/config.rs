@@ -125,7 +125,7 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleGearbox => "Toggle Automatic Gearbox",
             HotkeyAction::ToggleBackfire => "Toggle Backfire",
-            HotkeyAction::ResetCalibration => "Reset RPM Calibration",
+            HotkeyAction::ResetCalibration => "Clear gearbox calibration",
             HotkeyAction::MiniSettings => "Open mini-settings",
             HotkeyAction::DashboardEdit => "Toggle dashboard edit",
             HotkeyAction::HideHud => "Hide HUD",

@@ -609,7 +609,7 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
             .on_hover_text(tr("Calmer to read. Gear and revs stay live."));
         theme::checkbox_row(ui, &mut o.shift_flash, tr("Shift flash"));
         theme::checkbox_row(ui, &mut o.gear_pulse, tr("Gear-change pulse"));
-        let redline_tip = tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Reset RPM Calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\".");
+        let redline_tip = tr("The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Clear gearbox calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear gearbox calibration\".");
         pct_row(ui, tr("Redline at (max rpm)"), &mut o.redline_frac, 50.0, 100.0, 0.5, Some(redline_tip));
         pct_row(
             ui,

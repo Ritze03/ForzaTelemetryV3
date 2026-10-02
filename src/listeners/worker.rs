@@ -123,10 +123,9 @@ struct ToListener {
 /// One-shot requests from the UI. Sent over a channel so none is ever lost.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // SetHudSink: the overlay is Linux-only
 pub enum Command {
-    /// Clear the detected redline + engagement; keeps the per-gear speed map.
-    ClearRpmCalibration,
-    /// Clear the per-gear speed map; keeps the detected redline.
-    ClearGearMap,
+    /// Clear the whole gearbox calibration: the per-gear speed map *and* the detected redline
+    /// + engagement. Same as the Reset-calibration hotkey / controller action.
+    ClearGearboxCalibration,
     /// Attach (`Some`) or detach (`None`) the HUD overlay's mailbox. With none attached the
     /// listener builds no snapshots.
     SetHudSink(Option<HudSink>),
@@ -350,14 +349,9 @@ fn run(ctx: Ctx) {
         let mut stop = false;
         for cmd in cmd_rx.try_iter() {
             match cmd {
-                Command::ClearRpmCalibration => {
-                    dsg.reset_state();
-                    dynamic_max_rpm = 0.0;
+                Command::ClearGearboxCalibration => {
+                    clear_gearbox_calibration(&mut dsg, &mut dynamic_max_rpm);
                     notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
-                    persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
-                }
-                Command::ClearGearMap => {
-                    dsg.reset_calibration();
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 Command::SetHudSink(sink) => {
@@ -398,8 +392,7 @@ fn run(ctx: Ctx) {
                     toggle_gen += 1;
                 }
                 HotkeyAction::ResetCalibration => {
-                    dsg.reset_state();
-                    dynamic_max_rpm = 0.0;
+                    clear_gearbox_calibration(&mut dsg, &mut dynamic_max_rpm);
                     notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
@@ -566,6 +559,16 @@ fn run(ctx: Ctx) {
     }
 }
 
+/// Forget everything the gearbox learned about the current car: the per-gear speed map, the
+/// detected redline and the engagement (the box goes hands-off until the next manual upshift).
+/// One operation for the hotkey, the controller action and the tab button. *Why both parts:*
+/// a user who wants to re-calibrate wants a clean slate, not a choice between two halves.
+fn clear_gearbox_calibration(dsg: &mut DsgListener, dynamic_max_rpm: &mut f32) {
+    dsg.reset_calibration();
+    dsg.reset_state();
+    *dynamic_max_rpm = 0.0;
+}
+
 /// Rewrite (or drop) the saved per-car profile to match the live calibration, so a car
 /// reload can't restore a part we just cleared. Entry removed once nothing's left to save.
 fn persist_calibration(
@@ -586,4 +589,28 @@ fn persist_calibration(
         cals.remove(&car_ordinal);
     }
     save_car_calibrations(cals);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearing_gearbox_calibration_clears_both_parts() {
+        let mut dsg = DsgListener::new();
+        dsg.gear_redline_speeds[1] = 60.0;
+        dsg.gear_redline_speeds[2] = 100.0;
+        dsg.engaged = true;
+        let mut max_rpm = 8500.0_f32;
+
+        clear_gearbox_calibration(&mut dsg, &mut max_rpm);
+
+        assert!(dsg.gear_redline_speeds.iter().all(|&s| s == 0.0), "gear map cleared");
+        assert_eq!(max_rpm, 0.0, "redline cleared");
+        assert!(!dsg.engaged, "engagement cleared");
+
+        // Nothing left, so the saved per-car profile is dropped rather than rewritten empty.
+        // (Mirrors persist_calibration's condition; the file write itself is not exercised.)
+        assert!(!(dsg.gear_redline_speeds[1] > 0.0 || max_rpm > 0.0));
+    }
 }
