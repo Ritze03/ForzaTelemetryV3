@@ -223,31 +223,41 @@ fn media_prefix(media_name: &str) -> String {
     media_name.split('_').next().unwrap_or("").to_ascii_uppercase()
 }
 
-/// Letter-subsequence match of a media prefix against make names (first letters equal; fewest
-/// skipped letters wins; a tie between different makes -> `None`).
+/// Letter-subsequence match of a media prefix against make names (first letters equal; most letters on word
+/// starts, then fewest skipped letters wins; a tie between different makes -> `None`).
 fn subsequence_make<'a>(prefix: &str, makes: &'a [String]) -> Option<&'a String> {
     let letters: Vec<char> = prefix.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_lowercase()).collect();
     if letters.len() < 2 {
         return None;
     }
-    let mut best: Option<(usize, &String)> = None;
+    let mut best: Option<((usize, usize), &String)> = None;
     let mut tie = false;
     for m in makes {
-        let mc: Vec<char> = m.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
-        if mc.first() != letters.first() {
+        // (char, starts a word): "Gordon Murray Automotive" -> GMA hits three word starts
+        let mut mc: Vec<(char, bool)> = Vec::new();
+        let mut prev_alnum = false;
+        for c in m.chars() {
+            if c.is_alphanumeric() {
+                mc.push((c.to_lowercase().next().unwrap_or(c), !prev_alnum));
+            }
+            prev_alnum = c.is_alphanumeric();
+        }
+        if mc.first().map(|x| x.0) != letters.first().copied() {
             continue;
         }
-        let (mut li, mut last) = (0, 0);
-        for (i, c) in mc.iter().enumerate() {
-            if li < letters.len() && *c == letters[li] {
+        let (mut li, mut last, mut hits) = (0, 0, 0usize);
+        for (i, &(c, start)) in mc.iter().enumerate() {
+            if li < letters.len() && c == letters[li] {
                 li += 1;
                 last = i;
+                hits += start as usize;
             }
         }
         if li < letters.len() {
             continue;
         }
-        let score = last + 1 - letters.len();
+        // most word-start hits, then fewest skipped letters (lower is better)
+        let score = (usize::MAX - hits, last + 1 - letters.len());
         match best {
             Some((s, _)) if s < score => {}
             Some((s, _)) if s == score => tie = true,
