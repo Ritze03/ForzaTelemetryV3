@@ -165,9 +165,44 @@ impl DriftWindow {
 /// Why the orientation: loading screens send 0/0/0 (user-observed; the pause menu keeps the
 /// real rotation), and a real car is never exactly level on all three axes.
 /// HUD only; gearbox and backfire keep their rules.
-pub fn hud_paused(pkt: &ForzaPacket) -> bool {
+/// `experimental` (`AppConfig::experimental_pause_detection`) adds [`garage_paused`] (D29).
+pub fn hud_paused(pkt: &ForzaPacket, experimental: bool) -> bool {
     let zero_orientation = pkt.yaw == 0.0 && pkt.pitch == 0.0 && pkt.roll == 0.0;
-    pkt.is_race_on == 0 || pkt.engine_max_rpm <= 0.0 || zero_orientation
+    pkt.is_race_on == 0
+        || pkt.engine_max_rpm <= 0.0
+        || zero_orientation
+        || (experimental && garage_paused(pkt).is_some())
+}
+
+/// Which part of the experimental garage rule matched (nothing is returned when it didn't).
+/// Exposed for the Debug tab (D24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GarageMatch {
+    /// Level (|yaw|, |pitch|, |roll| < 0.01), handbrake 255, and no linear/angular velocity.
+    LevelHandbrakeStill,
+}
+
+/// Orientation magnitude below this (rad) counts as "level".
+const GARAGE_LEVEL_EPS: f32 = 0.01;
+/// Velocity / angular-velocity component magnitude below this counts as "motionless".
+const GARAGE_STILL_EPS: f32 = 0.01;
+
+/// D29 experimental garage / menu detection. FH6 keeps `is_race_on = 1` and a normal max rpm in
+/// the garage, so the other pause rules miss it. A garage packet is level (yaw/pitch/roll ~ 0),
+/// has the handbrake fully on (255) and every velocity 0. Pure: no state, no debounce (the HUD
+/// already waits [`PAUSE_HIDE_SECS`] before hiding). Limitation: a garage view with the car
+/// rotated (yaw far from 0) is missed.
+pub fn garage_paused(pkt: &ForzaPacket) -> Option<GarageMatch> {
+    let level = pkt.yaw.abs() < GARAGE_LEVEL_EPS
+        && pkt.pitch.abs() < GARAGE_LEVEL_EPS
+        && pkt.roll.abs() < GARAGE_LEVEL_EPS;
+    let still = [
+        pkt.velocity_x, pkt.velocity_y, pkt.velocity_z,
+        pkt.angular_velocity_x, pkt.angular_velocity_y, pkt.angular_velocity_z,
+    ]
+    .iter()
+    .all(|v| v.abs() < GARAGE_STILL_EPS);
+    (level && pkt.hand_brake == 255 && still).then_some(GarageMatch::LevelHandbrakeStill)
 }
 
 /// Paused this long (s) → hidden. Short enough to clear the screen promptly on the pause
@@ -228,8 +263,8 @@ impl HudTracker {
     }
 
     /// Feed one packet received at `now`.
-    pub fn on_packet(&mut self, pkt: &ForzaPacket, cfg: &OverlayConfig, now: f64) {
-        let running = !hud_paused(pkt);
+    pub fn on_packet(&mut self, pkt: &ForzaPacket, cfg: &OverlayConfig, experimental_pause: bool, now: f64) {
+        let running = !hud_paused(pkt, experimental_pause);
         if self.have_pkt {
             let prev = &self.pkt;
             if pkt.car_ordinal != prev.car_ordinal {
@@ -307,7 +342,7 @@ impl HudTracker {
             built_at: now,
             visible: visible_target(&facts, now),
             connected: self.last_packet_at.is_some_and(|t| now - t < NO_PACKET_HIDE_SECS),
-            paused: self.have_pkt && hud_paused(&self.pkt),
+            paused: self.have_pkt && hud_paused(&self.pkt, app.experimental_pause_detection),
             hud_hidden: facts.hud_hidden,
             redline_rpm,
             shift_rpm,
@@ -559,12 +594,12 @@ mod tests {
             yaw: 0.5,
             ..Default::default()
         };
-        tr.on_packet(&p, &cfg, 1.0);
+        tr.on_packet(&p, &cfg, false, 1.0);
         p.race_position = 4;
         p.gear = 4;
         p.lap_number = 1;
         p.timestamp_ms = 16;
-        tr.on_packet(&p, &cfg, 1.016);
+        tr.on_packet(&p, &cfg, false, 1.016);
         let live = VisFacts { enabled: true, ..Default::default() };
         let s = tr.snapshot(live, &cfg, &app, 0.0, 1.02);
         assert!(s.visible && s.connected && !s.paused);
@@ -577,7 +612,7 @@ mod tests {
         assert!((s.redline_rpm - 5950.0).abs() < 0.1 && (s.shift_rpm - 6860.0).abs() < 0.1);
 
         p.is_race_on = 0;
-        tr.on_packet(&p, &cfg, 2.0);
+        tr.on_packet(&p, &cfg, false, 2.0);
         let s = tr.snapshot(live, &cfg, &app, 0.0, 2.1);
         assert!(s.paused && s.visible, "not hidden before 300 ms");
         let s = tr.snapshot(live, &cfg, &app, 0.0, 2.4);
@@ -601,18 +636,18 @@ mod tests {
             pitch: 0.01,
             ..Default::default()
         };
-        tr.on_packet(&p, &cfg, 1.0);
+        tr.on_packet(&p, &cfg, false, 1.0);
         assert!(!tr.snapshot(live, &cfg, &app, 0.0, 1.0).paused);
         // Race on, max rpm 0 (menus): paused, hidden once the 0.3 s delay has passed.
         p.engine_max_rpm = 0.0;
-        tr.on_packet(&p, &cfg, 2.0);
+        tr.on_packet(&p, &cfg, false, 2.0);
         let s = tr.snapshot(live, &cfg, &app, 0.0, 2.1);
         assert!(s.paused && s.visible, "not hidden before 300 ms");
-        tr.on_packet(&p, &cfg, 2.35);
+        tr.on_packet(&p, &cfg, false, 2.35);
         assert!(!tr.snapshot(live, &cfg, &app, 0.0, 2.4).visible, "hidden after 300 ms");
         // Max rpm back: shown on the very next packet.
         p.engine_max_rpm = 7500.0;
-        tr.on_packet(&p, &cfg, 2.5);
+        tr.on_packet(&p, &cfg, false, 2.5);
         let s = tr.snapshot(live, &cfg, &app, 0.0, 2.5);
         assert!(!s.paused && s.visible);
     }
@@ -629,17 +664,49 @@ mod tests {
             roll: -0.01,
             ..Default::default()
         };
-        assert!(!hud_paused(&driving), "normal driving packet");
+        assert!(!hud_paused(&driving, false), "normal driving packet");
         let ev_stand = ForzaPacket { num_cylinders: 0, current_engine_rpm: 0.0, ..driving.clone() };
-        assert!(!hud_paused(&ev_stand), "EV at 0 rpm (standstill) with max rpm and real orientation is not paused");
+        assert!(!hud_paused(&ev_stand, false), "EV at 0 rpm (standstill) with max rpm and real orientation is not paused");
         for p in [&driving, &ev_stand] {
             let menu = ForzaPacket { engine_max_rpm: 0.0, ..(*p).clone() };
-            assert!(hud_paused(&menu), "max rpm 0 is paused");
+            assert!(hud_paused(&menu, false), "max rpm 0 is paused");
             let loading = ForzaPacket { yaw: 0.0, pitch: 0.0, roll: 0.0, ..(*p).clone() };
-            assert!(hud_paused(&loading), "0/0/0 orientation is paused");
+            assert!(hud_paused(&loading, false), "0/0/0 orientation is paused");
         }
         let off = ForzaPacket { is_race_on: 0, ..driving };
-        assert!(hud_paused(&off));
+        assert!(hud_paused(&off, false));
+    }
+
+    #[test]
+    fn garage_pause_rule() {
+        // Captured garage packet: level, handbrake 255, everything else 0, race on, idle rpm.
+        let garage = ForzaPacket {
+            is_race_on: 1,
+            current_engine_rpm: 800.0,
+            engine_max_rpm: 8000.0,
+            yaw: -0.008,
+            hand_brake: 255,
+            ..Default::default()
+        };
+        assert_eq!(garage_paused(&garage), Some(GarageMatch::LevelHandbrakeStill));
+        assert!(hud_paused(&garage, true), "garage is paused with the setting on");
+        assert!(!hud_paused(&garage, false), "setting off: garage looks like normal driving");
+
+        let driving = ForzaPacket {
+            yaw: 1.2, pitch: 0.02, roll: -0.01, hand_brake: 0, velocity_x: 25.0,
+            ..garage.clone()
+        };
+        assert!(garage_paused(&driving).is_none() && !hud_paused(&driving, true));
+        // Handbrake held on a slope (pitch 0.05): not level.
+        let slope = ForzaPacket { pitch: 0.05, ..garage.clone() };
+        assert!(garage_paused(&slope).is_none() && !hud_paused(&slope, true));
+        // Level, handbrake on, but moving.
+        let moving = ForzaPacket { velocity_z: 3.0, ..garage.clone() };
+        assert!(garage_paused(&moving).is_none());
+        let spinning = ForzaPacket { angular_velocity_y: 1.0, ..garage.clone() };
+        assert!(garage_paused(&spinning).is_none());
+        // Handbrake not fully on.
+        assert!(garage_paused(&ForzaPacket { hand_brake: 254, ..garage }).is_none());
     }
 
     #[test]
@@ -663,7 +730,7 @@ mod tests {
         let live = VisFacts { enabled: true, ..Default::default() };
         let mut tr = HudTracker::new();
         let mut p = ForzaPacket { is_race_on: 1, current_engine_rpm: 3000.0, engine_max_rpm: 8000.0, gear: 3, num_cylinders: 4, yaw: 0.3, ..Default::default() };
-        tr.on_packet(&p, &cfg, 1.0);
+        tr.on_packet(&p, &cfg, false, 1.0);
         let mut app = AppConfig { dsg_enabled: false, ..Default::default() };
         assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.0).auto_gear, None);
         app.dsg_enabled = true;
@@ -671,7 +738,7 @@ mod tests {
         app.dsg_auto_race_mode = true;
         assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.0).auto_gear, Some(DriveMode::Street));
         p.race_position = 2;
-        tr.on_packet(&p, &cfg, 1.1);
+        tr.on_packet(&p, &cfg, false, 1.1);
         assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.1).auto_gear, Some(DriveMode::Race));
         app.dsg_auto_race_mode = false;
         assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 1.1).auto_gear, Some(DriveMode::Street));
@@ -690,7 +757,7 @@ mod tests {
             t = f64::from(i) / 60.0;
             p.timestamp_ms = (t * 1000.0).round() as u32;
             p.current_lap = (i / 6) as f32 * 100.0;
-            tr.on_packet(&p, &cfg, t);
+            tr.on_packet(&p, &cfg, false, t);
         }
         let s = tr.snapshot(live, &cfg, &app, 0.0, t);
         assert_eq!(s.mode, HudMode::Drift);
@@ -700,7 +767,7 @@ mod tests {
         for i in 240..300_u32 {
             let t = f64::from(i) / 60.0;
             p.timestamp_ms = (t * 1000.0).round() as u32;
-            tr.on_packet(&p, &cfg, t);
+            tr.on_packet(&p, &cfg, false, t);
         }
         assert_eq!(tr.snapshot(live, &cfg, &app, 0.0, 5.0).drift.last_rise_at, Some(rise));
         // Race mode never reports one (a lap timer rises every packet).
@@ -709,7 +776,7 @@ mod tests {
             let t = f64::from(i) / 60.0;
             p.timestamp_ms = (t * 1000.0).round() as u32;
             p.current_lap = t as f32;
-            race.on_packet(&p, &cfg, t);
+            race.on_packet(&p, &cfg, false, t);
         }
         assert_eq!(race.snapshot(live, &cfg, &app, 0.0, 1.0).drift.last_rise_at, None);
     }

@@ -174,7 +174,7 @@ impl DsgListener {
     ) {
         // Race vs drift, shared with the HUD (`listeners/hud.rs`). Fed before the paused early-out
         // so its window restarts on a pause instead of measuring it.
-        let in_drift = self.drift.update(pkt.current_lap, pkt.timestamp_ms, !hud_paused(pkt)) == HudMode::Drift;
+        let in_drift = self.drift.update(pkt.current_lap, pkt.timestamp_ms, !hud_paused(pkt, cfg.experimental_pause_detection)) == HudMode::Drift;
 
         if pkt.is_race_on == 0 {
             return;
