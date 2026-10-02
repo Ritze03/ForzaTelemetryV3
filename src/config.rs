@@ -709,6 +709,8 @@ pub struct AppConfig {
     pub backfire_accel_time_ms: u64,
     pub backfire_dynamic_duration: bool, // key-press length = one frame (from packets/sec) instead of the fixed ms
     pub backfire_dynamic_mode: BackfireDynamicMode, // when dynamic: estimate hold from packets/sec, or hold until next packet
+    pub backfire_limit_duration: bool, // stop a continuous backfire after backfire_max_duration_ms (re-arms on throttle / downshift)
+    pub backfire_max_duration_ms: u32, // 100..=5000
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
     pub backfire_drift_detection: bool, // suppress the pop while any wheel's slip ratio magnitude exceeds DRIFT_SLIP_MAX (a slide/wheelspin isn't a clean lift-off)
@@ -844,6 +846,8 @@ impl Default for AppConfig {
             backfire_accel_time_ms: 8,
             backfire_dynamic_duration: true,
             backfire_dynamic_mode: BackfireDynamicMode::PacketBased,
+            backfire_limit_duration: false,
+            backfire_max_duration_ms: 1000,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             backfire_drift_detection: true,
@@ -1018,6 +1022,7 @@ const BACKFIRE_KEYS: &[&str] = &[
     "backfire_interval_rpm", "backfire_accel_time_ms", "backfire_dynamic_duration",
     "backfire_dynamic_mode", "backfire_test_mode", "backfire_disable_standstill",
     "backfire_drift_detection",
+    "backfire_limit_duration", "backfire_max_duration_ms",
 ];
 
 const DSG_KEYS: &[&str] = &[
