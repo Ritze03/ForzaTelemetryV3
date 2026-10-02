@@ -115,12 +115,23 @@ fn module_card(
 
 // ── General ─────────────────────────────────────────────────────────────────
 
+/// The OS has an overlay backend (Linux layer-shell/X11, Windows layered window).
+const OVERLAY_OS: bool = cfg!(any(target_os = "linux", target_os = "windows"));
+
 fn general(ui: &mut Ui, app: &mut ForzaApp) {
     theme::card(ui, tr("General"), |ui| {
-        // The overlay is Linux only (layer-shell or X11): greyed out elsewhere.
-        ui.add_enabled_ui(cfg!(target_os = "linux"), |ui| {
-            theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay"))
-                .on_hover_text(tr("The HUD hides by itself while the game is paused."));
+        // The overlay exists on Linux (layer-shell or X11) and Windows: greyed out elsewhere.
+        ui.add_enabled_ui(OVERLAY_OS, |ui| {
+            let tip = if cfg!(target_os = "windows") {
+                format!(
+                    "{}\n{}",
+                    tr("The HUD hides by itself while the game is paused."),
+                    tr("Windows (experimental): Borderless or Windowed only — exclusive fullscreen can't be overlaid."),
+                )
+            } else {
+                tr("The HUD hides by itself while the game is paused.").to_string()
+            };
+            theme::checkbox_row(ui, &mut app.config.overlay.enabled, tr("Enable overlay")).on_hover_text(tip);
         });
         overlay_status_line(ui, app);
         hide_hud_row(ui, app);
@@ -136,8 +147,8 @@ fn general(ui: &mut Ui, app: &mut ForzaApp) {
 /// The overlay runtime's state. Not in the mockup; it sits under the enable toggle because
 /// it is that toggle's outcome (e.g. "needs Wayland").
 fn overlay_status_line(ui: &mut Ui, app: &ForzaApp) {
-    if !cfg!(target_os = "linux") {
-        status_line(ui, theme::FAINT, tr("The in-game overlay is available on Linux only (Wayland or X11)."));
+    if !OVERLAY_OS {
+        status_line(ui, theme::FAINT, tr("The in-game overlay needs Linux (Wayland or X11) or Windows."));
         return;
     }
     let (col, msg) = match app.overlay_status() {
@@ -185,6 +196,9 @@ fn hide_hud_row(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn method_label(m: MonitorMethod) -> &'static str {
     tr(match m {
+        // `Hyprland` is the "built-in" detector: hyprctl on Linux, the foreground window's
+        // monitor on Windows.
+        MonitorMethod::Hyprland if cfg!(target_os = "windows") => "Active window (built in)",
         MonitorMethod::Hyprland => "Hyprland (built in)",
         MonitorMethod::Custom => "Custom command",
         MonitorMethod::Fixed => "Fixed monitor",
@@ -199,8 +213,14 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
     let mut test: Option<Result<String, String>> = ui.data(|d| d.get_temp(test_id)).flatten();
     theme::card(ui, tr("Monitor Detection"), |ui| {
         let o = &mut app.config.overlay;
+        if cfg!(target_os = "windows") && o.monitor_method == MonitorMethod::Custom {
+            o.monitor_method = MonitorMethod::Hyprland; // no shell commands on Windows
+        }
         let before = o.monitor_method;
         let method_tip = match o.monitor_method {
+            MonitorMethod::Hyprland if cfg!(target_os = "windows") => {
+                format!("{}\n{}", tr("Uses the monitor the focused window is on."), tr(READ_WHILE_FOCUSED))
+            }
             MonitorMethod::Hyprland => {
                 format!("{}\n{}", tr("Runs hyprctl activeworkspace and reads the monitor it names."), tr(READ_WHILE_FOCUSED))
             }
@@ -212,7 +232,12 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
                 .selected_text(method_label(o.monitor_method))
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
-                    for m in [MonitorMethod::Hyprland, MonitorMethod::Custom, MonitorMethod::Fixed] {
+                    let methods: &[MonitorMethod] = if cfg!(target_os = "windows") {
+                        &[MonitorMethod::Hyprland, MonitorMethod::Fixed]
+                    } else {
+                        &[MonitorMethod::Hyprland, MonitorMethod::Custom, MonitorMethod::Fixed]
+                    };
+                    for &m in methods {
                         ui.selectable_value(&mut o.monitor_method, m, method_label(m));
                     }
                 });
@@ -237,10 +262,15 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
                 });
             }
             MonitorMethod::Fixed => {
-                control_row_tip(ui, tr("Monitor"), tr("The output name, e.g. DP-1. Empty = the first monitor."), |ui| {
+                let fixed_tip = if cfg!(target_os = "windows") {
+                    tr("DISPLAY2, \\\\.\\DISPLAY2 or just 2. Empty = the primary monitor.")
+                } else {
+                    tr("The output name, e.g. DP-1. Empty = the first monitor.")
+                };
+                control_row_tip(ui, tr("Monitor"), fixed_tip, |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Fills the field with the monitor Hyprland reports as focused: the one
-                        // this window is on when you click.
+                        // Fills the field with the monitor the built-in method reports as focused
+                        // (Hyprland / the foreground window): the one this window is on when you click.
                         if ui.button(tr("Detect")).clicked() {
                             match crate::focus::query_monitor(MonitorMethod::Hyprland, "") {
                                 Ok(name) => o.monitor_fixed = name,
@@ -271,8 +301,8 @@ fn monitor(ui: &mut Ui, app: &mut ForzaApp) {
 fn monitor_status_line(ui: &mut Ui, app: &ForzaApp, test: &mut Option<Result<String, String>>) {
     let o = &app.config.overlay;
     let out = app.focus.monitor_output().unwrap_or_else(|| tr("the first monitor").to_string());
-    let (col, msg) = if !cfg!(target_os = "linux") {
-        (theme::FAINT, tr("Monitor detection runs on Linux only.").to_string())
+    let (col, msg) = if !OVERLAY_OS {
+        (theme::FAINT, tr("Monitor detection needs Linux or Windows.").to_string())
     } else if !o.enabled {
         (theme::FAINT, tr("Detection is off while the overlay is disabled.").to_string())
     } else {

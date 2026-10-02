@@ -906,8 +906,14 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Overlay tab ────────────────────────────────────────────────
         "Enable overlay" => "Overlay aktivieren",
-        "The in-game overlay is available on Linux only (Wayland or X11)."
-            => "Das Ingame-Overlay gibt es nur unter Linux (Wayland oder X11).",
+        "The in-game overlay needs Linux (Wayland or X11) or Windows."
+            => "Das Ingame-Overlay braucht Linux (Wayland oder X11) oder Windows.",
+        "Windows (experimental): Borderless or Windowed only — exclusive fullscreen can't be overlaid."
+            => "Windows (experimentell): nur Rahmenlos oder Fenstermodus — exklusiver Vollbildmodus lässt sich nicht überlagern.",
+        "DISPLAY2, \\\\.\\DISPLAY2 or just 2. Empty = the primary monitor."
+            => "DISPLAY2, \\\\.\\DISPLAY2 oder einfach 2. Leer = der Hauptmonitor.",
+        "Active window (built in)" => "Aktives Fenster (integriert)",
+        "Uses the monitor the focused window is on." => "Nutzt den Monitor, auf dem das fokussierte Fenster liegt.",
         "Overlay off" => "Overlay aus",
         "Overlay starting…" => "Overlay startet…",
         "Overlay running" => "Overlay läuft",
@@ -961,7 +967,7 @@ fn de(s: &str) -> Option<&'static str> {
             => "Wird nur gelesen, solange Forza das aktive Fenster ist. Sonst bleibt das HUD, wo es war.",
         "error" => "Fehler",
         "the first monitor" => "dem ersten Monitor",
-        "Monitor detection runs on Linux only." => "Die Monitor-Erkennung läuft nur unter Linux.",
+        "Monitor detection needs Linux or Windows." => "Die Monitor-Erkennung braucht Linux oder Windows.",
         "Detection is off while the overlay is disabled." => "Die Erkennung ist aus, solange das Overlay deaktiviert ist.",
         "HUD pinned to" => "HUD fest auf",
         "Game on" => "Spiel auf",

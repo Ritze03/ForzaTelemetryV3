@@ -25,9 +25,9 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
   older Mutter may name outputs `XWAYLAND0…` (see below), and native X11 sessions are untested.
 - **Experimental, untested: Windows** (own backend, see [Windows](#windows)).
 - **Doesn't:** macOS. When no backend works the overlay reports a *disabled* reason
-  instead of failing, shown in the Overlay tab's status line. On non-Linux builds the tab says
-  the overlay is Linux only (Wayland or X11); that text predates the Windows backend and the
-  tab's `cfg!(target_os = "linux")` gates still need to learn about Windows.
+  instead of failing, shown in the Overlay tab's status line. On other OSes the tab greys out
+  Enable overlay and says "The in-game overlay needs Linux (Wayland or X11) or Windows."
+  (`overlay_tab::OVERLAY_OS` gates this and the status lines).
 - **Backend selection** (`overlay::Backend::from_env`, env var `FORZA_OVERLAY_BACKEND`, a
   developer override only):
   - unset / empty / unknown / `auto` (case-insensitive) = **auto**: layer-shell, then X11. On
@@ -151,9 +151,17 @@ Detection -> **Fixed monitor**, or `FORZA_OVERLAY_OUTPUT`) matched case-insensit
 device name (`\\.\DISPLAY2`), the name without the prefix (`DISPLAY2`), or a 1-based number
 (`2`, the enumeration order, which normally equals Windows' Display settings numbering but isn't
 guaranteed); no match, empty or a Linux-style name (`DP-1`) -> the **primary monitor**. The
-Hyprland/Custom detection methods don't exist on Windows (`focus::query_monitor` reports
-"unsupported platform"), so only Fixed has an effect. `overlay::foreground_monitor_name()` is ready
-for a Windows branch of that query (monitor of the focused game window); nothing calls it yet.
+Hyprland/Custom detection methods don't exist on Windows. Instead `focus::query_monitor` has a
+`#[cfg(windows)]` branch returning `overlay::foreground_monitor_name()` (the monitor of the
+foreground window, `\\.\DISPLAYn`), run by the focus thread only while the game window is focused,
+exactly like Hyprland on Linux. *Why:* it reuses the existing `MonitorMethod::Hyprland` variant (the
+"built-in" detector; serde name unchanged, so the default config and profiles shared across OSes
+just work, no new enum value or migration) rather than adding an `ActiveWindow` variant. On Windows
+the Method combo shows **Active window (built in)** and **Fixed monitor** only; Custom command is
+hidden (no `sh`), and a config that has `Custom` is normalised to the built-in method when the tab
+is drawn. The Fixed field's Detect button fills in the focused monitor the same way.
+**UI (Windows):** the Enable overlay checkbox's tooltip carries the "Borderless or Windowed only,
+exclusive fullscreen can't be overlaid" note (a tooltip, not under-option text).
 A changed monitor layout recreates the window within a second.
 
 **Limits.**

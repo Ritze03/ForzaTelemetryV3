@@ -122,7 +122,7 @@ struct ToListener {
 }
 
 /// One-shot requests from the UI. Sent over a channel so none is ever lost.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // SetHudSink: the overlay is Linux-only
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // SetHudSink: the overlay exists on Linux and Windows only
 pub enum Command {
     /// Clear the detected redline + engagement; keeps the per-gear speed map. Same as the
     /// "Clear RPM calibration" hotkey / controller action.
@@ -200,7 +200,7 @@ impl ListenerHandle {
     }
 
     /// Attach the overlay (`Some`) or detach it (`None`); see [`Command::SetHudSink`].
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the overlay is Linux-only
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay exists on Linux and Windows only
     pub fn set_hud_sink(&self, sink: Option<HudSink>) {
         self.send(Command::SetHudSink(sink));
     }
