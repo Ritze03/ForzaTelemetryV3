@@ -2547,6 +2547,16 @@ impl eframe::App for ForzaApp {
                             ui.add_space(4.0);
                             ui.label(tr("Zoom when stopped (radius, metres)"));
                             ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
+                            ui.add_space(10.0);
+                            ui.label(crate::theme::section_label(tr("Notifications")));
+                            ui.add_space(4.0);
+                            crate::theme::styled_checkbox(ui, &mut o.notif_on, tr("Show notifications"));
+                            ui.add_enabled_ui(o.notif_on, |ui| {
+                                crate::theme::styled_checkbox(ui, &mut o.notif_gearbox_toggle, tr("Gearbox on / off"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_gearbox_mode, tr("Gearbox mode changed"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_backfire, tr("Backfire on / off"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_calibration, tr("Calibration started / done"));
+                            });
                         }
                         PageSettingsTab::Tab(Tab::PowerCurve) => {
                             crate::ui::power_curve::options_ui(ui, &mut self.config);

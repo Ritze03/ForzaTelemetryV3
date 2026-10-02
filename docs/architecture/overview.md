@@ -274,6 +274,7 @@ might produce.
 | `minimap.rs` | M2′ minimap, `MapLoader` (`hud-map` thread), co-op teammate markers. |
 | `race.rs` | R1′ race block; the position cap shared with the drift counter. |
 | `drift.rs` | X1′ drift counter, Position + Gain and Total styles. |
+| `notify.rs` | D26 notification pills: pure `stack_layout`, fade curve, `draw`. |
 | `layout.rs` | The 3×3 slot layout and stacking (`MARGIN` 44, `GAP` 12). |
 | `anim.rs` | Time-based curves: fade, pulse, place change, lap hold, chip, count-up. |
 | `prims.rs` / `fonts.rs` | Drawing primitives in design px (fixed digit cells, outlined text); the baked Big Shoulders fonts. |
@@ -294,6 +295,7 @@ might produce.
 | `mod.rs` | Declares the five listener modules plus `worker`, `hud` and `lap_trace`. |
 | `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, the global hotkeys (incl. the Hide HUD toggle, `hud_hidden`), the co-op send, and the HUD snapshot publishing; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener` / `PacketQueue`) + `Command` channel + `ListenerHandle` (`set_hud_sink`). |
 | `hud.rs` | HUD data on the listener thread: `HudTracker` (packet → `HudSnapshot`), the race/drift `ModeClassifier`, the drift gain `DriftWindow`, `visible_target`. See [[overlay]]. |
+| `notify.rs` | D26 `Notifier`: queue of HUD messages + `watch` (diffs gearbox/backfire/calibration state each loop pass). See [[overlay]]. |
 | `lap_trace.rs` | Best-lap trace keyed by distance → the HUD's live lap delta. |
 | `backfire.rs` | Synthetic anti-lag / throttle-blip; echo-window bookkeeping. See [[backfire]]. |
 | `dsg.rs` | DSG-style auto-shifter with per-car calibration. See [[gearbox]]. |

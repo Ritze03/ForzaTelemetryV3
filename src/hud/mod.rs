@@ -12,6 +12,7 @@ pub mod drift;
 pub mod fonts;
 pub mod layout;
 pub mod minimap;
+pub mod notify;
 pub mod prims;
 pub mod race;
 
@@ -177,7 +178,7 @@ impl Hud {
                 Module::Race => race::draw(p, &xf, snap, now),
             };
         }
-        animating
+        animating | notify::draw(p, screen, snap, now, self.fade, s)
     }
 }
 

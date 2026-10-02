@@ -52,6 +52,7 @@ use crate::input::InputSender;
 use crate::listeners::backfire::{BackfireListener, BackfireView};
 use crate::listeners::dsg::{DsgListener, DsgView};
 use crate::listeners::hud::{HudTracker, VisFacts};
+use crate::listeners::notify::{Event, Notifier};
 use crate::overlay::snapshot::{hud_clock, HudSink};
 use crate::packet::ForzaPacket;
 
@@ -310,6 +311,9 @@ fn run(ctx: Ctx) {
     let mut hud_visible = false;
     let mut hud_force = false;
     let mut hud_cfg = Arc::new(cfg.overlay.clone());
+    // D26 on-HUD messages; `in_race` = race position ≠ 0 on the last race-on packet.
+    let mut notifier = Notifier::default();
+    let mut in_race = false;
     // Co-Op: (class, PI) of the last race-on packet, restored into paused packets.
     let mut coop_car = (-1, 0);
 
@@ -346,6 +350,7 @@ fn run(ctx: Ctx) {
                 Command::ClearRpmCalibration => {
                     dsg.reset_state();
                     dynamic_max_rpm = 0.0;
+                    notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 Command::ClearGearMap => {
@@ -392,6 +397,7 @@ fn run(ctx: Ctx) {
                 HotkeyAction::ResetCalibration => {
                     dsg.reset_state();
                     dynamic_max_rpm = 0.0;
+                    notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 // why: ignored while the overlay is off. The key may double as a game key
@@ -428,7 +434,11 @@ fn run(ctx: Ctx) {
                     pps_since = Instant::now();
                 }
 
+                if pkt.is_race_on != 0 {
+                    in_race = pkt.race_position != 0;
+                }
                 if pkt.car_ordinal != 0 && pkt.car_ordinal != last_car_ordinal {
+                    let had_car = last_car_ordinal != 0;
                     last_car_ordinal = pkt.car_ordinal;
                     dsg.reset_calibration();
                     dsg.reset_state();
@@ -443,6 +453,10 @@ fn run(ctx: Ctx) {
                             dsg.engaged = true;
                             dynamic_max_rpm = cal.max_rpm;
                         }
+                    }
+                    // A new car starts uncalibrated (not announced for the first car seen).
+                    if had_car && !dsg.engaged {
+                        notifier.push(&cfg.overlay, Event::CalibrationStarted, hud_clock());
                     }
                 }
 
@@ -501,6 +515,10 @@ fn run(ctx: Ctx) {
             Err(RecvTimeoutError::Disconnected) => break, // app dropped its sender
         }
 
+        // ── D26: queue what changed (hotkeys and UI settings alike). ──
+        notifier.watch(&cfg, in_race, dsg.engaged, dynamic_max_rpm, hud_clock());
+        hud_force |= notifier.take_new(); // a message must reach the HUD even without a packet
+
         // ── listener → overlay: every packet, plus any visibility change without one. ──
         if let Some(sink) = &hud_sink {
             let now = hud_clock();
@@ -514,7 +532,8 @@ fn run(ctx: Ctx) {
             // The gearbox's redline counts once the DSG itself trusts it: after the first
             // manual upshift (or a restored profile). Runs with the DSG switched off too.
             let calibrated = if dsg.engaged { dynamic_max_rpm } else { 0.0 };
-            let snap = hud.snapshot(facts, &hud_cfg, &cfg, calibrated, now);
+            let mut snap = hud.snapshot(facts, &hud_cfg, &cfg, calibrated, now);
+            snap.notifications = notifier.items().to_vec();
             if got_packet || hud_force || snap.visible != hud_visible {
                 hud_visible = snap.visible;
                 hud_force = false;

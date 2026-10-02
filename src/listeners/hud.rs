@@ -374,6 +374,8 @@ impl HudTracker {
                 origin_x: app.minimap_world_origin_x,
                 origin_z: app.minimap_world_origin_z,
             },
+            // Filled by the worker (it owns the notifier).
+            notifications: Vec::new(),
         }
     }
 }

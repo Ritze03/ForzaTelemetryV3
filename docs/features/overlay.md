@@ -218,6 +218,56 @@ window. The slot is empty in drift mode when the drift counter is off, or when s
 best are both 0 (free roam after a drift event: `current_lap` drops to 0 and the classifier
 stays in Drift, since flat windows are no evidence).
 
+## Notifications (D26, `hud/notify.rs`, `listeners/notify.rs`)
+
+Short pill messages on the HUD when a setting changes. *Why:* the user wants in-game
+feedback when a hotkey flips something (the game covers the app window, so there is nowhere
+else to see it).
+
+**Events** (each has its own toggle):
+
+| Message | Toggle (`OverlayConfig`) | Source |
+|---|---|---|
+| `Gearbox: ON / OFF` | `notif_gearbox_toggle` | G hotkey or the Gearbox tab |
+| `Gearbox mode: <mode>` | `notif_gearbox_mode` | mode picker, or the automatic switch to Race in a race and back (the *effective* mode, `dsg_effective_mode`); silent while the gearbox is off |
+| `Backfire: ON / OFF` | `notif_backfire` | Backfire hotkey or tab |
+| `Calibration started` | `notif_calibration` | Reset-calibration hotkey, the tab's Clear RPM calibration button, a new car that starts uncalibrated |
+| `Calibration done: N rpm` | `notif_calibration` | the gearbox engaging (`DsgListener::engaged` false to true: first manual upshift or a restored profile) |
+
+Not included: Hide HUD (the HUD, notifications with it, is hidden by that very key), dashboard
+edit mode and Mini-Settings (app-window only).
+
+**Transport.** Everything is detected on the **listener thread**: it already receives the
+hotkeys and gets the UI's config every frame, so `Notifier::watch` just diffs
+`dsg_enabled` / `backfire_enabled` / effective mode / `engaged` once per loop pass. *Why a
+diff and not a hook per source:* UI-side toggles, the G key, profile loads and the automatic
+race switch all produce one identical message exactly once, and there is no UI to listener
+queue. Calibration *start* can't be diffed (a reset of an uncalibrated box changes nothing),
+so the three reset sites push it explicitly. The `Notifier` queue (max 8, pruned after 4 s)
+is copied into `HudSnapshot::notifications` (`Vec<Notification { id, text, kind, created }>`,
+`created` on `hud_clock`); a new entry forces a publish even without a packet. Text is
+translated when created. The first pass only records a baseline, so starting the app says
+nothing. Nothing is queued while the overlay is off.
+
+**Look.** A 38 px plate pill (Drive cluster plate colour and font), a status dot (green on /
+done, red off, blue info) and the text. Alive for `TTL_SECS` = 2.5 s, 0.15 s fade-in, 0.45 s
+fade-out; the newest 5 are drawn; the overlay's frame timer runs while any is alive. They
+follow the HUD's global fade, so a hidden or paused HUD shows none.
+
+**Position** (Overlay tab, Notifications card): a 3×3 anchor picker, `notif_cell`, default
+top-centre; the edge margin is the Layout card's. **Stacking** (`hud::notify::stack_layout`,
+pure and unit-tested per anchor; always one vertical column, never side by side):
+
+- top row (incl. top-centre): grows down from the margin, newest on top, older below;
+- bottom row: grows up from the margin, newest at the bottom, older above;
+- left-centre / right-centre: top to bottom, newest on top, the block centred on the
+  vertical middle;
+- dead centre: starts at the vertical middle, grows downward, newest on top.
+
+The master switch and per-event toggles are in **Mini-Settings → Overlay → Notifications**
+(self-explanatory, no tooltips); the master switch is also the card's Enabled box on the
+Overlay tab.
+
 ## Race vs drift detection (`listeners/hud.rs`)
 
 FH6 has no drift field. In drift events it puts the **live drift score in `current_lap`**
@@ -387,6 +437,7 @@ push apply every change to the running HUD, so there's no Apply button.
   `hud::layout::layout`, always with the default margin/gap (the grid shows cell and stacking
   order, not spacing; a 0 gap would break its scale trick). The drag-and-drop is hand-rolled because egui's `dnd_drop_zone`
   sizes to its content.
+- **Notifications:** Enabled box + the anchor picker (see Notifications).
 - **Drive Cluster / Minimap / Race Block / Drift Counter:** a module on/off toggle plus the
   options listed under Widgets. No style thumbnails (D24).
 - **Rebinding:** the Hide HUD button arms the shared `ForzaApp::capture_rebind` (Esc cancels,

@@ -2,6 +2,7 @@ pub mod backfire;
 pub mod dsg;
 pub mod hud;
 pub mod lap_trace;
+pub mod notify;
 pub mod perf_test;
 pub mod power_capture;
 pub mod sprint_timer;

@@ -956,6 +956,16 @@ fn de(s: &str) -> Option<&'static str> {
         "Progress bar" => "Fortschrittsbalken",
         "Replaces the race block automatically while you drift, in the same spot."
             => "Ersetzt beim Driften automatisch die Rennanzeige an derselben Stelle.",
+        "Notifications" => "Benachrichtigungen",
+        "Show notifications" => "Benachrichtigungen anzeigen",
+        "Gearbox on / off" => "Getriebe an / aus",
+        "Gearbox mode changed" => "Getriebemodus geändert",
+        "Backfire on / off" => "Fehlzündung an / aus",
+        "Calibration started / done" => "Kalibrierung gestartet / fertig",
+        "ON" => "AN",
+        "OFF" => "AUS",
+        "Calibration started" => "Kalibrierung gestartet",
+        "Calibration done" => "Kalibrierung fertig",
 
         _ => return None,
     })
