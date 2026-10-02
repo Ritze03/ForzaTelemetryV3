@@ -2,7 +2,7 @@
 """Validation: distance from each POI type to the nearest decoded road (roads.json + pois.json from the other scripts).
 
 Usage: roaddist.py [--out ./fh6-out]     Needs: numpy (scipy optional, speeds it up).
-Exact-position types (race_start, house, fast_travel...) should sit on/near roads (race_start median ~2.8 m);
+Exact-position types (race_pin, house, fast_travel...) should sit on/near roads (race_pin median ~2.8 m);
 'precision: cell' types are only cell-centre approximations and will not.
 """
 import argparse, collections, json

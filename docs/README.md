@@ -43,7 +43,8 @@ The navigation reference — read these to move around the source efficiently.
 
 ## game-data/ — reverse-engineered FH6 game files
 
-- [FH6 Game Files](game-data/fh6-game-files.md) — how to read the map imagery (`.swatchbin` BC1 tiles), the road graph (`Brio_00.nav`) and POIs (trigger zones, locators) from the user's own install; formats, validation, dead ends, and why we read at runtime instead of bundling. Scripts: [`tools/fh6-extract/`](../tools/fh6-extract/README.md).
+- [FH6 Game Files](game-data/fh6-game-files.md) — the data catalogue (what is readable, exact vs approximate, loadable from a user install or creator-dump only), encryption status, and the formats: map imagery (`.swatchbin` BC1 tiles), road graph (`Brio_00.nav`), POIs (trigger zones, locators, `GameObjs.xml`), GeoChunk/PGZP, exact race starts (`RVAN`), race names, the seasonal-playlist verdict, the live-game probe, dead ends, and why we read at runtime instead of bundling. Scripts: [`tools/fh6-extract/`](../tools/fh6-extract/README.md).
+- [FH6 Terrain](game-data/fh6-terrain.md) — terrain elevation (`burG` models in GeoChunk0, 0.17 m vs roads) and surface-id collision meshes (`.phys`); the inferred surface classes and the open question of their real names.
 
 ## claude-instructions/ — mandatory rules for agents
 
