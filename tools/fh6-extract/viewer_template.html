@@ -123,7 +123,11 @@ const UI = {
         landmarks: 'Landmarks', racelines: 'Race lines (centre)', ribbons: 'Track edges (zoom in)', grids: 'Race start grids', hover: 'move the mouse over the map',
         surf_hint: 'Names are OURS (the game table is encrypted): confirmed = checked in-game, seen = visual only, reasoned = guess. Click a row to isolate it.',
         map: 'Map', terrain: 'Terrain', signs: 'Speed-limit signs', limit: 'Limit sign', high: 'High-speed sign', end: 'End of limit', variant: 'variant', kmh_unknown: 'km/h not in the files',
-        cls4: 'Highway-class roads (guess)', cls5: 'Normal roads', cls6: 'Dirt / track roads (guess)', cls8: 'Other road class (1 road)', ok: 'ok',
+        cls4: 'Nav class 4 roads', cls5: 'Nav class 5 roads', cls6: 'Nav class 6 roads', cls8: 'Nav class 8 roads (2 roads)', ok: 'ok',
+        rk0: 'Roads: paved (asphalt, concrete)', rk1: 'Roads: off-road (dirt, gravel, grass, snow...)', rk2: 'Roads: unknown (no surface data)',
+        road: 'Road', navcls: 'Nav class', navcls_v: ' (mixes surfaces - not a surface type)', thisrun: 'This stretch', wholeroad: 'Whole road piece', ids_run: 'Surface ids here', ids_road: 'Surface ids, whole road',
+        k0: 'paved', k1: 'off-road', k2: 'unknown', why0: 'no collision mesh under it (city core / arena / gap)', why1: 'road is elevated / in a tunnel (terrain >3 m away)', why2: 'water or unidentified surface id',
+        reasoned_note: '~ = reasoned guess, not checked in-game',
         region: 'Region', landmark: 'Landmark', radius: 'Radius', area: 'Area', route: 'Route', circuit: 'circuit', p2p: 'point-to-point', length: 'Length', heading: 'Heading',
         facing: 'Faces', width: 'Half-width', roadd: 'Road distance', cell: 'Source cell', surface: 'Surface', elev: 'Terrain height', layers: 'Layers', model: 'Model', ctx: 'Position',
         grid_hint: 'Race start grids', goto: 'jump to', nores: 'no matches', basis_guess: 'icon is a guess', basis_ours: 'icon chosen by us', unreachable: 'visual only' },
@@ -132,7 +136,11 @@ const UI = {
         landmarks: 'Wahrzeichen', racelines: 'Rennlinien (Mitte)', ribbons: 'Streckenraender (hineinzoomen)', grids: 'Startaufstellungen', hover: 'Maus ueber die Karte bewegen',
         surf_hint: 'Namen sind von UNS (die Spieltabelle ist verschluesselt): confirmed = im Spiel geprueft, seen = nur gesehen, reasoned = Vermutung. Zeile anklicken zum Isolieren.',
         map: 'Karte', terrain: 'Gelaende', signs: 'Tempolimit-Schilder', limit: 'Limit-Schild', high: 'Highspeed-Schild', end: 'Limit-Ende', variant: 'Variante', kmh_unknown: 'km/h nicht in den Dateien',
-        cls4: 'Strassen Klasse Autobahn (Vermutung)', cls5: 'Normale Strassen', cls6: 'Feldwege / Pisten (Vermutung)', cls8: 'Andere Strassenklasse (1 Strasse)',
+        cls4: 'Strassen Nav-Klasse 4', cls5: 'Strassen Nav-Klasse 5', cls6: 'Strassen Nav-Klasse 6', cls8: 'Strassen Nav-Klasse 8 (2 Strassen)',
+        rk0: 'Strassen: befestigt (Asphalt, Beton)', rk1: 'Strassen: Offroad (Erde, Schotter, Gras, Schnee...)', rk2: 'Strassen: unbekannt (keine Untergrunddaten)',
+        road: 'Strasse', navcls: 'Nav-Klasse', navcls_v: ' (mischt Untergruende - kein Untergrundtyp)', thisrun: 'Dieser Abschnitt', wholeroad: 'Ganzes Strassenstueck', ids_run: 'Untergrund-IDs hier', ids_road: 'Untergrund-IDs, ganze Strasse',
+        k0: 'befestigt', k1: 'Offroad', k2: 'unbekannt', why0: 'kein Kollisionsmesh darunter (Stadtkern / Arena / Luecke)', why1: 'Strasse erhoeht / im Tunnel (Gelaende >3 m entfernt)', why2: 'Wasser oder unbekannte Untergrund-ID',
+        reasoned_note: '~ = Vermutung, nicht im Spiel geprueft',
         region: 'Region', landmark: 'Wahrzeichen', radius: 'Radius', area: 'Flaeche', route: 'Route', circuit: 'Rundkurs', p2p: 'Punkt-zu-Punkt', length: 'Laenge', heading: 'Richtung',
         facing: 'Zeigt nach', width: 'Halbbreite', roadd: 'Abstand zur Strasse', cell: 'Quellzelle', surface: 'Untergrund', elev: 'Gelaendehoehe', layers: 'Ebenen', model: 'Modell', ctx: 'Position',
         grid_hint: 'Startaufstellungen', goto: 'springe zu', nores: 'keine Treffer', basis_guess: 'Symbol geraten', basis_ours: 'Symbol von uns gewaehlt', unreachable: 'nur gesehen' },
@@ -147,7 +155,7 @@ const catLabel = (k) => { const m = META.cats[k]; return m ? (isDE() ? m.de : m.
 // ------------------------------------------------------------------------------------------------------------------- map
 const CRS = L.extend({}, L.CRS.Simple, { scale: (z) => Math.pow(2, z - 3), zoom: (s) => Math.log(s) / Math.LN2 + 3 });   // zoom 3 = 1 unit per px of the 8192 map
 const MAPB = L.latLngBounds([-8192, 0], [0, 8192]);
-const map = L.map('map', { crs: CRS, minZoom: -1, maxZoom: 7, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90, preferCanvas: true, attributionControl: false, zoomControl: true });
+const map = L.map('map', { crs: CRS, minZoom: -1, maxZoom: 7, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90, preferCanvas: true, renderer: L.canvas({ tolerance: 4 }), attributionControl: false, zoomControl: true });
 map.createPane('over'); map.getPane('over').style.zIndex = 250;                     // overlays above tiles, below vectors
 const seasons = META.seasons && META.seasons.length ? META.seasons : [];
 if (!seasons.length) msg('No map tiles were built - the base map is empty.');
@@ -255,14 +263,35 @@ function addLabel(group, pos, fn, cls) { const m = L.marker(pos, { icon: labelIc
 
 // ---- map group: roads, regions, landmarks
 const ROAD_COL = { 4: '#ff9f43', 5: '#dfe3ea', 6: '#c98b55', 8: '#f472b6' };
+const KIND_COL = ['#38bdf8', '#ff8c1a', '#e11d95'];      // paved / off-road / unknown
 if (D.roads) {
+  const SU = D.roads.surf;
   [4, 5, 6, 8].forEach((c) => {
     const idx = []; D.roads.cls.forEach((v, i) => { if ((v & 0xffff) === c) idx.push(i); });
     if (!idx.length) return;
-    entry({ id: 'roads' + c, group: 'map', label: () => t('cls' + c), line: ROAD_COL[c], n: idx.length, on: c === 5 || c === 4, back: true,
+    entry({ id: 'roads' + c, group: 'map', label: () => t('cls' + c), line: ROAD_COL[c], n: idx.length, on: !SU && (c === 5 || c === 4), back: true,
       make: () => { const g = L.featureGroup(); idx.forEach((i) => { const a = D.roads.lines[i], pts = []; for (let j = 0; j < a.length; j += 2) pts.push(ll(a[j], a[j + 1]));
         L.polyline(pts, { color: ROAD_COL[c], weight: c === 5 ? 1.5 : 2, opacity: 0.85, interactive: false }).addTo(g); }); return g; } });
   });
+  if (SU) {
+    const sid = (id, pct) => { const m = SU.ids[id]; return '<div>' + (m ? (m[1] === 'reasoned' ? '~' : '') + esc(m[0]) + ' <small>[' + id + ', ' + m[1] + ', ' + m[2] + ']</small>' : 'id ' + id) + (pct != null ? ' &mdash; ' + pct + '%' : '') + '</div>'; };
+    const roadPopup = (i, run) => {
+      const [sm, topIds, runs] = SU.roads[i], r = runs[run], cls = D.roads.cls[i] & 0xffff;
+      const rows = [[t('navcls'), cls + t('navcls_v')],
+        [t('thisrun'), '<b style="color:' + KIND_COL[r[0]] + '">' + t('k' + r[0]) + '</b>, ' + r[1] + ' m' + (r[3] != null ? '<br><small>' + esc(t('why' + r[3])) + '</small>' : ''), 1],
+        [t('wholeroad'), runs.reduce((a, q) => a + q[1], 0) + ' m: ' + sm.map((v, k) => v + '% ' + t('k' + k)).join(' / ')],
+        [t('ids_run'), r[2].map((q) => sid(q[0], q[1])).join('') || '-', 1],
+        [t('ids_road'), topIds.map((q) => sid(q[0], q[1])).join('') || '-', 1], ['~', t('reasoned_note')]];
+      return popupHtml({ title: t('road') + ' #' + i, type: t('rk' + r[0]).replace(/^[^:]*: /, ''), rows });
+    };
+    [0, 1, 2].forEach((k) => {
+      let n = 0; SU.roads.forEach((q) => q[2].forEach((r) => { if (r[0] === k) n++; }));
+      entry({ id: 'roadk' + k, group: 'map', label: () => t('rk' + k), line: KIND_COL[k], n, on: true, back: true,
+        make: () => { const g = L.featureGroup(); SU.roads.forEach((q, i) => q[2].forEach((r, ri) => { if (r[0] !== k) return;
+          const a = r[4], pts = []; for (let j = 0; j < a.length; j += 2) pts.push(ll(a[j], a[j + 1]));
+          L.polyline(pts, { color: KIND_COL[k], weight: 2.5, opacity: 0.9 }).bindPopup(() => roadPopup(i, ri)).addTo(g); })); return g; } });
+    });
+  }
 }
 if (D.names) {
   const RCOL = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#fb923c', '#2dd4bf', '#f87171', '#a3e635', '#e879f9'];

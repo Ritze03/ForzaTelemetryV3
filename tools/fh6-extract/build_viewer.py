@@ -25,6 +25,7 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from fh6common import ci, autodetect_media
+from fh6surfaces import SURFACES, PAVED, OFFROAD
 
 T0 = time.time()
 LOCK = threading.Lock()
@@ -107,7 +108,12 @@ def run_extractors(media, work, force, terrain):
         jobs.append(ex.submit(chain, ('names', 'extract_names.py', [], work, ['names.json', 'regions.json'])))
         jobs.append(ex.submit(chain, ('racelines', 'extract_racelines.py', [], work, ['racelines.json'])))
         # roads first (extract_speedsigns snaps to roads.json), then the rest of the chains
+        rj = W('roads.json')
+        if os.path.isfile(rj) and b'"heights"' not in open(rj, 'rb').read():       # roads.json from before node heights were exported
+            os.remove(rj)
         chain(('roads', 'decode_nav.py', [], work, ['roads.json']))
+        if terrain and res.get('roads'):
+            jobs.append(ex.submit(chain, ('roadsurf', 'classify_roads.py', [], work, ['roadsurf.npz'])))
         jobs.append(ex.submit(after_nav))
         jobs.append(ex.submit(chain, ('speedsigns', 'extract_speedsigns.py', [], work, ['speedsigns.json'])))
         for j in jobs:
@@ -329,9 +335,84 @@ def build_names(work):
     return dict(languages=n['languages'], landmarks=lm, regions=regs)
 
 
+ELEV_DM = 30           # road node more than 3.0 m above/below the nearest terrain triangle -> elevated / underground -> unknown
+MINRUN_M = 40          # surface runs shorter than this are absorbed by the longer neighbour (flicker, seams between collision squares)
+KIND_NAMES = ['paved', 'offroad', 'unknown']
+WHY = ['no collision mesh', 'elevated / tunnel', 'water or unidentified id']       # why a sample is unknown
+
+
+def smooth_runs(code, step, minrun=MINRUN_M):
+    """per-sample kind codes (0 paved, 1 off-road, 2 unknown) -> ([[kind, first sample, n samples]], smoothed codes); runs shorter than `minrun`
+    metres are merged into the longer neighbour (equal neighbours -> that kind), shortest first."""
+    def rle(c):
+        ch = np.nonzero(np.diff(c))[0] + 1
+        st = np.r_[0, ch]; en = np.r_[ch, len(c)]
+        return [[int(c[x]), int(x), int(y - x)] for x, y in zip(st, en)]
+    code = np.asarray(code).copy(); runs = rle(code); mn = max(1, int(round(minrun / step)))
+    while len(runs) > 1:
+        k = min(range(len(runs)), key=lambda j: runs[j][2])
+        if runs[k][2] >= mn:
+            break
+        l = runs[k - 1] if k > 0 else None; r = runs[k + 1] if k + 1 < len(runs) else None
+        tgt = (l if (l[0] == r[0] or l[2] >= r[2]) else r) if (l and r) else (l or r)
+        code[runs[k][1]:runs[k][1] + runs[k][2]] = tgt[0]
+        runs = rle(code)
+    return runs, code
+
+
 def build_roads(work):
     r = jl(os.path.join(work, 'roads.json'))
-    return dict(cls=r['cls'], lines=[[v for p in pl for v in (fl(p[0]), fl(p[1]))] for pl in r['polylines']])
+    out = dict(cls=r['cls'], lines=[[v for p in pl for v in (fl(p[0]), fl(p[1]))] for pl in r['polylines']])
+    npz = os.path.join(work, 'roadsurf.npz')
+    if not os.path.isfile(npz):
+        warn('road surfaces', 'roadsurf.npz missing (classify_roads.py failed or --no-terrain) - roads are coloured by nav class only')
+        return out
+    d = np.load(npz); step = float(d['step']); off = d['off']
+    ids, dy, SX, SZ = d['id'].astype(int), d['dy'].astype(int), d['x'], d['z']      # load once (npz members decompress on every access)
+    kind_of = np.full(65536, 2, np.int8)
+    for i, (_, _, k) in SURFACES.items():
+        kind_of[i] = 0 if k == PAVED else 1 if k == OFFROAD else 2
+    tri = ids != 65535
+    elev = tri & (np.abs(dy) > ELEV_DM)
+    valid = tri & ~elev                                            # a trustworthy surface id under the road
+    raw = np.where(valid, kind_of[ids], 2)                         # 0 paved / 1 off-road / 2 unknown
+    why = np.where(~tri, 0, np.where(elev, 1, 2))                  # reason for unknown samples
+    used = set()
+    km = {}                                                        # nav class -> [paved, offroad, unknown] km
+    wkm = [0.0, 0.0, 0.0]                                          # unknown km by dominant reason
+    roads = []
+
+    def top(v, k):
+        u, c = np.unique(v, return_counts=True); o = np.argsort(-c)[:k]
+        return [[int(u[j]), int(round(100 * c[j] / max(len(v), 1)))] for j in o]
+    for q in range(len(r['cls'])):
+        a, b = int(off[q]), int(off[q + 1]); n = b - a
+        pl = np.asarray(r['polylines'][q], float); length = float(np.hypot(*np.diff(pl, axis=0).T).sum()); w = length / max(n - 1, 1)
+        runs, code = smooth_runs(raw[a:b], step)
+        vi = ids[a:b][valid[a:b]]
+        used.update(int(i) for i in np.unique(vi))
+        sm = [round(100 * float((code == k).mean())) for k in range(3)]
+        rr = []
+        for kd, s0, ln in runs:
+            sl = slice(a + s0, a + s0 + ln); e = min(s0 + ln + 1, n)          # +1: a run ends on the first sample of the next one (no visual gap)
+            ix = np.unique(np.r_[np.arange(s0, e, 4), e - 1])
+            pts = [fl(v, 1) for j in ix for v in (SX[a + j], SZ[a + j])]
+            wy = np.bincount(why[sl][raw[sl] == 2], minlength=3)
+            rr.append([kd, int(round(ln * w)), top(ids[sl][valid[sl]], 3), int(wy.argmax()) if kd == 2 and wy.sum() else None, pts])
+            km.setdefault(r['cls'][q], [0.0, 0.0, 0.0])[kd] += ln * w / 1000
+            if kd == 2 and wy.sum():
+                wkm[int(wy.argmax())] += ln * w / 1000
+        roads.append([sm, top(vi, 4), rr])
+    out['surf'] = dict(kinds=KIND_NAMES, why=WHY, minrun=MINRUN_M, elev_m=ELEV_DM / 10, roads=roads,
+                       ids={str(i): (list(SURFACES[i]) if i in SURFACES else ['Unknown id %d' % i, 'unknown', 'other']) for i in sorted(used)})
+    log('road surface kinds after smoothing (km): paved / off-road / unknown')
+    for c in sorted(km):
+        v = km[c]; t_ = sum(v)
+        log(f'    nav class {c}: {v[0]:7.1f} / {v[1]:7.1f} / {v[2]:6.1f}   ({t_:.1f} km; {100 * v[0] / t_:.0f}% / {100 * v[1] / t_:.0f}% / {100 * v[2] / t_:.0f}%)')
+    tot = [sum(km[c][k] for c in km) for k in range(3)]
+    log(f'    all        : {tot[0]:7.1f} / {tot[1]:7.1f} / {tot[2]:6.1f}   ({sum(tot):.1f} km); unknown by dominant reason: ' +
+        ', '.join(f'{WHY[k]} {wkm[k]:.1f} km' for k in range(3)))
+    return out
 
 
 def build_racelines(work):
@@ -484,7 +565,7 @@ def main():
         INCLUDED['POI categories'] = ', '.join(f'{k}:{len(v)}' for k, v in sorted(cats.items(), key=lambda kv: -len(kv[1])))
     nm = layer('landmarks + regions', lambda: build_names(W()), lambda o: f"{len(o['landmarks'])} landmarks, {len(o['regions'])} regions")
     if nm: scripts.append(write_js(out, 'names', nm))
-    rd_ = layer('roads', lambda: build_roads(W()), lambda o: f"{len(o['lines'])} polylines")
+    rd_ = layer('roads', lambda: build_roads(W()), lambda o: f"{len(o['lines'])} polylines" + (', surface kinds for all' if 'surf' in o else ', no surface data'))
     if rd_: scripts.append(write_js(out, 'roads', rd_))
     rl = layer('race lines', lambda: build_racelines(W()), lambda o: f'{len(o)} routes, {sum(len(r["p"]) // 2 for r in o)} points')
     if rl: scripts.append(write_js(out, 'racelines', rl))
