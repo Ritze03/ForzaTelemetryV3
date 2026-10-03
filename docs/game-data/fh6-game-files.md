@@ -540,6 +540,7 @@ That is **37 of the 170 routes**. The user's three examples are all in the first
 - `ChunkContentsMiniZip*.txt`: asset lists only.
 
 So the remaining 133 routes' pin positions are presumably entity placements in the encrypted `EntityModel.zip` (the creator dump's `campaign_slots.xml` family) - not loadable. The editor keeps those at the RVAN start line and marks them as such. Do **not** fill them by nearest-neighbour matching: it was ruled out by the user, and with the sphere distances above (0-780 m from the start) it would be a guess.
+Update: for the routes without a sphere the start line is a *validated prediction* (their pin sits there, within 41 m), see [Predicting race type and map-pin position](#predicting-race-type-and-map-pin-position-validated-against-the-users-marks); the viewer labels it "predicted: at start line (+-N m)".
 
 ### Race names
 
@@ -607,7 +608,7 @@ Names: **111/111 EN and 111/111 DE** (e.g. 281 "Highway Circuit" / "Highway-Rund
 
 **Routes left without a type, on purpose:**
 - **Initial-Experience routes 3333–3337** carry `UseCrossCountryAI=True` (key 1257, 1258, 1308–1310) but are tutorial drives, not cross-country races, so the extractor skips the flag for them (an explicit rule in `fh6careers.INITIAL_EXPERIENCE`; they have no other type field, so they stay unmarked).
-- **The 16 scramble / trail routes** (keys 64–79: scramble routes 121, 162, 181, 271, 301, 341; trail routes 2051, 2061, 2071, 2101, 2121, 2211, 2271, 2281, 2301, 2311): no field states a type for them (`CareerRaceDataSet` has no entry above key 63). Their *names* contain "Scramble"/"Trail", but that is a name, not a type field — see the Why below. Marking them (probably `rally`, as the four 60–63 scrambles are) is left to a separate decision by the user.
+- **The 16 scramble / trail routes** (keys 64–79: scramble routes 121, 162, 181, 271, 301, 341; trail routes 2051, 2061, 2071, 2101, 2121, 2211, 2271, 2281, 2301, 2311): no field states a type for them (`CareerRaceDataSet` has no entry above key 63). Their *names* contain "Scramble"/"Trail", but that is a name, not a type field — see the Why below. The user marked all of them `rally`, and the AI-driver-family field agrees: all **17** (these 16 plus the finale 2052 Gauntlet) use the `Dirt_*` family, see [Predicting race type](#predicting-race-type-and-map-pin-position-validated-against-the-users-marks).
 - Finales (132 Colossus, 2052 Gauntlet, 5555 Goliath), Horizon Rush/showcase/invitational routes 8001–8008, Playground arenas 3001–3023, 4251, route 0, and the ~59 routes with no TrackInfo entry (11000–11045, 20000–20005, 30000–30006, 30100–30106, 99): no editor-type field, or no entry at all.
 
 *Why: exact fields only, no inference.* The user's call (2026-10-03), after seeing types guessed from route geometry, surface and name words: "That's a bad way of doing it". A type the files do not state is left unset (the map viewer shows a grey "?") for the user to mark by hand, so every pre-marked type can be traced to a named game field (`extra.type_source`). Do not add heuristics here without the user asking.
@@ -637,6 +638,75 @@ other 6.7, not set 0.4) and **93 of 170 races typed**: rally 21, road 21, cross 
   (no TrackInfo/CareerRace entry, not a story challenge route id), so those marks are the user's call alone.
 - **Why:** the game files do not state the road surface class (see [fh6-terrain.md](fh6-terrain.md)) nor, for most races, a pin or a type; the user chose to mark them by hand
   against the in-game map rather than have them inferred from geometry or names. Nothing in this file is inferred.
+
+### Predicting race type and map-pin position (validated against the user's marks)
+
+Everything above is **exact** (a named game field) or the **user's own mark**. For the other routes the build adds *predictions*: `tools/fh6-extract/racetype_method.py` (type), `pin_method.py` (pin),
+driven by `extract_predictions.py` -> `predictions.json` (per route: `type_predicted`, `type_kind`, `type_confidence`, `type_source`, `type_why`, `type_alternatives`, `pin_predicted {x, z, method, expected_err_m, note}`).
+`build_viewer.py` merges them into the `extra` of each route's `race_start` / `ie_route` / `horizon_chase` record. The viewer shows them as three separate rows (Game files / Your mark / Predicted) and queues the
+doubtful ones in the editor's **Review queue** (Accept = an ordinary undoable mark; predictions never write into `fh6-road-types.json` or the user's marks by themselves).
+The user's hand marks (93 routes) are the ground truth the method was built and checked against (user, 2026-10-03: "use the actual data that I've provided so far to try and harden the method").
+
+**Race type: ordered sources, the first that answers wins**
+
+| # | `type_source` | Answers when | Confidence |
+|---|---|---|---|
+| 1 | `exact` | `fh6careers.race_types` states a type (the exact fields above) | 1.0 |
+| 2 | `event` | `HorizonStoryChallengeData.RouteId` -> `story`; `CareerRaceDataSet.EventType = Showcase` -> `wristband` (analogy to the user-marked 8004) | 0.90 / 0.70 |
+| 3 | `ai_family` | the route has `Route<N>_<level>` DifficultyLevels (86 routes) -> its AI-driver family | 0.80-0.96 per family (precision on the marks), 0.5 on a Street/Road tie |
+| 4 | `not_a_race` | Initial-Experience drives, Horizon Chase, routes with no collision under the line and all AI tags 0 (99, 102, 103) | 0.8-0.95 |
+| 5 | `copy` | id >= 30000 and >= 95 % of its racing line lies within 3 m of another route's line -> `story` (event copy; 30002-30004 are marked story) | 0.80 |
+| 6 | `line` / `id_convention` | fitted rules on the racing line (below) | leaf probability |
+
+**The AI-family field (source 3).** `ObjectModelGame.zip` holds 613 `DifficultyLevel` objects (root `type="DifficultyLevel"`, one `.om.xml` each; the file ids differ per object, so find them by the type attribute, not by id.
+The type name is in the BXML string table, so a byte pre-filter is enough, 0.2 s). Each has a `DifficultyName` and object-guid slots (`RaceTrack`, `RaceStart`, ...). The game's *generic* levels are named `<Family>_<level>`
+(`Dirt_`, `Cross_`, `Street_`, `Road_`, `Drag_`, `Touge_` x `AboveAverage ... Unbeatable`); a route has its own `Route<N>_<level>` set (86 routes in the Oct-2026 build, 9 levels each). **Fingerprint = the
+(`RaceTrack`, `RaceStart`) guid pair per level**: a family scores 1 per level whose pair equals the generic one, the best family wins (margin = best - second). Mapping: `Dirt` -> rally, `Cross` -> cross_country,
+`Street` -> street, `Road` -> road, `Drag` -> drag, `Touge` -> touge. Margins in this build: Dirt 5, Cross 6, Drag 6, Touge 5; **Road vs Street is the only close pair (margin 1: they differ in one level, `Unbeatable`)**.
+*Why this source:* it is a **game field** (which AI drivers the game itself runs on the route), not a guess from geometry or names, and nothing in it is fitted. So it outranks the line rules, and unlike them it needs no calibration.
+It also settles the 17 scramble / trail routes: all use the `Dirt_*` family, consistent with the user's `rally` marks.
+
+**Line rules (source 6; only for what 1-5 leave open: 9 routes in this build).** Features are computed on the trimmed racing line (`racelines.json` points):
+`s_off` = share of line points whose exact terrain triangle (height-matched within 15 m, same sampler as `classify_roads.py`, kind table `fh6surfaces.SURFACES`) is off-road; `t_dirt` = share (by length) of `.owt`
+node `tag[0]` in 272-274. Ordered rules (thresholds fitted by an exhaustive 1-D search on the 85 race-typed marks): `s_off >= 0.124` -> off-road, within that `t_dirt >= 0.148` -> `rally` else `cross_country`;
+point-to-point and length <= 1844 m -> `drag`; circuit -> `road`; paved point-to-point -> road / street / touge are not separable from the line, so the **route-id thousands digit** is used (2xxx road, 4xxx street, 5xxx touge)
+and the source is labelled `id_convention`. *Why labelled:* the digit is a **naming convention** in the route ids that happens to hold on the 85 marks, **not a game field**; a future build could break it, so the viewer
+says so on every prediction that rests on it (currently only 4301). `extract_predictions.py --refit` re-fits the thresholds after a game update (prints leave-one-out accuracy; writes nothing).
+
+**Accuracy against the user's 93 marks** (`extract_predictions.py` prints it on every run; the build log repeats it):
+
+| Test | Result |
+|---|---|
+| Full pipeline, all 93 marks | **90 / 93** (96.8 %); the three misses are listed below |
+| Hand-only marks (26 without an exact type) | **23 / 26** |
+| Race-typed marks (85) | 84 / 85 |
+| AI family alone, no fitted parameter (85 marks with a family) | **83 / 85** (97.6 %); on the 66 exact-typed ones 66 / 66 |
+| Line rules alone, leave-one-out, without the id hint | 67 / 85 = **78.8 %** (road+street merged 91.8 %) |
+| Line rules alone, leave-one-out, with the id hint | 81 / 85 = **95.3 %** |
+| Line-rule confidence calibration (with id hint) | 0.6-0.9 bucket: 78 / 81 held-out correct; < 0.6: 3 / 4 |
+
+Misses of the full pipeline - all three are **flagged for review**, none is forced:
+- **5555 The Goliath**, marked street, family `Road` 6/6 vs `Street` 5/6 (the route lacks the `Street_Unbeatable` match): probably a slip in the mark, or a street race on the Road AI.
+- **132 The Colossus**, marked story, family `Road`: a story / finale pin on a route that uses the Road AI; the family cannot know "story".
+- **8006 Horizon Invitational**, marked story, predicted road at 0.5 from the line: unverifiable (no family, no story-challenge entry).
+
+Classes the method **cannot separate**: road vs street on a route without an AI family (the line is the same kind of paved road; only the id digit hints), story / wristband / invitational pins vs the race they
+sit on (events are only recognised by `HorizonStoryChallengeData` / `Showcase` / a copied line), and touge vs drag / street without the family (touge: 4 of 5 held out). 11000 and 11002 sit next to story-challenge ids
+without an entry of their own (the viewer's queue says so).
+
+**Map pin (`pin_method.py`).** Rules in order: **exact** (a `race_trigger_zone_rt<N>` sphere or the touge locator, 37 routes, error 0) -> **event POI** (route 8001-8099 without a pin: the nearest *unclaimed* special-event POI
+(`rush_event` / `showcase` / `special_event`) within 600 m of the start; in this build only 8007 -> `legendevent`, 23 m from its start line) -> **start line** (the RVAN start).
+*Why the start line:* the game only needs an extra trigger sphere where the pin is **not** at the start, so a route without a sphere has its pin at the start. Validated against an independent in-game-captured pin set:
+**55 of 55** checked routes without a sphere have their pin at the start line, within **<= 41 m (median 5 m, p90 18 m)** along the road. Expected errors reported with each prediction: 18 m races, 20 m event rule, 25 m
+unverified (128, 4301, 8008), 30 m story / job routes (11000-30100; the start sits on the story activation); no pin expected for test / tutorial / chase routes. **No geometric method predicts a *displaced* pin**
+(every hypothesis tested was ~150-500 m off, leave-one-out ~150 m), so a displaced pin is only knowable from the exact sources. The viewer wording is "predicted: at start line (+-N m)".
+
+**Caveats.** The guids and tags were checked on the Oct-2026 build only (re-run after a game update; `--refit` for the line thresholds). The drag threshold (1844 m) rests on 3 samples and is fragile. `.owt` tag 272-274 is an
+**undecoded** field (60 % of the rally lines, 0-3 % of road / street / touge), so its use is empirical. Confidences are Laplace-smoothed precisions on the user's marks, not probabilities of truth, and the marks themselves are
+human: a mismatch is as likely a slip in the mark as in the prediction, which is why the review queue exists. The `why` strings are English only.
+
+*Why predictions are kept apart:* the user's earlier call (exact fields only, no inference) still holds for the *exact* rows. Predictions are a separate, labelled layer, so a guess can never be mistaken for a game field or
+for the user's own mark, and they only become a mark when the user clicks Accept.
 
 ### More categories (route files, arenas, train, creator dump)
 
@@ -744,6 +814,7 @@ extract_poi.py --out DIR [--entity-model OLD_EntityModel.zip] # pois.json (5578 
 extract_geochunk.py --out DIR [--skip-pgeo]                   # geochunk_pois.json (1649 exact prop records)
 extract_races.py --out DIR [--entity-model ...]               # races.json (169 race starts + grids + finishes, names)
 extract_racelines.py --out DIR [--step 5]                     # racelines.json (170 trimmed racing lines + track edges)
+extract_predictions.py --out DIR [--refit]                    # predictions.json (needs races/pois/racelines.json in DIR): predicted race type + map pin per route, self-check vs the marks
 extract_speedsigns.py --out DIR [--roads roads.json] [--variant-map "0=50,1=60,..."]   # speedsigns.json (2141 signs)
 extract_terrain.py --out DIR [--region X0,Z0,X1,Z1] [--coarse]# elevation.npy/.png, surfaces.npy/.png (+ names in surfaces.json)
 extract_cars.py --out DIR [--lang EN,DE|all] [--ordinal N ..] # cars.json (671 ordinals -> media name + full/model name + make + display)
@@ -754,7 +825,7 @@ build_viewer.py --out DIR_OUTSIDE_REPO                         # local Leaflet m
 ```
 
 Library modules: `fh6common.py` (install detection, case-insensitive paths, `.nt`/`.tz` readers), `pgzp.py` + `lz4b.py` (PGZP reader, u32 **and** u64 table),
-`fh6str.py` (string tables), `fh6owt.py` (`.owt` racing line + `RVAN` block), `fh6surfaces.py` (terrain surface-id names with their confirmed/reasoned status), `fh6bxml.py` (BXML; also decodes the plaintext `ObjectModelGame.zip`), `fh6careers.py` (exact race names + types from it).
+`fh6str.py` (string tables), `fh6owt.py` (`.owt` racing line + `RVAN` block), `fh6surfaces.py` (terrain surface-id names with their confirmed/reasoned status), `fh6bxml.py` (BXML; also decodes the plaintext `ObjectModelGame.zip`), `fh6careers.py` (exact race names + types from it). `racetype_method.py` / `pin_method.py` (predicted race type / map pin, see "Predicting race type and map-pin position").
 
 Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 GameObjs objects, 1649 records, pgeo error 0.000 m, identical to the original research output;
 `extract_races.py` → 169 race starts, start line within 0.1 m of its own racing line for 165 (was 164 before the `.owt` fix) (names: 22 exact incl. IE/chase, 3 locator, 44 landmark ≤ 400 m, 10 weaker with the creator dump);
