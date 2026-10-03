@@ -295,16 +295,21 @@ AI_CONF = {'Dirt': 0.957, 'Cross': 0.95, 'Touge': 0.857, 'Drag': 0.80, 'Street':
 COPY_CONF = 0.80          # 3 of 3 marked event copies (30002-30004) are story
 STORY_CONF = 0.90         # 2 of 2 marked story-challenge routes (11017, 11044) are story; the other 47 are unmarked
 SHOWCASE_CONF = 0.70      # 1 marked Showcase route (8004 -> wristband); 8005 is the same EventType
-SOURCES = ('exact', 'event', 'ai_family', 'not_a_race', 'copy', 'line')
+# Series finales shown with the street (purple) icon in-game. User rule 2026-10-03: "Goliath is technically a road race, but it has the purple icon, so everyone
+# considers it a street race, especially since for every race type there's one final race, so it should be purple."  5555 The Goliath: AI family Road (6/6), Street 5/6.
+FINALE_ICON = {5555: 'street'}
+SOURCES = ('exact', 'finale_icon', 'event', 'ai_family', 'not_a_race', 'copy', 'line')
 
 
 def predict(f, sources=SOURCES, P=None):
     """One feature dict -> dict(type, kind, confidence, source, why, alternatives).  type in road|street|rally|cross_country|touge|drag|story|wristband|none,
-    kind in race|event|not_a_race, source in exact|event|ai_family|not_a_race|copy|line|id_convention.  `sources` switches steps off (self-check tests ai_family alone)."""
+    kind in race|event|not_a_race, source in exact|finale_icon|event|ai_family|not_a_race|copy|line|id_convention.  `sources` switches steps off (self-check tests ai_family alone)."""
     def out(t, kind, c, src, why, alt=()):
         return dict(type=t, kind=kind, confidence=round(c, 3), source=src, why=why, alternatives=[[a, round(b, 3)] for a, b in alt])
     if 'exact' in sources and f.get('type_exact'):
         return out(f['type_exact'], 'race', 1.0, 'exact', 'CareerRaceDataSet / TrackInfoDataSet field')
+    if 'finale_icon' in sources and f['rid'] in FINALE_ICON:
+        return out(FINALE_ICON[f['rid']], 'race', 1.0, 'finale_icon', 'series finale; shown with the street (purple) icon in-game — user rule 2026-10-03')
     if 'event' in sources:
         if f.get('story_challenge'):
             return out('story', 'event', STORY_CONF, 'event', f"HorizonStoryChallengeData.RouteId ({f['story_challenge']})")

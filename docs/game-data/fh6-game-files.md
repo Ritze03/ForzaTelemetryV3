@@ -652,6 +652,7 @@ The user's hand marks (93 routes) are the ground truth the method was built and 
 | # | `type_source` | Answers when | Confidence |
 |---|---|---|---|
 | 1 | `exact` | `fh6careers.race_types` states a type (the exact fields above) | 1.0 |
+| 1b | `finale_icon` | an explicit per-route override (`FINALE_ICON` in `racetype_method.py`; only 5555 The Goliath -> `street`) | 1.0 |
 | 2 | `event` | `HorizonStoryChallengeData.RouteId` -> `story`; `CareerRaceDataSet.EventType = Showcase` -> `wristband` (analogy to the user-marked 8004) | 0.90 / 0.70 |
 | 3 | `ai_family` | the route has `Route<N>_<level>` DifficultyLevels (86 routes) -> its AI-driver family | 0.80-0.96 per family (precision on the marks), 0.5 on a Street/Road tie |
 | 4 | `not_a_race` | Initial-Experience drives, Horizon Chase, routes with no collision under the line and all AI tags 0 (99, 102, 103) | 0.8-0.95 |
@@ -677,18 +678,23 @@ says so on every prediction that rests on it (currently only 4301). `extract_pre
 
 | Test | Result |
 |---|---|
-| Full pipeline, all 93 marks | **90 / 93** (96.8 %); the three misses are listed below |
-| Hand-only marks (26 without an exact type) | **23 / 26** |
+| Full pipeline, all 93 marks | **91 / 93** (97.8 %); the two misses are listed below |
+| Hand-only marks (26 without an exact type) | **24 / 26** |
 | Race-typed marks (85) | 84 / 85 |
 | AI family alone, no fitted parameter (85 marks with a family) | **83 / 85** (97.6 %); on the 66 exact-typed ones 66 / 66 |
 | Line rules alone, leave-one-out, without the id hint | 67 / 85 = **78.8 %** (road+street merged 91.8 %) |
 | Line rules alone, leave-one-out, with the id hint | 81 / 85 = **95.3 %** |
 | Line-rule confidence calibration (with id hint) | 0.6-0.9 bucket: 78 / 81 held-out correct; < 0.6: 3 / 4 |
 
-Misses of the full pipeline - all three are **flagged for review**, none is forced:
-- **5555 The Goliath**, marked street, family `Road` 6/6 vs `Street` 5/6 (the route lacks the `Street_Unbeatable` match): probably a slip in the mark, or a street race on the Road AI.
+Misses of the full pipeline - both are **flagged for review**, none is forced:
+- ~~5555 The Goliath~~ - fixed by the `finale_icon` override (next paragraph).
 - **132 The Colossus**, marked story, family `Road`: a story / finale pin on a route that uses the Road AI; the family cannot know "story".
 - **8006 Horizon Invitational**, marked story, predicted road at 0.5 from the line: unverifiable (no family, no story-challenge entry).
+
+**Series finales carry the street icon (`finale_icon`, source 1b).** Each race series has one finale. The Goliath (5555) has the `Road` AI family (6/6; `Street` 5/6, it lacks the `Street_Unbeatable` match),
+but in-game it shows the street (purple) icon and players treat it as the street finale, so `racetype_method.FINALE_ICON = {5555: 'street'}` predicts `street` (confidence 1.0). User rule, 2026-10-03: "Goliath is technically a
+road race, but it has the purple icon, so everyone considers it a street race, especially since for every race type there's one final race, so it should be purple."
+*Why:* the in-game icon is what players see; the AI family is an implementation detail. Only 5555 is listed: the other finales (132 The Colossus, 2052 The Gauntlet, 1023 The Titan) are not decided.
 
 Classes the method **cannot separate**: road vs street on a route without an AI family (the line is the same kind of paved road; only the id digit hints), story / wristband / invitational pins vs the race they
 sit on (events are only recognised by `HorizonStoryChallengeData` / `Showcase` / a copied line), and touge vs drag / street without the family (touge: 4 of 5 held out). 11000 and 11002 sit next to story-challenge ids
