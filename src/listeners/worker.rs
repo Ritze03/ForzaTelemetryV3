@@ -50,7 +50,7 @@ use crate::coop::CoopReader;
 use crate::focus::FocusDetector;
 use crate::input::InputSender;
 use crate::listeners::backfire::{BackfireListener, BackfireView};
-use crate::listeners::calib::MaxRpmChecks;
+use crate::listeners::calib::next_max_rpm;
 use crate::listeners::dsg::{DsgListener, DsgView};
 use crate::listeners::hud::{hud_paused, HudTracker, VisFacts};
 use crate::listeners::notify::Notifier;
@@ -475,13 +475,13 @@ fn run(ctx: Ctx) {
                     // rule in `Notifier::watch` (car change = new episode), not from here.
                 }
 
-                // Dynamic redline: highest RPM seen while the engine is making power,
-                // ignoring handbrake / slipping tyres (>0.5) — those inflate RPM without
+                // Dynamic redline: highest RPM seen before the first manual upshift, ignoring
+                // handbrake / slipping tyres (>0.5) — those inflate RPM without
                 // real road speed. The gearbox's only redline source, so it lives here.
                 // The conditions live in `listeners/calib.rs` (shared with the Debug tab).
-                if MaxRpmChecks::eval(&pkt).all() {
-                    dynamic_max_rpm = dynamic_max_rpm.max(pkt.current_engine_rpm);
-                }
+                // Locked once the box is engaged (`dsg.engaged`): only Clear RPM calibration, a car
+                // change or a restored profile changes it. See `MaxRpmChecks::unlocked`.
+                dynamic_max_rpm = next_max_rpm(dynamic_max_rpm, &pkt, dsg.engaged);
 
                 backfire.update(&pkt, &cfg, &input, pps);
                 // No grace here: `echo_grace` exists for consumers that read the window a
