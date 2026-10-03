@@ -79,6 +79,14 @@ impl CalibRaw {
 /// 1. Max-RPM capture: all must hold for `dynamic_max_rpm = max(dynamic_max_rpm, rpm)`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MaxRpmChecks {
+    /// The redline is not locked yet: false once the box is engaged *and* a redline is known.
+    /// Why: the whole point of the calibration procedure is a stable redline; later over-revs
+    /// (limiter bounce, downshift spikes) must not move the shift point. Only Clear RPM
+    /// calibration (which clears `engaged` and the redline), a car change or a loaded saved
+    /// calibration changes it. "And a redline is known": a restored profile can carry
+    /// `engaged` with `max_rpm == 0` (RPM cleared, gear map kept, then saved), which must
+    /// still be able to capture rather than lock at 0.
+    pub unlocked: bool,
     pub race_on: bool,
     pub power_positive: bool,
     pub handbrake_off: bool,
@@ -87,8 +95,9 @@ pub struct MaxRpmChecks {
 }
 
 impl MaxRpmChecks {
-    pub fn eval(pkt: &ForzaPacket) -> Self {
+    pub fn eval(pkt: &ForzaPacket, engaged: bool, max_rpm: f32) -> Self {
         Self {
+            unlocked: !(engaged && max_rpm > 0.0),
             race_on: pkt.is_race_on != 0,
             power_positive: pkt.power > 0.0,
             handbrake_off: pkt.hand_brake == 0,
@@ -104,7 +113,18 @@ impl MaxRpmChecks {
         // (engage only on a manual upshift, gear-map median) makes practically impossible.
         // Still computed for the Debug panel (informational).
         // && self.power_positive
-        self.race_on && self.handbrake_off && self.slip_ok.iter().all(|&b| b)
+        self.unlocked && self.race_on && self.handbrake_off && self.slip_ok.iter().all(|&b| b)
+    }
+}
+
+/// The detected redline after this packet: raised to `rpm` while capture is allowed
+/// (`MaxRpmChecks::all`), otherwise unchanged. The worker's only writer of `dynamic_max_rpm`
+/// besides car change / clear / restore.
+pub fn next_max_rpm(current: f32, pkt: &ForzaPacket, engaged: bool) -> f32 {
+    if MaxRpmChecks::eval(pkt, engaged, current).all() {
+        current.max(pkt.current_engine_rpm)
+    } else {
+        current
     }
 }
 
@@ -203,7 +223,7 @@ pub struct CalibChecks {
 impl CalibChecks {
     pub fn eval(pkt: &ForzaPacket, engage: EngageChecks, max_rpm: f32) -> Self {
         Self {
-            max_rpm: MaxRpmChecks::eval(pkt),
+            max_rpm: MaxRpmChecks::eval(pkt, engage.engaged, max_rpm),
             engage,
             gear_map: GearMapChecks::eval(pkt, max_rpm),
             raw: CalibRaw::of(pkt, max_rpm),
@@ -235,25 +255,25 @@ mod tests {
 
     #[test]
     fn max_rpm_passes_on_a_clean_packet() {
-        assert!(MaxRpmChecks::eval(&good()).all());
+        assert!(MaxRpmChecks::eval(&good(), false, 0.0).all());
     }
 
     #[test]
     fn max_rpm_each_condition_fails_alone() {
         let mut p = good();
         p.is_race_on = 0;
-        let c = MaxRpmChecks::eval(&p);
+        let c = MaxRpmChecks::eval(&p, false, 0.0);
         assert!(!c.race_on && !c.all());
 
         let mut p = good();
         p.power = 0.0; // informational only: still reported, never blocks capture
-        assert!(!MaxRpmChecks::eval(&p).power_positive);
+        assert!(!MaxRpmChecks::eval(&p, false, 0.0).power_positive);
         p.power = 0.01;
-        assert!(MaxRpmChecks::eval(&p).power_positive);
+        assert!(MaxRpmChecks::eval(&p, false, 0.0).power_positive);
 
         let mut p = good();
         p.hand_brake = 1;
-        let c = MaxRpmChecks::eval(&p);
+        let c = MaxRpmChecks::eval(&p, false, 0.0);
         assert!(!c.handbrake_off && !c.all());
     }
 
@@ -261,21 +281,54 @@ mod tests {
     fn max_rpm_still_captures_with_zero_power_at_the_limiter() {
         let mut p = good();
         p.power = 0.0; // fast rev limiter: power reads 0
-        let c = MaxRpmChecks::eval(&p);
+        let c = MaxRpmChecks::eval(&p, false, 0.0);
         assert!(!c.power_positive && c.all());
         p.power = -5.0;
-        assert!(MaxRpmChecks::eval(&p).all());
+        assert!(MaxRpmChecks::eval(&p, false, 0.0).all());
     }
 
     #[test]
     fn max_rpm_slip_boundary_is_inclusive_and_per_wheel() {
         let mut p = good();
         p.tire_slip_ratio_rl = 0.5; // <= 0.5 passes
-        assert!(MaxRpmChecks::eval(&p).all());
+        assert!(MaxRpmChecks::eval(&p, false, 0.0).all());
         p.tire_slip_ratio_rl = -0.51; // abs
-        let c = MaxRpmChecks::eval(&p);
+        let c = MaxRpmChecks::eval(&p, false, 0.0);
         assert_eq!(c.slip_ok, [true, true, false, true]);
         assert!(!c.all());
+    }
+
+    fn pkt_rpm(rpm: f32) -> ForzaPacket {
+        ForzaPacket { current_engine_rpm: rpm, ..good() }
+    }
+
+    #[test]
+    fn max_rpm_rises_until_engaged_then_is_locked() {
+        // Before engagement the redline keeps climbing (and never drops).
+        let mut max = next_max_rpm(0.0, &pkt_rpm(7000.0), false);
+        assert_eq!(max, 7000.0);
+        max = next_max_rpm(max, &pkt_rpm(8000.0), false);
+        assert_eq!(max, 8000.0);
+        max = next_max_rpm(max, &pkt_rpm(7500.0), false);
+        assert_eq!(max, 8000.0);
+        // Engaged: a clean, higher-RPM packet (limiter bounce) no longer moves it.
+        assert_eq!(next_max_rpm(max, &pkt_rpm(9000.0), true), 8000.0);
+        let c = MaxRpmChecks::eval(&pkt_rpm(9000.0), true, max);
+        assert!(!c.unlocked && !c.all());
+    }
+
+    #[test]
+    fn max_rpm_recaptures_after_clear_rpm_calibration() {
+        // Clear RPM calibration = engaged false and max 0 (`worker::clear_rpm_calibration`).
+        let max = next_max_rpm(0.0, &pkt_rpm(9000.0), false);
+        assert_eq!(max, 9000.0);
+    }
+
+    #[test]
+    fn max_rpm_engaged_without_a_redline_can_still_capture() {
+        // Restored profile with max_rpm 0 (RPM cleared, gear map kept): must not lock at 0.
+        assert_eq!(next_max_rpm(0.0, &pkt_rpm(8000.0), true), 8000.0);
+        assert_eq!(next_max_rpm(8000.0, &pkt_rpm(9000.0), true), 8000.0);
     }
 
     #[test]

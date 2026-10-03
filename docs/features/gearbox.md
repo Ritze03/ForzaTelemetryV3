@@ -20,12 +20,22 @@ gear-ratio table.
 - **The exact calibration conditions** (a car "just doesn't calibrate" = one of these
   fails; the **Debug tab → Derived from telemetry → Calibration checks** shows each one
   live with its raw value and a green/red dot, see [[debug]]):
-  1. *Max-RPM capture* (`worker.rs`, `dynamic_max_rpm = max(.., rpm)`): `is_race_on != 0`,
+  1. *Max-RPM capture* (`worker.rs` via `calib::next_max_rpm`, `dynamic_max_rpm = max(.., rpm)`):
+     the redline is **not locked** (not yet engaged, or no redline known yet), `is_race_on != 0`,
      `hand_brake == 0`, and `|slip| <= 0.5` on all four wheels. `power > 0` is deliberately
      **not** required (commented out in `calib.rs`). Why: cars with a very fast rev limiter
      report power 0 while bouncing off the limiter, which blocked capture; the check only
      guarded against mis-shift over-revs, which the current protocol (engage on a manual
      upshift, gear-map median) makes practically impossible.
+     **The lock.** Once the box is engaged (the same moment as `Calibration done`) the
+     redline is frozen: it only changes through **Clear RPM calibration** (clears
+     engagement + redline, so capture restarts), a car change, or loading a saved per-car
+     calibration (which restores it already locked). **Clear gear map** and the gearbox
+     on/off switch don't touch it. *Why:* the whole point of the calibration procedure is a
+     stable redline; later over-revs (limiter bounce, downshift spikes) must not move the
+     shift point (previously `dynamic_max_rpm` kept rising after engagement). The lock needs
+     a known redline too, so a restored profile that has `engaged` but `max_rpm == 0`
+     (RPM cleared, gear map kept, then saved) still captures instead of locking at 0.
   2. *Engage* (`dsg.rs`): the first manual upshift between two forward gears: not yet
      engaged, previous forward gear in 1..=9, current gear in 2..=10, gear > previous.
   3. *Gear-map sample* (`dsg.rs`): race on, gear 1..=10, a redline is known, `kmh > 5`,
