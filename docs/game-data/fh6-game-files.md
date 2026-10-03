@@ -624,17 +624,17 @@ install (not 54 of 75 — 17 slugs just use a different string id, see [names](f
 The user marked the whole road network and the race types **by hand** in the map viewer's editor on 2026-10-03, against the in-game map. The result is committed as
 `tools/fh6-extract/data/fh6-road-types.json` (ids and types only, **no coordinates**, so no game data; format `fh6-road-types` v1, see `tools/fh6-extract/README.md`). The viewer
 starts from it and has a "Reset to project data" button. Contents (nav sha1 `a88c69f4…`, 38 473 nodes): 39 360 of 39 383 edges painted + 43 added links (road 553.9 km, offroad 207.5,
-other 6.7, not set 0.4) and **93 of 170 races typed**: rally 21, road 21, cross country 19, street 16, story 7, touge 5, drag 3, wristband 1.
+other 6.7, not set 0.4) and **93 of 170 races typed**: rally 21, road 21, cross country 19, street 17, story 6, touge 5, drag 3, wristband 1.
 
-- **Race types** are the six the game states (road / street / rally / cross country / touge / drag) plus **story** (a Horizon Story pin: The Colossus 132, Horizon Invitational 8006,
+- **Race types** are the six the game states (road / street / rally / cross country / touge / drag) plus **story** (a Horizon Story pin: Horizon Invitational 8006,
   story routes 11017, 11044, 30002–30004) and **wristband** (a Wristband event; DE "Armband-Event", the game's own term; so far only 8004 "Mech My Day", a showcase like "Launch Control").
   The first editor versions had a single `midnight` ("Midnight Battle") type; the user's marked "Midnight Battle" pins are Stories, except 8004. Importing a legacy file maps
-  `midnight` to `story` (8004 to `wristband`).
+  `midnight` to `story` (8004 to `wristband`). The Colossus 132 was marked story first; the user re-marked it **street** on 2026-10-04 ("Its a Street Race.").
 - **The user's marks agree 100 % with every exact type** (`type_exact`, see above): 0 conflicts over the 61 races both cover. The canonical file additionally contains the 6 exact-typed
   routes the user did not mark (1211 cross country; 2031, 2201, 2241, 2261, 2361 road), filled from `type_exact`; everything else in it is the user's own marking.
 - **Story / wristband in the game files** (only what is exact): route 8004 has `CareerRaceDataSet[10]` `EventType=Showcase`, `UITheme=showcase_mech` (8005 key 11 is `showcase_planes`);
   `Showcase` is not literally "wristband", so it is not used to set the type. Routes 11001–11045 and 20000–20005 are `HorizonStoryChallengeData.RouteId`s (the story chapters' destinations;
-  11017 = `VOL_HS_CanyonDaytrip_chapter_02`, 11044 = `VOL_HS_TanakasAuto_chapter_06`), so those two are exactly stories. For 132, 8006 and 30002–30004 no field was found
+  11017 = `VOL_HS_CanyonDaytrip_chapter_02`, 11044 = `VOL_HS_TanakasAuto_chapter_06`), so those two are exactly stories. For 8006 and 30002–30004 no field was found
   (no TrackInfo/CareerRace entry, not a story challenge route id), so those marks are the user's call alone.
 - **Why:** the game files do not state the road surface class (see [fh6-terrain.md](fh6-terrain.md)) nor, for most races, a pin or a type; the user chose to mark them by hand
   against the in-game map rather than have them inferred from geometry or names. Nothing in this file is inferred.
@@ -652,7 +652,7 @@ The user's hand marks (93 routes) are the ground truth the method was built and 
 | # | `type_source` | Answers when | Confidence |
 |---|---|---|---|
 | 1 | `exact` | `fh6careers.race_types` states a type (the exact fields above) | 1.0 |
-| 1b | `finale_icon` | an explicit per-route override (`FINALE_ICON` in `racetype_method.py`; only 5555 The Goliath -> `street`) | 1.0 |
+| 1b | `finale_icon` | an explicit per-route override (`FINALE_ICON` in `racetype_method.py`; 5555 The Goliath and 132 The Colossus -> `street`) | 1.0 |
 | 2 | `event` | `HorizonStoryChallengeData.RouteId` -> `story`; `CareerRaceDataSet.EventType = Showcase` -> `wristband` (analogy to the user-marked 8004) | 0.90 / 0.70 |
 | 3 | `ai_family` | the route has `Route<N>_<level>` DifficultyLevels (86 routes) -> its AI-driver family | 0.80-0.96 per family (precision on the marks), 0.5 on a Street/Road tie |
 | 4 | `not_a_race` | Initial-Experience drives, Horizon Chase, routes with no collision under the line and all AI tags 0 (99, 102, 103) | 0.8-0.95 |
@@ -678,23 +678,22 @@ says so on every prediction that rests on it (currently only 4301). `extract_pre
 
 | Test | Result |
 |---|---|
-| Full pipeline, all 93 marks | **91 / 93** (97.8 %); the two misses are listed below |
-| Hand-only marks (26 without an exact type) | **24 / 26** |
-| Race-typed marks (85) | 84 / 85 |
+| Full pipeline, all 93 marks | **92 / 93** (98.9 %); the one miss is listed below |
+| Hand-only marks (26 without an exact type) | **25 / 26** |
+| Race-typed marks (85) | 85 / 85 |
 | AI family alone, no fitted parameter (85 marks with a family) | **83 / 85** (97.6 %); on the 66 exact-typed ones 66 / 66 |
 | Line rules alone, leave-one-out, without the id hint | 67 / 85 = **78.8 %** (road+street merged 91.8 %) |
 | Line rules alone, leave-one-out, with the id hint | 81 / 85 = **95.3 %** |
 | Line-rule confidence calibration (with id hint) | 0.6-0.9 bucket: 78 / 81 held-out correct; < 0.6: 3 / 4 |
 
-Misses of the full pipeline - both are **flagged for review**, none is forced:
-- ~~5555 The Goliath~~ - fixed by the `finale_icon` override (next paragraph).
-- **132 The Colossus**, marked story, family `Road`: a story / finale pin on a route that uses the Road AI; the family cannot know "story".
+Miss of the full pipeline - **flagged for review**, none is forced:
+- ~~5555 The Goliath~~ and ~~132 The Colossus~~ - fixed by the `finale_icon` override (next paragraph).
 - **8006 Horizon Invitational**, marked story, predicted road at 0.5 from the line: unverifiable (no family, no story-challenge entry).
 
 **Series finales carry the street icon (`finale_icon`, source 1b).** Each race series has one finale. The Goliath (5555) has the `Road` AI family (6/6; `Street` 5/6, it lacks the `Street_Unbeatable` match),
-but in-game it shows the street (purple) icon and players treat it as the street finale, so `racetype_method.FINALE_ICON = {5555: 'street'}` predicts `street` (confidence 1.0). User rule, 2026-10-03: "Goliath is technically a
-road race, but it has the purple icon, so everyone considers it a street race, especially since for every race type there's one final race, so it should be purple."
-*Why:* the in-game icon is what players see; the AI family is an implementation detail. Only 5555 is listed: the other finales (132 The Colossus, 2052 The Gauntlet, 1023 The Titan) are not decided.
+but in-game it shows the street (purple) icon and players treat it as the street finale, so `racetype_method.FINALE_ICON = {5555: 'street'}` predicts `street` (confidence 1.0); 132 The Colossus (AI family `Road` 6/6, a 37.7 km paved circuit) is listed too. User rule, 2026-10-03: "Goliath is technically a
+road race, but it has the purple icon, so everyone considers it a street race, especially since for every race type there's one final race, so it should be purple." For 132 (2026-10-04): "Its a Street Race."
+*Why:* the in-game icon is what players see; the AI family is an implementation detail. Only 5555 and 132 are listed: the other finales (2052 The Gauntlet, 1023 The Titan) are not decided.
 
 Classes the method **cannot separate**: road vs street on a route without an AI family (the line is the same kind of paved road; only the id digit hints), story / wristband / invitational pins vs the race they
 sit on (events are only recognised by `HorizonStoryChallengeData` / `Showcase` / a copied line), and touge vs drag / street without the family (touge: 4 of 5 held out). 11000 and 11002 sit next to story-challenge ids
