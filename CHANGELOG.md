@@ -6,7 +6,11 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.4.2] – 2026-10-04
 
+### Added
+- **Setup: Hotkey Diagnostics (Linux)**: a new card below Input Permissions that shows why hotkeys might not fire: every keyboard device found (readable, open, virtual), the last key press the app saw (the key name is only recorded while this card is open) and the last hotkey it sent, whether the gate lets hotkeys through in game (telemetry live / game window matched, with the active window name and the recent window names) and any key reader that stopped. **Copy diagnostics** puts all of it on the clipboard as text to paste into a bug report.
+
 ### Fixed
+- **Hotkeys on GNOME/Fedora: virtual devices and mouse interfaces no longer count as a working keyboard**: the permission check still went amber ("fine") when something other than your real keyboard was readable, such as ydotool's or a remapper's virtual keyboard or a gaming mouse's key interface, so the "input permissions missing" dialog stayed away while no key press could be read. Only real keyboards count now (virtual devices and mouse/pad interfaces are still read, but ignored for the status), so you get the red status, the dialog and the fix commands. The check also refreshes every couple of seconds while Setup is open, and a key reader that stops (device unplugged, read error) is reported instead of dying silently.
 - **Hotkeys on GNOME/Fedora: the permission check no longer shows a false green**: *Setup → Input Permissions* counted any readable input device, so a game controller made it green even when the keyboard could not be read, and the "input permissions missing" dialog never appeared while hotkeys stayed dead. It now checks that a **keyboard** is readable (and that hotkeys actually opened one), shows red with the fix commands otherwise, and **Re-check** reopens keyboards without a restart. Not being in the `input` group is only a hint (amber) while everything works.
 - **Automatic gearbox: the detected max RPM (redline) is now locked once calibration finishes**: later over-revs (limiter bounce, downshift spikes) kept raising it and moved the shift point. Only **Clear RPM calibration**, switching cars, or loading a saved per-car calibration changes it now. The Debug tab's Calibration checks show the lock ("Redline not locked" row, heading "locked").
 

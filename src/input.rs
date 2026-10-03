@@ -1,6 +1,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Name of the uinput device `InputSender` creates (Linux). The hotkey backend skips it by this
+/// name: it only ever carries our own synthetic presses, never a real keyboard's.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const VIRTUAL_DEVICE_NAME: &str = "Forza Telemetry Input";
+
 /// Shared "synthetic press may still echo in telemetry" window.
 ///
 /// Written by the input WORKER at actual key emission time — not at enqueue
@@ -68,7 +73,7 @@ mod linux {
                 keys.insert(Key::KEY_Q);
 
                 let device = VirtualDeviceBuilder::new()
-                    .and_then(|b| b.name("Forza Telemetry Input").with_keys(&keys))
+                    .and_then(|b| b.name(super::VIRTUAL_DEVICE_NAME).with_keys(&keys))
                     .and_then(|b| b.build());
 
                 let mut device = match device {
@@ -454,8 +459,10 @@ pub fn evaluate(p: &InputProbe) -> InputReport {
 }
 
 /// Pure: the hotkeys light. Permission-denied is red; "readable" but the backend opened zero
-/// keyboards (`active_keyboards == 0`) is red too — *Why:* it must never stay green while
-/// hotkeys are silently dead. No keyboard at all is not a permission problem.
+/// **physical** keyboards (`active_keyboards == 0`) is red too — *Why:* it must never stay green
+/// while hotkeys are silently dead (virtual keyboards such as ydotoold's, or a mouse's key
+/// interface, can be readable while the real keyboard isn't, and they don't count). No keyboard
+/// at all is not a permission problem.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn hotkeys_ok(status: crate::hotkeys::HotkeyStatus, active_keyboards: usize) -> bool {
     use crate::hotkeys::HotkeyStatus::*;

@@ -21,13 +21,15 @@ pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: M
     binds.iter().filter(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a).collect()
 }
 
-/// Send every action bound to `key` + `mods` (the caller has already checked the rebind guard).
-/// Shared by both backends so neither can stop at the first match.
+/// Send every action bound to `key` + `mods` (the caller has already checked the rebind guard)
+/// and return what was sent. Shared by both backends so neither can stop at the first match.
 #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
-fn dispatch(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods, tx: &std::sync::mpsc::Sender<HotkeyAction>) {
-    for action in match_combo(binds, key, mods) {
-        let _ = tx.send(action);
+fn dispatch(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods, tx: &std::sync::mpsc::Sender<HotkeyAction>) -> Vec<HotkeyAction> {
+    let actions = match_combo(binds, key, mods);
+    for action in &actions {
+        let _ = tx.send(*action);
     }
+    actions
 }
 
 /// How long input sources stay muted after a rebind capture ends (see [`RebindGuard`]).
@@ -72,12 +74,14 @@ impl RebindGuard {
 #[allow(dead_code)] // Unsupported is only built on non-Linux/Windows targets
 pub enum HotkeyStatus { Ok, NoPermission, NoDevice, Unsupported }
 
-/// Pure: `(is_keyboard, readable)` per `/dev/input/event*` node → status. `Ok` when at least
-/// one **keyboard** can be read, `NoPermission` when keyboards exist but none can be, `NoDevice`
-/// when there is no keyboard at all. Only keyboards count: *Why:* on GNOME / KDE / Fedora
-/// systemd-logind `uaccess` ACLs make game controllers (and `/dev/uinput`) readable for the
-/// seated user but not keyboards (those stay `root:input 0660`), so "any readable node" was
-/// green with a gamepad plugged in while no hotkey could ever be read.
+/// Pure: `(is_keyboard, readable)` per **physical** `/dev/input/event*` node → status. `Ok` when
+/// at least one keyboard can be read, `NoPermission` when keyboards exist but none can be,
+/// `NoDevice` when there is no keyboard at all. Only keyboards count: *Why:* on GNOME / KDE /
+/// Fedora systemd-logind `uaccess` ACLs make game controllers (and `/dev/uinput`) readable for
+/// the seated user but not keyboards (those stay `root:input 0660`), so "any readable node" was
+/// green with a gamepad plugged in while no hotkey could ever be read. Callers pass physical
+/// keyboards only ([`counts_as_physical`]): a readable *virtual* keyboard (ydotoold, a remapper,
+/// Steam Input) says nothing about whether the real one can be read.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn classify(devs: &[(bool, bool)]) -> HotkeyStatus {
     let keyboards: Vec<bool> = devs.iter().filter(|(kb, _)| *kb).map(|(_, r)| *r).collect();
@@ -96,30 +100,126 @@ fn key_bitmap_has_letters(bitmap: &str) -> bool {
         .is_some_and(|w| w & (1 << 30) != 0)
 }
 
-/// Probe `/dev/input/event*` for a readable keyboard (Linux). A node counts as a keyboard by
-/// its sysfs capability bitmap (works for nodes we may not open), falling back to asking the
-/// device itself when sysfs has no entry. Windows polls `GetAsyncKeyState`, which needs
-/// nothing, so it is always `Ok`.
+/// Pure: does a sysfs `capabilities/ev` bitmap say the node also reports relative or absolute
+/// axes (`EV_REL` bit 2, `EV_ABS` bit 3)? Mice with a keyboard-ish interface, gamepads and
+/// ydotool's catch-all device do; a plain keyboard doesn't. Shown in the diagnostics only
+/// (some real keyboards have a trackpoint/touchpad on the same node, so it never decides).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ev_bitmap_has_axes(bitmap: &str) -> bool {
+    bitmap.split_whitespace().last()
+        .and_then(|w| u64::from_str_radix(w, 16).ok())
+        .is_some_and(|w| w & 0b1100 != 0)
+}
+
+/// Pure: a node created through `/dev/uinput` lives under `/sys/devices/virtual/input/`.
+/// *Why this path and not "virtual" anywhere:* Bluetooth keyboards arrive through `uhid`
+/// (`/sys/devices/virtual/misc/uhid/…`) and are real hardware.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_virtual_sysfs_path(canonical: &str) -> bool {
+    canonical.starts_with("/sys/devices/virtual/input/")
+}
+
+/// Pure: does this node count as a **physical** keyboard? Not our own uinput device
+/// ([`crate::input::VIRTUAL_DEVICE_NAME`]) and not any other uinput device. *Why:* virtual
+/// keyboards (ydotoold, a remapper, Steam Input, Bluetooth AVRCP, …) are often readable through
+/// `uaccess`/ACLs while the real keyboard isn't, and counting them made the permission light
+/// amber ("fine") while no real key could ever be read.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn counts_as_physical(name: &str, is_virtual: bool) -> bool {
+    !is_virtual && name != crate::input::VIRTUAL_DEVICE_NAME
+}
+
+/// Pure: which keyboard-like nodes count as a **working keyboard**, from `(is_physical_keyboard,
+/// also_pointer)` per node. Physical keyboard-likes that also report mouse/pad axes (a gaming
+/// mouse's key-macro interface, a pad) only count when no plain keyboard exists. *Why:* such
+/// interfaces can be readable while the real keyboard isn't, and counting them turned the light
+/// amber ("fine") with no typed key readable; the fallback keeps a keyboard whose node does
+/// report axes (some do) from turning the light red.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn working_mask(devs: &[(bool, bool)]) -> Vec<bool> {
+    let any_plain = devs.iter().any(|(physical, pointer)| *physical && !*pointer);
+    devs.iter().map(|(physical, pointer)| *physical && (!*pointer || !any_plain)).collect()
+}
+
+/// One keyboard-like (`KEY_A`) input node, for the Setup diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardInfo {
+    /// `eventN`.
+    pub node: String,
+    pub name: String,
+    /// `/dev/input/eventN` can be opened by us.
+    pub readable: bool,
+    /// The backend has a reader thread on it.
+    pub opened: bool,
+    /// A uinput device (including our own), not hardware.
+    pub is_virtual: bool,
+    /// Also reports relative/absolute axes (mouse, gamepad, catch-all virtual device).
+    pub pointer: bool,
+    /// Counts as a working keyboard (see [`working_mask`]): not virtual, not a mouse/pad interface.
+    pub counts: bool,
+}
+
+/// One `/dev/input/event*` node as seen through sysfs + an open attempt (Linux).
+#[cfg(target_os = "linux")]
+struct Node {
+    node: String,
+    path: std::path::PathBuf,
+    name: String,
+    readable: bool,
+    is_kb: bool,
+    is_virtual: bool,
+    pointer: bool,
+}
+
+/// Every `/dev/input/event*` node, ordered by number. A node is a keyboard by its world-readable
+/// sysfs capability bitmap (works for nodes we may not open), falling back to asking the device
+/// itself when sysfs has no entry. A failed path lookup counts as *not* virtual so a real
+/// keyboard is never hidden by a sysfs hiccup.
+#[cfg(target_os = "linux")]
+fn inventory() -> Vec<Node> {
+    let Ok(dir) = std::fs::read_dir("/dev/input") else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in dir.flatten() {
+        let node = e.file_name().to_string_lossy().into_owned();
+        if !node.starts_with("event") { continue; }
+        let sys = |f: &str| std::fs::read_to_string(format!("/sys/class/input/{node}/device/{f}")).ok();
+        let readable = std::fs::File::open(e.path()).is_ok();
+        let is_kb = sys("capabilities/key")
+            .map(|s| key_bitmap_has_letters(&s))
+            .or_else(|| {
+                if !readable { return None; }
+                evdev::Device::open(e.path()).ok()
+                    .map(|d| d.supported_keys().is_some_and(|k| k.contains(evdev::Key::KEY_A)))
+            })
+            .unwrap_or(false);
+        let is_virtual = std::fs::canonicalize(format!("/sys/class/input/{node}")).ok()
+            .is_some_and(|p| is_virtual_sysfs_path(&p.to_string_lossy()));
+        out.push(Node {
+            name: sys("name").map(|n| n.trim().to_string()).unwrap_or_default(),
+            pointer: sys("capabilities/ev").is_some_and(|s| ev_bitmap_has_axes(&s)),
+            path: e.path(), node, readable, is_kb, is_virtual,
+        });
+    }
+    out.sort_by_key(|n| n.node.trim_start_matches("event").parse::<u32>().unwrap_or(u32::MAX));
+    out
+}
+
+/// For each node, whether it counts as a working keyboard ([`working_mask`]).
+#[cfg(target_os = "linux")]
+fn working_keyboards(nodes: &[Node]) -> Vec<bool> {
+    let kinds: Vec<(bool, bool)> = nodes.iter()
+        .map(|n| (n.is_kb && counts_as_physical(&n.name, n.is_virtual), n.pointer))
+        .collect();
+    working_mask(&kinds)
+}
+
+/// Probe `/dev/input/event*` for a readable **working** keyboard (Linux). Windows polls
+/// `GetAsyncKeyState`, which needs nothing, so it is always `Ok`.
 pub fn probe_status() -> HotkeyStatus {
     #[cfg(target_os = "linux")]
     {
-        let Ok(dir) = std::fs::read_dir("/dev/input") else { return HotkeyStatus::NoDevice };
-        let mut devs = Vec::new();
-        for e in dir.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("event") { continue; }
-            let readable = std::fs::File::open(e.path()).is_ok();
-            let is_kb = std::fs::read_to_string(format!("/sys/class/input/{name}/device/capabilities/key"))
-                .ok()
-                .map(|s| key_bitmap_has_letters(&s))
-                .or_else(|| {
-                    if !readable { return None; }
-                    evdev::Device::open(e.path()).ok()
-                        .map(|d| d.supported_keys().is_some_and(|k| k.contains(evdev::Key::KEY_A)))
-                })
-                .unwrap_or(false);
-            devs.push((is_kb, readable));
-        }
+        let nodes = inventory();
+        let devs: Vec<(bool, bool)> = working_keyboards(&nodes).into_iter().zip(&nodes).map(|(w, n)| (w, n.readable)).collect();
         classify(&devs)
     }
     #[cfg(target_os = "windows")]
@@ -128,15 +228,91 @@ pub fn probe_status() -> HotkeyStatus {
     { HotkeyStatus::Unsupported }
 }
 
-/// Event nodes the Linux backend currently reads (empty elsewhere). Shared so a rescan skips
-/// keyboards that already have a reader thread, and the UI can tell "backend has zero keyboards".
-pub type OpenKeyboards = Arc<Mutex<std::collections::HashSet<std::path::PathBuf>>>;
+/// Event nodes the Linux backend currently reads (empty elsewhere), each with "is a physical
+/// keyboard". Shared so a rescan skips keyboards that already have a reader thread, and the UI
+/// can tell "backend has zero (physical) keyboards".
+pub type OpenKeyboards = Arc<Mutex<std::collections::HashMap<std::path::PathBuf, bool>>>;
+
+/// What the Setup diagnostics can show about the keyboard path. Cheap, shared between the
+/// reader threads and the UI.
+///
+/// **Privacy:** the backend is match-only (non-matching keys are never stored). The diagnostics
+/// keep only a press *counter* and its time/device always, and the **identity** of the last key
+/// only while the Setup → Input Permissions card is on screen ([`listen`](Self::listen) is
+/// called every frame it is drawn). *Why:* "which key did you see?" is the one thing that tells
+/// "no events arrive" apart from "events arrive but are gated", but a key log must not run
+/// while the user is typing a password elsewhere.
+#[derive(Clone, Default)]
+pub struct HotkeyDiag(Arc<Mutex<DiagInner>>);
+
+#[derive(Default)]
+struct DiagInner {
+    presses: u64,
+    /// Time + device of the latest key-down (key not recorded).
+    last_press: Option<(Instant, String)>,
+    /// Latest key-down with its identity, recorded only while listening.
+    last_key: Option<(Instant, String, String)>,
+    /// Latest action the backend pushed to the listener thread (before its focus gate).
+    last_action: Option<(Instant, HotkeyAction)>,
+    listen_until: Option<Instant>,
+    /// Reader threads that ended (device unplugged / read error), newest last, max 5.
+    ended: Vec<String>,
+}
+
+/// A copy of [`HotkeyDiag`] with ages instead of instants, for display.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DiagSnapshot {
+    pub presses: u64,
+    pub last_press: Option<(Duration, String)>,
+    /// `(age, key name, device)`.
+    pub last_key: Option<(Duration, String, String)>,
+    pub last_action: Option<(Duration, HotkeyAction)>,
+    pub ended: Vec<String>,
+}
+
+/// How long after the last [`HotkeyDiag::listen`] the key identity is still recorded.
+const LISTEN_WINDOW: Duration = Duration::from_millis(1500);
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl HotkeyDiag {
+    /// The diagnostics card is on screen: record key identities for the next moments.
+    pub fn listen(&self) { self.0.lock().unwrap().listen_until = Some(Instant::now() + LISTEN_WINDOW); }
+    /// A key went down on `device`. `key` is only evaluated while listening.
+    fn press(&self, device: &str, key: impl FnOnce() -> String) {
+        let now = Instant::now();
+        let mut d = self.0.lock().unwrap();
+        d.presses += 1;
+        d.last_press = Some((now, device.to_string()));
+        if d.listen_until.is_some_and(|t| now < t) { d.last_key = Some((now, key(), device.to_string())); }
+    }
+    fn sent(&self, actions: &[HotkeyAction]) {
+        if let Some(a) = actions.last() { self.0.lock().unwrap().last_action = Some((Instant::now(), *a)); }
+    }
+    fn reader_ended(&self, what: String) {
+        let mut d = self.0.lock().unwrap();
+        d.ended.push(what);
+        if d.ended.len() > 5 { d.ended.remove(0); }
+    }
+    pub fn snapshot(&self) -> DiagSnapshot {
+        let d = self.0.lock().unwrap();
+        let now = Instant::now();
+        let age = |t: &Instant| now.saturating_duration_since(*t);
+        DiagSnapshot {
+            presses: d.presses,
+            last_press: d.last_press.as_ref().map(|(t, dev)| (age(t), dev.clone())),
+            last_key: d.last_key.as_ref().map(|(t, k, dev)| (age(t), k.clone(), dev.clone())),
+            last_action: d.last_action.as_ref().map(|(t, a)| (age(t), *a)),
+            ended: d.ended.clone(),
+        }
+    }
+}
 
 pub struct HotkeyListener {
     binds: Bindings,
     tx: std::sync::mpsc::Sender<HotkeyAction>,
     guard: Arc<RebindGuard>,
     open: OpenKeyboards,
+    diag: HotkeyDiag,
 }
 
 impl HotkeyListener {
@@ -149,18 +325,39 @@ impl HotkeyListener {
         let (tx, rx) = std::sync::mpsc::channel();
         let guard = Arc::new(RebindGuard::default());
         let open = OpenKeyboards::default();
-        let me = HotkeyListener { binds, tx, guard, open };
+        let me = HotkeyListener { binds, tx, guard, open, diag: HotkeyDiag::default() };
         me.rescan();
         (me, rx)
     }
     /// (Re)open keyboards that have no reader yet — the initial scan, and the Setup **Re-check**
     /// button, so access that appears later (a udev/ACL change, a hot-plugged keyboard) works
     /// without a restart. Synchronous: the open count is right as soon as it returns.
-    pub fn rescan(&self) { backend::scan(&self.binds, &self.tx, &self.guard, &self.open); }
-    /// How many keyboards the backend is actually reading (always 1 off Linux: nothing to open).
+    pub fn rescan(&self) { backend::scan(&self.binds, &self.tx, &self.guard, &self.open, &self.diag); }
+    /// How many **physical** keyboards the backend is actually reading (always 1 off Linux:
+    /// nothing to open). Virtual keyboards it also reads don't count: see [`counts_as_physical`].
     pub fn active_keyboards(&self) -> usize {
-        if cfg!(target_os = "linux") { self.open.lock().unwrap().len() } else { 1 }
+        self.open.lock().unwrap().values().filter(|physical| **physical).count()
     }
+    /// The keyboard-like nodes right now, with readable / open flags, for the diagnostics
+    /// (empty off Linux). Reads sysfs and tries to open every event node: not for every frame.
+    pub fn keyboards(&self) -> Vec<KeyboardInfo> {
+        #[cfg(target_os = "linux")]
+        {
+            let open = self.open.lock().unwrap();
+            let nodes = inventory();
+            let working = working_keyboards(&nodes);
+            nodes.into_iter().zip(working).filter(|(n, _)| n.is_kb).map(|(n, counts)| KeyboardInfo {
+                opened: open.contains_key(&n.path),
+                is_virtual: !counts_as_physical(&n.name, n.is_virtual),
+                counts,
+                node: n.node, name: n.name, readable: n.readable, pointer: n.pointer,
+            }).collect()
+        }
+        #[cfg(not(target_os = "linux"))]
+        { Vec::new() }
+    }
+    /// The shared diagnostics (last key seen, last action sent, ended readers).
+    pub fn diag(&self) -> HotkeyDiag { self.diag.clone() }
     /// A sender into the same action channel, for other input sources (the gamepad), so
     /// they pass through the listener thread's focus gate exactly like keyboard hotkeys.
     pub fn action_sender(&self) -> std::sync::mpsc::Sender<HotkeyAction> { self.tx.clone() }
@@ -176,52 +373,70 @@ mod backend {
     use std::thread;
     use evdev::{Device, EventType, Key};
     use std::sync::Arc;
-    use super::{Bindings, OpenKeyboards, RebindGuard, dispatch};
+    use super::{Bindings, HotkeyDiag, OpenKeyboards, RebindGuard, dispatch, inventory, working_keyboards};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
-    /// Open every readable keyboard that has no reader thread yet and start one for it.
-    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards) {
-        // `enumerate` yields only devices we can open; non-keyboards are filtered out.
-        let keyboards: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
-            .filter(|(_, d)| d.supported_keys().map_or(false, |k| k.contains(Key::KEY_A)))
-            .collect();
-        {
-            // One reader thread per keyboard; each tracks its own modifier state.
-            for (path, mut dev) in keyboards {
-                if !open.lock().unwrap().insert(path.clone()) { continue; } // already read
-                let binds = binds.clone();
-                let tx = tx.clone();
-                let guard = guard.clone();
-                let open = open.clone();
-                thread::spawn(move || {
-                    let mut mods = Mods::default();
-                    loop {
-                        let events = match dev.fetch_events() { Ok(e) => e, Err(_) => break };
-                        for ev in events {
-                            if ev.event_type() != EventType::KEY { continue; }
-                            let key = Key::new(ev.code());
-                            let down = ev.value() == 1; // 1=down, 0=up, 2=repeat
-                            match key {
-                                Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => { mods.ctrl = ev.value() != 0; }
-                                Key::KEY_LEFTALT | Key::KEY_RIGHTALT => { mods.alt = ev.value() != 0; }
-                                Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => { mods.shift = ev.value() != 0; }
-                                Key::KEY_LEFTMETA | Key::KEY_RIGHTMETA => { mods.sup = ev.value() != 0; }
-                                _ if down => {
-                                    if let Some(hk) = HotKey::from_evdev(key) {
-                                        let list = binds.lock().unwrap();
-                                        // Muted while a rebind capture runs (and just after).
-                                        if !guard.blocked() { dispatch(&list, hk, mods, &tx); }
-                                        // Non-matching keys are dropped here — never stored/logged.
+    /// Open every readable keyboard that has no reader thread yet and start one for it. Reads
+    /// virtual keyboards too (a remapper such as keyd re-emits the physical keys there), except
+    /// our own uinput device, which only carries our synthetic presses; only *working* keyboards
+    /// ([`working_mask`]) get the `true` flag in [`OpenKeyboards`] that [`HotkeyListener::active_keyboards`] counts.
+    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards, diag: &HotkeyDiag) {
+        // One reader thread per keyboard; each tracks its own modifier state.
+        let nodes = inventory();
+        let working = working_keyboards(&nodes);
+        for (n, counts) in nodes.into_iter().zip(working) {
+            if !n.is_kb || !n.readable || n.name == crate::input::VIRTUAL_DEVICE_NAME { continue; }
+            let path = n.path;
+            if open.lock().unwrap().contains_key(&path) { continue; } // already read
+            let Ok(mut dev) = Device::open(&path) else { continue };
+            open.lock().unwrap().insert(path.clone(), counts);
+            let label = format!("{} ({})", n.name, n.node);
+            let binds = binds.clone();
+            let tx = tx.clone();
+            let guard = guard.clone();
+            let open = open.clone();
+            let diag = diag.clone();
+            thread::spawn(move || {
+                let mut mods = Mods::default();
+                'read: loop {
+                    let events = match dev.fetch_events() {
+                        Ok(e) => e,
+                        Err(e) => {
+                            // Never silent: the Setup diagnostics list ended readers.
+                            eprintln!("hotkeys: reader for {label} ended: {e}");
+                            diag.reader_ended(format!("{label}: {e}"));
+                            break 'read;
+                        }
+                    };
+                    for ev in events {
+                        if ev.event_type() != EventType::KEY { continue; }
+                        let key = Key::new(ev.code());
+                        let down = ev.value() == 1; // 1=down, 0=up, 2=repeat
+                        // Counter always; the key's identity only while the diagnostics card is open.
+                        if down { diag.press(&label, || format!("{key:?}")); }
+                        match key {
+                            Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => { mods.ctrl = ev.value() != 0; }
+                            Key::KEY_LEFTALT | Key::KEY_RIGHTALT => { mods.alt = ev.value() != 0; }
+                            Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => { mods.shift = ev.value() != 0; }
+                            Key::KEY_LEFTMETA | Key::KEY_RIGHTMETA => { mods.sup = ev.value() != 0; }
+                            _ if down => {
+                                if let Some(hk) = HotKey::from_evdev(key) {
+                                    let list = binds.lock().unwrap();
+                                    // Muted while a rebind capture runs (and just after).
+                                    if !guard.blocked() {
+                                        let sent = dispatch(&list, hk, mods, &tx);
+                                        diag.sent(&sent);
                                     }
+                                    // Non-matching keys are dropped here — never stored/logged.
                                 }
-                                _ => {}
                             }
+                            _ => {}
                         }
                     }
-                    open.lock().unwrap().remove(&path); // device gone: a rescan may reopen it
-                });
-            }
+                }
+                open.lock().unwrap().remove(&path); // device gone: a rescan may reopen it
+            });
         }
     }
 }
@@ -233,7 +448,7 @@ mod backend {
     use std::thread;
     use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use super::{Bindings, OpenKeyboards, RebindGuard, dispatch};
+    use super::{Bindings, HotkeyDiag, OpenKeyboards, RebindGuard, dispatch};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
@@ -245,8 +460,8 @@ mod backend {
     fn down(vk: i32) -> bool { (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0 }
 
     /// Starts the poll thread once (a rescan has nothing to reopen: `GetAsyncKeyState` needs no device).
-    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards) {
-        if !open.lock().unwrap().insert(std::path::PathBuf::new()) { return; }
+    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards, _diag: &HotkeyDiag) {
+        if open.lock().unwrap().insert(std::path::PathBuf::new(), true).is_some() { return; }
         let (binds, tx, guard) = (binds.clone(), tx.clone(), guard.clone());
         thread::spawn(move || {
             // Previous key-down state per virtual key (not per action): the state is tracked
@@ -284,9 +499,9 @@ mod backend {
 mod backend {
     use std::sync::mpsc::Sender;
     use std::sync::Arc;
-    use super::{Bindings, OpenKeyboards, RebindGuard};
+    use super::{Bindings, HotkeyDiag, OpenKeyboards, RebindGuard};
     use crate::config::HotkeyAction;
-    pub fn scan(_b: &Bindings, _tx: &Sender<HotkeyAction>, _g: &Arc<RebindGuard>, _o: &OpenKeyboards) {}
+    pub fn scan(_b: &Bindings, _tx: &Sender<HotkeyAction>, _g: &Arc<RebindGuard>, _o: &OpenKeyboards, _d: &HotkeyDiag) {}
 }
 
 #[cfg(test)]
@@ -317,6 +532,68 @@ mod tests {
         assert!(!key_bitmap_has_letters("7cdb000000000000 0 0 0"));
         assert!(!key_bitmap_has_letters("0"));
         assert!(!key_bitmap_has_letters(""));
+    }
+
+    #[test]
+    fn virtual_keyboards_never_count_as_physical() {
+        // uinput devices live under /sys/devices/virtual/input/; hardware (USB, i8042, ...) doesn't.
+        assert!(is_virtual_sysfs_path("/sys/devices/virtual/input/input30/event24"));
+        assert!(!is_virtual_sysfs_path("/sys/devices/pci0000:00/0000:00:14.0/usb1/1-7/1-7:1.0/0003:0416:0123.0002/input/input5/event4"));
+        assert!(!is_virtual_sysfs_path("/sys/devices/platform/i8042/serio0/input/input3/event3"));
+        // Bluetooth keyboards come through uhid, not uinput: real hardware.
+        assert!(!is_virtual_sysfs_path("/sys/devices/virtual/misc/uhid/0005:046D:B342.0004/input/input40/event9"));
+        assert!(counts_as_physical("Ducky One2 SF RGB", false));
+        assert!(!counts_as_physical("ydotoold virtual device", true));
+        // Our own uinput device never counts, even if a sysfs lookup failed and it looked physical.
+        assert!(!counts_as_physical(crate::input::VIRTUAL_DEVICE_NAME, false));
+    }
+
+    #[test]
+    fn readable_virtual_keyboard_does_not_hide_an_unreadable_real_one() {
+        // The GNOME report: a virtual keyboard readable via ACL, the real one not. Only physical
+        // keyboards are passed to `classify`, so this is NoPermission (red + modal), not Ok.
+        let nodes = [("ydotoold virtual device", true, true), ("Real keyboard", false, false)]; // name, virtual, readable
+        let physical: Vec<(bool, bool)> = nodes.iter().map(|(n, v, r)| (counts_as_physical(n, *v), *r)).collect();
+        assert_eq!(classify(&physical), HotkeyStatus::NoPermission);
+    }
+
+    #[test]
+    fn ev_bitmap_flags_mice_and_pads_but_not_keyboards() {
+        assert!(!ev_bitmap_has_axes("120013")); // SYN KEY MSC LED REP: a keyboard
+        assert!(ev_bitmap_has_axes("17")); // + REL: a mouse with a key interface
+        assert!(ev_bitmap_has_axes("1b")); // + ABS: a pad
+        assert!(!ev_bitmap_has_axes(""));
+    }
+
+    #[test]
+    fn diag_records_the_key_only_while_listening() {
+        let d = HotkeyDiag::default();
+        d.press("kbd", || "KEY_J".into()); // card closed: counted, identity not kept
+        let s = d.snapshot();
+        assert_eq!(s.presses, 1);
+        assert_eq!(s.last_press.as_ref().map(|(_, dev)| dev.as_str()), Some("kbd"));
+        assert!(s.last_key.is_none(), "a key log must not run while the card is closed");
+        d.listen();
+        d.press("kbd", || "KEY_K".into());
+        let s = d.snapshot();
+        assert_eq!(s.presses, 2);
+        assert_eq!(s.last_key.map(|(_, k, dev)| (k, dev)), Some(("KEY_K".into(), "kbd".into())));
+        d.sent(&[HotkeyAction::ToggleGearbox, HotkeyAction::ClearGearMap]);
+        assert_eq!(d.snapshot().last_action.map(|(_, a)| a), Some(HotkeyAction::ClearGearMap));
+        for i in 0..8 { d.reader_ended(format!("r{i}")); }
+        assert_eq!(d.snapshot().ended.len(), 5);
+    }
+
+    #[test]
+    fn mouse_key_interfaces_only_count_without_a_plain_keyboard() {
+        // (is_physical_keyboard, also_pointer): Ducky keyboard, Razer mouse's key interface, virtual.
+        assert_eq!(working_mask(&[(true, false), (true, true), (false, true)]), vec![true, false, false]);
+        // Only mouse-like nodes: keep them (a keyboard that reports axes must not turn the light red).
+        assert_eq!(working_mask(&[(true, true), (false, false)]), vec![true, false]);
+        // The report: readable mouse interface + unreadable real keyboard -> the real one decides.
+        let kinds = [(true, false), (true, true)];
+        let devs: Vec<(bool, bool)> = working_mask(&kinds).into_iter().zip([false, true]).collect(); // (counts, readable)
+        assert_eq!(classify(&devs), HotkeyStatus::NoPermission);
     }
 
     #[test]

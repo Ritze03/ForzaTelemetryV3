@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{FocusMethod, MonitorMethod};
 
@@ -22,6 +22,48 @@ pub enum FocusStatus { Ok = 0, ToolMissing = 1, QueryFailed = 2, Idle = 3 }
 /// Case-insensitive substring match; an empty needle never matches.
 pub fn window_matches(active: &str, needle: &str) -> bool {
     !needle.is_empty() && active.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// What the poll thread last saw, for the Setup diagnostics: the active window it got, whether
+/// that matched `game_match`, and the window names seen recently (so a wrong match string shows
+/// up as "the game's window is called X").
+#[derive(Clone, Debug, Default)]
+pub struct FocusSnapshot {
+    /// Last successful answer (may be empty: nothing focused).
+    pub window: Option<String>,
+    /// Whether `window` matched the game; `None` before the first answer.
+    pub matched: Option<bool>,
+    /// The last query's error, cleared by the next success.
+    pub error: Option<String>,
+    /// When a poll last matched the game.
+    pub matched_at: Option<Instant>,
+    /// Distinct recent answers, newest first, each with whether it matched (max 5).
+    pub recent: Vec<(String, bool)>,
+}
+
+/// Longest window name kept (titles can be long; this is for a log line, not for matching).
+const SNAPSHOT_NAME_MAX: usize = 80;
+
+impl FocusSnapshot {
+    /// Fold in one query result (pure; the poll thread calls it every tick).
+    pub fn record(&mut self, result: &Result<String, String>, needle: &str, now: Instant) {
+        match result {
+            Ok(name) => {
+                let m = window_matches(name, needle);
+                let shown: String = name.trim().chars().take(SNAPSHOT_NAME_MAX).collect();
+                self.window = Some(shown.clone());
+                self.matched = Some(m);
+                self.error = None;
+                if m { self.matched_at = Some(now); }
+                if !shown.is_empty() {
+                    self.recent.retain(|(n, _)| *n != shown);
+                    self.recent.insert(0, (shown, m));
+                    self.recent.truncate(5);
+                }
+            }
+            Err(e) => self.error = Some(e.clone()),
+        }
+    }
 }
 
 /// Settings the poll thread reads each tick (cheap clone via Arc<Mutex>).
@@ -81,6 +123,7 @@ pub struct FocusDetector {
     status: Arc<AtomicU8>,
     params: Arc<Mutex<FocusParams>>,
     monitor: Arc<Mutex<MonitorShared>>,
+    snapshot: Arc<Mutex<FocusSnapshot>>,
 }
 
 impl FocusDetector {
@@ -95,13 +138,15 @@ impl FocusDetector {
             sent: None,
             sink: None,
         }));
+        let snapshot = Arc::new(Mutex::new(FocusSnapshot::default()));
         let d = FocusDetector {
             focused: focused.clone(),
             status: status.clone(),
             params: params.clone(),
             monitor: monitor.clone(),
+            snapshot: snapshot.clone(),
         };
-        thread::spawn(move || poll_loop(focused, status, params, monitor));
+        thread::spawn(move || poll_loop(focused, status, params, monitor, snapshot));
         d
     }
 
@@ -113,6 +158,10 @@ impl FocusDetector {
             2 => FocusStatus::QueryFailed, _ => FocusStatus::Idle,
         }
     }
+    /// What the poll thread last saw (the diagnostics readout); empty while the detector idles.
+    pub fn snapshot(&self) -> FocusSnapshot { lock(&self.snapshot).clone() }
+    /// The current method / game match string, for the diagnostics readout.
+    pub fn params(&self) -> FocusParams { self.params.lock().unwrap().clone() }
     /// Push updated params (called when settings change).
     pub fn set_params(&self, p: FocusParams) { *self.params.lock().unwrap() = p; }
 
@@ -158,6 +207,7 @@ fn poll_loop(
     status: Arc<AtomicU8>,
     params: Arc<Mutex<FocusParams>>,
     monitor: Arc<Mutex<MonitorShared>>,
+    snapshot: Arc<Mutex<FocusSnapshot>>,
 ) {
     loop {
         let p = params.lock().unwrap().clone();
@@ -170,7 +220,9 @@ fn poll_loop(
         }
         // The real answer, not the fail-open one: monitor detection must only act on a
         // confirmed "the game is focused".
-        let game_focused = match query_active_window(p.method, &p.custom_cmd) {
+        let result = query_active_window(p.method, &p.custom_cmd);
+        lock(&snapshot).record(&result, &p.game_match, Instant::now());
+        let game_focused = match result {
             Ok(name) => {
                 let m = window_matches(&name, &p.game_match);
                 focused.store(m, Ordering::Relaxed);
@@ -429,6 +481,39 @@ mod tests {
         assert!(window_matches("Forza Horizon 6", "forza"));
         assert!(window_matches("gamescope[123]: Forza", "Forza"));
         assert!(!window_matches("Firefox", "Forza"));
+    }
+
+    #[test]
+    fn snapshot_tracks_matches_and_distinct_recent_windows() {
+        let t0 = Instant::now();
+        let mut s = FocusSnapshot::default();
+        s.record(&Ok("steam_app_1 Forza Horizon 6".into()), "Forza", t0);
+        assert_eq!(s.matched, Some(true));
+        assert_eq!(s.matched_at, Some(t0));
+        // A wrong answer is a *non-match*, not an error (the gate then blocks hotkeys).
+        s.record(&Ok("firefox Mozilla".into()), "Forza", t0 + Duration::from_secs(1));
+        assert_eq!((s.matched, s.error.as_deref()), (Some(false), None));
+        assert_eq!(s.matched_at, Some(t0), "matched_at keeps the last real match");
+        // Repeats move to the front instead of duplicating; empty answers are not listed.
+        s.record(&Ok("steam_app_1 Forza Horizon 6".into()), "Forza", t0);
+        s.record(&Ok(String::new()), "Forza", t0);
+        assert_eq!(s.recent.iter().map(|(n, m)| (n.as_str(), *m)).collect::<Vec<_>>(),
+            vec![("steam_app_1 Forza Horizon 6", true), ("firefox Mozilla", false)]);
+        // An error keeps the last window and is cleared by the next success.
+        s.record(&Err("gdbus exited 1".into()), "Forza", t0);
+        assert_eq!(s.error.as_deref(), Some("gdbus exited 1"));
+        s.record(&Ok("x".into()), "Forza", t0);
+        assert_eq!(s.error, None);
+    }
+
+    #[test]
+    fn snapshot_caps_recent_and_name_length() {
+        let mut s = FocusSnapshot::default();
+        for i in 0..8 { s.record(&Ok(format!("w{i}")), "Forza", Instant::now()); }
+        assert_eq!(s.recent.len(), 5);
+        assert_eq!(s.recent[0].0, "w7");
+        s.record(&Ok("x".repeat(500)), "Forza", Instant::now());
+        assert_eq!(s.window.as_ref().unwrap().chars().count(), SNAPSHOT_NAME_MAX);
     }
 
     #[test]

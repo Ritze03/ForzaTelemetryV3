@@ -118,7 +118,11 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 - **Detect button:** 3-second countdown, then one query auto-fills `game_match` — handles
   opaque titles (e.g. GameScope).
 - **Fail-open:** if a query errors (tool missing, bad command), the detector reports
-  focused=true so hotkeys/input keep working, and the settings shows a red status.
+  focused=true so hotkeys/input keep working, and the settings shows a red status. A
+  *successful* answer that doesn't match `game_match` is **not** an error: focused=false, hotkeys
+  (in *Game window focused* mode) and gated input are dropped. `FocusDetector::snapshot()`
+  keeps the last window, match flag, error, last-match time and the 5 most recent distinct
+  names for the Hotkey Diagnostics card.
 
 ## Gate rules
 
@@ -165,7 +169,7 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   backfire). *Why a probe, not the listener:* the backends run on worker threads and only
   `return` on failure, so the UI can't ask them; opening the nodes is cheap and exact.
   *Why the flag is `EXPORT_EXCLUDE`:* it's per-machine, not a tuning setting.
-  **What the hotkeys light tests:** "at least one *keyboard* event node is readable".
+  **What the hotkeys light tests:** "at least one *working keyboard* event node is readable".
   `hotkeys::classify()` (pure) maps `(is_keyboard, readable)` per node to `Ok` (≥1 readable
   keyboard) / `NoPermission` (keyboards exist, none readable) / `NoDevice` (no keyboard; not a
   permission problem, light stays green). A node is a keyboard by its world-readable sysfs
@@ -179,6 +183,47 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   node" check was therefore a false positive with a gamepad plugged in (green light, modal
   never shown, no hotkey ever read). `/dev/uinput` stays an open-for-write test: a writable
   ACL there is genuinely fine.
+  **Working keyboard = physical, not mouse-like** (v0.4.2 follow-up; GNOME report: light amber,
+  no modal, hotkeys dead). `hotkeys::inventory()` lists every event node once (name, readable,
+  `KEY_A`, virtual, pointer-like) and three pure rules decide which ones count
+  (`working_mask`, `counts_as_physical`, `is_virtual_sysfs_path`): (1) **not virtual**, i.e. the
+  node's canonical sysfs path isn't under `/sys/devices/virtual/input/` (the uinput devices:
+  ydotoold, a remapper, Steam Input, Bluetooth AVRCP, and **our own** `Forza Telemetry Input`,
+  `input::VIRTUAL_DEVICE_NAME`, which has only W/E/Q so it was never a `KEY_A` keyboard anyway but
+  is also excluded by name); (2) **not mouse-like** (also reports `EV_REL`/`EV_ABS`, e.g. a gaming
+  mouse's key-macro interface or a pad), *unless* no plain keyboard exists at all (some real
+  keyboards report axes, so that case falls back instead of going red). *Why:* all of those can be
+  readable through `uaccess`/ACLs while the real keyboard (`root:input 0660`) isn't, and the old
+  "any `KEY_A` node" count made the light amber with zero readable typed keys. Bluetooth keyboards
+  (`uhid`, `/sys/devices/virtual/misc/uhid/…`) are real hardware and count. **The scan still reads
+  virtual and mouse-like nodes** (except our own device): a remapper such as keyd re-emits the
+  physical keys on a virtual keyboard and grabs the real one, so reading only physical nodes
+  would break that setup. They just don't count toward `active_keyboards()` / the light.
+  `OpenKeyboards` is now a map `node path → counts as working`.
+  **Hotkey Diagnostics card** (Setup, below Input Permissions, Linux): (a) *Keyboards*: every
+  `KEY_A` node with readable / open / virtual / also-mouse flags (dot: green = working and open,
+  red = working but not readable / open, amber = doesn't count); (b) *Hotkey events*: last key
+  seen + device + age, last hotkey sent to the listener thread, ended readers; (c) *Hotkey gate*:
+  the mode, the verdict **with the game in front** (`app::gate_verdict(.., our_focused=false, ..)`,
+  built on the same `global_hotkey_allowed` the listener thread calls), the focus detector's last
+  window + match yes/no, "game window last matched N s ago / never" and the recent distinct window
+  names (tooltip). **Copy diagnostics** puts the same facts on the clipboard as English text.
+  *Why this exists:* the failure is silent (no events, or events dropped by the gate), and we
+  can't test on GNOME; "no key seen" vs "key seen, hotkey sent, still nothing" vs "gate says no"
+  points at the culprit from one screenshot. *Privacy:* the backend stays match-only; the card
+  keeps a press **counter** + device + time always, but the **identity** of the last key only
+  while the card is drawn (`HotkeyDiag::listen()` each frame, 1.5 s window), so no key log runs
+  in the background. *Limit:* the listener thread's own drop decision isn't recorded
+  (`src/listeners/` is separate); the card recomputes the verdict from the same facts instead.
+  The card also refreshes `input_probe` and the keyboard list every ~2 s while on screen (the
+  probe used to run only at startup, so a later reader death left a stale green). A reader thread
+  that ends logs `hotkeys: reader for … ended: …` to stderr and shows in the card.
+  **Gate facts for GNOME:** with the default *Telemetry live* mode the window query isn't used for
+  hotkeys at all (only packets in the last 2 s, or our own window focused); in *Game window
+  focused* mode a **successful but non-matching** answer blocks hotkeys (fail-open covers only
+  query *errors*), so a wrong `game_match` (e.g. the Proton window's title/class lacks
+  "Forza") drops them silently: the card's recent-windows list shows what the game window is
+  actually called.
   **Modal / group line:** the modal fires only when hotkeys or uinput are actually missing
   (`evaluate().any_missing()`); being outside the `input` group alone doesn't nag, because
   access may come from ACLs. The group line is amber then, red only when something is missing.
