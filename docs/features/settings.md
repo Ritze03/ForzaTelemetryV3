@@ -63,11 +63,13 @@ The **Hotkey** card lists every binding in two groups (Global / In-app), includi
 HUD** (default J, the same binding the Overlay tab edits). Click a button and press a key;
 **Esc** cancels, **Backspace** clears it to a faint **Not set**. Details in [[hotkeys]].
 
-The **Input Permissions** category (Linux only, below Window Detection) shows status dots for
-*keyboards readable (hotkeys)*, *uinput writable* and *in the input group*, the copyable fix commands, a
-*Remind me on startup* checkbox and *Re-check*. Below it the **Hotkey Diagnostics** card
-(Linux) lists the keyboards found, the last key / hotkey seen and the focus-gate verdict, with
-**Copy diagnostics**. Details in [[hotkeys]].
+The **Input Permissions** category (Linux only, below Window Detection) shows three status dots,
+green or red (no amber): *Hotkeys: read keyboard devices*, *Key input: write /dev/uinput* and
+*Member of the input group*, plus the copyable fix commands, a *Remind me on startup* checkbox and
+*Re-check*. Not being in the `input` group is red on its own and opens the "input permissions
+missing" dialog. *Why:* the keyboard check alone is unreliable (a gaming mouse's key interface
+can count as a keyboard), a user outside the group practically can't read keyboards, and a false
+alarm is muted with *Don't remind me again*. Details in [[hotkeys]].
 
 The **Window Detection** card (formerly **Input**; its duplicate "Window Detection"
 sub-heading is gone) holds the focus detection that several features share:
