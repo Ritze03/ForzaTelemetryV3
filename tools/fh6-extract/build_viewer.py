@@ -127,8 +127,9 @@ def run_extractors(media, work, force, terrain):
     # predicted race types + map pins: needs races.json, pois.json AND racelines.json, so it runs after everything above; ~20 s
     pj = W('predictions.json')
     ins = [W('races.json'), W('pois.json'), W('racelines.json')]
-    if os.path.isfile(pj) and (b'"pin_predicted"' not in open(pj, 'rb').read() or any(os.path.isfile(i) and os.path.getmtime(i) > os.path.getmtime(pj) for i in ins)):
-        os.remove(pj)                                     # from before the predictions, or older than its inputs
+    scripts = [os.path.join(os.path.dirname(os.path.abspath(__file__)), f) for f in ('racetype_method.py', 'pin_method.py', 'extract_predictions.py')]
+    if os.path.isfile(pj) and (b'"pin_predicted"' not in open(pj, 'rb').read() or any(os.path.isfile(i) and os.path.getmtime(i) > os.path.getmtime(pj) for i in ins + scripts)):
+        os.remove(pj)                                     # from before the predictions, or older than its inputs / method scripts
     if all(os.path.isfile(i) for i in ins):
         chain(('predict', 'extract_predictions.py', [], work, ['predictions.json']))
     else:
