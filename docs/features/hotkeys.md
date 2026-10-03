@@ -150,9 +150,10 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 - **Linux `input` group:** reading `/dev/input` needs the user in the `input` group
   (`sudo usermod -aG input $USER`, then re-login) **or** an ACL that grants the seat user the
   keyboard nodes. The settings status light shows 🟢/🔴.
-- **Input-permission check (D13, Linux only):** at startup `input::probe()` gathers the facts
-  (a **keyboard** under `/dev/input/event*` readable via `hotkeys::probe_status()` and
-  opened by the backend, `/dev/uinput` writable,
+- **Input-permission check (D13, Linux only):** `input::probe()` gathers the facts (a
+  **keyboard** under `/dev/input/event*` readable via `hotkeys::probe_status()` and
+  opened by the backend, the **key sender's virtual keyboard really created** (see *What the
+  lights mean* below),
   `/dev/uinput` existing / group `input` rw, process in the `input` group) and the pure
   `input::evaluate()` turns them into *what's missing* + the fix commands: `sudo usermod -aG
   input $USER` (not in the group), `sudo modprobe uinput` (no `/dev/uinput`), or a udev rule
@@ -161,14 +162,36 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   group-`input` writable. `evaluate()` returns `(label, cmd)` pairs; each command sits under a
   numbered label (1., 2., 3. by position shown) saying what it does, and with two or more the
   closing line is "Run all commands above, then log out and back in." (Why: users couldn't tell
-  whether they needed both.) If anything is missing a **modal** opens once per launch (X = closed
-  for this session; *Don't remind me again* sets `input_perm_dont_remind`). Setup has an
+  whether they needed both.) If anything is missing a **modal** opens (at launch, and again on a
+  transition into "missing", see *Live status* below; X = closed until then; *Don't remind me
+  again* sets `input_perm_dont_remind`). Setup has an
   **Input Permissions** category below *Window Detection* (a light per requirement, the same
   copyable commands, a *Remind me on startup* checkbox = inverse of the flag, *Re-check*).
   Hidden on Windows. *Why:* both failures are silent otherwise (no hotkeys, dead gearbox /
   backfire). *Why a probe, not the listener:* the backends run on worker threads and only
   `return` on failure, so the UI can't ask them; opening the nodes is cheap and exact.
   *Why the flag is `EXPORT_EXCLUDE`:* it's per-machine, not a tuning setting.
+  **What the lights mean (both are functional checks).** A green light means the thing works
+  *right now*, not merely that a permission looks right. *Why:* the user's bug report was exactly
+  a green light while reading or sending was dead (a friend on GNOME, not in `input`).
+  - **Hotkeys** green = at least one **physical** keyboard is readable *and* the backend holds an
+    open reader on it (details below). Real `open()`s, no guessing from group membership.
+  - **Key input** green = `InputSender` **created its uinput virtual keyboard** (`Forza Telemetry
+    Input`; `InputSender::uinput_ready()` is `Some(true)`), decided by `input::uinput_ok()`. The
+    old test (`open("/dev/uinput")` for write) only proved the node opens; the device build on
+    the worker thread could still fail and then every press was silently dropped. The sender's
+    answer wins over the open test; only while it hasn't answered (`None`) does the open test stand
+    in. *Why the constructor waits:* `InputSender::new()` waits up to 500 ms for the first build
+    (ms in practice) and the app creates it **before** the startup probe, so the first probe and
+    the startup modal see the real answer instead of "pending".
+  - **The sender retries.** The worker loops: build the device; on failure mark it failed, log
+    **once** (`uinput: could not create virtual device: …`), drop queued commands, wait 2 s (or
+    until **Re-check** nudges it) and try again; it stops only when the app is gone. While the
+    device is not ready, `press*`/`hold_tracked`/`release` return at once (nothing queues up, and
+    the UI thread can't block on a full queue). *Why:* it used to try once and end, so fixing the
+    permission later (`modprobe`, a udev rule) left key sending dead until a restart, even though
+    the light then went green. Re-check calls `InputSender::recheck()` (retry now, wait up to
+    300 ms for the outcome). Windows / other platforms report ready (no virtual device).
   **What the hotkeys light tests:** "at least one *working keyboard* event node is readable".
   `hotkeys::classify()` (pure) maps `(is_keyboard, readable)` per node to `Ok` (≥1 readable
   keyboard) / `NoPermission` (keyboards exist, none readable) / `NoDevice` (no keyboard; not a
@@ -199,7 +222,10 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   virtual and mouse-like nodes** (except our own device): a remapper such as keyd re-emits the
   physical keys on a virtual keyboard and grabs the real one, so reading only physical nodes
   would break that setup. They just don't count toward `active_keyboards()` / the light.
-  `OpenKeyboards` is now a map `node path → counts as working`.
+  `OpenKeyboards` is now a map `node path → counts as working`; a rescan **refreshes** that flag
+  for nodes that are already open (`refresh_open_flag`) instead of freezing the verdict from the
+  moment the node was opened. *Why:* a node first classified wrong (a sysfs hiccup, or the
+  "no plain keyboard yet" fallback) would otherwise skew the light for the whole session.
   **Hotkey Diagnostics card** (Setup, below Input Permissions, Linux): (a) *Keyboards*: every
   `KEY_A` node with readable / open / virtual / also-mouse flags (dot: green = working and open,
   red = working but not readable / open, amber = doesn't count); (b) *Hotkey events*: last key
@@ -215,9 +241,7 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   while the card is drawn (`HotkeyDiag::listen()` each frame, 1.5 s window), so no key log runs
   in the background. *Limit:* the listener thread's own drop decision isn't recorded
   (`src/listeners/` is separate); the card recomputes the verdict from the same facts instead.
-  The card also refreshes `input_probe` and the keyboard list every ~2 s while on screen (the
-  probe used to run only at startup, so a later reader death left a stale green). A reader thread
-  that ends logs `hotkeys: reader for … ended: …` to stderr and shows in the card.
+  A reader thread that ends logs `hotkeys: reader for … ended: …` to stderr and shows in the card.
   **Gate facts for GNOME:** with the default *Telemetry live* mode the window query isn't used for
   hotkeys at all (only packets in the last 2 s, or our own window focused); in *Game window
   focused* mode a **successful but non-matching** answer blocks hotkeys (fail-open covers only
@@ -227,15 +251,36 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   **Modal / group line:** the modal fires only when hotkeys or uinput are actually missing
   (`evaluate().any_missing()`); being outside the `input` group alone doesn't nag, because
   access may come from ACLs. The group line is amber then, red only when something is missing.
-  **Re-check** calls `HotkeyListener::rescan()` before re-probing: the backend opens any
-  keyboard that has no reader yet (tracked in `OpenKeyboards`), so access that appears later
-  works without a restart (group membership itself still needs a re-login). Reader threads
-  remove their node on exit so a replugged device is picked up by the next rescan.
+  **Live status (v0.4.2 follow-up).** `ui::settings::refresh_input_facts()` runs from
+  `ForzaApp::update` every frame, throttled to once per ~2 s (plus at once on **Re-check**): it
+  re-reads the keyboard list and `input_probe` (sysfs reads, `open()` of the event nodes, the
+  uinput open and the sender's readiness: sub-millisecond). So the Setup lights, the Controller
+  card's "can't read /dev/input" line and the modal's self-close always show fresh data, whether or
+  not the Setup tab is open. *Why:* the probe used to run only at startup (and while Setup was
+  drawn), so a fix or a later breakage never reached the lights or the modal.
+  **Modal rule** (`input::modal_should_open(prev_missing, now_missing, remind)`): the modal opens
+  at launch if something is missing, and again **once per transition** from "all fine" to
+  "something missing" (device unplugged, sender died) while *Remind me on startup* is on. It
+  never re-opens while the status simply stays missing, so closing it with X keeps it closed until
+  the status has been fine and then breaks again. It closes by itself when nothing is missing any
+  more. *Why:* the status is live now, so a mid-session breakage must be announced once, but a
+  dismissed dialog must not reappear every 2 s.
+  **Automatic reopen / hot-plug.** `HotkeyListener::new` starts a small rescan thread
+  (`RESCAN_EVERY`, 2.5 s, Linux) that calls the same `scan()` as **Re-check**: it only opens
+  keyboards that have no reader yet. A reader thread removes its node on exit, so an unplugged,
+  suspended or Bluetooth-reconnected keyboard is picked up within ~2.5 s with no click. *Why in the
+  backend, not the UI frame loop:* hotkeys must keep working while the window is hidden and no
+  frames are drawn. `claim_node` makes the check-and-insert atomic so the thread and the Re-check
+  button can't start two readers on one node (every hotkey would fire twice). The thread ends
+  when the `HotkeyListener` is dropped.
+  **Re-check** calls `HotkeyListener::rescan()` and `InputSender::recheck()` before re-probing, so
+  access that appears later works without a restart (group membership itself still needs a
+  re-login; then the app is restarted anyway).
   *Dev/testing aid:* `FORZA_FAKE_NO_INPUT_PERMS=1` makes `probe()` report hotkeys unreadable,
   uinput not writable and not in the `input` group (node present but not group-writable, so the
   udev-rule and `usermod` commands show). *Why:* a machine with every permission never shows
   the modal, so it couldn't be reviewed.
 - Observe-only (a bound key still reaches the game); modifiers tracked per keyboard device;
-  focus reads can be up to `1/Hz` stale; keyboards hot-plugged after launch are picked up by
-  Setup → Input Permissions → **Re-check** (no automatic hotplug watching).
+  focus reads can be up to `1/Hz` stale; keyboards hot-plugged after launch are picked up by the
+  periodic rescan (~2.5 s) or at once by Setup → Input Permissions → **Re-check**.
   See spec §11.

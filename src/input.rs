@@ -35,9 +35,11 @@ impl EchoWindow {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TryRecvError};
+    use std::sync::Arc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use evdev::{AttributeSet, EventType, InputEvent, Key};
     use evdev::uinput::VirtualDeviceBuilder;
@@ -52,6 +54,35 @@ mod linux {
         // (or auto-released at `max_hold_ms` if none arrives — e.g. packets stop).
         Hold { key: Key, max_hold_ms: u64, echo_ms: u64 },
         Release,
+        // Wake the worker while its virtual device is missing: retry the build now instead of
+        // at the next 2 s tick (Setup -> Re-check).
+        Retry,
+    }
+
+    /// Readiness of the virtual device (stored in an `AtomicU8`).
+    const PENDING: u8 = 0;
+    const READY: u8 = 1;
+    const FAILED: u8 = 2;
+
+    /// Pure: the `AtomicU8` state as the tri-state the permission check uses.
+    pub(super) fn ready_from_state(state: u8) -> Option<bool> {
+        match state {
+            READY => Some(true),
+            FAILED => Some(false),
+            _ => None,
+        }
+    }
+
+    /// How long the worker waits after a failed build before trying again. *Why retry:* a one-shot
+    /// build left the sender dead until restart even after the user fixed the permission.
+    const RETRY_EVERY: Duration = Duration::from_secs(2);
+
+    fn build_device() -> std::io::Result<evdev::uinput::VirtualDevice> {
+        let mut keys = AttributeSet::<Key>::new();
+        keys.insert(Key::KEY_W);
+        keys.insert(Key::KEY_E);
+        keys.insert(Key::KEY_Q);
+        VirtualDeviceBuilder::new()?.name(super::VIRTUAL_DEVICE_NAME).with_keys(&keys)?.build()
     }
 
     #[derive(Clone)]
@@ -59,6 +90,8 @@ mod linux {
         tx: SyncSender<Cmd>,
         echo: EchoWindow,
         gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// PENDING / READY / FAILED: whether the worker holds a working virtual device.
+        state: Arc<AtomicU8>,
     }
 
     impl InputSender {
@@ -66,22 +99,44 @@ mod linux {
             let (tx, rx) = mpsc::sync_channel::<Cmd>(64);
             let echo = EchoWindow::default();
             let worker_echo = echo.clone();
+            let state = Arc::new(AtomicU8::new(PENDING));
+            let worker_state = state.clone();
             thread::spawn(move || {
-                let mut keys = AttributeSet::<Key>::new();
-                keys.insert(Key::KEY_W);
-                keys.insert(Key::KEY_E);
-                keys.insert(Key::KEY_Q);
-
-                let device = VirtualDeviceBuilder::new()
-                    .and_then(|b| b.name(super::VIRTUAL_DEVICE_NAME).with_keys(&keys))
-                    .and_then(|b| b.build());
-
-                let mut device = match device {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("uinput: could not create virtual device: {e}");
-                        eprintln!("uinput: ensure the current user is in the 'input' group or /dev/uinput is accessible");
-                        return;
+                // Build the virtual device, retrying until it works (or the app is gone).
+                let mut logged = false;
+                let mut device = loop {
+                    match build_device() {
+                        Ok(d) => {
+                            worker_state.store(READY, Ordering::Relaxed);
+                            if logged { eprintln!("uinput: virtual device created, key input works now"); }
+                            break d;
+                        }
+                        Err(e) => {
+                            worker_state.store(FAILED, Ordering::Relaxed);
+                            // Once, not every retry.
+                            if !logged {
+                                logged = true;
+                                eprintln!("uinput: could not create virtual device: {e}");
+                                eprintln!("uinput: ensure the current user is in the 'input' group or /dev/uinput is accessible; retrying every 2 s");
+                            }
+                        }
+                    }
+                    // Wait for the next try; presses are dropped at the sender while not READY, and
+                    // anything that slipped in is discarded here so it can't fire long after.
+                    let until = Instant::now() + RETRY_EVERY;
+                    loop {
+                        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                            Ok(Cmd::Retry) | Err(RecvTimeoutError::Timeout) => break,
+                            Ok(_) => {}
+                            Err(RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    loop {
+                        match rx.try_recv() {
+                            Ok(_) => {}
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => return,
+                        }
                     }
                 };
 
@@ -108,7 +163,8 @@ mod linux {
                     let syn = InputEvent::new(EventType::SYNCHRONIZATION, 0, 0);
                     match cmd {
                         // Timeout or Release: emit key-up for the held key, re-anchor echo.
-                        None | Some(Cmd::Release) => {
+                        // (`Retry` only matters while the device is missing: nothing to do here.)
+                        None | Some(Cmd::Release) | Some(Cmd::Retry) => {
                             if let Some((key, _, echo)) = held.take() {
                                 device.emit(&[InputEvent::new(EventType::KEY, key.code(), 0), syn]).ok();
                                 worker_echo.open(echo);
@@ -148,8 +204,36 @@ mod linux {
                     }
                 }
             });
-            Self { tx, echo, gate: None }
+            let me = Self { tx, echo, gate: None, state };
+            // Give the first build a moment so the startup permission probe sees a real answer
+            // (ms in practice; success and EACCES both return at once) instead of "pending".
+            me.wait_resolved(Duration::from_millis(500));
+            me
         }
+
+        fn wait_resolved(&self, max: Duration) {
+            let end = Instant::now() + max;
+            while self.state.load(Ordering::Relaxed) == PENDING && Instant::now() < end {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        /// Whether the virtual keyboard really exists: `Some(true)` it was created, `Some(false)`
+        /// the last attempt failed (the worker keeps retrying), `None` still starting.
+        pub fn uinput_ready(&self) -> Option<bool> {
+            ready_from_state(self.state.load(Ordering::Relaxed))
+        }
+
+        /// Retry a failed virtual-device build now and wait briefly for the outcome (Setup ->
+        /// Re-check). No-op while the device works.
+        pub fn recheck(&self) {
+            if self.state.compare_exchange(FAILED, PENDING, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                self.tx.try_send(Cmd::Retry).ok();
+                self.wait_resolved(Duration::from_millis(300));
+            }
+        }
+
+        fn is_ready(&self) -> bool { self.state.load(Ordering::Relaxed) == READY }
 
         /// Install a shared focus gate: when set and false, key emission is
         /// suppressed (so synthetic input never leaks into other apps).
@@ -161,7 +245,7 @@ mod linux {
         }
 
         pub fn press(&self, key: Key, hold_ms: u64, gap_ms: u64) {
-            if !self.input_allowed() { return; }
+            if !self.input_allowed() || !self.is_ready() { return; }
             self.tx.send(Cmd::Key { key, hold_ms, gap_ms, echo_ms: None }).ok();
         }
 
@@ -169,7 +253,7 @@ mod linux {
         /// Non-blocking: a full queue drops the press (a skipped backfire pop is
         /// harmless; stalling the UI thread is not).
         pub fn press_tracked(&self, key: Key, hold_ms: u64, gap_ms: u64, echo_ms: u64) {
-            if !self.input_allowed() { return; }
+            if !self.input_allowed() || !self.is_ready() { return; }
             self.tx
                 .try_send(Cmd::Key { key, hold_ms, gap_ms, echo_ms: Some(echo_ms) })
                 .ok();
@@ -179,7 +263,7 @@ mod linux {
         /// after `max_hold_ms` as a stuck-key safety). Non-blocking, like
         /// `press_tracked`. Used for packet-based backfire (hold until next packet).
         pub fn hold_tracked(&self, key: Key, max_hold_ms: u64, echo_ms: u64) {
-            if !self.input_allowed() { return; }
+            if !self.input_allowed() || !self.is_ready() { return; }
             self.tx
                 .try_send(Cmd::Hold { key, max_hold_ms, echo_ms })
                 .ok();
@@ -187,6 +271,7 @@ mod linux {
 
         /// Release a key held via [`Self::hold_tracked`]. Non-blocking.
         pub fn release(&self) {
+            if !self.is_ready() { return; }
             self.tx.try_send(Cmd::Release).ok();
         }
 
@@ -319,6 +404,10 @@ mod windows {
             self.gate.as_ref().map_or(true, |g| g.load(std::sync::atomic::Ordering::Relaxed))
         }
 
+        /// No virtual device to build (enigo): always ready.
+        pub fn uinput_ready(&self) -> Option<bool> { Some(true) }
+        pub fn recheck(&self) {}
+
         pub fn press(&self, key: KeyCode, hold_ms: u64, gap_ms: u64) {
             if !self.input_allowed() { return; }
             self.tx.send(Cmd::Press { key: key.0, hold_ms, gap_ms, echo_ms: None }).ok();
@@ -377,6 +466,8 @@ mod stub {
         pub fn new() -> Self { Self }
         pub fn set_focus_gate(&mut self, _gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
         pub fn input_allowed(&self) -> bool { true }
+        pub fn uinput_ready(&self) -> Option<bool> { Some(true) }
+        pub fn recheck(&self) {}
         pub fn press(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64) {}
         pub fn press_tracked(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64, _echo_ms: u64) {}
         pub fn hold_tracked(&self, _key: KeyCode, _max_hold_ms: u64, _echo_ms: u64) {}
@@ -406,7 +497,8 @@ pub struct InputProbe {
     /// A **keyboard** under `/dev/input/event*` is readable *and* the hotkey backend is reading
     /// at least one (no keyboard at all isn't a permission problem). See [`hotkeys_ok`].
     pub hotkeys_ok: bool,
-    /// `/dev/uinput` can be opened for writing.
+    /// Key sending works: the virtual keyboard was really created ([`uinput_ok`]); before the
+    /// sender has answered, `/dev/uinput` opening for writing stands in.
     pub uinput_ok: bool,
     /// `/dev/uinput` exists (else the `uinput` kernel module isn't loaded).
     pub uinput_exists: bool,
@@ -473,10 +565,30 @@ pub fn hotkeys_ok(status: crate::hotkeys::HotkeyStatus, active_keyboards: usize)
     }
 }
 
+/// Pure: the "key input" light. The **sender's own readiness** wins: `Some(true)` = the virtual
+/// keyboard was really created, `Some(false)` = building it failed (the worker keeps retrying).
+/// Only while it is still starting (`None`) the plain open-for-write test stands in. *Why:* the
+/// open test alone stayed green while the device build failed and every key press was silently
+/// dropped; and a created device is the proof that sending works, whatever a later open says.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn uinput_ok(open_ok: bool, sender_ready: Option<bool>) -> bool {
+    sender_ready.unwrap_or(open_ok)
+}
+
+/// Pure: should the missing-permissions modal open now? Once per *transition* into "missing"
+/// (or at startup), never repeatedly while it stays missing. `prev_missing` = what the previous
+/// refresh saw (false at launch before the first one), `now_missing` = what this refresh sees.
+/// *Why:* the status is live now, so access that breaks mid-session (a device unplugged, the
+/// sender dying) must tell the user once, but a dismissed dialog must not pop up every 2 s.
+pub fn modal_should_open(prev_missing: bool, now_missing: bool, remind: bool) -> bool {
+    remind && now_missing && !prev_missing
+}
+
 /// Probe this machine. `active_keyboards` = keyboards the hotkey backend is reading
-/// (`HotkeyListener::active_keyboards`). Windows (and anything non-Linux) needs no permissions.
+/// (`HotkeyListener::active_keyboards`); `uinput_ready` = [`InputSender::uinput_ready`].
+/// Windows (and anything non-Linux) needs no permissions.
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-pub fn probe(active_keyboards: usize) -> InputProbe {
+pub fn probe(active_keyboards: usize, uinput_ready: Option<bool>) -> InputProbe {
     #[cfg(target_os = "linux")]
     {
         // Dev/testing aid: pretend nothing is permitted so the modal can be reviewed.
@@ -501,7 +613,7 @@ pub fn probe(active_keyboards: usize) -> InputProbe {
         let meta = std::fs::metadata("/dev/uinput").ok();
         InputProbe {
             hotkeys_ok: hotkeys_ok(crate::hotkeys::probe_status(), active_keyboards),
-            uinput_ok: std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok(),
+            uinput_ok: uinput_ok(std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok(), uinput_ready),
             uinput_exists: meta.is_some(),
             uinput_group_input: meta.is_some_and(|m| Some(m.gid()) == input_gid && m.mode() & 0o060 == 0o060),
             in_input_group,
@@ -553,6 +665,42 @@ mod tests {
         assert!(!hotkeys_ok(Ok, 0), "readable but zero keyboards opened must be red");
         assert!(hotkeys_ok(Ok, 1));
         assert!(hotkeys_ok(NoDevice, 0));
+    }
+
+    #[test]
+    fn uinput_light_follows_sender_readiness() {
+        // Sender answered: its answer wins over the open test.
+        assert!(!uinput_ok(true, Some(false)), "open ok but device build failed must be red");
+        assert!(uinput_ok(false, Some(true)), "a created device proves sending works");
+        assert!(uinput_ok(true, Some(true)));
+        assert!(!uinput_ok(false, Some(false)));
+        // Still pending: fall back to the open test.
+        assert!(uinput_ok(true, None));
+        assert!(!uinput_ok(false, None));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sender_state_maps_to_tristate() {
+        assert_eq!(linux::ready_from_state(0), None);
+        assert_eq!(linux::ready_from_state(1), Some(true));
+        assert_eq!(linux::ready_from_state(2), Some(false));
+    }
+
+    #[test]
+    fn modal_reshows_once_per_transition_to_missing() {
+        // Startup: missing and reminders on -> open.
+        assert!(modal_should_open(false, true, true));
+        // Still missing (even after the user closed it): no repeat.
+        assert!(!modal_should_open(true, true, true));
+        // Fine -> fine, and recovery: nothing.
+        assert!(!modal_should_open(false, false, true));
+        assert!(!modal_should_open(true, false, true));
+        // Reminders off: never.
+        assert!(!modal_should_open(false, true, false));
+        // OK -> missing -> OK -> missing walks through two openings.
+        let walk = [(false, true), (true, true), (true, false), (false, true)];
+        assert_eq!(walk.iter().filter(|(p, n)| modal_should_open(*p, *n, true)).count(), 2);
     }
 
     #[test]

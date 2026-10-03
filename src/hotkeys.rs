@@ -233,6 +233,28 @@ pub fn probe_status() -> HotkeyStatus {
 /// can tell "backend has zero (physical) keyboards".
 pub type OpenKeyboards = Arc<Mutex<std::collections::HashMap<std::path::PathBuf, bool>>>;
 
+/// Pure: an already-open node keeps its reader but takes the **fresh** "counts as working
+/// keyboard" verdict. Returns true when the node was already open. *Why:* the flag was frozen at
+/// open time, so a node first classified wrong (a sysfs hiccup, the "no plain keyboard" fallback
+/// before the real keyboard appeared) kept skewing the light for the whole session.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn refresh_open_flag(map: &mut std::collections::HashMap<std::path::PathBuf, bool>, path: &std::path::Path, counts: bool) -> bool {
+    match map.get_mut(path) {
+        Some(v) => { *v = counts; true }
+        None => false,
+    }
+}
+
+/// Pure: claim a node for a new reader: inserts it and returns true, or (already open) refreshes
+/// the flag and returns false. One lock, so the periodic rescan thread and the Re-check button
+/// can never both start a reader on the same node (that would fire every hotkey twice).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn claim_node(map: &mut std::collections::HashMap<std::path::PathBuf, bool>, path: &std::path::Path, counts: bool) -> bool {
+    if refresh_open_flag(map, path, counts) { return false; }
+    map.insert(path.to_path_buf(), counts);
+    true
+}
+
 /// What the Setup diagnostics can show about the keyboard path. Cheap, shared between the
 /// reader threads and the UI.
 ///
@@ -313,7 +335,18 @@ pub struct HotkeyListener {
     guard: Arc<RebindGuard>,
     open: OpenKeyboards,
     diag: HotkeyDiag,
+    /// Tells the periodic rescan thread to end when the listener is dropped.
+    stop: Arc<std::sync::atomic::AtomicBool>,
 }
+
+impl Drop for HotkeyListener {
+    fn drop(&mut self) { self.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+}
+
+/// How often the backend looks for keyboards that have no reader (hot-plug, Bluetooth reconnect,
+/// access that appeared).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const RESCAN_EVERY: Duration = Duration::from_millis(2500);
 
 impl HotkeyListener {
     /// Starts the capture backend and hands back the matched-action receiver, which the
@@ -325,13 +358,27 @@ impl HotkeyListener {
         let (tx, rx) = std::sync::mpsc::channel();
         let guard = Arc::new(RebindGuard::default());
         let open = OpenKeyboards::default();
-        let me = HotkeyListener { binds, tx, guard, open, diag: HotkeyDiag::default() };
+        let me = HotkeyListener { binds, tx, guard, open, diag: HotkeyDiag::default(), stop: Arc::default() };
         me.rescan();
+        // Keep looking for keyboards with no reader. Here, not in the UI frame loop: hotkeys must
+        // keep working while the window is hidden and no frames are drawn. A scan is sysfs reads
+        // plus `open()`s (sub-millisecond) and only starts readers for nodes without one.
+        #[cfg(target_os = "linux")]
+        {
+            let (binds, tx, guard, open, diag, stop) =
+                (me.binds.clone(), me.tx.clone(), me.guard.clone(), me.open.clone(), me.diag.clone(), me.stop.clone());
+            std::thread::spawn(move || loop {
+                std::thread::sleep(RESCAN_EVERY);
+                if stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                backend::scan(&binds, &tx, &guard, &open, &diag);
+            });
+        }
         (me, rx)
     }
-    /// (Re)open keyboards that have no reader yet — the initial scan, and the Setup **Re-check**
-    /// button, so access that appears later (a udev/ACL change, a hot-plugged keyboard) works
-    /// without a restart. Synchronous: the open count is right as soon as it returns.
+    /// (Re)open keyboards that have no reader yet — the initial scan, the Setup **Re-check**
+    /// button (a periodic background rescan does the same every [`RESCAN_EVERY`]), so access that
+    /// appears later (a udev/ACL change, a hot-plugged keyboard) works without a restart.
+    /// Synchronous: the open count is right as soon as it returns.
     pub fn rescan(&self) { backend::scan(&self.binds, &self.tx, &self.guard, &self.open, &self.diag); }
     /// How many **physical** keyboards the backend is actually reading (always 1 off Linux:
     /// nothing to open). Virtual keyboards it also reads don't count: see [`counts_as_physical`].
@@ -388,9 +435,11 @@ mod backend {
         for (n, counts) in nodes.into_iter().zip(working) {
             if !n.is_kb || !n.readable || n.name == crate::input::VIRTUAL_DEVICE_NAME { continue; }
             let path = n.path;
-            if open.lock().unwrap().contains_key(&path) { continue; } // already read
+            // Already read: keep its reader, but refresh the "counts" verdict.
+            if super::refresh_open_flag(&mut open.lock().unwrap(), &path, counts) { continue; }
             let Ok(mut dev) = Device::open(&path) else { continue };
-            open.lock().unwrap().insert(path.clone(), counts);
+            // Claim under one lock (the periodic scan and Re-check can race to here).
+            if !super::claim_node(&mut open.lock().unwrap(), &path, counts) { continue; }
             let label = format!("{} ({})", n.name, n.node);
             let binds = binds.clone();
             let tx = tx.clone();
@@ -512,6 +561,34 @@ mod tests {
 
     fn bind(ctrl: bool, key: HotKey) -> HotkeyBinding {
         HotkeyBinding { mods: Mods { ctrl, ..Default::default() }, key }
+    }
+
+    #[test]
+    fn open_node_flag_is_refreshed_not_frozen() {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+        let p = Path::new("/dev/input/event3");
+        let mut m: HashMap<PathBuf, bool> = HashMap::new();
+        assert!(!refresh_open_flag(&mut m, p, true), "unknown node: nothing to refresh");
+        assert!(m.is_empty());
+        m.insert(p.to_path_buf(), false);
+        assert!(refresh_open_flag(&mut m, p, true));
+        assert_eq!(m[p], true, "counts verdict must follow the fresh classification");
+        assert!(refresh_open_flag(&mut m, p, false));
+        assert_eq!(m[p], false);
+    }
+
+    #[test]
+    fn claim_node_starts_one_reader_per_node() {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+        let p = Path::new("/dev/input/event5");
+        let mut m: HashMap<PathBuf, bool> = HashMap::new();
+        assert!(claim_node(&mut m, p, true), "first claim wins");
+        assert!(!claim_node(&mut m, p, false), "second claim must not start another reader");
+        assert_eq!(m[p], false, "...but refreshes the flag");
+        m.remove(p); // reader ended (device gone)
+        assert!(claim_node(&mut m, p, true), "a replugged node can be claimed again");
     }
 
     #[test]

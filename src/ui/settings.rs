@@ -337,7 +337,6 @@ fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::Inpu
 /// The "Input Permissions" category (Linux): one status light per requirement, plus the
 /// fix commands when something is missing and the startup-reminder toggle.
 fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
-    refresh_input_facts(app, false);
     let p = app.input_probe;
     let dot = |ok: bool| if ok { Dot::Ok } else { Dot::Bad };
     status_dot(ui, dot(p.hotkeys_ok), tr("Hotkeys: read keyboard devices (/dev/input)"));
@@ -360,23 +359,38 @@ fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
         app.config.input_perm_dont_remind = !remind;
     }
     if ui.add(crate::theme::secondary_button(tr("Re-check"))).clicked() {
-        // Reopen keyboards first so access that appeared since launch works without a restart.
+        // Reopen keyboards and retry the virtual keyboard first, so access that appeared since
+        // launch works without a restart.
         app.hotkeys.rescan();
+        app.recheck_uinput();
         refresh_input_facts(app, true);
     }
 }
 
-/// Re-read the keyboard list and the input probe (the Setup cards read both from the app). Runs
-/// at most every ~2 s while the cards are on screen, or at once with `force` (Re-check). *Why live:*
-/// the probe used to run once at startup, so a reader thread that died later left a stale green.
-fn refresh_input_facts(app: &mut ForzaApp, force: bool) {
+/// Re-read the keyboard list and the input probe (the Setup cards, the modal and the "Controller"
+/// light read them from the app). Called **every frame from `ForzaApp::update`**, throttled to
+/// once per ~2 s, or at once with `force` (Re-check). *Why app-level and live:* the probe used to
+/// run once at startup (and only while Setup was open afterwards), so a reader thread or the key
+/// sender dying later left a stale green, and the startup modal could never notice a fix or a
+/// new breakage. Cost: sysfs reads + `open()` of the event nodes + the uinput open (sub-ms).
+///
+/// Also applies the modal rule ([`crate::input::modal_should_open`]): it re-opens once when the
+/// status turns from fine to missing, never repeatedly while it stays missing.
+pub fn refresh_input_facts(app: &mut ForzaApp, force: bool) {
     const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
     if !force && app.kb_list_at.is_some_and(|t| t.elapsed() < EVERY) {
         return;
     }
     app.kb_list = app.hotkeys.keyboards();
-    app.input_probe = crate::input::probe(app.hotkeys.active_keyboards());
+    app.input_probe = crate::input::probe(app.hotkeys.active_keyboards(), app.uinput_ready());
     app.kb_list_at = Some(std::time::Instant::now());
+    let missing = crate::input::evaluate(&app.input_probe).any_missing();
+    if cfg!(target_os = "linux")
+        && crate::input::modal_should_open(app.input_prev_missing, missing, !app.config.input_perm_dont_remind)
+    {
+        app.input_perm_modal_open = true;
+    }
+    app.input_prev_missing = missing;
 }
 
 /// "3 s ago" / "2 min ago" (German: "vor 3 s"). `de` is false for the copied text.

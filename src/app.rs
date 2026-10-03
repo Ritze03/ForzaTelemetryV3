@@ -570,7 +570,8 @@ pub struct ForzaApp {
     // crate::config::KEY_GROUPS by index.
     pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete / Export / Import
     pub input_probe: crate::input::InputProbe, // D13: cached input-permission probe (Setup + startup modal)
-    pub input_perm_modal_open: bool,         // D13: startup modal still showing this session
+    pub input_perm_modal_open: bool,         // D13: permissions modal currently showing
+    pub input_prev_missing: bool,            // anything was missing at the previous refresh (modal re-shows on a transition into missing)
     pub input_perm_copied: Option<(usize, Instant)>, // D13: which fix command was just copied
     pub kb_list: Vec<crate::hotkeys::KeyboardInfo>, // Setup diagnostics: keyboard nodes, refreshed every ~2 s
     pub kb_list_at: Option<Instant>,                // when `kb_list` (and `input_probe`) were last refreshed
@@ -797,11 +798,13 @@ impl ForzaApp {
             hotkeys.rebind_guard(),
             crate::gamepad::PadParams::from_config(&config.gamepad),
         );
-        let input_probe = crate::input::probe(hotkeys.active_keyboards());
-        let input_perm_modal_open =
-            cfg!(target_os = "linux") && !config.input_perm_dont_remind && crate::input::evaluate(&input_probe).any_missing();
+        // The sender first: its constructor waits briefly for the virtual device build, so the
+        // probe below sees "created / failed" instead of guessing from an open() test.
         let mut input = InputSender::new();
         input.set_focus_gate(input_allowed.clone());
+        let input_probe = crate::input::probe(hotkeys.active_keyboards(), input.uinput_ready());
+        let input_prev_missing = crate::input::evaluate(&input_probe).any_missing();
+        let input_perm_modal_open = cfg!(target_os = "linux") && !config.input_perm_dont_remind && input_prev_missing;
 
         // The listener thread owns Backfire, the gearbox, the per-car calibrations and the
         // global hotkeys, so they all keep running when the window stops being drawn.
@@ -890,6 +893,7 @@ impl ForzaApp {
             profile_dialog: ProfileDialog::None,
             input_probe,
             input_perm_modal_open,
+            input_prev_missing,
             input_perm_copied: None,
             kb_list: Vec::new(),
             kb_list_at: None,
@@ -949,6 +953,12 @@ impl ForzaApp {
         self._network = start_receiver(port, self.packet_tx.clone());
         self.config.listen_port = port;
     }
+
+    /// Whether the virtual keyboard for key sending really exists (`None` = still starting).
+    pub fn uinput_ready(&self) -> Option<bool> { self.input.uinput_ready() }
+
+    /// Retry a failed virtual-keyboard build now (Setup -> Re-check).
+    pub fn recheck_uinput(&self) { self.input.recheck(); }
 
     /// True while Backfire's simulated keypress may still be echoing back in
     /// telemetry as a fake accel value. The window is anchored by the input
@@ -1457,6 +1467,8 @@ impl eframe::App for ForzaApp {
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
         self.update_minimap_trails();
+        // Live input status (every ~2 s): Setup lights, the modal's self-close and re-show.
+        crate::ui::settings::refresh_input_facts(self, false);
 
         // Poll minimap image receiver — drain all pending messages this frame
         if self.minimap_img_receiver.is_some() {
