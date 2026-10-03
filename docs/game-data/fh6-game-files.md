@@ -53,8 +53,10 @@ Precision: *exact* = world coordinates straight from the file; *approx* = recons
 | Race start line + 12-slot grid + heading + finish | `OpenWorld/Brio/AITracks/Route<N>.nav` (`RVAN` block) | 169 routes (+ route 99 test) | exact (on racing line < 0.1 m) | partial, see next rows | **yes** |
 | Race racing line + track width | `AITracks/Route<N>.owt` | 170 (127 point-to-point + 43 circuits; 2 off-map, 1 test) | exact; edges = pos ± half-width vector | n/a | **yes** — [Race lines](#race-lines-the-owt-racing-line-files) |
 | Race map pin (activation sphere) | `Tracks/Brio/triggerzones/tz_race_activations/race_triggers.tz` | 36 | exact pin, **not** the start (median 185 m off) | slug `rt<N>` only | **yes** |
-| Race display names | `Stripped/StringTables/EN.zip` `CareerRaceCollection.str` | 110 unique | text exact | yes, but **route ↔ name link is not in the files** | strings **yes**; link: 15 routes (3 rush via locators, 5 IE + 7 chase by id convention) without the dump, +10 exact +44 heuristic +10 guess with it |
-| Race types (sprint, circuit, scramble, …) | `Entities/Brio/campaign_slots.xml` | 88 routes | exact | yes | **creator dump only** |
+| Race display names, **exact** (route → name) | `ObjectModelGame.zip` `TrackInfoDataSet` (`InfoByRouteId` → `DisplayName` string id) + `Stripped/StringTables/<LANG>.zip` `CareerTrackInfo.str` | 111 routes, EN + DE (and the other 22 languages) | exact | yes | **yes** — [exact race names and types](#exact-race-names-and-types-objectmodelgamezip) |
+| Race types, **exact** (road / street / rally / cross country / touge / drag) | `ObjectModelGame.zip` `CareerRaceDataSet.UITheme`, `TrackInfoDataSet.UseCrossCountryAI`, `RaceCollectionUIOverridesMap` StreetRace flyer | 67 of the 170 routes | exact, **only what the files state** | n/a | **yes** (same section); the other 103 routes have no stated type |
+| Race display names (older fallback) | `Stripped/StringTables/EN.zip` `CareerRaceCollection.str` | 110 unique | text exact | link route ↔ name only for the ~60 routes without a TrackInfo entry, via the older methods in [Race names](#race-names) | superseded for the 111 TrackInfo routes |
+| Race event families (sprint, circuit, scramble, …) | `Entities/Brio/campaign_slots.xml` | 88 routes | exact | yes | **creator dump only** (only needed now for the heuristic fallback names) |
 | Landmarks | `Tracks/Brio/triggerzones/tz_world_constraints/landmark_triggers.tz` | 75 | exact (sphere centre) | slug (`shibuya_crossing`); **names 75/75 in 24 languages** from `Landmarks.str` (54 direct, 17 alternate ids, 2 by name/position, 2 borrow the parent name) | **yes** — [names](fh6-cars-names-icons.md#2-area-landmark-and-region-names-24-languages) |
 | Named locators (houses, fast travel, festival, barn finds + hint areas, car/drag meets, touge, showcases, treasure cars, aftermarket spots/boards, Horizon Jobs/Stories, rush, invitational/legend, upsell) | `Tracks/Brio/trackroutes/route0.nt` (+ `route40001/40900/4004x/4005x.nt`) | ~370 + extras | exact | internal slugs | **yes** |
 | Pinatas / eliminator spawns / parking areas | `trackroutes/{pinata_locators,eliminator_locators,parkingareas}.nt` | 1536 / 373 / 2664 | exact | no | **yes** |
@@ -101,6 +103,7 @@ shared was decrypted. Signature of the encrypted ones: zip method **22** (or a r
 | `Physics/surfaceTypes.xml` | **encrypted** | the terrain-surface id → name table |
 | profile backups; `…/compatdata/2483190/pfx/…/AppData/Local/ForzaHorizon6/CmsCache/*` | **encrypted** | save data; server-delivered content (CMS) cache |
 | `UI.zip` (incl. `MapProfiles/MapIncludes/*.xml`) | plaintext | UI definitions, the game's own map filter/icon types |
+| `ObjectModelGame.zip` (7121 × `source/ScribbleData/<id>.om.xml`, `BXML`) | **plaintext** (found 2026-10-03) | game data sets: `TrackInfoDataSet`, `CareerRaceDataSet`, `RaceCollectionUIOverridesMap` → exact race names and types; the other ~7100 files are unexplored |
 | `Stripped/StringTables/<LANG>.zip` (`*.str`, 24 languages) | plaintext | all UI/event/race text, car names (`Data_Car.str`), landmark / region names |
 | `Cars/<MediaName>.zip` (671), `UI/Textures/HiRes/Data_Bound/Horizon_Map.zip` | plaintext (deflate) | car clip ids (= `CarOrdinal`), map icons |
 | `UI/Textures/Data_Bound/Map_Brio_<Season>.zip` | plaintext | map tiles |
@@ -534,9 +537,11 @@ Validation:
 `Landmarks.IDS_Area_Discovered_ine` → table `Landmarks`, key `hash("IDS_Area_Discovered_ine")` → `Ine`. Database strings `_&<u64>` use the
 **low 32 bits** as the key (search all tables).
 
-**Race names** are the *second half* of `CareerRaceCollection.str` (entries ≥ 154 of 323 — the lower entries are descriptions; the upper block mixes ~110 race names with playlist, Playground-arena and drag-strip names).
-**There is no direct route-id → name link in the readable files** (the `CareerRace` key scheme is uncracked), so `extract_races.py` assigns names by increasing
-confidence (recorded in `extra.name_confidence` / `name_evidence`; only `exact`, `locator` and `landmark<=400m` are written to `race_name`,
+**The exact route → name link exists** (found 2026-10-03; an earlier version of this page said it did not): `ObjectModelGame.zip` → see
+[Exact race names and types](#exact-race-names-and-types-objectmodelgamezip) below. It covers 111 of the 170 routes and `extract_races.py` lets it override everything else.
+The rest of this section is the **older fallback** for the ~60 routes without a TrackInfo entry (route files 11000–11045, 20000–20005, 30000–30006, 30100–30106, 99, …); 
+`CareerRaceCollection.str` holds race names in its *second half* (entries ≥ 154 of 323 — the lower entries are descriptions; the upper block mixes ~110 race names with playlist, Playground-arena and drag-strip names).
+The fallback methods, by increasing confidence (recorded in `extra.name_confidence` / `name_evidence`; only `exact`, `locator` and `landmark<=400m` are written to `race_name`,
 the rest to `race_name_guess`):
 
 | Method | Routes | Needs |
@@ -547,9 +552,47 @@ the rest to `race_name_guess`):
 | Exit locator in `post_race_locators.xml` (`race_<collectionId>` → `<name>_custom_exit_locator`) | 6 | **creator dump** |
 | Heuristic: per event family, assign that family's names to its routes by **Hungarian matching** on the distance landmark keyword → racing line (keyword table `K` in the script; 5/5 manual checks matched) | 44 (≤ 400 m) + 9 (≤ 1000 m) + 1 (elimination) | **creator dump** (for the family) + scipy |
 
-So **without the creator dump only 15 of 169 routes get a name**; the app can still show circuit / point-to-point (finish ≠ start), length and
-`Route <N>`. Race *types* for 88 routes (`brio_{circuit,sprint,scramble,trail,street,touge,finale,horizon_rush}_<N>` in `campaign_slots.xml`, with
-`CareerRaceCollectionId` 80–87 = cross-country circuit, 88–97 = cross-country sprint) are also creator-dump only.
+These methods (before the exact link was found) gave only 15 of 169 routes a name without the creator dump; they are now just the fallback behind the exact names.
+Event families for 88 routes (`brio_{circuit,sprint,scramble,trail,street,touge,finale,horizon_rush}_<N>` in `campaign_slots.xml`, with
+`CareerRaceCollectionId` 80–87 = cross-country circuit, 88–97 = cross-country sprint) remain creator-dump only — and were the **ground truth** the exact types below were validated against.
+
+### Exact race names and types (`ObjectModelGame.zip`)
+
+`<media>/ObjectModelGame.zip` is a **plaintext** zip of 7121 `source/ScribbleData/<id>.om.xml` files, each a `BXML` binary XML (decoder `fh6bxml.py`, `bxml_decode`;
+the same format as the creator's `EntityModel.zip`, but this zip is *not* encrypted in the user install). Code: `tools/fh6-extract/fh6careers.py` (`race_types`), called by `extract_races.py`.
+Three files matter (ids stable between the Sept and Oct 2026 builds we looked at):
+
+| Data set | File id | Content |
+|---|---|---|
+| `TrackInfoDataSet` | `13260499414882115191` | two maps. `Data` (112 entries; key = *CareerRace key*): `RouteId`, `RibbonConfig` (`P2P` / `Circuit` / `Playground`), `UseCrossCountryAI`, `DisplayName` = `CareerTrackInfo.IDS_DisplayName_<guid>` (resolve with `fh6str.StringTables(media, lang).ids(...)`, any of the 24 languages), `CustomRouteId`, …. `InfoByRouteId` (111 entries): **route id → key into `Data`** — this is the link the old notes said did not exist. Route 2091 also appears in `Data[4048]`; `InfoByRouteId` says key 39 (use that one). One `Data` entry has no `RouteId`. |
+| `CareerRaceDataSet` | `16066973273702787567` | only 35 keys (5–11, 20–43, 60–63): `RaceMode` (Touge / LapsRace / P2P / Scramble / Drag / Showcase), `UITheme` (`asphalt_series`, `touge_series`, `drag_racing`, `mixed_surface_series`, `showcase_*`), `CustomEntityName` (`touge_event_5411`, …) |
+| `RaceCollectionUIOverridesMap` | `6322925578581225131` | 31 keys → flyer texture. Keys 102–116 → `Backgrounds\Custom\StreetRace.png` (the 15 street races); also `Touge_Racing_*` for keys 1, 6–9 and finale flyers |
+
+**Pitfall:** the `TrackInfoDataSet` object holds *two* maps; a naive "all `map_element`s under the object" walk mixes the `InfoByRouteId` entries (route-id keys) into `Data` and corrupts it. Select the map by its `property id`.
+
+**Type mapping (exact fields only):**
+
+| Editor type | Field |
+|---|---|
+| `road` | `CareerRaceDataSet[key].UITheme = asphalt_series` |
+| `touge` | `UITheme = touge_series` |
+| `drag` | `UITheme = drag_racing` |
+| `rally` | `UITheme = mixed_surface_series` |
+| `street` | key has the `StreetRace.png` flyer in `RaceCollectionUIOverridesMap` |
+| `cross_country` | `TrackInfoDataSet[key].UseCrossCountryAI = True` (keys 80–97 and 200 = The Titan), **except the Initial-Experience routes 3333–3337** |
+
+Result on the Oct-2026 build: **67 of 170 routes typed** — road 21, cross country 19 (18 + The Titan), street 15, touge 5, rally 4 (keys 60–63), drag 3 (routes 4501–4503) — and 103 untyped.
+Validation: against the creator dump's `campaign_slots.xml` families (circuit/sprint/street/touge/…) there were **0 contradictions** for the 67 (road = circuit + sprint, street incl. key 109 = route 4341 "Rainbow Bridge Descent").
+Names: **111/111 EN and 111/111 DE** (e.g. 281 "Highway Circuit" / "Highway-Rundkurs", 5411 "Hakone Nanamagari", 1023 "The Titan" / "Der Titan").
+
+**Routes left without a type, on purpose:**
+- **Initial-Experience routes 3333–3337** carry `UseCrossCountryAI=True` (key 1257, 1258, 1308–1310) but are tutorial drives, not cross-country races, so the extractor skips the flag for them (an explicit rule in `fh6careers.INITIAL_EXPERIENCE`; they have no other type field, so they stay unmarked).
+- **The 16 scramble / trail routes** (keys 64–79: scramble routes 121, 162, 181, 271, 301, 341; trail routes 2051, 2061, 2071, 2101, 2121, 2211, 2271, 2281, 2301, 2311): no field states a type for them (`CareerRaceDataSet` has no entry above key 63). Their *names* contain "Scramble"/"Trail", but that is a name, not a type field — see the Why below. Marking them (probably `rally`, as the four 60–63 scrambles are) is left to a separate decision by the user.
+- Finales (132 Colossus, 2052 Gauntlet, 5555 Goliath), Horizon Rush/showcase/invitational routes 8001–8008, Playground arenas 3001–3023, 4251, route 0, and the ~59 routes with no TrackInfo entry (11000–11045, 20000–20005, 30000–30006, 30100–30106, 99): no editor-type field, or no entry at all.
+
+*Why: exact fields only, no inference.* The user's call (2026-10-03), after seeing types guessed from route geometry, surface and name words: "That's a bad way of doing it". A type the files do not state is left unset (the map viewer shows a grey "?") for the user to mark by hand, so every pre-marked type can be traced to a named game field (`extra.type_source`). Do not add heuristics here without the user asking.
+
+Consumers: `extract_races.py` writes `names{lang}`, `type_exact` (absent when none), `type_source`, `career_key`, `ribbon` into the `extra` of each route's `race_start` / `ie_route` / `horizon_chase` record, and the EN name becomes `race_name` (confidence `exact`); the viewer's **Prefill race types (exact)** button uses `type_exact`.
 
 Corrected trap (earlier notes were wrong twice): the landmark strings for `seaside_circuit` / `seaside_offroad_circuit` are **not swapped** — `seaside_circuit` (2606, 2805)
 is the Hokubu Circuit (race start 2827, 2696) and `seaside_offroad_circuit` (2676, −5095) is Sekibe Scramble (2496, −5065); and landmark names resolve for **75 of 75** slugs from the
@@ -671,7 +714,7 @@ build_viewer.py --out DIR_OUTSIDE_REPO                         # local Leaflet m
 ```
 
 Library modules: `fh6common.py` (install detection, case-insensitive paths, `.nt`/`.tz` readers), `pgzp.py` + `lz4b.py` (PGZP reader, u32 **and** u64 table),
-`fh6str.py` (string tables), `fh6owt.py` (`.owt` racing line + `RVAN` block), `fh6surfaces.py` (terrain surface-id names with their confirmed/reasoned status), `fh6bxml.py` (BXML, creator dump only).
+`fh6str.py` (string tables), `fh6owt.py` (`.owt` racing line + `RVAN` block), `fh6surfaces.py` (terrain surface-id names with their confirmed/reasoned status), `fh6bxml.py` (BXML; also decodes the plaintext `ObjectModelGame.zip`), `fh6careers.py` (exact race names + types from it).
 
 Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 GameObjs objects, 1649 records, pgeo error 0.000 m, identical to the original research output;
 `extract_races.py` → 169 race starts, start line within 0.1 m of its own racing line for 165 (was 164 before the `.owt` fix) (names: 22 exact incl. IE/chase, 3 locator, 44 landmark ≤ 400 m, 10 weaker with the creator dump);
@@ -687,7 +730,7 @@ Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 Ga
 3. Roads: parse `Brio_00.nav` per [Roads](#1-roads--openworldbriofreeroambrio_00nav) (it is a flat
    binary — only needs positions, road table and list A).
 4. POIs: parse the small XML/text files (regex is enough, see `extract_poi.py`) **and `Ribbon_00/GameObjs.xml`** (speed traps, zones, drift zones, XP boards… — no binary needed).
-5. Race starts/grids: the `RVAN` block of `AITracks/Route<N>.nav` (flat binary; no PGZP needed). Names only for ~15 routes without the (encrypted) entity data. Racing line / track edges: `Route<N>.owt` ([layout](#race-lines-the-owt-racing-line-files); flat binary, mind the section count).
+5. Race starts/grids: the `RVAN` block of `AITracks/Route<N>.nav` (flat binary; no PGZP needed). Exact names (and types) for 111 routes from the plaintext `ObjectModelGame.zip` ([how](#exact-race-names-and-types-objectmodelgamezip)). Racing line / track edges: `Route<N>.owt` ([layout](#race-lines-the-owt-racing-line-files); flat binary, mind the section count).
 6. Anything from GeoChunk (danger signs, drift posts, speed-limit signs, terrain) additionally needs the PGZP reader (u32/u64 tables, LZ4 block, deflate). Do it lazily and cache a *derived, compact* grid in the app data dir.
 7. Do it lazily on a background thread and cache nothing derived in the repo.
 8. Names: car names (`Cars/*.zip` central directories + `Data_Car.str`), landmark / region names (`Landmarks.str`, `MapRegion.str`, any of 24 languages) and the game's map icons all come from plaintext

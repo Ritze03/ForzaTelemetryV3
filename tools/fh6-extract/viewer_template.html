@@ -231,7 +231,7 @@ document.addEventListener('click', (e) => {
   if (a.dataset.copy) { try { navigator.clipboard.writeText(a.dataset.copy); a.textContent = t('ok'); } catch (err) { /* ignore */ } }
   if (a.dataset.act) { const [fn, arg] = a.dataset.act.split(':'); if (fn === 'route') showRoute(Number(arg)); }
 });
-const EXTRA_SKIP = { grid: 1, left: 1, right: 1, polyline: 1, heading_zaxis: 1 };
+const EXTRA_SKIP = { grid: 1, left: 1, right: 1, polyline: 1, heading_zaxis: 1, names: 1 };
 function extraRows(ex) {
   const rows = [];
   if (!ex) return rows;
@@ -324,7 +324,7 @@ function catIcon(cat, r) {
   const big = cat === 'treasure_chest_current' ? 40 : 26;
   return L.icon({ iconUrl: META.icons[key], iconSize: [big, big], iconAnchor: [big / 2, big / 2], popupAnchor: [0, -big / 2 + 1], className: 'poi-ic' + (big > 26 ? ' poi-cur' : '') });
 }
-const catTitle = (cat, r) => r[3] || (cat === 'treasure_chest_current' ? catLabel(cat) + ' (' + t('board') + ' ' + r[5].board + ')' : catLabel(cat));
+const catTitle = (cat, r) => (r[5] && r[5].names && nameOf(r[5].names)) || r[3] || (cat === 'treasure_chest_current' ? catLabel(cat) + ' (' + t('board') + ' ' + r[5].board + ')' : catLabel(cat));
 function makeCat(cat) {
   const m = META.cats[cat], rows = D.poi.cats[cat];
   const g = (m.cluster && MC) ? L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 48, disableClusteringAtZoom: 6, showCoverageOnHover: false }) : L.featureGroup();
@@ -358,9 +358,13 @@ function ribbon(r) {
   r._rib = L.polygon(L1.concat(R1.reverse()), { color: r.circuit ? '#38bdf8' : '#fb7185', weight: 1, fillOpacity: 0.28, interactive: false });
   return r._rib;
 }
+// route id -> its POI record (race start / Initial-Experience route / Horizon Chase); extra.names = exact race name per language (ObjectModelGame.zip), extra.type_exact = exact race type
+const RINFO = {};
+['race_start', 'ie_route', 'horizon_chase'].forEach((c) => ((D.poi && D.poi.cats[c]) || []).forEach((q) => { if (q[5] && q[5].route_id != null && !RINFO[q[5].route_id]) RINFO[q[5].route_id] = q; }));
+const raceName = (id) => { const q = RINFO[id]; return q ? ((q[5].names && nameOf(q[5].names)) || (q[3] && q[3].indexOf('route') !== 0 ? q[3] : null)) : null; };
 function routePopup(r) {
-  const st = (D.poi && D.poi.cats.race_start || []).find((q) => q[5] && q[5].route_id === r.id);
-  return popupHtml({ title: (st && st[3] && st[3].indexOf('route') !== 0 ? st[3] : t('route') + ' ' + r.id), type: t('route') + ' ' + r.id + ' - ' + (r.circuit ? t('circuit') : t('p2p')),
+  const st = RINFO[r.id];
+  return popupHtml({ title: raceName(r.id) || (t('route') + ' ' + r.id), type: t('route') + ' ' + r.id + ' - ' + (r.circuit ? t('circuit') : t('p2p')),
     x: st ? st[0] : null, z: st ? st[1] : null, y: st ? st[2] : null,
     rows: [[t('length'), (r.len / 1000).toFixed(2) + ' km'], [t('heading'), r.hdg != null ? r.hdg + ' deg' : '-'], [t('width'), r.hw ? r.hw[0] + '..' + r.hw[1] + ' m' : '-'], ['points', String(r.p.length / 2)]],
     src: 'OpenWorld/Brio/AITracks/Route' + r.id + '.owt' });
@@ -369,7 +373,7 @@ if (D.racelines) {
   entry({ id: 'racelines', group: 'races', label: () => t('racelines'), line: '#38bdf8', n: D.racelines.length, on: false,
     make: () => { const g = L.featureGroup();
       D.racelines.forEach((r) => { const pl = L.polyline(racePts(r), { color: r.circuit ? '#38bdf8' : '#fb7185', weight: 2.5, opacity: 0.9 });
-        pl.bindTooltip(() => t('route') + ' ' + r.id + ' (' + (r.circuit ? t('circuit') : t('p2p')) + ', ' + (r.len / 1000).toFixed(1) + ' km)', { sticky: true });
+        pl.bindTooltip(() => (raceName(r.id) ? raceName(r.id) + ' - ' : '') + t('route') + ' ' + r.id + ' (' + (r.circuit ? t('circuit') : t('p2p')) + ', ' + (r.len / 1000).toFixed(1) + ' km)', { sticky: true });
         pl.bindPopup(() => routePopup(r)); g.addLayer(pl); }); return g; } });
   const Rib = L.LayerGroup.extend({
     onAdd(m) { this._m = m; m.on('moveend', this._upd, this); this._upd(); },
@@ -474,6 +478,9 @@ const EDITOR = (function () {
     s_prefill: 'Prefilled', s_edges: 'edges', s_imp: 'Imported', s_skip: 'skipped (unknown ids)', s_exp: 'Exported', s_undo: 'Undone', s_noundo: 'Nothing to undo',
     s_bad: 'Not a fh6-road-types file', s_conn: 'Link added', s_exists: 'These nodes are already linked', s_nonode: 'No node here - zoom in', s_del: 'Link removed', s_pickA: 'Node A set - click node B',
     racepins: 'Race pins (type marking)', rtype: 'Race type', rt_none: 'not marked', rclear: 'Clear mark',
+    prefill_r: 'Prefill race types (exact)', game_says: 'Game files', game_exact: 'exact type from game files', game_none: 'no exact type in the game files - mark by hand', game_diff: 'your mark differs',
+    c_prefill_r: 'Your mark differs from the game files on {n} race(s). Prefill overwrites those marks. Continue?', s_prefill_r: 'Prefilled race types', s_same: 'already matching', s_noexact: 'without an exact type (left alone)',
+    h_prefill_r: 'Prefill sets only races whose type the game files state exactly; the rest stay unmarked.',
     rt_road: 'Road', rt_street: 'Street', rt_rally: 'Rally', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_midnight: 'Midnight Battle',
   });
   Object.assign(UI.de, {
@@ -491,6 +498,9 @@ const EDITOR = (function () {
     s_prefill: 'Vorbefuellt', s_edges: 'Kanten', s_imp: 'Importiert', s_skip: 'uebersprungen (unbekannte IDs)', s_exp: 'Exportiert', s_undo: 'Rueckgaengig gemacht', s_noundo: 'Nichts rueckgaengig zu machen',
     s_bad: 'Keine fh6-road-types-Datei', s_conn: 'Link hinzugefuegt', s_exists: 'Diese Knoten sind schon verbunden', s_nonode: 'Hier ist kein Knoten - hineinzoomen', s_del: 'Link entfernt', s_pickA: 'Knoten A gesetzt - Knoten B anklicken',
     racepins: 'Rennpins (Rennart markieren)', rtype: 'Rennart', rt_none: 'nicht markiert', rclear: 'Markierung loeschen',
+    prefill_r: 'Rennarten vorbefuellen (exakt)', game_says: 'Spieldateien', game_exact: 'exakte Art aus den Spieldateien', game_none: 'keine exakte Art in den Spieldateien - von Hand markieren', game_diff: 'deine Markierung weicht ab',
+    c_prefill_r: 'Deine Markierung weicht bei {n} Rennen von den Spieldateien ab. Vorbefuellen ueberschreibt diese. Fortfahren?', s_prefill_r: 'Rennarten vorbefuellt', s_same: 'stimmten schon', s_noexact: 'ohne exakte Art (unberuehrt)',
+    h_prefill_r: 'Vorbefuellen setzt nur Rennen, deren Art die Spieldateien exakt nennen; der Rest bleibt unmarkiert.',
     rt_road: 'Strasse', rt_street: 'Street', rt_rally: 'Rallye', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_midnight: 'Midnight Battle',
   });
 
@@ -771,8 +781,17 @@ const EDITOR = (function () {
   }
 
   // ---------------------------------------------------------------------------------------------------------------- race pins
-  const RPOS = {}, RMK = {};
+  const RPOS = RINFO, RMK = {};
   const rtLabel = (ty) => ty ? t('rt_' + ty) : t('rt_none');
+  const exactOf = (id) => { const q = RPOS[id]; return (q && q[5] && q[5].type_exact) || null; };      // type stated by the game files, or null
+  const exactIds = () => (D.racelines || []).map((r) => r.id).filter((id) => RT.indexOf(exactOf(id)) >= 0);
+  function prefillRaces() {                                             // sets only exact types; a differing manual mark needs confirm() like the road prefill
+    const ids = exactIds(), diff = ids.filter((id) => marks[id] && marks[id] !== exactOf(id)).length;
+    if (diff && !confirm(t('c_prefill_r').replace('{n}', diff))) return;
+    const ops = []; let same = 0;
+    ids.forEach((id) => { const old = marks[id] || null, nv = exactOf(id); if (old === nv) { same++; return; } marks[id] = nv; refreshRace(id); ops.push(['r', id, old, nv]); });
+    say(t('s_prefill_r') + ': ' + ops.length + (same ? ' (+' + same + ' ' + t('s_same') + ')' : '') + ', ' + (D.racelines.length - ids.length) + ' ' + t('s_noexact')); commit(ops);
+  }
   function raceIconUrl(r, ty) {
     const ri = META.race_icons || {}, v = ty ? RTV[ty][r.circuit ? 0 : 1] : (r.circuit ? 'asphalt_circuit' : 'asphalt_p2p');
     const k = ri[v] || (r.circuit ? ri.circuit : ri.p2p); return k && META.icons[k];
@@ -784,20 +803,22 @@ const EDITOR = (function () {
   }
   function refreshRace(id) { const m = RMK[id]; if (m) m.setIcon(racePinIcon(RL[id])); }
   function refreshAllRaces() { Object.keys(RMK).forEach(refreshRace); }
-  const raceTitle = (r) => { const st = RPOS[r.id]; return (st && st[3] && st[3].indexOf('route') !== 0) ? st[3] : t('route') + ' ' + r.id; };
+  const raceTitle = (r) => raceName(r.id) || t('route') + ' ' + r.id;
   if (HAS_RC) {
-    (D.poi && D.poi.cats.race_start || []).forEach((q) => { if (q[5] && q[5].route_id != null) RPOS[q[5].route_id] = q; });
     entry({ id: 'racepins', group: 'races', label: () => t('racepins'), color: '#ff5a4d', n: D.racelines.length, on: true,
       make: () => { const g = L.featureGroup();
         D.racelines.forEach((r) => { const q = RPOS[r.id], p = q ? ll(q[0], q[1]) : ll(r.p[0], r.p[1]);
           const m = L.marker(p, { icon: racePinIcon(r) }); RMK[r.id] = m;
-          m.bindTooltip(() => raceTitle(r) + ' - ' + (r.circuit ? t('circuit') : t('p2p')) + ' - ' + rtLabel(marks[r.id])); m.bindPopup(() => routePopup(r)); g.addLayer(m); });
+          m.bindTooltip(() => raceTitle(r) + ' - ' + (r.circuit ? t('circuit') : t('p2p')) + ' - ' + rtLabel(marks[r.id]) + (exactOf(r.id) && marks[r.id] !== exactOf(r.id) ? ' (' + t('game_says') + ': ' + rtLabel(exactOf(r.id)) + ')' : '')); m.bindPopup(() => routePopup(r)); g.addLayer(m); });
         return g; } });
     const pe = ENTRIES.find((q) => q.id === 'poi_race_start'); if (pe) pe.on = false;      // our pin layer replaces it (one pin per route, type aware)
     const _rp = routePopup;
     routePopup = function (r) {                                       // + race type row; palette only in "Race types" mode
       const ty = marks[r.id];
       let h = '<div style="margin-top:6px"><b>' + esc(t('rtype')) + ':</b> ' + esc(rtLabel(ty)) + ' <span class="small">(' + (r.circuit ? t('circuit') : t('p2p')) + ')</span></div>';
+      const gx = exactOf(r.id);
+      h += '<div class="small" style="margin-top:2px">' + (gx ? esc(t('game_says')) + ': <b>' + esc(rtLabel(gx)) + '</b> (' + esc(t('game_exact')) + ')' + (ty && ty !== gx ? ' - <span style="color:var(--warn)">' + esc(t('game_diff')) + '</span>' : '')
+        : esc(t('game_none'))) + '</div>';
       if (ed.on && ed.mode === 'races') {
         h += '<div class="rtpal">' + RT.map((k) => '<a class="rt' + (ty === k ? ' sel' : '') + '" data-r="' + r.id + '" data-ty="' + k + '">' + (raceIconUrl(r, k) ? '<img src="' + esc(raceIconUrl(r, k)) + '" alt="">' : '') + esc(t('rt_' + k)) + '</a>').join('') +
           '<a class="rt" data-r="' + r.id + '" data-ty="">' + esc(t('rclear')) + '</a></div>';
@@ -849,13 +870,15 @@ const EDITOR = (function () {
       '<div class="seg" id="ed_modes">' + modes.map((m) => '<button data-m="' + m + '" class="' + (ed.mode === m ? 'sel' : '') + '">' + esc(t('m_' + m)) + '</button>').join('') + '</div>' +
       (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
         '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_fill"' + (ed.fill ? ' checked' : '') + '>' + esc(t('fill')) + '</label>' : '') +
-      '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') + '</div>' +
+      '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') +
+        (HAS_RC && exactIds().length ? '<button id="ed_prr" title="' + esc(t('h_prefill_r')) + '">' + esc(t('prefill_r')) + '</button>' : '') + '</div>' +
       '<div class="seg"><button id="ed_undo">' + esc(t('undo')) + '</button><button id="ed_exp">' + esc(t('export')) + '</button><button id="ed_imp">' + esc(t('import')) + '</button></div>' +
       '<div class="small">' + esc(t('h_' + (ed.mode === 'pan' ? 'pan' : ed.mode))) + '</div><div id="ed_stats"></div><div id="ed_stat" class="small"></div>';
     box.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.m)));
     box.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => setBrush(Number(b.dataset.b))));
     const f = document.getElementById('ed_fill'); if (f) f.addEventListener('change', () => { ed.fill = f.checked; });
     const pb = document.getElementById('ed_pre'); if (pb) pb.addEventListener('click', prefill);
+    const pr = document.getElementById('ed_prr'); if (pr) pr.addEventListener('click', prefillRaces);
     document.getElementById('ed_undo').addEventListener('click', undo);
     document.getElementById('ed_exp').addEventListener('click', download);
     document.getElementById('ed_imp').addEventListener('click', () => fin.click());
@@ -876,7 +899,7 @@ const EDITOR = (function () {
   ed.mode = store.get('edmode', 'pan'); renderBox(); cv.style.display = 'none';
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
-  return { ed, marks, hist, exportObj, importObj, prefill, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
+  return { ed, marks, hist, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
     graph: { NID, EA, EB, ET, EL, EAD, EAL, NGAME, ekey, nodeIdx, NX, NY, PRE } };
 })();
 

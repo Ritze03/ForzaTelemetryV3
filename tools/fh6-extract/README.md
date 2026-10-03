@@ -23,7 +23,7 @@ Steam's `libraryfolders.vdf`, see `fh6common.py`) and `--out DIR` (default `./fh
 | `decode_nav.py [--map IMG]` | `roads.json`, `roads.png`, `roads_on_map.png` | `Brio_00.nav` road graph. `--map` (optional) = full-map image from `extract_map.py` for the overlay. |
 | `extract_poi.py [--entity-model ZIP]` | `pois.json` | ~5.6k POIs from `.nt`/`.tz`/`gameobjs.xml`/`.owt`/route files (+ arenas, car meets, train line). `race_pin` = race map pin (NOT the start). `--entity-model` adds the creator-dump-only categories (photo spots, time attacks, chase starts…). |
 | `extract_geochunk.py [--skip-pgeo]` | `geochunk_pois.json` | exact positions: `Ribbon_00/GameObjs.xml` (793 objects: speed traps/zones, drift zones, XP boards, …) + GeoChunk0 `.pgeo` (danger signs, drift-zone posts). Takes ~1 s. |
-| `extract_races.py [--entity-model ZIP]` | `races.json` | start line, 12-slot grid, heading, finish for 169 routes from the `RVAN` block of `AITracks/Route<N>.nav`; names for ~15 routes (more with `--entity-model`). Optional validation vs `roads.json` if it is in `--out`. |
+| `extract_races.py [--entity-model ZIP]` | `races.json` | start line, 12-slot grid, heading, finish for 169 routes from the `RVAN` block of `AITracks/Route<N>.nav`; exact names (EN+DE) for 111 routes and exact types for 67 from `ObjectModelGame.zip` (`fh6careers.py`); older fallback names for the rest (more with `--entity-model`). Optional validation vs `roads.json` if it is in `--out`. |
 | `extract_terrain.py [--region X0,Z0,X1,Z1] [--res 4] [--surf-res 8] [--coarse] [--no-elevation] [--no-surfaces]` | `elevation.npy/.json/.png`, `surfaces.npy/.json/.png` | terrain height raster + surface-id raster from GeoChunk0. Full island: minutes and a few GB RAM — use `--region` (world metres) for a quick test, e.g. `--region -87,1460,1413,2960`. `--coarse` = whole-island low-detail elevation (~40 s). Surface names are **ours** (`fh6surfaces.py`: confirmed in-game / seen / reasoned); the class colours only group ids for the preview. |
 | `classify_roads.py [--step 4] [--jobs 8]` | `roadsurf.npz` | terrain surface id under every nav road (exact `.phys` triangle at 4 m spacing, node-height rule for bridges); needs `roads.json` **with `heights`** (current `decode_nav.py`) in `--out`. ~16 s. `build_viewer.py` turns it into paved / off-road / unknown runs (kinds from `fh6surfaces.py`). Method: [fh6-terrain.md](../../docs/game-data/fh6-terrain.md#surface-kind-paved--off-road-and-the-surface-under-the-roads). |
 | `extract_racelines.py [--step 5]` | `racelines.json` | 170 racing lines from `AITracks/Route<N>.owt`, trimmed to one drive / lap (127 point-to-point + 43 circuits), with left/right track edges (half-width vector). Needs `fh6owt.py`. |
@@ -72,7 +72,11 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
 - **Races** (mode **Race types**): click a race pin (or its race line) and pick **Road / Street / Rally / Cross Country / Touge / Drag / Midnight Battle** (or "Clear mark"). The pin takes
   that type's own game icon (Road = asphalt, Rally = mixedsurface, Cross Country = crosscountry, each in its circuit / point-to-point variant; Street, Touge, Drag, Midnight Battle have one icon).
   **Every race starts unmarked and shows the greyed icon with a "?"** - nothing is inferred from geometry, surface or names. Circuit vs point-to-point is exact (`.owt` header) and not marked
-  by hand. One pin per route (170 routes in `racelines.json`; 13 of them have no `race_start` POI and are placed at the start of their race line). The three drag meets and the
+  by hand. **Prefill race types (exact)** (button in the editor panel) sets the type of every race whose type the game files state exactly (67 of 170: road 21, cross country 19, street 15,
+  touge 5, rally 4, drag 3; source `ObjectModelGame.zip`, see `docs/game-data/fh6-game-files.md#exact-race-names-and-types-objectmodelgamezip`); the other 103 stay unmarked (the 16 scramble/trail
+  routes too - a name word is not a type field). It never overwrites a different manual mark without a `confirm()`, and says how many it set. The pin tooltip and popup show the **exact race
+  name** in the current language (111 routes, EN + DE; others show `Route <N>`), plus "Game files: Road (exact type from game files)" and, if your mark differs, "your mark differs".
+  One pin per route (170 routes in `racelines.json`; route 99, the test route, has no POI and is placed at the start of its race line; IE routes and Horizon Chases are placed at their start line). The three drag meets and the
   touge events are separate POI categories without a route id, so they are not among the 170 routes.
 - **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json`; **Import** reads it back
   (asks before replacing, warns if the nav sha1 / node count differ).
@@ -97,7 +101,7 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
 Library modules (imported, not run): `fh6common.py` (install detection, case-insensitive paths, `.nt` / `.tz`
 readers), `pgzp.py` + `lz4b.py` (reader for the 40 GB `GeoChunk*.minizip` PGZP containers — seek-reads single
 entries), `fh6str.py` (string-table reader + key hash), `fh6owt.py` (`.owt` racing-line reader + `RVAN` start/finish block), `fh6surfaces.py` (terrain
-surface-id → name + kind table; each entry is marked confirmed in-game / seen / reasoned), `fh6bxml.py` (binary-XML decoder, only for `--entity-model`).
+surface-id → name + kind table; each entry is marked confirmed in-game / seen / reasoned), `fh6bxml.py` (binary-XML decoder; `--entity-model`, and the plaintext `ObjectModelGame.zip`), `fh6careers.py` (exact race names + types from it).
 `pgzp.py` reads all four `GeoChunk*.minizip` (handles the u64-N table of GeoChunk2 and the last entry of the file).
 
 **`--entity-model PATH`** = an *older, readable* `Stripped/EntityModel.zip`. The one in the current install is

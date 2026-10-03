@@ -111,6 +111,9 @@ def run_extractors(media, work, force, terrain):
         rj = W('roads.json')
         if os.path.isfile(rj) and not all(k in open(rj, 'rb').read() for k in (b'"heights"', b'"ids"')):       # roads.json from before node heights / node ids were exported
             os.remove(rj)
+        rc = W('races.json')
+        if os.path.isfile(rc) and b'"type_exact"' not in open(rc, 'rb').read():       # races.json from before exact race names / types (ObjectModelGame.zip)
+            os.remove(rc)
         chain(('roads', 'decode_nav.py', [], work, ['roads.json']))
         if terrain and res.get('roads'):
             jobs.append(ex.submit(chain, ('roadsurf', 'classify_roads.py', [], work, ['roadsurf.npz'])))
