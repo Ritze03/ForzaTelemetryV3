@@ -69,8 +69,8 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   gets the current brush type; yellow rings = dead ends, i.e. the usual gaps), **Delete link** (only user-added links; game roads cannot be deleted).
   **Prefill from surface data** sets paved -> Road and off-road -> Offroad per edge (majority of the smoothed 4 m terrain samples on that edge, from `roadsurf.npz`); unknown edges
   (no collision mesh / elevated / unidentified id) stay *not set*. It asks before overwriting existing paint. Ctrl+Z undoes (200 actions). Totals in km are shown live.
-- **Races** (mode **Race types**): click a race pin (or its race line) and pick **Road / Street / Rally / Cross Country / Touge / Drag / Midnight Battle** (or "Clear mark"). The pin takes
-  that type's own game icon (Road = asphalt, Rally = mixedsurface, Cross Country = crosscountry, each in its circuit / point-to-point variant; Street, Touge, Drag, Midnight Battle have one icon).
+- **Races** (mode **Race types**): click a race pin (or its race line) and pick **Road / Street / Rally / Cross Country / Touge / Drag / Story / Wristband event** (or "Clear mark"). The pin takes
+  that type's own game icon (Road = asphalt, Rally = mixedsurface, Cross Country = crosscountry, each in its circuit / point-to-point variant; Street, Touge, Drag have one icon; Story = the Horizon Story map marker, Wristband event = the orange wristband from the pause-menu art, since the game has no wristband map pin). **Story** = a Horizon Story pin, **Wristband event** = e.g. the "Mech My Day" showcase (DE "Armband-Event").
   **Every race starts unmarked and shows the greyed icon with a "?"** - nothing is inferred from geometry, surface or names. Circuit vs point-to-point is exact (`.owt` header) and not marked
   by hand. **Prefill race types (exact)** (button in the editor panel) sets the type of every race whose type the game files state exactly (67 of 170: road 21, cross country 19, street 15,
   touge 5, rally 4, drag 3; source `ObjectModelGame.zip`, see `docs/game-data/fh6-game-files.md#exact-race-names-and-types-objectmodelgamezip`); the other 103 stay unmarked (the 16 scramble/trail
@@ -81,6 +81,10 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   locator (37 of 170; link = the route id inside the object's name, nothing guessed). Those markers have a solid orange ring and a dashed connector to the start line; the other 133 have a dashed white ring,
   the tooltip says "start line (no map pin known)" and the popup says so too (the popup also gives the pin source and the pin-to-start distance). The editor panel counts "Exact map pins". Marks stay keyed by route id,
   so moving a marker never changes the autosave or the export. The three drag meets and the touge events are separate POI categories (the touge events are used as described, the drag meets are not linked).
+- **Project data** (`tools/fh6-extract/data/fh6-road-types.json`, committed, ids + types only): the user's finished hand classification (see `docs/game-data/fh6-game-files.md#hand-classified-road-and-race-types`).
+  `build_viewer.py` embeds it as `data/canon.js`; when the browser has **no saved editor work** the editor starts from it (not copied into `localStorage` until you edit, so a newer build's project data
+  shows through), and the **Reset to project data** button (with `confirm()`) loads it over the current state. Saved `localStorage` work keeps priority. If its nav sha1 / node count differ from the
+  install's, it is not loaded, the button is disabled and the panel says so. *Why committed:* it is the user's own work and the only copy that must never be lost; it holds no game data.
 - **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json`; **Import** reads it back
   (asks before replacing, warns if the nav sha1 / node count differ).
 - **Export format** (`fh6-road-types`, version 1, ~0.8 MB): ids and types only, **no coordinates**.
@@ -94,7 +98,7 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
 ```
 
   `types` key = `"<idA>-<idB>"` with idA < idB, both **stable nav node ids** (`a` in the node struct); only painted game edges are listed. `added` = user-made links
-  between two node ids (`type` may be `null` = unset). `races` key = route id, value `road|street|rally|cross_country|touge|drag|midnight`. `counts` is informational.
+  between two node ids (`type` may be `null` = unset). `races` key = route id, value `road|street|rally|cross_country|touge|drag|story|wristband` (the first editor versions wrote `midnight`; Import maps it to `story`, and route 8004 to `wristband`). `counts` is informational.
   *Why ids and not coordinates:* the export must contain no game data (licensing rule), and positions are re-read from the user's own install when the file is used. Node ids are
   unique over all 38 473 nodes (checked by `decode_nav.py`), so they are a safe key; the nav sha1 pins the graph version.
 - Implementation: `decode_nav.py` exports `ids` (node id per polyline vertex), `nav` {file, sha1, nodes} and `orphans` into `roads.json`; `build_viewer.py:build_roaded` writes

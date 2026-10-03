@@ -618,6 +618,26 @@ Corrected trap (earlier notes were wrong twice): the landmark strings for `seasi
 is the Hokubu Circuit (race start 2827, 2696) and `seaside_offroad_circuit` (2676, −5095) is Sekibe Scramble (2496, −5065); and landmark names resolve for **75 of 75** slugs from the
 install (not 54 of 75 — 17 slugs just use a different string id, see [names](fh6-cars-names-icons.md#landmarks--75--75-named)), so `landmark_areas.xml` (creator dump) is not needed.
 
+### Hand-classified road and race types
+
+The user marked the whole road network and the race types **by hand** in the map viewer's editor on 2026-10-03, against the in-game map. The result is committed as
+`tools/fh6-extract/data/fh6-road-types.json` (ids and types only, **no coordinates**, so no game data; format `fh6-road-types` v1, see `tools/fh6-extract/README.md`). The viewer
+starts from it and has a "Reset to project data" button. Contents (nav sha1 `a88c69f4…`, 38 473 nodes): 39 360 of 39 383 edges painted + 43 added links (road 553.9 km, offroad 207.5,
+other 6.7, not set 0.4) and **93 of 170 races typed**: rally 21, road 21, cross country 19, street 16, story 7, touge 5, drag 3, wristband 1.
+
+- **Race types** are the six the game states (road / street / rally / cross country / touge / drag) plus **story** (a Horizon Story pin: The Colossus 132, Horizon Invitational 8006,
+  story routes 11017, 11044, 30002–30004) and **wristband** (a Wristband event; DE "Armband-Event", the game's own term; so far only 8004 "Mech My Day", a showcase like "Launch Control").
+  The first editor versions had a single `midnight` ("Midnight Battle") type; the user's marked "Midnight Battle" pins are Stories, except 8004. Importing a legacy file maps
+  `midnight` to `story` (8004 to `wristband`).
+- **The user's marks agree 100 % with every exact type** (`type_exact`, see above): 0 conflicts over the 61 races both cover. The canonical file additionally contains the 6 exact-typed
+  routes the user did not mark (1211 cross country; 2031, 2201, 2241, 2261, 2361 road), filled from `type_exact`; everything else in it is the user's own marking.
+- **Story / wristband in the game files** (only what is exact): route 8004 has `CareerRaceDataSet[10]` `EventType=Showcase`, `UITheme=showcase_mech` (8005 key 11 is `showcase_planes`);
+  `Showcase` is not literally "wristband", so it is not used to set the type. Routes 11001–11045 and 20000–20005 are `HorizonStoryChallengeData.RouteId`s (the story chapters' destinations;
+  11017 = `VOL_HS_CanyonDaytrip_chapter_02`, 11044 = `VOL_HS_TanakasAuto_chapter_06`), so those two are exactly stories. For 132, 8006 and 30002–30004 no field was found
+  (no TrackInfo/CareerRace entry, not a story challenge route id), so those marks are the user's call alone.
+- **Why:** the game files do not state the road surface class (see [fh6-terrain.md](fh6-terrain.md)) nor, for most races, a pin or a type; the user chose to mark them by hand
+  against the in-game map rather than have them inferred from geometry or names. Nothing in this file is inferred.
+
 ### More categories (route files, arenas, train, creator dump)
 
 From the install (all added to `pois.json` by `extract_poi.py`):

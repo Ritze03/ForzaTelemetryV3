@@ -288,6 +288,11 @@ def build_icons(work, out, used_cats):
     race['p2p'] = add(v.get('asphalt_p2p'))
     for k, nm in v.items():                    # every variant by its mapping.json name (road editor: the icon per race type)
         race.setdefault(k, add(nm))
+    # editor race types without a race-pin icon of their own: the game's own symbols (user's pick, 2026-10-03)
+    #   story     = the Horizon Story map marker (the `horizon_story` category icon: the yellow arch the per-story logos sit on)
+    #   wristband = the orange wristband from the pause-menu art (mapping.json has no wristband map pin; `icons/MapIcons/wristband_objective` is a green "!" objective shield)
+    race['story'] = add((mp.get('horizon_story') or {}).get('icon') or 'atlas/ForteMapIconSheet/pos_story_background')
+    race['wristband'] = add('pins/Wristbands/wristband_orange')
     return cat_icon, files, race
 
 
@@ -466,6 +471,17 @@ def build_roaded(work):
     return dict(nav=r['nav'], ids=r['ids'], pre=pre, orphans=r['orphans'])
 
 
+CANON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fh6-road-types.json')
+
+
+def build_canon():
+    """The project's hand-classified road + race types (tools/fh6-extract/data/fh6-road-types.json, ids only) -> data/canon.js.  The editor starts from it
+    when the browser has no saved work of its own; 'Reset to project data' loads it."""
+    o = jl(CANON)
+    assert o.get('format') == 'fh6-road-types' and o.get('version') == 1, 'unexpected canonical file format'
+    return o
+
+
 def build_racelines(work):
     rl = jl(os.path.join(work, 'racelines.json'))
     out = []
@@ -620,6 +636,8 @@ def main():
     if rd_: scripts.append(write_js(out, 'roads', rd_))
     re_ = layer('road editor', lambda: build_roaded(W()), lambda o: f"{sum(len(q) - 1 for q in o['ids'])} edges" + (', prefill' if o['pre'] else ', no prefill'))
     if re_: scripts.append(write_js(out, 'roaded', re_))
+    cn = layer('project road/race types', build_canon, lambda o: f"{len(o['types'])} painted edges, {len(o['added'])} added links, {len(o['races'])} race marks")
+    if cn: scripts.append(write_js(out, 'canon', cn))
     rl = layer('race lines', lambda: build_racelines(W()), lambda o: f'{len(o)} routes, {sum(len(r["p"]) // 2 for r in o)} points')
     if rl: scripts.append(write_js(out, 'racelines', rl))
     sg = layer('speed signs', lambda: build_signs(W()), lambda o: len(o['rows']))

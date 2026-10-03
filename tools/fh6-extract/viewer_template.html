@@ -482,7 +482,9 @@ const EDITOR = (function () {
     prefill_r: 'Prefill race types (exact)', game_says: 'Game files', game_exact: 'exact type from game files', game_none: 'no exact type in the game files - mark by hand', game_diff: 'your mark differs',
     c_prefill_r: 'Your mark differs from the game files on {n} race(s). Prefill overwrites those marks. Continue?', s_prefill_r: 'Prefilled race types', s_same: 'already matching', s_noexact: 'without an exact type (left alone)',
     h_prefill_r: 'Prefill sets only races whose type the game files state exactly; the rest stay unmarked.',
-    rt_road: 'Road', rt_street: 'Street', rt_rally: 'Rally', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_midnight: 'Midnight Battle',
+    rt_road: 'Road', rt_street: 'Street', rt_rally: 'Rally', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_story: 'Story', rt_wristband: 'Wristband event',
+    reset_proj: 'Reset to project data', c_reset: 'This replaces everything painted and marked so far with the project data (hand-classified roads and race types). Continue?',
+    w_canon_nav: 'The project data belongs to a different nav file (sha1 / node count differ) and was not loaded.',
   });
   Object.assign(UI.de, {
     ed: 'Editor', ed_title: 'Strassen- & Rennen-Editor', m_pan: 'Bewegen', m_paint: 'Malen', m_connect: 'Verbinden', m_delete: 'Link loeschen', m_races: 'Rennarten',
@@ -503,7 +505,9 @@ const EDITOR = (function () {
     prefill_r: 'Rennarten vorbefuellen (exakt)', game_says: 'Spieldateien', game_exact: 'exakte Art aus den Spieldateien', game_none: 'keine exakte Art in den Spieldateien - von Hand markieren', game_diff: 'deine Markierung weicht ab',
     c_prefill_r: 'Deine Markierung weicht bei {n} Rennen von den Spieldateien ab. Vorbefuellen ueberschreibt diese. Fortfahren?', s_prefill_r: 'Rennarten vorbefuellt', s_same: 'stimmten schon', s_noexact: 'ohne exakte Art (unberuehrt)',
     h_prefill_r: 'Vorbefuellen setzt nur Rennen, deren Art die Spieldateien exakt nennen; der Rest bleibt unmarkiert.',
-    rt_road: 'Strasse', rt_street: 'Street', rt_rally: 'Rallye', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_midnight: 'Midnight Battle',
+    rt_road: 'Strasse', rt_street: 'Street', rt_rally: 'Rallye', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_story: 'Story', rt_wristband: 'Armband-Event',
+    reset_proj: 'Auf Projektdaten zuruecksetzen', c_reset: 'Das ersetzt alles bisher Gemalte und Markierte durch die Projektdaten (handklassifizierte Strassen und Rennarten). Fortfahren?',
+    w_canon_nav: 'Die Projektdaten gehoeren zu einer anderen Nav-Datei (sha1 / Knotenzahl weichen ab) und wurden nicht geladen.',
   });
 
   const css = document.createElement('style');
@@ -515,19 +519,22 @@ const EDITOR = (function () {
     '#ed_stats{display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:12px}#ed_stats i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}#ed_stats b{text-align:right;font-variant-numeric:tabular-nums}' +
     '#ed_stat{min-height:15px;color:var(--ok)}' +
     '#map.ed-paint,#map.ed-paint .leaflet-interactive,#map.ed-paint .leaflet-grab{cursor:crosshair!important}' +
-    '.rpin{position:relative;width:30px;height:30px}.rpin img{width:30px;height:30px;display:block;filter:drop-shadow(0 0 2px #000)}' +
+    '.rpin{position:relative;width:30px;height:30px}.rpin img{width:30px;height:30px;object-fit:contain;display:block;filter:drop-shadow(0 0 2px #000)}' +
     '.rpin.px::before,.rpin.sl::before{content:"";position:absolute;inset:-2px;border-radius:50%;pointer-events:none}.rpin.px::before{border:2px solid #ff9f43}.rpin.sl::before{border:1.5px dashed rgba(255,255,255,.6)}' +
     '.rpin.unk img{filter:grayscale(1) brightness(.85) opacity(.55) drop-shadow(0 0 1px #000)}' +
     '.rpin b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:700 17px system-ui;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 6px #000;pointer-events:none}' +
     '.rtpal{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px}.rtpal a.rt{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:2px 6px;display:flex;align-items:center;gap:4px;font-size:12px;background:var(--panel2);color:var(--text)}' +
-    '.rtpal a.rt:hover,.rtpal a.rt.sel{border-color:var(--accent)}.rtpal a.rt img{width:18px;height:18px}';
+    '.rtpal a.rt:hover,.rtpal a.rt.sel{border-color:var(--accent)}.rtpal a.rt img{width:18px;height:18px;object-fit:contain}';
   document.head.appendChild(css);
 
   // ---------------------------------------------------------------------------------------------------------------- state
   const TN = [null, 'road', 'offroad', 'other'], TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80'], TKEY = ['unset', 'road', 'offroad', 'other'];   // type 0 = not set
-  const RT = ['road', 'street', 'rally', 'cross_country', 'touge', 'drag', 'midnight'];
+  const RT = ['road', 'street', 'rally', 'cross_country', 'touge', 'drag', 'story', 'wristband'];
   const RTV = { road: ['asphalt_circuit', 'asphalt_p2p'], rally: ['mixedsurface_circuit', 'mixedsurface_p2p'], cross_country: ['crosscountry_circuit', 'crosscountry_p2p'],
-                street: ['streetracing', 'streetracing'], touge: ['touge', 'touge'], drag: ['dragracing', 'dragracing'], midnight: ['midnight_battle', 'midnight_battle'] };
+                street: ['streetracing', 'streetracing'], touge: ['touge', 'touge'], drag: ['dragracing', 'dragracing'], story: ['story', 'story'], wristband: ['wristband', 'wristband'] };
+  // One-off migration of the first editor versions' 'midnight' type ("Midnight Battle"): the user's hand marking (2026-10-03) showed that those pins are Horizon Stories,
+  // except route 8004 "Mech My Day", which is a Wristband event (a showcase, like "Launch Control").  So legacy 'midnight' -> 'story', and route 8004 -> 'wristband'.
+  const raceTy = (id, v) => v === 'midnight' ? (String(id) === '8004' ? 'wristband' : 'story') : v;
   const ed = { on: false, mode: 'pan', brush: 1, fill: false, sel: -1, hover: -1, mouse: null };
   const marks = {};                       // route id -> race type
   const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = added edge alive, r = race mark)
@@ -649,7 +656,8 @@ const EDITOR = (function () {
     for (let e = 0; e < EA.length; e++) { ET[e] = 0; if (EAD[e]) EAL[e] = 0; }
     Object.keys(marks).forEach((k) => { delete marks[k]; });
   }
-  function importObj(o, silent) {
+  const navOk = (o) => !HAS_RD || !o.nav || (o.nav.sha1 === RE.nav.sha1 && o.nav.nodes === RE.nav.nodes);
+  function importObj(o, silent, noSave) {
     if (!o || o.format !== 'fh6-road-types' || o.version !== 1) { say(t('s_bad'), 1); return false; }
     if (HAS_RD && o.nav && (o.nav.sha1 !== RE.nav.sha1 || o.nav.nodes !== RE.nav.nodes) && !silent && !confirm(t('c_nav'))) return false;
     if (HAS_RD && o.nav && silent && (o.nav.sha1 !== RE.nav.sha1 || o.nav.nodes !== RE.nav.nodes)) return false;       // autosave from another nav file: ignore
@@ -665,10 +673,16 @@ const EDITOR = (function () {
       const e = mkEdge(i, j, 1); if (EAD[e]) { EAL[e] = 1; ET[e] = Math.max(0, tix(q.type)); add++; } else skip++;
     });
     const rid = new Set((D.racelines || []).map((r) => String(r.id)));
-    Object.keys(o.races || {}).forEach((k) => { if (rid.has(k) && RT.indexOf(o.races[k]) >= 0) marks[k] = o.races[k]; else skip++; });
+    Object.keys(o.races || {}).forEach((k) => { const v = raceTy(k, o.races[k]); if (rid.has(k) && RT.indexOf(v) >= 0) marks[k] = v; else skip++; });
     hist.length = 0; refreshAllRaces();
     if (!silent) say(t('s_imp') + ': ' + ok + ' ' + t('s_edges') + ', ' + add + ' ' + t('added') + ', ' + Object.keys(marks).length + ' ' + t('racesm') + (skip ? ', ' + skip + ' ' + t('s_skip') : ''), skip ? 1 : 0);
-    changed(true); return true;
+    if (noSave) { redraw(); renderStats(); } else changed(true);      // noSave: the untouched project data is not copied into localStorage, so a newer build's project data shows until the user edits
+    return true;
+  }
+  const CANON = D.canon || null, canonBad = !!CANON && !navOk(CANON);      // project data (tools/fh6-extract/data/fh6-road-types.json) is embedded as FH6.canon
+  function resetToProject() {
+    if (!CANON || !confirm(t('c_reset'))) return;
+    importObj(CANON, false);                                          // non-silent: asks again if the nav file differs; reports the counts; saved as the new autosave
   }
   let saveT = 0;
   function save() { clearTimeout(saveT); saveT = setTimeout(() => store.set('editor', exportObj()), 500); }
@@ -888,6 +902,8 @@ const EDITOR = (function () {
       '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') +
         (HAS_RC && exactIds().length ? '<button id="ed_prr" title="' + esc(t('h_prefill_r')) + '">' + esc(t('prefill_r')) + '</button>' : '') + '</div>' +
       '<div class="seg"><button id="ed_undo">' + esc(t('undo')) + '</button><button id="ed_exp">' + esc(t('export')) + '</button><button id="ed_imp">' + esc(t('import')) + '</button></div>' +
+      (CANON ? '<div class="seg"><button id="ed_rst"' + (canonBad ? ' disabled' : '') + '>' + esc(t('reset_proj')) + '</button></div>' : '') +
+      (canonBad ? '<div class="small" style="color:var(--warn)">' + esc(t('w_canon_nav')) + '</div>' : '') +
       '<div class="small">' + esc(t('h_' + (ed.mode === 'pan' ? 'pan' : ed.mode))) + '</div><div id="ed_stats"></div><div id="ed_stat" class="small"></div>';
     box.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.m)));
     box.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => setBrush(Number(b.dataset.b))));
@@ -897,6 +913,7 @@ const EDITOR = (function () {
     document.getElementById('ed_undo').addEventListener('click', undo);
     document.getElementById('ed_exp').addEventListener('click', download);
     document.getElementById('ed_imp').addEventListener('click', () => fin.click());
+    const rs = document.getElementById('ed_rst'); if (rs) rs.addEventListener('click', resetToProject);
     renderStats();
   }
   const fin = document.createElement('input'); fin.type = 'file'; fin.accept = '.json,application/json'; fin.style.display = 'none'; document.body.appendChild(fin);
@@ -909,8 +926,8 @@ const EDITOR = (function () {
   tg.addEventListener('click', () => setOpen(!ed.on));
   const _al = applyLang; applyLang = function () { _al(); renderBox(); };
 
-  // restore: autosave first (silent), then the last mode
-  const sv = store.get('editor', null); if (sv) importObj(sv, true);
+  // restore: the browser's own autosave first (silent; it keeps priority), else the project data (also silent and not autosaved), then the last mode
+  const sv = store.get('editor', null); if (!(sv && importObj(sv, true)) && CANON && !canonBad) importObj(CANON, true, true);
   ed.mode = store.get('edmode', 'pan'); renderBox(); cv.style.display = 'none';
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
