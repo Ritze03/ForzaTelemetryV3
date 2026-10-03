@@ -504,7 +504,9 @@ pub struct InputProbe {
     pub uinput_exists: bool,
     /// `/dev/uinput` is group `input` with group rw — otherwise a udev rule is needed.
     pub uinput_group_input: bool,
-    /// The running process is in the `input` group.
+    /// The running process is in the `input` group (effective groups: a `usermod` without a
+    /// re-login does not count yet). Without it a user practically can't read keyboards or write
+    /// `/dev/uinput`, so being outside it counts as **missing** (see [`evaluate`]).
     pub in_input_group: bool,
 }
 
@@ -526,17 +528,29 @@ pub const CMD_UDEV: &str = "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"06
 pub struct InputReport {
     pub hotkeys_missing: bool,
     pub uinput_missing: bool,
+    /// Not a member of the `input` group.
+    pub group_missing: bool,
     /// `(label, command)` pairs; the label is an English `tr()` key.
     pub commands: Vec<(&'static str, &'static str)>,
 }
 
 impl InputReport {
-    pub fn any_missing(&self) -> bool { self.hotkeys_missing || self.uinput_missing }
+    pub fn any_missing(&self) -> bool { self.hotkeys_missing || self.uinput_missing || self.group_missing }
 }
 
-/// Pure: turn probe results into the missing items + fix commands.
+/// Pure: turn probe results into the missing items + fix commands. Not being in the `input` group
+/// is itself "missing" (and offers `usermod`) even while the other two lights are green.
+/// *Why:* the keyboard check alone was unreliable (a gaming mouse's key interface counted as a
+/// working keyboard, so a user whose real keyboard was unreadable got no dialog), and without the
+/// group a user practically can't read keyboards anyway. A false alarm (access set up by ACLs or
+/// udev) is muted with "Don't remind me again".
 pub fn evaluate(p: &InputProbe) -> InputReport {
-    let mut r = InputReport { hotkeys_missing: !p.hotkeys_ok, uinput_missing: !p.uinput_ok, commands: Vec::new() };
+    let mut r = InputReport {
+        hotkeys_missing: !p.hotkeys_ok,
+        uinput_missing: !p.uinput_ok,
+        group_missing: !p.in_input_group,
+        commands: Vec::new(),
+    };
     if r.uinput_missing {
         if !p.uinput_exists {
             r.commands.push((LBL_MODPROBE, CMD_MODPROBE));
@@ -544,7 +558,7 @@ pub fn evaluate(p: &InputProbe) -> InputReport {
             r.commands.push((LBL_UDEV, CMD_UDEV));
         }
     }
-    if r.any_missing() && !p.in_input_group {
+    if r.group_missing {
         r.commands.insert(0, (LBL_USERMOD, CMD_USERMOD));
     }
     r
@@ -584,6 +598,17 @@ pub fn modal_should_open(prev_missing: bool, now_missing: bool, remind: bool) ->
     remind && now_missing && !prev_missing
 }
 
+/// Pure: does `/proc/self/status` list `gid` among the process's groups (`getgroups()` / `id -G`
+/// semantics: the supplementary `Groups:` plus the effective gid, `Gid:`'s second field)?
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn status_has_gid(status: &str, gid: u32) -> bool {
+    let nums = |line: &str| -> Vec<u32> { line.split_whitespace().skip(1).filter_map(|g| g.parse().ok()).collect() };
+    status.lines().any(|l| {
+        (l.starts_with("Groups:") && nums(l).contains(&gid))
+            || (l.starts_with("Gid:") && nums(l).get(1) == Some(&gid))
+    })
+}
+
 /// Probe this machine. `active_keyboards` = keyboards the hotkey backend is reading
 /// (`HotkeyListener::active_keyboards`); `uinput_ready` = [`InputSender::uinput_ready`].
 /// Windows (and anything non-Linux) needs no permissions.
@@ -603,12 +628,10 @@ pub fn probe(active_keyboards: usize, uinput_ready: Option<bool>) -> InputProbe 
                 f.nth(1).and_then(|n| n.parse::<u32>().ok())
             })
         });
+        // The process's own groups, so a fresh `usermod` without a re-login is correctly still
+        // "not a member".
         let in_input_group = input_gid.is_some_and(|gid| {
-            std::fs::read_to_string("/proc/self/status").ok().is_some_and(|s| {
-                s.lines().find(|l| l.starts_with("Groups:")).is_some_and(|l| {
-                    l.split_whitespace().skip(1).any(|g| g.parse::<u32>().ok() == Some(gid))
-                })
-            })
+            std::fs::read_to_string("/proc/self/status").ok().is_some_and(|s| status_has_gid(&s, gid))
         });
         let meta = std::fs::metadata("/dev/uinput").ok();
         InputProbe {
@@ -704,10 +727,25 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_group_alone_never_nags() {
-        // Everything works via ACLs but the user is not in `input`: nothing missing -> no modal.
+    fn group_membership_reads_the_process_groups() {
+        let st = "Name:\tx\nGid:\t1000\t1000\t1000\t1000\nGroups:\t10 998 1000\n";
+        assert!(status_has_gid(st, 998), "supplementary group");
+        assert!(status_has_gid(st, 1000), "primary / effective gid");
+        assert!(!status_has_gid(st, 104), "not a member (a fresh usermod without re-login)");
+        assert!(!status_has_gid("Name:\tx\n", 998));
+    }
+
+    #[test]
+    fn not_in_the_input_group_is_missing_on_its_own() {
+        // Other lights green, user not in `input`: missing -> modal, with the usermod command.
         let r = evaluate(&InputProbe { in_input_group: false, ..Default::default() });
-        assert!(!r.any_missing() && r.commands.is_empty());
+        assert!(r.group_missing && !r.hotkeys_missing && !r.uinput_missing);
+        assert!(r.any_missing());
+        assert_eq!(r.commands, vec![(LBL_USERMOD, CMD_USERMOD)]);
+        assert!(modal_should_open(false, r.any_missing(), true));
+        // In the group and everything else fine: nothing missing.
+        let r = evaluate(&InputProbe { in_input_group: true, ..Default::default() });
+        assert!(!r.any_missing() && !r.group_missing && r.commands.is_empty());
     }
 
     #[test]

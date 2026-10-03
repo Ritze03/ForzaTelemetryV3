@@ -21,15 +21,13 @@ pub fn match_combo(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: M
     binds.iter().filter(|(b, _)| b.key == key && b.mods == mods).map(|(_, a)| *a).collect()
 }
 
-/// Send every action bound to `key` + `mods` (the caller has already checked the rebind guard)
-/// and return what was sent. Shared by both backends so neither can stop at the first match.
+/// Send every action bound to `key` + `mods` (the caller has already checked the rebind guard).
+/// Shared by both backends so neither can stop at the first match.
 #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
-fn dispatch(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods, tx: &std::sync::mpsc::Sender<HotkeyAction>) -> Vec<HotkeyAction> {
-    let actions = match_combo(binds, key, mods);
-    for action in &actions {
-        let _ = tx.send(*action);
+fn dispatch(binds: &[(HotkeyBinding, HotkeyAction)], key: HotKey, mods: Mods, tx: &std::sync::mpsc::Sender<HotkeyAction>) {
+    for action in match_combo(binds, key, mods) {
+        let _ = tx.send(action);
     }
-    actions
 }
 
 /// How long input sources stay muted after a rebind capture ends (see [`RebindGuard`]).
@@ -102,8 +100,9 @@ fn key_bitmap_has_letters(bitmap: &str) -> bool {
 
 /// Pure: does a sysfs `capabilities/ev` bitmap say the node also reports relative or absolute
 /// axes (`EV_REL` bit 2, `EV_ABS` bit 3)? Mice with a keyboard-ish interface, gamepads and
-/// ydotool's catch-all device do; a plain keyboard doesn't. Shown in the diagnostics only
-/// (some real keyboards have a trackpoint/touchpad on the same node, so it never decides).
+/// ydotool's catch-all device do; a plain keyboard doesn't. Only feeds [`working_mask`], which
+/// falls back to such nodes when no plain keyboard exists (some real keyboards have a
+/// trackpoint/touchpad on the same node).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ev_bitmap_has_axes(bitmap: &str) -> bool {
     bitmap.split_whitespace().last()
@@ -139,24 +138,6 @@ pub fn counts_as_physical(name: &str, is_virtual: bool) -> bool {
 pub fn working_mask(devs: &[(bool, bool)]) -> Vec<bool> {
     let any_plain = devs.iter().any(|(physical, pointer)| *physical && !*pointer);
     devs.iter().map(|(physical, pointer)| *physical && (!*pointer || !any_plain)).collect()
-}
-
-/// One keyboard-like (`KEY_A`) input node, for the Setup diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyboardInfo {
-    /// `eventN`.
-    pub node: String,
-    pub name: String,
-    /// `/dev/input/eventN` can be opened by us.
-    pub readable: bool,
-    /// The backend has a reader thread on it.
-    pub opened: bool,
-    /// A uinput device (including our own), not hardware.
-    pub is_virtual: bool,
-    /// Also reports relative/absolute axes (mouse, gamepad, catch-all virtual device).
-    pub pointer: bool,
-    /// Counts as a working keyboard (see [`working_mask`]): not virtual, not a mouse/pad interface.
-    pub counts: bool,
 }
 
 /// One `/dev/input/event*` node as seen through sysfs + an open attempt (Linux).
@@ -215,6 +196,7 @@ fn working_keyboards(nodes: &[Node]) -> Vec<bool> {
 
 /// Probe `/dev/input/event*` for a readable **working** keyboard (Linux). Windows polls
 /// `GetAsyncKeyState`, which needs nothing, so it is always `Ok`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn probe_status() -> HotkeyStatus {
     #[cfg(target_os = "linux")]
     {
@@ -255,86 +237,11 @@ fn claim_node(map: &mut std::collections::HashMap<std::path::PathBuf, bool>, pat
     true
 }
 
-/// What the Setup diagnostics can show about the keyboard path. Cheap, shared between the
-/// reader threads and the UI.
-///
-/// **Privacy:** the backend is match-only (non-matching keys are never stored). The diagnostics
-/// keep only a press *counter* and its time/device always, and the **identity** of the last key
-/// only while the Setup → Input Permissions card is on screen ([`listen`](Self::listen) is
-/// called every frame it is drawn). *Why:* "which key did you see?" is the one thing that tells
-/// "no events arrive" apart from "events arrive but are gated", but a key log must not run
-/// while the user is typing a password elsewhere.
-#[derive(Clone, Default)]
-pub struct HotkeyDiag(Arc<Mutex<DiagInner>>);
-
-#[derive(Default)]
-struct DiagInner {
-    presses: u64,
-    /// Time + device of the latest key-down (key not recorded).
-    last_press: Option<(Instant, String)>,
-    /// Latest key-down with its identity, recorded only while listening.
-    last_key: Option<(Instant, String, String)>,
-    /// Latest action the backend pushed to the listener thread (before its focus gate).
-    last_action: Option<(Instant, HotkeyAction)>,
-    listen_until: Option<Instant>,
-    /// Reader threads that ended (device unplugged / read error), newest last, max 5.
-    ended: Vec<String>,
-}
-
-/// A copy of [`HotkeyDiag`] with ages instead of instants, for display.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DiagSnapshot {
-    pub presses: u64,
-    pub last_press: Option<(Duration, String)>,
-    /// `(age, key name, device)`.
-    pub last_key: Option<(Duration, String, String)>,
-    pub last_action: Option<(Duration, HotkeyAction)>,
-    pub ended: Vec<String>,
-}
-
-/// How long after the last [`HotkeyDiag::listen`] the key identity is still recorded.
-const LISTEN_WINDOW: Duration = Duration::from_millis(1500);
-
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-impl HotkeyDiag {
-    /// The diagnostics card is on screen: record key identities for the next moments.
-    pub fn listen(&self) { self.0.lock().unwrap().listen_until = Some(Instant::now() + LISTEN_WINDOW); }
-    /// A key went down on `device`. `key` is only evaluated while listening.
-    fn press(&self, device: &str, key: impl FnOnce() -> String) {
-        let now = Instant::now();
-        let mut d = self.0.lock().unwrap();
-        d.presses += 1;
-        d.last_press = Some((now, device.to_string()));
-        if d.listen_until.is_some_and(|t| now < t) { d.last_key = Some((now, key(), device.to_string())); }
-    }
-    fn sent(&self, actions: &[HotkeyAction]) {
-        if let Some(a) = actions.last() { self.0.lock().unwrap().last_action = Some((Instant::now(), *a)); }
-    }
-    fn reader_ended(&self, what: String) {
-        let mut d = self.0.lock().unwrap();
-        d.ended.push(what);
-        if d.ended.len() > 5 { d.ended.remove(0); }
-    }
-    pub fn snapshot(&self) -> DiagSnapshot {
-        let d = self.0.lock().unwrap();
-        let now = Instant::now();
-        let age = |t: &Instant| now.saturating_duration_since(*t);
-        DiagSnapshot {
-            presses: d.presses,
-            last_press: d.last_press.as_ref().map(|(t, dev)| (age(t), dev.clone())),
-            last_key: d.last_key.as_ref().map(|(t, k, dev)| (age(t), k.clone(), dev.clone())),
-            last_action: d.last_action.as_ref().map(|(t, a)| (age(t), *a)),
-            ended: d.ended.clone(),
-        }
-    }
-}
-
 pub struct HotkeyListener {
     binds: Bindings,
     tx: std::sync::mpsc::Sender<HotkeyAction>,
     guard: Arc<RebindGuard>,
     open: OpenKeyboards,
-    diag: HotkeyDiag,
     /// Tells the periodic rescan thread to end when the listener is dropped.
     stop: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -358,19 +265,19 @@ impl HotkeyListener {
         let (tx, rx) = std::sync::mpsc::channel();
         let guard = Arc::new(RebindGuard::default());
         let open = OpenKeyboards::default();
-        let me = HotkeyListener { binds, tx, guard, open, diag: HotkeyDiag::default(), stop: Arc::default() };
+        let me = HotkeyListener { binds, tx, guard, open, stop: Arc::default() };
         me.rescan();
         // Keep looking for keyboards with no reader. Here, not in the UI frame loop: hotkeys must
         // keep working while the window is hidden and no frames are drawn. A scan is sysfs reads
         // plus `open()`s (sub-millisecond) and only starts readers for nodes without one.
         #[cfg(target_os = "linux")]
         {
-            let (binds, tx, guard, open, diag, stop) =
-                (me.binds.clone(), me.tx.clone(), me.guard.clone(), me.open.clone(), me.diag.clone(), me.stop.clone());
+            let (binds, tx, guard, open, stop) =
+                (me.binds.clone(), me.tx.clone(), me.guard.clone(), me.open.clone(), me.stop.clone());
             std::thread::spawn(move || loop {
                 std::thread::sleep(RESCAN_EVERY);
                 if stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
-                backend::scan(&binds, &tx, &guard, &open, &diag);
+                backend::scan(&binds, &tx, &guard, &open);
             });
         }
         (me, rx)
@@ -379,32 +286,12 @@ impl HotkeyListener {
     /// button (a periodic background rescan does the same every [`RESCAN_EVERY`]), so access that
     /// appears later (a udev/ACL change, a hot-plugged keyboard) works without a restart.
     /// Synchronous: the open count is right as soon as it returns.
-    pub fn rescan(&self) { backend::scan(&self.binds, &self.tx, &self.guard, &self.open, &self.diag); }
+    pub fn rescan(&self) { backend::scan(&self.binds, &self.tx, &self.guard, &self.open); }
     /// How many **physical** keyboards the backend is actually reading (always 1 off Linux:
     /// nothing to open). Virtual keyboards it also reads don't count: see [`counts_as_physical`].
     pub fn active_keyboards(&self) -> usize {
         self.open.lock().unwrap().values().filter(|physical| **physical).count()
     }
-    /// The keyboard-like nodes right now, with readable / open flags, for the diagnostics
-    /// (empty off Linux). Reads sysfs and tries to open every event node: not for every frame.
-    pub fn keyboards(&self) -> Vec<KeyboardInfo> {
-        #[cfg(target_os = "linux")]
-        {
-            let open = self.open.lock().unwrap();
-            let nodes = inventory();
-            let working = working_keyboards(&nodes);
-            nodes.into_iter().zip(working).filter(|(n, _)| n.is_kb).map(|(n, counts)| KeyboardInfo {
-                opened: open.contains_key(&n.path),
-                is_virtual: !counts_as_physical(&n.name, n.is_virtual),
-                counts,
-                node: n.node, name: n.name, readable: n.readable, pointer: n.pointer,
-            }).collect()
-        }
-        #[cfg(not(target_os = "linux"))]
-        { Vec::new() }
-    }
-    /// The shared diagnostics (last key seen, last action sent, ended readers).
-    pub fn diag(&self) -> HotkeyDiag { self.diag.clone() }
     /// A sender into the same action channel, for other input sources (the gamepad), so
     /// they pass through the listener thread's focus gate exactly like keyboard hotkeys.
     pub fn action_sender(&self) -> std::sync::mpsc::Sender<HotkeyAction> { self.tx.clone() }
@@ -420,7 +307,7 @@ mod backend {
     use std::thread;
     use evdev::{Device, EventType, Key};
     use std::sync::Arc;
-    use super::{Bindings, HotkeyDiag, OpenKeyboards, RebindGuard, dispatch, inventory, working_keyboards};
+    use super::{Bindings, OpenKeyboards, RebindGuard, dispatch, inventory, working_keyboards};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
@@ -428,7 +315,7 @@ mod backend {
     /// virtual keyboards too (a remapper such as keyd re-emits the physical keys there), except
     /// our own uinput device, which only carries our synthetic presses; only *working* keyboards
     /// ([`working_mask`]) get the `true` flag in [`OpenKeyboards`] that [`HotkeyListener::active_keyboards`] counts.
-    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards, diag: &HotkeyDiag) {
+    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards) {
         // One reader thread per keyboard; each tracks its own modifier state.
         let nodes = inventory();
         let working = working_keyboards(&nodes);
@@ -445,16 +332,14 @@ mod backend {
             let tx = tx.clone();
             let guard = guard.clone();
             let open = open.clone();
-            let diag = diag.clone();
             thread::spawn(move || {
                 let mut mods = Mods::default();
                 'read: loop {
                     let events = match dev.fetch_events() {
                         Ok(e) => e,
                         Err(e) => {
-                            // Never silent: the Setup diagnostics list ended readers.
+                            // Never silent: a dead reader would otherwise just stop the hotkeys.
                             eprintln!("hotkeys: reader for {label} ended: {e}");
-                            diag.reader_ended(format!("{label}: {e}"));
                             break 'read;
                         }
                     };
@@ -462,8 +347,6 @@ mod backend {
                         if ev.event_type() != EventType::KEY { continue; }
                         let key = Key::new(ev.code());
                         let down = ev.value() == 1; // 1=down, 0=up, 2=repeat
-                        // Counter always; the key's identity only while the diagnostics card is open.
-                        if down { diag.press(&label, || format!("{key:?}")); }
                         match key {
                             Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => { mods.ctrl = ev.value() != 0; }
                             Key::KEY_LEFTALT | Key::KEY_RIGHTALT => { mods.alt = ev.value() != 0; }
@@ -474,8 +357,7 @@ mod backend {
                                     let list = binds.lock().unwrap();
                                     // Muted while a rebind capture runs (and just after).
                                     if !guard.blocked() {
-                                        let sent = dispatch(&list, hk, mods, &tx);
-                                        diag.sent(&sent);
+                                        dispatch(&list, hk, mods, &tx);
                                     }
                                     // Non-matching keys are dropped here — never stored/logged.
                                 }
@@ -497,7 +379,7 @@ mod backend {
     use std::thread;
     use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use super::{Bindings, HotkeyDiag, OpenKeyboards, RebindGuard, dispatch};
+    use super::{Bindings, OpenKeyboards, RebindGuard, dispatch};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
@@ -509,7 +391,7 @@ mod backend {
     fn down(vk: i32) -> bool { (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0 }
 
     /// Starts the poll thread once (a rescan has nothing to reopen: `GetAsyncKeyState` needs no device).
-    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards, _diag: &HotkeyDiag) {
+    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards) {
         if open.lock().unwrap().insert(std::path::PathBuf::new(), true).is_some() { return; }
         let (binds, tx, guard) = (binds.clone(), tx.clone(), guard.clone());
         thread::spawn(move || {
@@ -548,9 +430,9 @@ mod backend {
 mod backend {
     use std::sync::mpsc::Sender;
     use std::sync::Arc;
-    use super::{Bindings, HotkeyDiag, OpenKeyboards, RebindGuard};
+    use super::{Bindings, OpenKeyboards, RebindGuard};
     use crate::config::HotkeyAction;
-    pub fn scan(_b: &Bindings, _tx: &Sender<HotkeyAction>, _g: &Arc<RebindGuard>, _o: &OpenKeyboards, _d: &HotkeyDiag) {}
+    pub fn scan(_b: &Bindings, _tx: &Sender<HotkeyAction>, _g: &Arc<RebindGuard>, _o: &OpenKeyboards) {}
 }
 
 #[cfg(test)]
@@ -640,25 +522,6 @@ mod tests {
         assert!(ev_bitmap_has_axes("17")); // + REL: a mouse with a key interface
         assert!(ev_bitmap_has_axes("1b")); // + ABS: a pad
         assert!(!ev_bitmap_has_axes(""));
-    }
-
-    #[test]
-    fn diag_records_the_key_only_while_listening() {
-        let d = HotkeyDiag::default();
-        d.press("kbd", || "KEY_J".into()); // card closed: counted, identity not kept
-        let s = d.snapshot();
-        assert_eq!(s.presses, 1);
-        assert_eq!(s.last_press.as_ref().map(|(_, dev)| dev.as_str()), Some("kbd"));
-        assert!(s.last_key.is_none(), "a key log must not run while the card is closed");
-        d.listen();
-        d.press("kbd", || "KEY_K".into());
-        let s = d.snapshot();
-        assert_eq!(s.presses, 2);
-        assert_eq!(s.last_key.map(|(_, k, dev)| (k, dev)), Some(("KEY_K".into(), "kbd".into())));
-        d.sent(&[HotkeyAction::ToggleGearbox, HotkeyAction::ClearGearMap]);
-        assert_eq!(d.snapshot().last_action.map(|(_, a)| a), Some(HotkeyAction::ClearGearMap));
-        for i in 0..8 { d.reader_ended(format!("r{i}")); }
-        assert_eq!(d.snapshot().ended.len(), 5);
     }
 
     #[test]

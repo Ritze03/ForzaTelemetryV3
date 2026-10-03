@@ -32,42 +32,6 @@ pub(crate) fn global_hotkey_allowed(our_focused: bool, wants_text: bool, game_fo
     if our_focused { !wants_text } else { game_focused }
 }
 
-/// Why the listener thread's global-hotkey gate lets a hotkey through or drops it — the same
-/// decision as `worker.rs` (it calls [`global_hotkey_allowed`], and so does this), named for the
-/// Setup diagnostics so a dropped hotkey is no longer silent.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum GateVerdict {
-    Open,
-    /// Our window is focused but a text field (or a rebind capture) wants the keys.
-    OurAppTyping,
-    /// *Telemetry live* mode and no packet arrived in the last 2 s.
-    NoTelemetry,
-    /// *Game window focused* mode and the focused window isn't the game.
-    GameNotFocused,
-}
-
-/// Pure: the gate's verdict for `mode` given the facts. `window_matches` is the focus
-/// detector's cached answer (fail-open `true` on a query error, like `FocusDetector::focused`).
-pub(crate) fn gate_verdict(
-    mode: crate::config::GateMode,
-    our_focused: bool,
-    wants_text: bool,
-    telemetry_live: bool,
-    window_matches: bool,
-) -> GateVerdict {
-    use crate::config::GateMode;
-    let game_focused = match mode {
-        GateMode::TelemetryLive => telemetry_live,
-        GateMode::WindowFocus => window_matches,
-    };
-    match (global_hotkey_allowed(our_focused, wants_text, game_focused), our_focused, mode) {
-        (true, ..) => GateVerdict::Open,
-        (false, true, _) => GateVerdict::OurAppTyping,
-        (false, false, GateMode::TelemetryLive) => GateVerdict::NoTelemetry,
-        (false, false, GateMode::WindowFocus) => GateVerdict::GameNotFocused,
-    }
-}
-
 /// The global-scope bindings the capture backend should match against.
 pub(crate) fn global_bindings(
     cfg: &crate::config::AppConfig,
@@ -573,8 +537,7 @@ pub struct ForzaApp {
     pub input_perm_modal_open: bool,         // D13: permissions modal currently showing
     pub input_prev_missing: bool,            // anything was missing at the previous refresh (modal re-shows on a transition into missing)
     pub input_perm_copied: Option<(usize, Instant)>, // D13: which fix command was just copied
-    pub kb_list: Vec<crate::hotkeys::KeyboardInfo>, // Setup diagnostics: keyboard nodes, refreshed every ~2 s
-    pub kb_list_at: Option<Instant>,                // when `kb_list` (and `input_probe`) were last refreshed
+    pub input_probe_at: Option<Instant>,     // when `input_probe` was last refreshed (2 s throttle)
     pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
     pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
@@ -895,8 +858,7 @@ impl ForzaApp {
             input_perm_modal_open,
             input_prev_missing,
             input_perm_copied: None,
-            kb_list: Vec::new(),
-            kb_list_at: None,
+            input_probe_at: None,
             profile_dialog_focus: false,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
@@ -2830,20 +2792,5 @@ mod hotkey_tests {
     #[test]
     fn blocked_when_third_app_focused() {
         assert!(!global_hotkey_allowed(false, false, false));
-    }
-
-    #[test]
-    fn gate_verdict_names_why_a_hotkey_is_dropped() {
-        use super::{gate_verdict, GateVerdict::*};
-        use crate::config::GateMode::*;
-        // In game (our window not focused): Telemetry-live mode asks for packets ...
-        assert_eq!(gate_verdict(TelemetryLive, false, false, true, false), Open);
-        assert_eq!(gate_verdict(TelemetryLive, false, false, false, true), NoTelemetry);
-        // ... Window-focus mode asks for the window match (a successful non-match blocks).
-        assert_eq!(gate_verdict(WindowFocus, false, false, false, true), Open);
-        assert_eq!(gate_verdict(WindowFocus, false, false, true, false), GameNotFocused);
-        // Our own window in front: open unless typing, whatever the mode says about the game.
-        assert_eq!(gate_verdict(WindowFocus, true, false, false, false), Open);
-        assert_eq!(gate_verdict(TelemetryLive, true, true, true, true), OurAppTyping);
     }
 }

@@ -120,9 +120,7 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 - **Fail-open:** if a query errors (tool missing, bad command), the detector reports
   focused=true so hotkeys/input keep working, and the settings shows a red status. A
   *successful* answer that doesn't match `game_match` is **not** an error: focused=false, hotkeys
-  (in *Game window focused* mode) and gated input are dropped. `FocusDetector::snapshot()`
-  keeps the last window, match flag, error, last-match time and the 5 most recent distinct
-  names for the Hotkey Diagnostics card.
+  (in *Game window focused* mode) and gated input are dropped.
 
 ## Gate rules
 
@@ -149,7 +147,8 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 
 - **Linux `input` group:** reading `/dev/input` needs the user in the `input` group
   (`sudo usermod -aG input $USER`, then re-login) **or** an ACL that grants the seat user the
-  keyboard nodes. The settings status light shows 🟢/🔴.
+  keyboard nodes. The settings status light shows 🟢/🔴; not being in the group is red and
+  triggers the "input permissions missing" dialog (see *The three checks* below).
 - **Input-permission check (D13, Linux only):** `input::probe()` gathers the facts (a
   **keyboard** under `/dev/input/event*` readable via `hotkeys::probe_status()` and
   opened by the backend, the **key sender's virtual keyboard really created** (see *What the
@@ -171,9 +170,27 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   backfire). *Why a probe, not the listener:* the backends run on worker threads and only
   `return` on failure, so the UI can't ask them; opening the nodes is cheap and exact.
   *Why the flag is `EXPORT_EXCLUDE`:* it's per-machine, not a tuning setting.
-  **What the lights mean (both are functional checks).** A green light means the thing works
+  **The three checks (Setup → Input Permissions).** Green = fine, red = missing; there is **no
+  amber state**. Any red makes `evaluate().any_missing()` true, which opens the startup modal
+  (if *Remind me on startup* is on) and re-opens it on a transition into "missing".
+  - **Member of the input group** green = the process's effective groups contain `input`
+    (`getgroups()` / `id -G` semantics, read from `/proc/self/status`: `Groups:` plus the
+    effective gid; `input::status_has_gid`). A fresh `usermod -aG input $USER` without re-login
+    therefore still counts as **not** a member, as it should: the running process doesn't have
+    the group yet. Red = **missing** (`InputReport::group_missing`), and the modal then shows
+    `sudo usermod -aG input $USER` + "log out and back in" even if the other two lights are green.
+    *Why a hard requirement:* the friend's GNOME report: a gaming mouse's key interface was
+    readable and counted as the working keyboard (the keyboard check can't be made fully
+    reliable, mice present themselves as keyboards), so he got no dialog while his real keyboard
+    was unreadable. Without the `input` group a user practically can't read keyboards anyway
+    (unless something very specific is set up, e.g. ACLs), so the group line alone is the
+    dependable trigger. *False positives are acceptable:* if the group is missing but access works
+    by other means, the user taps **Don't remind me again** (`input_perm_dont_remind`) and the
+    dialog never comes back. (This replaced an earlier amber "outside the group but everything
+    works" state, and a diagnostics card that was added to debug the report; both removed.)
+  Hotkeys and Key input are functional checks. A green light means the thing works
   *right now*, not merely that a permission looks right. *Why:* the user's bug report was exactly
-  a green light while reading or sending was dead (a friend on GNOME, not in `input`).
+  a green light while reading or sending was dead.
   - **Hotkeys** green = at least one **physical** keyboard is readable *and* the backend holds an
     open reader on it (details below). Real `open()`s, no guessing from group membership.
   - **Key input** green = `InputSender` **created its uinput virtual keyboard** (`Forza Telemetry
@@ -207,7 +224,7 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   never shown, no hotkey ever read). `/dev/uinput` stays an open-for-write test: a writable
   ACL there is genuinely fine.
   **Working keyboard = physical, not mouse-like** (v0.4.2 follow-up; GNOME report: light amber,
-  no modal, hotkeys dead). `hotkeys::inventory()` lists every event node once (name, readable,
+  no modal, hotkeys dead; best effort, the group check above is the reliable trigger). `hotkeys::inventory()` lists every event node once (name, readable,
   `KEY_A`, virtual, pointer-like) and three pure rules decide which ones count
   (`working_mask`, `counts_as_physical`, `is_virtual_sysfs_path`): (1) **not virtual**, i.e. the
   node's canonical sysfs path isn't under `/sys/devices/virtual/input/` (the uinput devices:
@@ -226,34 +243,15 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   for nodes that are already open (`refresh_open_flag`) instead of freezing the verdict from the
   moment the node was opened. *Why:* a node first classified wrong (a sysfs hiccup, or the
   "no plain keyboard yet" fallback) would otherwise skew the light for the whole session.
-  **Hotkey Diagnostics card** (Setup, below Input Permissions, Linux): (a) *Keyboards*: every
-  `KEY_A` node with readable / open / virtual / also-mouse flags (dot: green = working and open,
-  red = working but not readable / open, amber = doesn't count); (b) *Hotkey events*: last key
-  seen + device + age, last hotkey sent to the listener thread, ended readers; (c) *Hotkey gate*:
-  the mode, the verdict **with the game in front** (`app::gate_verdict(.., our_focused=false, ..)`,
-  built on the same `global_hotkey_allowed` the listener thread calls), the focus detector's last
-  window + match yes/no, "game window last matched N s ago / never" and the recent distinct window
-  names (tooltip). **Copy diagnostics** puts the same facts on the clipboard as English text.
-  *Why this exists:* the failure is silent (no events, or events dropped by the gate), and we
-  can't test on GNOME; "no key seen" vs "key seen, hotkey sent, still nothing" vs "gate says no"
-  points at the culprit from one screenshot. *Privacy:* the backend stays match-only; the card
-  keeps a press **counter** + device + time always, but the **identity** of the last key only
-  while the card is drawn (`HotkeyDiag::listen()` each frame, 1.5 s window), so no key log runs
-  in the background. *Limit:* the listener thread's own drop decision isn't recorded
-  (`src/listeners/` is separate); the card recomputes the verdict from the same facts instead.
-  A reader thread that ends logs `hotkeys: reader for … ended: …` to stderr and shows in the card.
+  A reader thread that ends logs `hotkeys: reader for … ended: …` to stderr (never silent).
   **Gate facts for GNOME:** with the default *Telemetry live* mode the window query isn't used for
   hotkeys at all (only packets in the last 2 s, or our own window focused); in *Game window
   focused* mode a **successful but non-matching** answer blocks hotkeys (fail-open covers only
   query *errors*), so a wrong `game_match` (e.g. the Proton window's title/class lacks
-  "Forza") drops them silently: the card's recent-windows list shows what the game window is
-  actually called.
-  **Modal / group line:** the modal fires only when hotkeys or uinput are actually missing
-  (`evaluate().any_missing()`); being outside the `input` group alone doesn't nag, because
-  access may come from ACLs. The group line is amber then, red only when something is missing.
+  "Forza") drops them silently.
   **Live status (v0.4.2 follow-up).** `ui::settings::refresh_input_facts()` runs from
   `ForzaApp::update` every frame, throttled to once per ~2 s (plus at once on **Re-check**): it
-  re-reads the keyboard list and `input_probe` (sysfs reads, `open()` of the event nodes, the
+  re-reads `input_probe` (sysfs reads, `open()` of the event nodes, the
   uinput open and the sender's readiness: sub-millisecond). So the Setup lights, the Controller
   card's "can't read /dev/input" line and the modal's self-close always show fresh data, whether or
   not the Setup tab is open. *Why:* the probe used to run only at startup (and while Setup was
