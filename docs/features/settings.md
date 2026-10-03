@@ -64,7 +64,7 @@ HUD** (default J, the same binding the Overlay tab edits). Click a button and pr
 **Esc** cancels, **Backspace** clears it to a faint **Not set**. Details in [[hotkeys]].
 
 The **Input Permissions** category (Linux only, below Window Detection) shows status dots for
-*hotkeys readable*, *uinput writable* and *in the input group*, the copyable fix commands, a
+*keyboards readable (hotkeys)*, *uinput writable* and *in the input group*, the copyable fix commands, a
 *Remind me on startup* checkbox and *Re-check*. Details in [[hotkeys]].
 
 The **Window Detection** card (formerly **Input**; its duplicate "Window Detection"

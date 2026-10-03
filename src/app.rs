@@ -759,7 +759,7 @@ impl ForzaApp {
             hotkeys.rebind_guard(),
             crate::gamepad::PadParams::from_config(&config.gamepad),
         );
-        let input_probe = crate::input::probe();
+        let input_probe = crate::input::probe(hotkeys.active_keyboards());
         let input_perm_modal_open =
             cfg!(target_os = "linux") && !config.input_perm_dont_remind && crate::input::evaluate(&input_probe).any_missing();
         let mut input = InputSender::new();
