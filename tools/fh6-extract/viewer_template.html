@@ -86,6 +86,8 @@ summary::before{content:"\25B8";display:inline-block;width:14px}details[open]>su
 <div id="map"></div>
 <div id="msg"></div>
 <button id="ptoggle" title="Layers panel">Layers</button>
+<button id="edtoggle" title="Road &amp; race type editor">Editor</button>
+<div id="ed"></div>
 <div id="coords">move the mouse over the map</div>
 <div id="panel">
   <div id="phead">
@@ -448,6 +450,436 @@ if (D.elevation) {
     make: () => { const e = D.elevation.img; return L.imageOverlay(e.file, L.latLngBounds(ll(e.x0, e.z1), ll(e.x0 + e.w * e.res, e.z1 - e.h * e.res)), { pane: 'over', opacity: state.op.elevation != null ? state.op.elevation : 0.7 }); } });
 }
 
+// ================================================================================================= ROAD + RACE-TYPE EDITOR
+// Self-contained section (own CSS, strings, state). Touches the rest of the page only through: ENTRIES (race pins layer), routePopup / applyLang (wrapped),
+// the #edtoggle button and window.FH6V.ed.  Edges are keyed by stable nav node ids ("<idA>-<idB>", idA < idB), races by route id - never by coordinates.
+// Export / import / localStorage autosave all use the same JSON ("fh6-road-types" v1, documented in tools/fh6-extract/README.md).
+const EDITOR = (function () {
+  const RE = D.roaded, HAS_RD = !!(RE && D.roads && D.roads.lines && RE.ids && RE.ids.length === D.roads.lines.length);
+  const HAS_RC = !!(D.racelines && D.racelines.length);
+  if (!HAS_RD && !HAS_RC) return null;
+
+  Object.assign(UI.en, {
+    ed: 'Editor', ed_title: 'Road & race editor', m_pan: 'Pan', m_paint: 'Paint', m_connect: 'Connect', m_delete: 'Delete link', m_races: 'Race types',
+    b_road: 'Road', b_offroad: 'Offroad', b_other: 'Other', b_clear: 'Clear', unset: 'not set', fill: 'Fill whole road between junctions (or Shift-click)',
+    prefill: 'Prefill from surface data', undo: 'Undo', export: 'Export', import: 'Import',
+    h_pan: 'Drag to move the map. Hold Space in any mode to pan.',
+    h_paint: 'Pick a brush, then click or drag over roads. Shift-click (or the fill tick) paints a whole road between two junctions. Space + drag pans. Keys 1-4 = brush, Ctrl+Z = undo.',
+    h_connect: 'Zoom in until the nodes show (yellow rings = dead ends). Click node A, then node B: a new dashed link gets the current brush type. Esc cancels.',
+    h_delete: 'Click a dashed (added) link to remove it. Game roads cannot be deleted.',
+    h_races: 'Click a race pin (or its race line), then pick a type. Unmarked races show a greyed icon with a "?".',
+    km_road: 'Road', km_offroad: 'Offroad', km_other: 'Other', km_unset: 'Not set', racesm: 'Races marked', of: 'of', added: 'added links',
+    c_prefill: 'Prefill sets paved -> Road and off-road -> Offroad on the roads that have surface data (unknown roads are left alone). This overwrites existing paint on those roads. Continue?',
+    c_import: 'Importing replaces everything you have painted so far. Continue?', c_nav: 'This file was made for a different nav file (sha1 / node count differ). Edges may not match. Import anyway?',
+    s_prefill: 'Prefilled', s_edges: 'edges', s_imp: 'Imported', s_skip: 'skipped (unknown ids)', s_exp: 'Exported', s_undo: 'Undone', s_noundo: 'Nothing to undo',
+    s_bad: 'Not a fh6-road-types file', s_conn: 'Link added', s_exists: 'These nodes are already linked', s_nonode: 'No node here - zoom in', s_del: 'Link removed', s_pickA: 'Node A set - click node B',
+    racepins: 'Race pins (type marking)', rtype: 'Race type', rt_none: 'not marked', rclear: 'Clear mark',
+    rt_road: 'Road', rt_street: 'Street', rt_rally: 'Rally', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_midnight: 'Midnight Battle',
+  });
+  Object.assign(UI.de, {
+    ed: 'Editor', ed_title: 'Strassen- & Rennen-Editor', m_pan: 'Bewegen', m_paint: 'Malen', m_connect: 'Verbinden', m_delete: 'Link loeschen', m_races: 'Rennarten',
+    b_road: 'Strasse', b_offroad: 'Offroad', b_other: 'Sonstige', b_clear: 'Leeren', unset: 'nicht gesetzt', fill: 'Ganze Strasse zwischen Kreuzungen fuellen (oder Shift-Klick)',
+    prefill: 'Aus Untergrunddaten vorbefuellen', undo: 'Rueckgaengig', export: 'Export', import: 'Import',
+    h_pan: 'Ziehen verschiebt die Karte. Leertaste halten = in jedem Modus verschieben.',
+    h_paint: 'Pinsel waehlen, dann Strassen anklicken oder ueberstreichen. Shift-Klick (oder Haken) faerbt eine ganze Strasse zwischen zwei Kreuzungen. Leertaste + Ziehen = verschieben. Tasten 1-4 = Pinsel, Strg+Z = rueckgaengig.',
+    h_connect: 'Hineinzoomen, bis die Knoten erscheinen (gelbe Ringe = Sackgassen). Knoten A, dann Knoten B anklicken: ein neuer gestrichelter Link bekommt den aktuellen Pinseltyp. Esc bricht ab.',
+    h_delete: 'Einen gestrichelten (hinzugefuegten) Link anklicken zum Entfernen. Spielstrassen lassen sich nicht loeschen.',
+    h_races: 'Rennpin (oder Rennlinie) anklicken, dann Art waehlen. Unmarkierte Rennen zeigen ein ausgegrautes Symbol mit "?".',
+    km_road: 'Strasse', km_offroad: 'Offroad', km_other: 'Sonstige', km_unset: 'Nicht gesetzt', racesm: 'Rennen markiert', of: 'von', added: 'hinzugefuegte Links',
+    c_prefill: 'Vorbefuellen setzt befestigt -> Strasse und Offroad -> Offroad auf allen Strassen mit Untergrunddaten (unbekannte bleiben unberuehrt). Vorhandene Markierungen dort werden ueberschrieben. Fortfahren?',
+    c_import: 'Der Import ersetzt alles bisher Gemalte. Fortfahren?', c_nav: 'Diese Datei gehoert zu einer anderen Nav-Datei (sha1 / Knotenzahl weichen ab). Kanten passen evtl. nicht. Trotzdem importieren?',
+    s_prefill: 'Vorbefuellt', s_edges: 'Kanten', s_imp: 'Importiert', s_skip: 'uebersprungen (unbekannte IDs)', s_exp: 'Exportiert', s_undo: 'Rueckgaengig gemacht', s_noundo: 'Nichts rueckgaengig zu machen',
+    s_bad: 'Keine fh6-road-types-Datei', s_conn: 'Link hinzugefuegt', s_exists: 'Diese Knoten sind schon verbunden', s_nonode: 'Hier ist kein Knoten - hineinzoomen', s_del: 'Link entfernt', s_pickA: 'Knoten A gesetzt - Knoten B anklicken',
+    racepins: 'Rennpins (Rennart markieren)', rtype: 'Rennart', rt_none: 'nicht markiert', rclear: 'Markierung loeschen',
+    rt_road: 'Strasse', rt_street: 'Street', rt_rally: 'Rallye', rt_cross_country: 'Cross Country', rt_touge: 'Touge', rt_drag: 'Drag', rt_midnight: 'Midnight Battle',
+  });
+
+  const css = document.createElement('style');
+  css.textContent = '#edtoggle{position:absolute;top:10px;left:56px;z-index:1001;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}' +
+    '#edtoggle.on{border-color:var(--accent);color:var(--accent)}' +
+    '#ed{position:absolute;top:46px;left:56px;z-index:1001;width:340px;max-height:calc(100% - 80px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:none;gap:7px;flex-direction:column}' +
+    '#ed.show{display:flex}#ed h2{margin:0;font-size:13px}.seg{display:flex;flex-wrap:wrap;gap:4px}.seg button{flex:1 1 auto;padding:4px 6px;font-size:12px;white-space:nowrap}' +
+    '.seg button.sel{background:#2d3d57;border-color:var(--accent)}.seg button.bs{border-left:5px solid var(--c)}' +
+    '#ed_stats{display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:12px}#ed_stats i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}#ed_stats b{text-align:right;font-variant-numeric:tabular-nums}' +
+    '#ed_stat{min-height:15px;color:var(--ok)}' +
+    '#map.ed-paint,#map.ed-paint .leaflet-interactive,#map.ed-paint .leaflet-grab{cursor:crosshair!important}' +
+    '.rpin{position:relative;width:30px;height:30px}.rpin img{width:30px;height:30px;display:block;filter:drop-shadow(0 0 2px #000)}' +
+    '.rpin.unk img{filter:grayscale(1) brightness(.85) opacity(.55) drop-shadow(0 0 1px #000)}' +
+    '.rpin b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:700 17px system-ui;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 6px #000;pointer-events:none}' +
+    '.rtpal{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px}.rtpal a.rt{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:2px 6px;display:flex;align-items:center;gap:4px;font-size:12px;background:var(--panel2);color:var(--text)}' +
+    '.rtpal a.rt:hover,.rtpal a.rt.sel{border-color:var(--accent)}.rtpal a.rt img{width:18px;height:18px}';
+  document.head.appendChild(css);
+
+  // ---------------------------------------------------------------------------------------------------------------- state
+  const TN = [null, 'road', 'offroad', 'other'], TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80'], TKEY = ['unset', 'road', 'offroad', 'other'];   // type 0 = not set
+  const RT = ['road', 'street', 'rally', 'cross_country', 'touge', 'drag', 'midnight'];
+  const RTV = { road: ['asphalt_circuit', 'asphalt_p2p'], rally: ['mixedsurface_circuit', 'mixedsurface_p2p'], cross_country: ['crosscountry_circuit', 'crosscountry_p2p'],
+                street: ['streetracing', 'streetracing'], touge: ['touge', 'touge'], drag: ['dragracing', 'dragracing'], midnight: ['midnight_battle', 'midnight_battle'] };
+  const ed = { on: false, mode: 'pan', brush: 1, fill: false, sel: -1, hover: -1, mouse: null };
+  const marks = {};                       // route id -> race type
+  const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = added edge alive, r = race mark)
+  let panHeld = false;
+
+  // ---------------------------------------------------------------------------------------------------------------- graph
+  const nodeIdx = new Map(), NID = [], NX = [], NY = [], NWX = [], NWZ = [], adj = [];
+  const EA = [], EB = [], ET = [], EL = [], EAD = [], EAL = [], PRE = [], ekey = new Map();
+  const kkey = (a, b) => (a < b ? a + '-' + b : b + '-' + a);
+  const CELL = 24, ck = (cx, cy) => cx * 1024 + cy, gridN = new Map(), gridE = new Map();
+  const gpush = (g, k, v) => { const l = g.get(k); if (l) l.push(v); else g.set(k, [v]); };
+  function node(id, x, z) {
+    let i = nodeIdx.get(id);
+    if (i === undefined) {
+      i = NID.length; nodeIdx.set(id, i); NID.push(id); NX.push((x - X0) * SC); NY.push((Z1 - z) * SC); NWX.push(x); NWZ.push(z); adj.push([]);
+      gpush(gridN, ck(Math.floor(NX[i] / CELL), Math.floor(NY[i] / CELL)), i);
+    }
+    return i;
+  }
+  function gridEdge(e) {
+    const i = EA[e], j = EB[e], x0 = NX[i], y0 = NY[i], x1 = NX[j], y1 = NY[j], n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (CELL / 2))), seen = new Set();
+    for (let s = 0; s <= n; s++) { const k = ck(Math.floor((x0 + (x1 - x0) * s / n) / CELL), Math.floor((y0 + (y1 - y0) * s / n) / CELL)); if (!seen.has(k)) { seen.add(k); gpush(gridE, k, e); } }
+  }
+  function mkEdge(i, j, added, pre) {                       // -> edge index; an existing edge (also a removed added one) is returned as is
+    const key = kkey(NID[i], NID[j]); let e = ekey.get(key);
+    if (e !== undefined) return e;
+    e = EA.length; EA.push(i); EB.push(j); ET.push(0); EL.push(Math.hypot(NWX[i] - NWX[j], NWZ[i] - NWZ[j])); EAD.push(added ? 1 : 0); EAL.push(added ? 0 : 1); PRE.push(pre == null ? 2 : pre);
+    adj[i].push(e); adj[j].push(e); ekey.set(key, e); gridEdge(e);
+    return e;
+  }
+  if (HAS_RD) {
+    D.roads.lines.forEach((a, q) => {
+      const ids = RE.ids[q], pre = RE.pre && RE.pre[q]; let prev = -1;
+      for (let k = 0; 2 * k < a.length; k++) {
+        const n = node(ids[k], a[2 * k], a[2 * k + 1]);
+        if (k > 0 && n !== prev) mkEdge(prev, n, 0, pre ? Number(pre[k - 1]) : null);
+        prev = n;
+      }
+    });
+    (RE.orphans || []).forEach((o) => node(o[0], o[1], o[2]));
+  }
+  const NGAME = EA.length;
+  const alive = (e) => EAL[e] === 1;
+  const deg = (i) => { let n = 0; adj[i].forEach((e) => { if (EAL[e]) n++; }); return n; };
+
+  // nearest things to a plane point (x, y), radius r in plane units
+  function nearEdges(x, y, r, addedOnly) {
+    const R = r + CELL / 4, out = [], seen = new Set();
+    for (let cx = Math.floor((x - R) / CELL); cx <= Math.floor((x + R) / CELL); cx++) for (let cy = Math.floor((y - R) / CELL); cy <= Math.floor((y + R) / CELL); cy++) {
+      const l = gridE.get(ck(cx, cy)); if (!l) continue;
+      for (const e of l) {
+        if (seen.has(e) || !EAL[e] || (addedOnly && !EAD[e])) continue; seen.add(e);
+        const ax = NX[EA[e]], ay = NY[EA[e]], dx = NX[EB[e]] - ax, dy = NY[EB[e]] - ay, L2 = dx * dx + dy * dy;
+        const u = L2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0, d = Math.hypot(x - ax - u * dx, y - ay - u * dy);
+        if (d <= r) out.push([d, e]);
+      }
+    }
+    return out.sort((p, q) => p[0] - q[0]);
+  }
+  function nearNode(x, y, r) {
+    let best = -1, bd = r;
+    for (let cx = Math.floor((x - r) / CELL); cx <= Math.floor((x + r) / CELL); cx++) for (let cy = Math.floor((y - r) / CELL); cy <= Math.floor((y + r) / CELL); cy++) {
+      const l = gridN.get(ck(cx, cy)); if (!l) continue;
+      for (const i of l) { const d = Math.hypot(NX[i] - x, NY[i] - y); if (d <= bd) { bd = d; best = i; } }
+    }
+    return best;
+  }
+  function runOf(e) {                                      // the whole road piece between two junctions / dead ends through edge e
+    const set = new Set([e]);
+    [EA[e], EB[e]].forEach((n0) => {
+      let n = n0, cur = e;
+      for (;;) {
+        const l = adj[n].filter((q) => EAL[q]); if (l.length !== 2) break;
+        const nx = l[0] === cur ? l[1] : l[0]; if (set.has(nx)) break;
+        set.add(nx); n = EA[nx] === n ? EB[nx] : EA[nx]; cur = nx;
+      }
+    });
+    return set;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- history / mutation
+  function setType(e, v) { ET[e] = v; }
+  function applyOp(op, rev) {
+    const v = rev ? op[2] : op[3];
+    if (op[0] === 't') setType(op[1], v); else if (op[0] === 'a') EAL[op[1]] = v; else if (op[0] === 'r') { if (v) marks[op[1]] = v; else delete marks[op[1]]; refreshRace(op[1]); }
+  }
+  function commit(ops) { if (!ops.length) return; hist.push(ops); if (hist.length > 200) hist.shift(); changed(); }
+  function undo() {
+    const ops = hist.pop(); if (!ops) { say(t('s_noundo')); return; }
+    for (let k = ops.length - 1; k >= 0; k--) applyOp(ops[k], true);
+    say(t('s_undo')); changed();
+  }
+  function paintEdges(list, v, ops) { list.forEach((e) => { if (ET[e] !== v) { ops.push(['t', e, ET[e], v]); ET[e] = v; } }); }
+  function prefill() {
+    if (!HAS_RD || !RE.pre) return;
+    let any = false; for (let e = 0; e < EA.length; e++) if (ET[e]) { any = true; break; }
+    if (any && !confirm(t('c_prefill'))) return;
+    const ops = []; let n = 0;
+    for (let e = 0; e < NGAME; e++) { const p = PRE[e]; if (p === 2) continue; n++; if (ET[e] !== p + 1) { ops.push(['t', e, ET[e], p + 1]); ET[e] = p + 1; } }
+    say(t('s_prefill') + ' ' + n + ' ' + t('s_edges')); commit(ops);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- export / import / autosave
+  function exportObj() {
+    const types = {}, added = [], km = [0, 0, 0, 0]; let painted = 0;
+    for (let e = 0; e < EA.length; e++) {
+      if (!EAL[e]) continue;
+      km[ET[e]] += EL[e] / 1000;
+      const a = Math.min(NID[EA[e]], NID[EB[e]]), b = Math.max(NID[EA[e]], NID[EB[e]]);
+      if (EAD[e]) added.push({ a, b, type: TN[ET[e]] }); else if (ET[e]) { types[a + '-' + b] = TN[ET[e]]; painted++; }
+    }
+    const rm = {}; Object.keys(marks).sort((p, q) => p - q).forEach((k) => { rm[k] = marks[k]; });
+    const r1 = (v) => Math.round(v * 10) / 10;
+    return { format: 'fh6-road-types', version: 1, nav: HAS_RD ? RE.nav : null, types, added, races: rm,
+      counts: { km: { road: r1(km[1]), offroad: r1(km[2]), other: r1(km[3]), not_set: r1(km[0]) }, edges: { total: NGAME, painted, added: added.length },
+                races: { marked: Object.keys(rm).length, total: HAS_RC ? D.racelines.length : 0 } } };
+  }
+  function resetAll() {
+    for (let e = 0; e < EA.length; e++) { ET[e] = 0; if (EAD[e]) EAL[e] = 0; }
+    Object.keys(marks).forEach((k) => { delete marks[k]; });
+  }
+  function importObj(o, silent) {
+    if (!o || o.format !== 'fh6-road-types' || o.version !== 1) { say(t('s_bad'), 1); return false; }
+    if (HAS_RD && o.nav && (o.nav.sha1 !== RE.nav.sha1 || o.nav.nodes !== RE.nav.nodes) && !silent && !confirm(t('c_nav'))) return false;
+    if (HAS_RD && o.nav && silent && (o.nav.sha1 !== RE.nav.sha1 || o.nav.nodes !== RE.nav.nodes)) return false;       // autosave from another nav file: ignore
+    resetAll(); let ok = 0, skip = 0, add = 0;
+    const tix = (s) => TN.indexOf(s);
+    Object.keys(o.types || {}).forEach((k) => {
+      const e = ekey.get(k), v = tix(o.types[k]);
+      if (e !== undefined && !EAD[e] && v > 0) { ET[e] = v; ok++; } else skip++;
+    });
+    (o.added || []).forEach((q) => {
+      const i = nodeIdx.get(q.a), j = nodeIdx.get(q.b);
+      if (i === undefined || j === undefined || i === j) { skip++; return; }
+      const e = mkEdge(i, j, 1); if (EAD[e]) { EAL[e] = 1; ET[e] = Math.max(0, tix(q.type)); add++; } else skip++;
+    });
+    const rid = new Set((D.racelines || []).map((r) => String(r.id)));
+    Object.keys(o.races || {}).forEach((k) => { if (rid.has(k) && RT.indexOf(o.races[k]) >= 0) marks[k] = o.races[k]; else skip++; });
+    hist.length = 0; refreshAllRaces();
+    if (!silent) say(t('s_imp') + ': ' + ok + ' ' + t('s_edges') + ', ' + add + ' ' + t('added') + ', ' + Object.keys(marks).length + ' ' + t('racesm') + (skip ? ', ' + skip + ' ' + t('s_skip') : ''), skip ? 1 : 0);
+    changed(true); return true;
+  }
+  let saveT = 0;
+  function save() { clearTimeout(saveT); saveT = setTimeout(() => store.set('editor', exportObj()), 500); }
+  function download() {
+    const b = new Blob([JSON.stringify(exportObj())], { type: 'application/json' }), a = document.createElement('a');
+    a.href = URL.createObjectURL(b); a.download = 'fh6-road-types.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    say(t('s_exp'));
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- canvas layer
+  map.createPane('edpane'); const ep = map.getPane('edpane'); ep.style.zIndex = 390; ep.style.pointerEvents = 'none';
+  const cv = document.createElement('canvas'); cv.style.position = 'absolute'; ep.appendChild(cv);
+  let raf = 0; const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+  function draw() {
+    if (!ed.on || !HAS_RD) return;
+    const sz = map.getSize(), cw = Math.round(sz.x * 1.5), ch = Math.round(sz.y * 1.5), dpr = window.devicePixelRatio || 1;
+    const tl = map.containerPointToLayerPoint([-sz.x * 0.25, -sz.y * 0.25]).round();
+    if (cv.width !== Math.round(cw * dpr) || cv.height !== Math.round(ch * dpr)) { cv.width = Math.round(cw * dpr); cv.height = Math.round(ch * dpr); cv.style.width = cw + 'px'; cv.style.height = ch + 'px'; }
+    L.DomUtil.setPosition(cv, tl);
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, ch);
+    const z = map.getZoom(), sc = Math.pow(2, z - 3), o = map.getPixelOrigin(), ox = o.x + tl.x, oy = o.y + tl.y;
+    const px = (i) => NX[i] * sc - ox, py = (i) => NY[i] * sc - oy;
+    const P = []; for (let k = 0; k < 8; k++) P.push(new Path2D());
+    for (let e = 0; e < EA.length; e++) {
+      if (!EAL[e]) continue;
+      const i = EA[e], j = EB[e], x0 = px(i), y0 = py(i), x1 = px(j), y1 = py(j);
+      if ((x0 < -10 && x1 < -10) || (x0 > cw + 10 && x1 > cw + 10) || (y0 < -10 && y1 < -10) || (y0 > ch + 10 && y1 > ch + 10)) continue;
+      const p = P[ET[e] + 4 * EAD[e]]; p.moveTo(x0, y0); p.lineTo(x1, y1);
+    }
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (let k = 0; k < 8; k++) {
+      g.strokeStyle = TCOL[k & 3]; g.lineWidth = (k < 4 ? 1 : 1.3) * Math.max(1.8, Math.min(5.5, 1.2 + sc * 0.9)); g.globalAlpha = k & 3 ? 0.92 : 1;
+      g.setLineDash(k < 4 ? [] : [7, 5]); g.stroke(P[k]);
+    }
+    g.setLineDash([]); g.globalAlpha = 1;
+    const showN = z >= (ed.mode === 'connect' ? 3.5 : 4.5), showEnds = ed.mode === 'connect' && z >= 2.5;
+    if (showN || showEnds) {
+      for (let i = 0; i < NID.length; i++) {
+        const x = px(i), y = py(i); if (x < -10 || y < -10 || x > cw + 10 || y > ch + 10) continue;
+        const d = deg(i);
+        if (showEnds && d === 1) { g.strokeStyle = '#fde047'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, 6.3); g.stroke(); }
+        if (showN) { g.fillStyle = d === 2 ? '#fff' : '#fde047'; g.strokeStyle = '#000'; g.lineWidth = 1; g.beginPath(); g.arc(x, y, d === 2 ? 2.6 : 4, 0, 6.3); g.fill(); g.stroke(); }
+      }
+    }
+    const ring = (i, col) => { g.strokeStyle = col; g.lineWidth = 3; g.beginPath(); g.arc(px(i), py(i), 9, 0, 6.3); g.stroke(); };
+    if (ed.mode === 'connect') {
+      if (ed.sel >= 0) { ring(ed.sel, '#fff'); if (ed.mouse) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(px(ed.sel), py(ed.sel)); g.lineTo(ed.mouse.x * sc - ox, ed.mouse.y * sc - oy); g.stroke(); g.setLineDash([]); } }
+      if (ed.hover >= 0 && ed.hover !== ed.sel) ring(ed.hover, TCOL[ed.brush]);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- pointer handling
+  const mapEl = map.getContainer();
+  const plane = (ev) => { const l = map.mouseEventToLatLng(ev); return { x: l.lng, y: -l.lat }; };
+  const pxu = (n) => n / Math.pow(2, map.getZoom() - 3);          // screen px -> plane units
+  let stroke = null;
+  function paintAt(x, y, shift, ops) {
+    if (shift || ed.fill) { const n = nearEdges(x, y, pxu(12)); if (n.length) paintEdges(runOf(n[0][1]), ed.brush, ops); }
+    else paintEdges(nearEdges(x, y, pxu(7)).map((q) => q[1]), ed.brush, ops);
+  }
+  function downAt(ev) {
+    const p = plane(ev);
+    if (ed.mode === 'paint') {
+      stroke = { ops: [], last: p, shift: ev.shiftKey }; paintAt(p.x, p.y, ev.shiftKey, stroke.ops); redraw();
+    } else if (ed.mode === 'delete') {
+      const n = nearEdges(p.x, p.y, pxu(10), true);
+      if (n.length) { EAL[n[0][1]] = 0; commit([['a', n[0][1], 1, 0]]); say(t('s_del')); }
+    } else if (ed.mode === 'connect') {
+      const n = nearNode(p.x, p.y, pxu(12));
+      if (n < 0) { say(t('s_nonode'), 1); return; }
+      if (ed.sel < 0) { ed.sel = n; say(t('s_pickA')); redraw(); return; }
+      if (n === ed.sel) { ed.sel = -1; redraw(); return; }
+      connect(ed.sel, n); ed.sel = -1;
+    }
+  }
+  function connect(i, j) {
+    const e = mkEdge(i, j, 1);
+    if (EAL[e]) { say(t('s_exists'), 1); redraw(); return false; }
+    EAL[e] = 1; ET[e] = ed.brush; commit([['a', e, 0, 1], ['t', e, 0, ed.brush]]);
+    // (undo order is reversed: type first, then alive - both end up as "never existed")
+    say(t('s_conn')); return true;
+  }
+  mapEl.addEventListener('mousedown', (ev) => {
+    if (!ed.on || !HAS_RD || ev.button !== 0 || panHeld || ed.mode === 'pan' || ed.mode === 'races') return;
+    if (ev.target.closest('.leaflet-control,.leaflet-popup,.leaflet-marker-icon')) return;
+    ev.preventDefault(); downAt(ev);
+  });
+  mapEl.addEventListener('mousemove', (ev) => {
+    if (!ed.on) return;
+    const p = plane(ev); ed.mouse = p;
+    if (stroke) {
+      const l = stroke.last, d = Math.hypot(p.x - l.x, p.y - l.y), step = pxu(5), n = Math.max(1, Math.ceil(d / step));
+      for (let s = 1; s <= n; s++) paintAt(l.x + (p.x - l.x) * s / n, l.y + (p.y - l.y) * s / n, stroke.shift, stroke.ops);
+      stroke.last = p; redraw();
+    } else if (ed.mode === 'connect') { const h = nearNode(p.x, p.y, pxu(12)); if (h !== ed.hover || ed.sel >= 0) { ed.hover = h; redraw(); } }
+  });
+  document.addEventListener('mouseup', () => { if (stroke) { const s = stroke; stroke = null; commit(s.ops); } });
+  map.on('popupopen', (e) => { if (ed.on && (ed.mode === 'paint' || ed.mode === 'connect' || ed.mode === 'delete') && e.popup._source instanceof L.Path) map.closePopup(); });
+  map.on('moveend zoomend resize', () => { cv.style.visibility = 'visible'; redraw(); });
+  map.on('zoomstart', () => { cv.style.visibility = 'hidden'; });
+  document.addEventListener('keydown', (ev) => {
+    if (!ed.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
+    if (ev.key === ' ') { ev.preventDefault(); if (!panHeld) { panHeld = true; dragState(); } }
+    else if (ev.key >= '1' && ev.key <= '4') setBrush([1, 2, 3, 0][Number(ev.key) - 1]);
+    else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
+    else if (ev.key === 'Escape') { ed.sel = -1; redraw(); }
+  });
+  document.addEventListener('keyup', (ev) => { if (ev.key === ' ' && panHeld) { panHeld = false; dragState(); } });
+  function dragState() {
+    const free = !ed.on || !HAS_RD || ed.mode === 'pan' || ed.mode === 'races' || panHeld;
+    if (free) map.dragging.enable(); else map.dragging.disable();
+    mapEl.classList.toggle('ed-paint', !free);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- race pins
+  const RPOS = {}, RMK = {};
+  const rtLabel = (ty) => ty ? t('rt_' + ty) : t('rt_none');
+  function raceIconUrl(r, ty) {
+    const ri = META.race_icons || {}, v = ty ? RTV[ty][r.circuit ? 0 : 1] : (r.circuit ? 'asphalt_circuit' : 'asphalt_p2p');
+    const k = ri[v] || (r.circuit ? ri.circuit : ri.p2p); return k && META.icons[k];
+  }
+  function racePinIcon(r) {
+    const ty = marks[r.id], u = raceIconUrl(r, ty);
+    return L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14],
+      html: '<div class="rpin' + (ty ? '' : ' unk') + '">' + (u ? '<img src="' + esc(u) + '" alt="">' : '') + (ty ? '' : '<b>?</b>') + '</div>' });
+  }
+  function refreshRace(id) { const m = RMK[id]; if (m) m.setIcon(racePinIcon(RL[id])); }
+  function refreshAllRaces() { Object.keys(RMK).forEach(refreshRace); }
+  const raceTitle = (r) => { const st = RPOS[r.id]; return (st && st[3] && st[3].indexOf('route') !== 0) ? st[3] : t('route') + ' ' + r.id; };
+  if (HAS_RC) {
+    (D.poi && D.poi.cats.race_start || []).forEach((q) => { if (q[5] && q[5].route_id != null) RPOS[q[5].route_id] = q; });
+    entry({ id: 'racepins', group: 'races', label: () => t('racepins'), color: '#ff5a4d', n: D.racelines.length, on: true,
+      make: () => { const g = L.featureGroup();
+        D.racelines.forEach((r) => { const q = RPOS[r.id], p = q ? ll(q[0], q[1]) : ll(r.p[0], r.p[1]);
+          const m = L.marker(p, { icon: racePinIcon(r) }); RMK[r.id] = m;
+          m.bindTooltip(() => raceTitle(r) + ' - ' + (r.circuit ? t('circuit') : t('p2p')) + ' - ' + rtLabel(marks[r.id])); m.bindPopup(() => routePopup(r)); g.addLayer(m); });
+        return g; } });
+    const pe = ENTRIES.find((q) => q.id === 'poi_race_start'); if (pe) pe.on = false;      // our pin layer replaces it (one pin per route, type aware)
+    const _rp = routePopup;
+    routePopup = function (r) {                                       // + race type row; palette only in "Race types" mode
+      const ty = marks[r.id];
+      let h = '<div style="margin-top:6px"><b>' + esc(t('rtype')) + ':</b> ' + esc(rtLabel(ty)) + ' <span class="small">(' + (r.circuit ? t('circuit') : t('p2p')) + ')</span></div>';
+      if (ed.on && ed.mode === 'races') {
+        h += '<div class="rtpal">' + RT.map((k) => '<a class="rt' + (ty === k ? ' sel' : '') + '" data-r="' + r.id + '" data-ty="' + k + '">' + (raceIconUrl(r, k) ? '<img src="' + esc(raceIconUrl(r, k)) + '" alt="">' : '') + esc(t('rt_' + k)) + '</a>').join('') +
+          '<a class="rt" data-r="' + r.id + '" data-ty="">' + esc(t('rclear')) + '</a></div>';
+      }
+      return _rp(r) + h;
+    };
+    document.addEventListener('click', (ev) => {
+      const a = ev.target.closest && ev.target.closest('a.rt'); if (!a) return;
+      const id = Number(a.dataset.r), nv = a.dataset.ty || null, old = marks[id] || null;
+      if (nv !== old) { if (nv) marks[id] = nv; else delete marks[id]; refreshRace(id); commit([['r', id, old, nv]]); }
+      map.closePopup();
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- toolbar
+  const tg = document.getElementById('edtoggle'), box = document.getElementById('ed');
+  const road_ents = () => ENTRIES.filter((q) => /^road(s\d|k\d)/.test(q.id));
+  let stash = [];
+  function setOpen(on) {
+    ed.on = on; tg.classList.toggle('on', on); box.classList.toggle('show', on);
+    if (HAS_RD) {
+      if (on) { stash = road_ents().filter((q) => q.layer && map.hasLayer(q.layer)); stash.forEach((q) => map.removeLayer(q.layer)); cv.style.display = ''; map.doubleClickZoom.disable(); }
+      else { stash.forEach((q) => q.layer && q.layer.addTo(map)); stash = []; cv.style.display = 'none'; map.doubleClickZoom.enable(); }
+      renderPanel();
+    }
+    store.set('edopen', on ? 1 : 0); dragState(); renderBox(); redraw();
+  }
+  function setMode(m) { ed.mode = m; ed.sel = -1; ed.hover = -1; store.set('edmode', m); dragState(); renderBox(); redraw(); }
+  function setBrush(b) { ed.brush = b; renderBox(); }
+  let statT = 0;
+  function say(s, bad) { const el = document.getElementById('ed_stat'); if (!el) return; el.textContent = s; el.style.color = bad ? 'var(--warn)' : 'var(--ok)'; clearTimeout(statT); statT = setTimeout(() => { el.textContent = ''; }, 6000); }
+  let sraf = 0;
+  function changed(now) { redraw(); save(); if (!sraf) sraf = requestAnimationFrame(() => { sraf = 0; renderStats(); }); }
+  function renderStats() {
+    const el = document.getElementById('ed_stats'); if (!el) return;
+    const km = [0, 0, 0, 0]; let add = 0;
+    for (let e = 0; e < EA.length; e++) if (EAL[e]) { km[ET[e]] += EL[e] / 1000; if (EAD[e]) add++; }
+    const row = (c, k, v) => '<span><i style="background:' + c + '"></i>' + esc(t(k)) + '</span><b>' + v + '</b>';
+    el.innerHTML = (HAS_RD ? row(TCOL[1], 'km_road', km[1].toFixed(1) + ' km') + row(TCOL[2], 'km_offroad', km[2].toFixed(1) + ' km') + row(TCOL[3], 'km_other', km[3].toFixed(1) + ' km') +
+      row(TCOL[0], 'km_unset', km[0].toFixed(1) + ' km') + '<span>' + esc(t('added')) + '</span><b>' + add + '</b>' : '') +
+      (HAS_RC ? '<span>' + esc(t('racesm')) + '</span><b>' + Object.keys(marks).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' : '');
+  }
+  function renderBox() {
+    if (!box) return;
+    tg.textContent = t('ed');
+    const modes = (HAS_RD ? ['pan', 'paint', 'connect', 'delete'] : []).concat(HAS_RC ? ['races'] : []);
+    if (modes.indexOf(ed.mode) < 0) ed.mode = modes[0];
+    box.innerHTML = '<h2>' + esc(t('ed_title')) + '</h2>' +
+      '<div class="seg" id="ed_modes">' + modes.map((m) => '<button data-m="' + m + '" class="' + (ed.mode === m ? 'sel' : '') + '">' + esc(t('m_' + m)) + '</button>').join('') + '</div>' +
+      (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
+        '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_fill"' + (ed.fill ? ' checked' : '') + '>' + esc(t('fill')) + '</label>' : '') +
+      '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') + '</div>' +
+      '<div class="seg"><button id="ed_undo">' + esc(t('undo')) + '</button><button id="ed_exp">' + esc(t('export')) + '</button><button id="ed_imp">' + esc(t('import')) + '</button></div>' +
+      '<div class="small">' + esc(t('h_' + (ed.mode === 'pan' ? 'pan' : ed.mode))) + '</div><div id="ed_stats"></div><div id="ed_stat" class="small"></div>';
+    box.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.m)));
+    box.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => setBrush(Number(b.dataset.b))));
+    const f = document.getElementById('ed_fill'); if (f) f.addEventListener('change', () => { ed.fill = f.checked; });
+    const pb = document.getElementById('ed_pre'); if (pb) pb.addEventListener('click', prefill);
+    document.getElementById('ed_undo').addEventListener('click', undo);
+    document.getElementById('ed_exp').addEventListener('click', download);
+    document.getElementById('ed_imp').addEventListener('click', () => fin.click());
+    renderStats();
+  }
+  const fin = document.createElement('input'); fin.type = 'file'; fin.accept = '.json,application/json'; fin.style.display = 'none'; document.body.appendChild(fin);
+  fin.addEventListener('change', () => {
+    const f = fin.files && fin.files[0]; if (!f) return;
+    f.text().then((s) => { let o = null; try { o = JSON.parse(s); } catch (e) { /* handled below */ } if (!o) { say(t('s_bad'), 1); return; }
+      const any = hist.length || Object.keys(marks).length || ET.some((v) => v); if (any && !confirm(t('c_import'))) return; importObj(o, false); });
+    fin.value = '';
+  });
+  tg.addEventListener('click', () => setOpen(!ed.on));
+  const _al = applyLang; applyLang = function () { _al(); renderBox(); };
+
+  // restore: autosave first (silent), then the last mode
+  const sv = store.get('editor', null); if (sv) importObj(sv, true);
+  ed.mode = store.get('edmode', 'pan'); renderBox(); cv.style.display = 'none';
+  if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
+
+  return { ed, marks, hist, exportObj, importObj, prefill, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
+    graph: { NID, EA, EB, ET, EL, EAD, EAL, NGAME, ekey, nodeIdx, NX, NY, PRE } };
+})();
+
 // -------------------------------------------------------------------------------------------------------------------- panel
 const plist = document.getElementById('plist');
 const GORDER = ['map'].concat((META.groups || []).map((g) => g[0]), ['signs', 'terrain']);
@@ -555,7 +987,7 @@ sbox.addEventListener('input', () => {
 const loadGridsP = loadGrids();
 ENTRIES.forEach((e) => { const on = state.on[e.id] != null ? !!state.on[e.id] : e.on; if (on) setOn(e, true); else state.on[e.id] = 0; });
 applyLang();
-window.FH6V = { map, ll, world, showRoute, state, ENTRIES };      // handy in the browser console
+window.FH6V = { map, ll, world, showRoute, state, ENTRIES, ed: EDITOR };      // handy in the browser console
 })();
 </script>
 </body>

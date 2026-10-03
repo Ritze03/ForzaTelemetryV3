@@ -109,7 +109,7 @@ def run_extractors(media, work, force, terrain):
         jobs.append(ex.submit(chain, ('racelines', 'extract_racelines.py', [], work, ['racelines.json'])))
         # roads first (extract_speedsigns snaps to roads.json), then the rest of the chains
         rj = W('roads.json')
-        if os.path.isfile(rj) and b'"heights"' not in open(rj, 'rb').read():       # roads.json from before node heights were exported
+        if os.path.isfile(rj) and not all(k in open(rj, 'rb').read() for k in (b'"heights"', b'"ids"')):       # roads.json from before node heights / node ids were exported
             os.remove(rj)
         chain(('roads', 'decode_nav.py', [], work, ['roads.json']))
         if terrain and res.get('roads'):
@@ -283,6 +283,8 @@ def build_icons(work, out, used_cats):
     v = mp.get('race_start', {}).get('variants', {})
     race['circuit'] = add(v.get('asphalt_circuit'))
     race['p2p'] = add(v.get('asphalt_p2p'))
+    for k, nm in v.items():                    # every variant by its mapping.json name (road editor: the icon per race type)
+        race.setdefault(k, add(nm))
     return cat_icon, files, race
 
 
@@ -424,6 +426,41 @@ def build_roads(work):
     log(f'    all        : {tot[0]:7.1f} / {tot[1]:7.1f} / {tot[2]:6.1f}   ({sum(tot):.1f} km); unknown by dominant reason: ' +
         ', '.join(f'{WHY[k]} {wkm[k]:.1f} km' for k in range(3)))
     return out
+
+
+def build_roaded(work):
+    """Road editor data (data/roaded.js): node ids per polyline vertex + a prefill kind per EDGE (consecutive vertices) from the surface samples.
+    Per-edge kind = majority of the (smoothed) 4 m samples that lie on that node-to-node stretch: '0' paved -> Road, '1' off-road -> Offroad, '2' unknown -> not set."""
+    r = jl(os.path.join(work, 'roads.json'))
+    if 'ids' not in r:
+        raise RuntimeError('roads.json has no node ids - re-run decode_nav.py')
+    npz = os.path.join(work, 'roadsurf.npz')
+    pre = None
+    if os.path.isfile(npz):
+        d = np.load(npz); step = float(d['step']); off = d['off']
+        ids, dy = d['id'].astype(int), d['dy'].astype(int)
+        kind_of = np.full(65536, 2, np.int8)
+        for i, (_, _, k) in SURFACES.items():
+            kind_of[i] = 0 if k == PAVED else 1 if k == OFFROAD else 2
+        tri = ids != 65535
+        raw = np.where(tri & ~(tri & (np.abs(dy) > ELEV_DM)), kind_of[ids], 2)
+        pre, tot = [], [0, 0, 0]
+        for q, pl in enumerate(r['polylines']):
+            a, b = int(off[q]), int(off[q + 1])
+            code = smooth_runs(raw[a:b], step)[1]
+            P = np.asarray(pl, float); dd = np.r_[0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+            t = np.unique(np.r_[np.arange(0, dd[-1], step), dd[-1]])                      # same sample positions as classify_roads.densify
+            assert len(t) == b - a, 'roadsurf.npz does not match roads.json - re-run classify_roads.py'
+            lo = np.searchsorted(t, dd[:-1], 'left'); hi = np.searchsorted(t, dd[1:], 'left')
+            s = []
+            for k in range(len(dd) - 1):
+                j = code[lo[k]:hi[k]] if hi[k] > lo[k] else code[[min(len(t) - 1, int(round((dd[k] + dd[k + 1]) / 2 / step)))]]
+                kd = int(np.bincount(j, minlength=3).argmax()); s.append(str(kd)); tot[kd] += (dd[k + 1] - dd[k]) / 1000
+            pre.append(''.join(s))
+        log(f'road editor prefill (km): Road {tot[0]:.1f} / Offroad {tot[1]:.1f} / not set {tot[2]:.1f}')
+    else:
+        warn('road editor', 'roadsurf.npz missing - the prefill button will have nothing to apply')
+    return dict(nav=r['nav'], ids=r['ids'], pre=pre, orphans=r['orphans'])
 
 
 def build_racelines(work):
@@ -578,6 +615,8 @@ def main():
     if nm: scripts.append(write_js(out, 'names', nm))
     rd_ = layer('roads', lambda: build_roads(W()), lambda o: f"{len(o['lines'])} polylines" + (', surface kinds for all' if 'surf' in o else ', no surface data'))
     if rd_: scripts.append(write_js(out, 'roads', rd_))
+    re_ = layer('road editor', lambda: build_roaded(W()), lambda o: f"{sum(len(q) - 1 for q in o['ids'])} edges" + (', prefill' if o['pre'] else ', no prefill'))
+    if re_: scripts.append(write_js(out, 'roaded', re_))
     rl = layer('race lines', lambda: build_racelines(W()), lambda o: f'{len(o)} routes, {sum(len(r["p"]) // 2 for r in o)} points')
     if rl: scripts.append(write_js(out, 'racelines', rl))
     sg = layer('speed signs', lambda: build_signs(W()), lambda o: len(o['rows']))
