@@ -189,8 +189,9 @@ fn calibration_section(ui: &mut egui::Ui, app: &crate::app::ForzaApp) {
 
     // 1. Max RPM capture
     let m = &c.max_rpm;
-    group_heading(ui, tr("1. Max RPM capture"), m.all(), if m.all() { tr("capturing now") } else { tr("not capturing") });
+    group_heading(ui, tr("1. Max RPM capture"), m.all(), if m.all() { tr("capturing now") } else if !m.unlocked { tr("locked") } else { tr("not capturing") });
     grid("debug_calib_maxrpm").show(ui, |ui| {
+        check_row(ui, m.unlocked, tr("Redline not locked"), if m.unlocked { tr("capturing") } else { tr("locked (Clear RPM calibration to re-capture)") }.into());
         check_row(ui, m.race_on, tr("Race on"), "is_race_on != 0".into());
         // Informational only (not part of `m.all()`): fast rev limiters report power 0.
         info_row(ui, tr("Engine power"), format!("power {:.0} ({})", r.power, tr("ignored")));
