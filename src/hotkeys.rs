@@ -72,20 +72,55 @@ impl RebindGuard {
 #[allow(dead_code)] // Unsupported is only built on non-Linux/Windows targets
 pub enum HotkeyStatus { Ok, NoPermission, NoDevice, Unsupported }
 
-/// Probe `/dev/input/event*` for read access (Linux): `Ok` when at least one node opens,
-/// `NoPermission` when nodes exist but none can be read, `NoDevice` when there are none.
-/// Windows polls `GetAsyncKeyState`, which needs nothing, so it is always `Ok`.
+/// Pure: `(is_keyboard, readable)` per `/dev/input/event*` node → status. `Ok` when at least
+/// one **keyboard** can be read, `NoPermission` when keyboards exist but none can be, `NoDevice`
+/// when there is no keyboard at all. Only keyboards count: *Why:* on GNOME / KDE / Fedora
+/// systemd-logind `uaccess` ACLs make game controllers (and `/dev/uinput`) readable for the
+/// seated user but not keyboards (those stay `root:input 0660`), so "any readable node" was
+/// green with a gamepad plugged in while no hotkey could ever be read.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn classify(devs: &[(bool, bool)]) -> HotkeyStatus {
+    let keyboards: Vec<bool> = devs.iter().filter(|(kb, _)| *kb).map(|(_, r)| *r).collect();
+    if keyboards.is_empty() { HotkeyStatus::NoDevice }
+    else if keyboards.iter().any(|r| *r) { HotkeyStatus::Ok }
+    else { HotkeyStatus::NoPermission }
+}
+
+/// Pure: does a sysfs `capabilities/key` bitmap (space-separated hex words, most significant
+/// first) contain `KEY_A` (bit 30, always in the last word)? World-readable, so it classifies a
+/// node as keyboard / not without being able to open it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn key_bitmap_has_letters(bitmap: &str) -> bool {
+    bitmap.split_whitespace().last()
+        .and_then(|w| u64::from_str_radix(w, 16).ok())
+        .is_some_and(|w| w & (1 << 30) != 0)
+}
+
+/// Probe `/dev/input/event*` for a readable keyboard (Linux). A node counts as a keyboard by
+/// its sysfs capability bitmap (works for nodes we may not open), falling back to asking the
+/// device itself when sysfs has no entry. Windows polls `GetAsyncKeyState`, which needs
+/// nothing, so it is always `Ok`.
 pub fn probe_status() -> HotkeyStatus {
     #[cfg(target_os = "linux")]
     {
         let Ok(dir) = std::fs::read_dir("/dev/input") else { return HotkeyStatus::NoDevice };
-        let mut nodes = 0;
+        let mut devs = Vec::new();
         for e in dir.flatten() {
-            if !e.file_name().to_string_lossy().starts_with("event") { continue; }
-            nodes += 1;
-            if std::fs::File::open(e.path()).is_ok() { return HotkeyStatus::Ok; }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("event") { continue; }
+            let readable = std::fs::File::open(e.path()).is_ok();
+            let is_kb = std::fs::read_to_string(format!("/sys/class/input/{name}/device/capabilities/key"))
+                .ok()
+                .map(|s| key_bitmap_has_letters(&s))
+                .or_else(|| {
+                    if !readable { return None; }
+                    evdev::Device::open(e.path()).ok()
+                        .map(|d| d.supported_keys().is_some_and(|k| k.contains(evdev::Key::KEY_A)))
+                })
+                .unwrap_or(false);
+            devs.push((is_kb, readable));
         }
-        if nodes == 0 { HotkeyStatus::NoDevice } else { HotkeyStatus::NoPermission }
+        classify(&devs)
     }
     #[cfg(target_os = "windows")]
     { HotkeyStatus::Ok }
@@ -93,10 +128,15 @@ pub fn probe_status() -> HotkeyStatus {
     { HotkeyStatus::Unsupported }
 }
 
+/// Event nodes the Linux backend currently reads (empty elsewhere). Shared so a rescan skips
+/// keyboards that already have a reader thread, and the UI can tell "backend has zero keyboards".
+pub type OpenKeyboards = Arc<Mutex<std::collections::HashSet<std::path::PathBuf>>>;
+
 pub struct HotkeyListener {
     binds: Bindings,
     tx: std::sync::mpsc::Sender<HotkeyAction>,
     guard: Arc<RebindGuard>,
+    open: OpenKeyboards,
 }
 
 impl HotkeyListener {
@@ -108,8 +148,18 @@ impl HotkeyListener {
         let binds: Bindings = Arc::new(Mutex::new(initial));
         let (tx, rx) = std::sync::mpsc::channel();
         let guard = Arc::new(RebindGuard::default());
-        backend::spawn(binds.clone(), tx.clone(), guard.clone());
-        (HotkeyListener { binds, tx, guard }, rx)
+        let open = OpenKeyboards::default();
+        let me = HotkeyListener { binds, tx, guard, open };
+        me.rescan();
+        (me, rx)
+    }
+    /// (Re)open keyboards that have no reader yet — the initial scan, and the Setup **Re-check**
+    /// button, so access that appears later (a udev/ACL change, a hot-plugged keyboard) works
+    /// without a restart. Synchronous: the open count is right as soon as it returns.
+    pub fn rescan(&self) { backend::scan(&self.binds, &self.tx, &self.guard, &self.open); }
+    /// How many keyboards the backend is actually reading (always 1 off Linux: nothing to open).
+    pub fn active_keyboards(&self) -> usize {
+        if cfg!(target_os = "linux") { self.open.lock().unwrap().len() } else { 1 }
     }
     /// A sender into the same action channel, for other input sources (the gamepad), so
     /// they pass through the listener thread's focus gate exactly like keyboard hotkeys.
@@ -126,23 +176,24 @@ mod backend {
     use std::thread;
     use evdev::{Device, EventType, Key};
     use std::sync::Arc;
-    use super::{Bindings, RebindGuard, dispatch};
+    use super::{Bindings, OpenKeyboards, RebindGuard, dispatch};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
-    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>, guard: Arc<RebindGuard>) {
-        thread::spawn(move || {
-            let keyboards: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
-                .filter(|(_, d)| d.supported_keys().map_or(false, |k| k.contains(Key::KEY_A)))
-                .collect();
-            if keyboards.is_empty() {
-                return; // no readable keyboards (no devices, or no read permission)
-            }
+    /// Open every readable keyboard that has no reader thread yet and start one for it.
+    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards) {
+        // `enumerate` yields only devices we can open; non-keyboards are filtered out.
+        let keyboards: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
+            .filter(|(_, d)| d.supported_keys().map_or(false, |k| k.contains(Key::KEY_A)))
+            .collect();
+        {
             // One reader thread per keyboard; each tracks its own modifier state.
-            for (_, mut dev) in keyboards {
+            for (path, mut dev) in keyboards {
+                if !open.lock().unwrap().insert(path.clone()) { continue; } // already read
                 let binds = binds.clone();
                 let tx = tx.clone();
                 let guard = guard.clone();
+                let open = open.clone();
                 thread::spawn(move || {
                     let mut mods = Mods::default();
                     loop {
@@ -168,9 +219,10 @@ mod backend {
                             }
                         }
                     }
+                    open.lock().unwrap().remove(&path); // device gone: a rescan may reopen it
                 });
             }
-        });
+        }
     }
 }
 
@@ -181,7 +233,7 @@ mod backend {
     use std::thread;
     use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    use super::{Bindings, RebindGuard, dispatch};
+    use super::{Bindings, OpenKeyboards, RebindGuard, dispatch};
     use crate::config::HotkeyAction;
     use crate::keymap::{HotKey, Mods};
 
@@ -192,7 +244,10 @@ mod backend {
 
     fn down(vk: i32) -> bool { (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0 }
 
-    pub fn spawn(binds: Bindings, tx: Sender<HotkeyAction>, guard: Arc<RebindGuard>) {
+    /// Starts the poll thread once (a rescan has nothing to reopen: `GetAsyncKeyState` needs no device).
+    pub fn scan(binds: &Bindings, tx: &Sender<HotkeyAction>, guard: &Arc<RebindGuard>, open: &OpenKeyboards) {
+        if !open.lock().unwrap().insert(std::path::PathBuf::new()) { return; }
+        let (binds, tx, guard) = (binds.clone(), tx.clone(), guard.clone());
         thread::spawn(move || {
             // Previous key-down state per virtual key (not per action): the state is tracked
             // even while a rebind capture mutes sending, so a key that was held down when the
@@ -229,9 +284,9 @@ mod backend {
 mod backend {
     use std::sync::mpsc::Sender;
     use std::sync::Arc;
-    use super::{Bindings, RebindGuard};
+    use super::{Bindings, OpenKeyboards, RebindGuard};
     use crate::config::HotkeyAction;
-    pub fn spawn(_b: Bindings, _tx: Sender<HotkeyAction>, _g: Arc<RebindGuard>) {}
+    pub fn scan(_b: &Bindings, _tx: &Sender<HotkeyAction>, _g: &Arc<RebindGuard>, _o: &OpenKeyboards) {}
 }
 
 #[cfg(test)]
@@ -242,6 +297,26 @@ mod tests {
 
     fn bind(ctrl: bool, key: HotKey) -> HotkeyBinding {
         HotkeyBinding { mods: Mods { ctrl, ..Default::default() }, key }
+    }
+
+    #[test]
+    fn classify_needs_a_readable_keyboard() {
+        // (is_keyboard, readable)
+        assert_eq!(classify(&[]), HotkeyStatus::NoDevice);
+        // Only a non-keyboard (gamepad) node exists: no keyboard at all.
+        assert_eq!(classify(&[(false, true)]), HotkeyStatus::NoDevice);
+        // The GNOME/uaccess case: gamepad readable, keyboard not -> must NOT be green.
+        assert_eq!(classify(&[(false, true), (true, false), (true, false)]), HotkeyStatus::NoPermission);
+        assert_eq!(classify(&[(false, true), (true, false), (true, true)]), HotkeyStatus::Ok);
+    }
+
+    #[test]
+    fn key_bitmap_detects_letter_keys() {
+        // Real keyboard (KEY_A is bit 30 of the last word) vs a gamepad (only BTN_* bits high up).
+        assert!(key_bitmap_has_letters("402000000 3803078f800d001 feffffdfffefffff fffffffffffffffe"));
+        assert!(!key_bitmap_has_letters("7cdb000000000000 0 0 0"));
+        assert!(!key_bitmap_has_letters("0"));
+        assert!(!key_bitmap_has_letters(""));
     }
 
     #[test]

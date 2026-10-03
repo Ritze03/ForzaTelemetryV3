@@ -144,9 +144,11 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
 ## Requirements & limitations
 
 - **Linux `input` group:** reading `/dev/input` needs the user in the `input` group
-  (`sudo usermod -aG input $USER`, then re-login). The settings status light shows 🟢/🔴.
+  (`sudo usermod -aG input $USER`, then re-login) **or** an ACL that grants the seat user the
+  keyboard nodes. The settings status light shows 🟢/🔴.
 - **Input-permission check (D13, Linux only):** at startup `input::probe()` gathers the facts
-  (`/dev/input/event*` readable via `hotkeys::probe_status()`, `/dev/uinput` writable,
+  (a **keyboard** under `/dev/input/event*` readable via `hotkeys::probe_status()` and
+  opened by the backend, `/dev/uinput` writable,
   `/dev/uinput` existing / group `input` rw, process in the `input` group) and the pure
   `input::evaluate()` turns them into *what's missing* + the fix commands: `sudo usermod -aG
   input $USER` (not in the group), `sudo modprobe uinput` (no `/dev/uinput`), or a udev rule
@@ -163,10 +165,32 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   backfire). *Why a probe, not the listener:* the backends run on worker threads and only
   `return` on failure, so the UI can't ask them; opening the nodes is cheap and exact.
   *Why the flag is `EXPORT_EXCLUDE`:* it's per-machine, not a tuning setting.
+  **What the hotkeys light tests:** "at least one *keyboard* event node is readable".
+  `hotkeys::classify()` (pure) maps `(is_keyboard, readable)` per node to `Ok` (≥1 readable
+  keyboard) / `NoPermission` (keyboards exist, none readable) / `NoDevice` (no keyboard; not a
+  permission problem, light stays green). A node is a keyboard by its world-readable sysfs
+  bitmap `/sys/class/input/eventN/device/capabilities/key` having `KEY_A` (bit 30), so it can be
+  classified without opening it; if sysfs has no entry the device is asked directly.
+  `input::hotkeys_ok()` additionally turns the light red when the probe says readable but the
+  backend has **zero** open keyboards, so hotkeys can't be dead behind a green light.
+  *Why keyboards only:* on GNOME / KDE / Fedora, systemd-logind `uaccess` ACLs (and Steam's
+  udev rules) make game controllers and `/dev/uinput` accessible to the seated user, but
+  keyboards are not `uaccess`-tagged and stay `root:input 0660`. The old "any readable event
+  node" check was therefore a false positive with a gamepad plugged in (green light, modal
+  never shown, no hotkey ever read). `/dev/uinput` stays an open-for-write test: a writable
+  ACL there is genuinely fine.
+  **Modal / group line:** the modal fires only when hotkeys or uinput are actually missing
+  (`evaluate().any_missing()`); being outside the `input` group alone doesn't nag, because
+  access may come from ACLs. The group line is amber then, red only when something is missing.
+  **Re-check** calls `HotkeyListener::rescan()` before re-probing: the backend opens any
+  keyboard that has no reader yet (tracked in `OpenKeyboards`), so access that appears later
+  works without a restart (group membership itself still needs a re-login). Reader threads
+  remove their node on exit so a replugged device is picked up by the next rescan.
   *Dev/testing aid:* `FORZA_FAKE_NO_INPUT_PERMS=1` makes `probe()` report hotkeys unreadable,
   uinput not writable and not in the `input` group (node present but not group-writable, so the
   udev-rule and `usermod` commands show). *Why:* a machine with every permission never shows
   the modal, so it couldn't be reviewed.
 - Observe-only (a bound key still reaches the game); modifiers tracked per keyboard device;
-  focus reads can be up to `1/Hz` stale; keyboards hot-plugged after launch need a restart.
+  focus reads can be up to `1/Hz` stale; keyboards hot-plugged after launch are picked up by
+  Setup → Input Permissions → **Re-check** (no automatic hotplug watching).
   See spec §11.

@@ -398,7 +398,8 @@ pub use stub::{InputSender, KeyCode, char_to_key};
 /// Raw facts about input access. `Default` = everything fine (what Windows reports).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputProbe {
-    /// `/dev/input/event*` readable (or no nodes at all, which isn't a permission problem).
+    /// A **keyboard** under `/dev/input/event*` is readable *and* the hotkey backend is reading
+    /// at least one (no keyboard at all isn't a permission problem). See [`hotkeys_ok`].
     pub hotkeys_ok: bool,
     /// `/dev/uinput` can be opened for writing.
     pub uinput_ok: bool,
@@ -452,8 +453,23 @@ pub fn evaluate(p: &InputProbe) -> InputReport {
     r
 }
 
-/// Probe this machine. Windows (and anything non-Linux) needs no permissions.
-pub fn probe() -> InputProbe {
+/// Pure: the hotkeys light. Permission-denied is red; "readable" but the backend opened zero
+/// keyboards (`active_keyboards == 0`) is red too — *Why:* it must never stay green while
+/// hotkeys are silently dead. No keyboard at all is not a permission problem.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn hotkeys_ok(status: crate::hotkeys::HotkeyStatus, active_keyboards: usize) -> bool {
+    use crate::hotkeys::HotkeyStatus::*;
+    match status {
+        NoPermission => false,
+        Ok => active_keyboards > 0,
+        NoDevice | Unsupported => true,
+    }
+}
+
+/// Probe this machine. `active_keyboards` = keyboards the hotkey backend is reading
+/// (`HotkeyListener::active_keyboards`). Windows (and anything non-Linux) needs no permissions.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn probe(active_keyboards: usize) -> InputProbe {
     #[cfg(target_os = "linux")]
     {
         // Dev/testing aid: pretend nothing is permitted so the modal can be reviewed.
@@ -477,7 +493,7 @@ pub fn probe() -> InputProbe {
         });
         let meta = std::fs::metadata("/dev/uinput").ok();
         InputProbe {
-            hotkeys_ok: !matches!(crate::hotkeys::probe_status(), crate::hotkeys::HotkeyStatus::NoPermission),
+            hotkeys_ok: hotkeys_ok(crate::hotkeys::probe_status(), active_keyboards),
             uinput_ok: std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok(),
             uinput_exists: meta.is_some(),
             uinput_group_input: meta.is_some_and(|m| Some(m.gid()) == input_gid && m.mode() & 0o060 == 0o060),
@@ -520,6 +536,23 @@ mod tests {
         // Already in the group but still can't read: needs a re-login, no command helps.
         let r = evaluate(&InputProbe { hotkeys_ok: false, ..Default::default() });
         assert!(r.hotkeys_missing && r.commands.is_empty());
+    }
+
+    #[test]
+    fn hotkeys_light_needs_permission_and_an_open_keyboard() {
+        use crate::hotkeys::HotkeyStatus::*;
+        assert!(!hotkeys_ok(NoPermission, 0));
+        assert!(!hotkeys_ok(NoPermission, 2));
+        assert!(!hotkeys_ok(Ok, 0), "readable but zero keyboards opened must be red");
+        assert!(hotkeys_ok(Ok, 1));
+        assert!(hotkeys_ok(NoDevice, 0));
+    }
+
+    #[test]
+    fn evaluate_group_alone_never_nags() {
+        // Everything works via ACLs but the user is not in `input`: nothing missing -> no modal.
+        let r = evaluate(&InputProbe { in_input_group: false, ..Default::default() });
+        assert!(!r.any_missing() && r.commands.is_empty());
     }
 
     #[test]

@@ -314,7 +314,7 @@ fn command_box(ui: &mut Ui, app: &mut ForzaApp, idx: usize, cmd: &str) {
 /// Setup card.
 fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::InputReport) {
     if report.hotkeys_missing {
-        status_dot(ui, Dot::Bad, tr("Hotkeys: cannot read /dev/input"));
+        status_dot(ui, Dot::Bad, tr("Hotkeys: cannot read keyboard devices in /dev/input"));
     }
     if report.uinput_missing {
         status_dot(ui, Dot::Bad, tr("Gearbox / Backfire key input: cannot write /dev/uinput"));
@@ -338,10 +338,13 @@ fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::Inpu
 fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
     let p = app.input_probe;
     let dot = |ok: bool| if ok { Dot::Ok } else { Dot::Bad };
-    status_dot(ui, dot(p.hotkeys_ok), tr("Hotkeys: read /dev/input"));
+    status_dot(ui, dot(p.hotkeys_ok), tr("Hotkeys: read keyboard devices (/dev/input)"));
     status_dot(ui, dot(p.uinput_ok), tr("Key input: write /dev/uinput"));
-    status_dot(ui, dot(p.in_input_group), tr("Member of the input group"));
     let report = crate::input::evaluate(&p);
+    // Info only: access can also come from ACLs (GNOME/KDE), so outside the group is amber while
+    // everything works and red only when something is actually missing (then it is the likely fix).
+    let group_dot = if p.in_input_group { Dot::Ok } else if report.any_missing() { Dot::Bad } else { Dot::Warn };
+    status_dot(ui, group_dot, tr("Member of the input group"));
     if report.any_missing() {
         ui.add_space(4.0);
         input_perm_fixes(ui, app, &report);
@@ -355,7 +358,9 @@ fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
         app.config.input_perm_dont_remind = !remind;
     }
     if ui.add(crate::theme::secondary_button(tr("Re-check"))).clicked() {
-        app.input_probe = crate::input::probe();
+        // Reopen keyboards first so access that appeared since launch works without a restart.
+        app.hotkeys.rescan();
+        app.input_probe = crate::input::probe(app.hotkeys.active_keyboards());
     }
 }
 
