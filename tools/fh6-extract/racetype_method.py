@@ -297,7 +297,8 @@ STORY_CONF = 0.90         # 2 of 2 marked story-challenge routes (11017, 11044) 
 SHOWCASE_CONF = 0.70      # 1 marked Showcase route (8004 -> wristband); 8005 is the same EventType
 # Series finales shown with the street (purple) icon in-game. User rule 2026-10-03: "Goliath is technically a road race, but it has the purple icon, so everyone
 # considers it a street race, especially since for every race type there's one final race, so it should be purple."  5555 The Goliath: AI family Road (6/6), Street 5/6.
-FINALE_ICON = {5555: 'street'}
+# 132 The Colossus (user, 2026-10-04: "Its a Street Race."): also a series finale with the purple icon; AI family Road 6/6, a 37.7 km paved circuit.
+FINALE_ICON = {5555: 'street', 132: 'street'}
 SOURCES = ('exact', 'finale_icon', 'event', 'ai_family', 'not_a_race', 'copy', 'line')
 
 
