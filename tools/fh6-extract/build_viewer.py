@@ -18,7 +18,7 @@ Coordinates everywhere: telemetry space (x, z metres).  Map px (8192 map) = ((x+
 uses those 8192-map pixels as units (lat = -py, lng = px).
 Needs: numpy, Pillow (scipy optional, used by extract_speedsigns).  Format notes: docs/game-data/.
 """
-import argparse, base64, concurrent.futures as cf, glob, json, math, os, shutil, subprocess, sys, threading, time, traceback, zlib
+import argparse, base64, concurrent.futures as cf, glob, json, math, os, re, shutil, subprocess, sys, threading, time, traceback, zlib
 import numpy as np
 from PIL import Image
 
@@ -208,6 +208,7 @@ CATS = {
     'mascot': ('collect', 'Mascot', 'Maskottchen', '#f0abfc', 1, 0),
     'treasure_chest': ('collect', 'Treasure chest', 'Schatztruhe', '#fde047', 0, 0),
     'treasure_chest_board': ('collect', 'Treasure chest board', 'Schatztruhen-Tafel', '#fde047', 0, 0),
+    'treasure_chest_current': ('collect', 'Current season treasure chest', 'Schatztruhe der aktuellen Saison', '#fde047', 0, 1),
     'barn_find': ('collect', 'Barn find', 'Scheunenfund', '#fbbf24', 0, 1),
     'barn_find_hint': ('collect', 'Barn find hint area', 'Scheunenfund-Hinweisgebiet', '#d97706', 0, 0),
     'barn_building_cell': ('collect', 'Barn building (approx., cell centre)', 'Scheune (ungefaehr, Zellmitte)', '#b45309', 0, 0),
@@ -241,7 +242,7 @@ GROUPS = [('races', 'Races & events', 'Rennen & Events'), ('stunts', 'Stunts (PR
           ('collect', 'Collectibles', 'Sammelobjekte'), ('places', 'Places & services', 'Orte & Dienste'),
           ('events', 'Arenas & games', 'Arenen & Spiele'), ('story', 'Horizon Stories & Jobs', 'Horizon-Stories & -Jobs'),
           ('other', 'Other', 'Sonstiges')]
-ICON_ALIAS = {'horizon_chase': 'horizon_chase_start'}
+ICON_ALIAS = {'horizon_chase': 'horizon_chase_start', 'treasure_chest_current': 'treasure_chest'}
 EXTRA_ICON = {'eliminator_spawn': 'ext/Eliminator/Map/EliminatorActivationMapIcon'}
 # categories whose pois.json 'cell' (approximate) records are superseded by the exact geochunk_pois.json ones
 SUPERSEDED = {'xp_board', 'drift_zone', 'danger_sign', 'drift_circuit_prop'}
@@ -311,6 +312,16 @@ def build_pois(work, out):
             sidx[s] = len(srcs); srcs.append(s)
         cats.setdefault(t, []).append([fl(rec['x'], 2), fl(rec['z'], 2), fl(rec['y'], 1) if rec.get('y') is not None else None,
                                        rec.get('name', ''), sidx[s], ex or None])
+    # current season's chest = the highest-numbered treasure-chest board over both sources (user observation, 2026-10-03)
+    best = None
+    for rec in P + G:
+        m = re.search(r'TREASURE_CHEST_(\d+)$|^treasure_chest_(\d+)$', rec.get('name', ''), re.I)
+        if m and rec['type'] in ('treasure_chest_board', 'treasure_chest') and (best is None or int(m[1] or m[2]) > best[0]):
+            best = (int(m[1] or m[2]), rec)
+    if best:
+        n, rec = best
+        cats['treasure_chest_current'] = [[fl(rec['x'], 2), fl(rec['z'], 2), fl(rec['y'], 1) if rec.get('y') is not None else None, '', sidx[rec.get('source', '')], {'board': n}]]
+        log(f'current season treasure chest: board {n} at x={rec["x"]} z={rec["z"]}')
     return cats, srcs, lines
 
 
