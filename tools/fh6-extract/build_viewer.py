@@ -16,9 +16,9 @@ tiles/<Season>/<z>/<x>/<y>.jpg (the game's own tile pyramid, z 0..3 = L0..L3) ·
 overlays/elevation.png (hillshade; surfaces are drawn client-side from a compressed id grid in data/surfaces.js).
 Coordinates everywhere: telemetry space (x, z metres).  Map px (8192 map) = ((x+12540)*0.3722, (10738-z)*0.3722); the viewer's Leaflet CRS
 uses those 8192-map pixels as units (lat = -py, lng = px).
-Needs: numpy, Pillow (scipy optional, used by extract_speedsigns).  Format notes: docs/game-data/.
+Needs: numpy, Pillow, scipy (extract_predictions; optional for extract_speedsigns).  Format notes: docs/game-data/.
 """
-import argparse, base64, concurrent.futures as cf, glob, json, math, os, re, shutil, subprocess, sys, threading, time, traceback, zlib
+import argparse, base64, collections, concurrent.futures as cf, glob, json, math, os, re, shutil, subprocess, sys, threading, time, traceback, zlib
 import numpy as np
 from PIL import Image
 
@@ -124,6 +124,15 @@ def run_extractors(media, work, force, terrain):
                 j.result()
             except Exception as e:                       # a crashing job must not kill the build
                 log('job crashed:', e)
+    # predicted race types + map pins: needs races.json, pois.json AND racelines.json, so it runs after everything above; ~20 s
+    pj = W('predictions.json')
+    ins = [W('races.json'), W('pois.json'), W('racelines.json')]
+    if os.path.isfile(pj) and (b'"pin_predicted"' not in open(pj, 'rb').read() or any(os.path.isfile(i) and os.path.getmtime(i) > os.path.getmtime(pj) for i in ins)):
+        os.remove(pj)                                     # from before the predictions, or older than its inputs
+    if all(os.path.isfile(i) for i in ins):
+        chain(('predict', 'extract_predictions.py', [], work, ['predictions.json']))
+    else:
+        log('predictions skipped: races.json / pois.json / racelines.json missing')
     return res
 
 
@@ -304,6 +313,15 @@ def build_pois(work, out):
     if not G: warn('GameObjs/GeoChunk POIs (geochunk_pois.json)', 'missing')
     if not R: warn('race starts (races.json)', 'missing')
     geo_types = {g['type'] for g in G}
+    PR = jl(os.path.join(work, 'predictions.json')) if os.path.isfile(os.path.join(work, 'predictions.json')) else None
+    if PR:
+        c = PR['check']
+        log(f"predictions: self-check vs {c['marks']} project marks: full pipeline {c['full']}, hand-only {c['hand_only']}, AI family alone {c['ai_family_alone']}; "
+            f"misses {[(m[0], m[1], m[2]) for m in c['misses']]}")
+        log('  type sources: ' + str(dict(collections.Counter(v['type_source'] for v in PR['routes'].values()))) + '; pin methods: ' +
+            str(dict(collections.Counter(v['pin_predicted']['method'] for v in PR['routes'].values()))))
+    else:
+        warn('predicted race types / pins (predictions.json)', 'missing - the viewer shows only exact data and your marks')
     srcs, sidx = [], {}
     cats, lines = {}, {}
     for rec in P + G + R:
@@ -313,6 +331,8 @@ def build_pois(work, out):
         if rec.get('precision') == 'cell' and t in SUPERSEDED and t in geo_types:
             continue
         ex = dict(rec.get('extra') or {})
+        if PR and t in ('race_start', 'ie_route', 'horizon_chase') and str(ex.get('route_id')) in PR['routes']:
+            ex.update({k: v for k, v in PR['routes'][str(ex['route_id'])].items() if k != 'type_exact'})       # PREDICTIONS (type_predicted, type_*, pin_predicted), kept apart from the exact fields
         if rec.get('precision') not in (None, 'exact'):
             ex['precision'] = rec['precision'] + ' (approximate)'
         if t == 'train_line' and 'polyline' in ex:
