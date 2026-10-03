@@ -16,8 +16,13 @@ magic 'RVAN' (16 B header: 'RVAN', u32 ver=2, u32 id, u32 size), that holds the 
 route's own .owt racing line (<0.1 m in 168/170).  The `race_trigger_zone_rt<N>` spheres (extract_poi.py `race_pin`) are only the
 MAP PIN (0-780 m from the start, median 185 m; circuits: anywhere on the loop).  .owt node 0 is just the lead-in.
 
-Race NAMES: `Stripped/StringTables/EN.zip` CareerRaceCollection.str (Name column = entries >= 154).  There is NO direct
-route-id -> name link in the plaintext data (the CareerRace key scheme is uncracked).  Without --entity-model only the 3 Horizon Rush
+EXACT race names + types (111 of the routes): `ObjectModelGame.zip` (plaintext) -> fh6careers.py: TrackInfoDataSet.InfoByRouteId links
+route -> CareerRace key -> DisplayName string (EN + DE) and the type (UITheme / UseCrossCountryAI / StreetRace flyer).  Written into
+extra as names{EN,DE}, type_exact (ABSENT when the files state none - nothing is inferred), type_source, career_key, ribbon; the EN name
+also becomes race_name (confidence 'exact') and overrides everything below.
+
+Older fallback for the remaining routes (the pre-ObjectModelGame approach; kept for the ~60 routes without a TrackInfo entry):
+`Stripped/StringTables/EN.zip` CareerRaceCollection.str (Name column = entries >= 154).  Without --entity-model only the 3 Horizon Rush
 (via `sidi_rush_*` locators), the 5 Initial-Experience routes and the 7 Horizon Chases get names.  With --entity-model (an OLDER, readable
 EntityModel.zip - the current install's copy is encrypted, see docs) it also derives the event family of 88 routes
 (Entities/Brio/campaign_slots.xml), 10 exact names (4 finales via ContextId + 6 via post_race_locators.xml) and ~44 more by the
@@ -25,13 +30,14 @@ heuristic "the family's names are assigned to its routes by Hungarian matching o
 keywords in K below" (+ a few by elimination).  Confidence is recorded per record (extra.name_confidence); treat anything but
 'exact'/'locator' as a guess.
 """
-import argparse, glob, json, math, os, re, struct, sys
+import argparse, glob, json, math, os, re, struct, sys, zipfile
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fh6common import add_media_args, ci, resolve_media, locators, tzones
 from fh6str import StringTables
 from fh6owt import parse_rvan, positions as owt_positions
+import fh6careers
 
 ap = argparse.ArgumentParser(description='Extract race start lines/grids from AITracks/Route<N>.nav (RVAN block) -> races.json')
 add_media_args(ap)
@@ -202,6 +208,16 @@ for rid in (8001, 8002, 8003):
     if k in RUSH_TXT:
         NAME[rid] = (f'Horizon Rush: {RUSH_TXT[k]}', 'locator', f'nearest sidi_rush_{k} {math.hypot(_rush[k][0]-A[0], _rush[k][1]-A[2]):.0f} m')
 
+# exact race names + exact race types from ObjectModelGame.zip (plaintext; see fh6careers.py) - these override every guess above
+try:
+    EXACT = fh6careers.race_types(MEDIA)
+except (FileNotFoundError, KeyError, zipfile.BadZipFile) as e:
+    EXACT = {}
+    print(f'WARNING: ObjectModelGame.zip not usable ({type(e).__name__}: {e}) - no exact race names / types', file=sys.stderr)
+for rid, x in EXACT.items():
+    if x['names'].get('EN'):
+        NAME[rid] = (x['names']['EN'], 'exact', f'TrackInfoDataSet[{x["career_key"]}].DisplayName (ObjectModelGame.zip)')
+
 # ================================================================================================ emit
 SRC_NAV = 'OpenWorld/Brio/AITracks/Route{}.nav (RVAN block) + owt'
 on_line = []
@@ -225,6 +241,9 @@ for rid in RIDS:
               collection_id=SLOT[rid][1] if rid in SLOT else None,
               race_name=nm[0] if sure else None, race_name_guess=nm[0] if nm and not sure else None,
               name_confidence=nm[1] if nm else None, name_evidence=nm[2] if nm else None, name_candidates=CAND.get(rid))
+    xe = EXACT.get(rid)
+    if xe:                                                      # exact fields only; type_exact is absent when the game files state no type
+        ex.update(type_exact=xe['type_exact'], type_source=xe['type_source'], career_key=xe['career_key'], ribbon=xe['ribbon'], names=xe['names'])
     if rid in TRIG:
         t = TRIG[rid]
         ex['activation'] = [round(t[0], 1), round(t[2], 1)]
@@ -254,6 +273,8 @@ act = [r['extra']['activation_dist_m'] for r in rs if 'activation_dist_m' in r['
 if act:
     print(f'activation pin to start line: n={len(act)} median {np.median(act):.0f} m max {max(act)} m')
 print('event types:', dict(Counter(r['extra']['event_type'] for r in rs)))
+tc = Counter(r['extra'].get('type_exact') for r in OUT if r['type'] in ('race_start', 'ie_route', 'horizon_chase') and 'career_key' in r['extra'])
+print('exact types:', dict(tc), '| records with a TrackInfo entry:', sum(tc.values()), 'of', len(EXACT), 'routes')
 print('names:', dict(Counter((r['extra'].get('name_confidence') or 'none') for r in rs + [r for r in OUT if r['type'] in ('ie_route', 'horizon_chase')])))
 roads = os.path.join(ARGS.out, 'roads.json')
 if os.path.exists(roads):                                      # optional validation against decode_nav.py output
