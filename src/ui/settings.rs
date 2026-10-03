@@ -181,6 +181,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // Linux-only: Windows needs no input permissions.
             if cfg!(target_os = "linux") {
                 crate::theme::card(right, tr("Input Permissions"), |ui| input_perm_card(ui, app));
+                crate::theme::card(right, tr("Hotkey Diagnostics"), |ui| hotkey_diag_card(ui, app));
             }
 
             crate::theme::card(right, tr("Window Detection"), |ui| input_card(ui, app));
@@ -336,6 +337,7 @@ fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::Inpu
 /// The "Input Permissions" category (Linux): one status light per requirement, plus the
 /// fix commands when something is missing and the startup-reminder toggle.
 fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
+    refresh_input_facts(app, false);
     let p = app.input_probe;
     let dot = |ok: bool| if ok { Dot::Ok } else { Dot::Bad };
     status_dot(ui, dot(p.hotkeys_ok), tr("Hotkeys: read keyboard devices (/dev/input)"));
@@ -360,7 +362,239 @@ fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
     if ui.add(crate::theme::secondary_button(tr("Re-check"))).clicked() {
         // Reopen keyboards first so access that appeared since launch works without a restart.
         app.hotkeys.rescan();
-        app.input_probe = crate::input::probe(app.hotkeys.active_keyboards());
+        refresh_input_facts(app, true);
+    }
+}
+
+/// Re-read the keyboard list and the input probe (the Setup cards read both from the app). Runs
+/// at most every ~2 s while the cards are on screen, or at once with `force` (Re-check). *Why live:*
+/// the probe used to run once at startup, so a reader thread that died later left a stale green.
+fn refresh_input_facts(app: &mut ForzaApp, force: bool) {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+    if !force && app.kb_list_at.is_some_and(|t| t.elapsed() < EVERY) {
+        return;
+    }
+    app.kb_list = app.hotkeys.keyboards();
+    app.input_probe = crate::input::probe(app.hotkeys.active_keyboards());
+    app.kb_list_at = Some(std::time::Instant::now());
+}
+
+/// "3 s ago" / "2 min ago" (German: "vor 3 s"). `de` is false for the copied text.
+fn ago(d: std::time::Duration, de: bool) -> String {
+    let n = d.as_secs();
+    let (v, unit) = if n < 100 { (n, "s") } else { (n / 60, "min") };
+    if de { format!("vor {v} {unit}") } else { format!("{v} {unit} ago") }
+}
+
+/// Everything the "Hotkey Diagnostics" card shows, gathered once so the screen and the copied
+/// text can't disagree.
+struct DiagData {
+    version: &'static str,
+    session: String,
+    probe: crate::input::InputProbe,
+    physical_open: usize,
+    kbs: Vec<crate::hotkeys::KeyboardInfo>,
+    snap: crate::hotkeys::DiagSnapshot,
+    focus: crate::focus::FocusSnapshot,
+    focus_status: crate::focus::FocusStatus,
+    focus_method: crate::config::FocusMethod,
+    game_match: String,
+    mode: crate::config::GateMode,
+    telemetry_live: bool,
+    /// The gate's verdict with the game in front (our own window not focused): what matters in play.
+    in_game: crate::app::GateVerdict,
+}
+
+fn collect_diag(app: &ForzaApp) -> DiagData {
+    let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "?".into());
+    let params = app.focus.params();
+    let mode = app.config.hotkeys.gate_mode;
+    let telemetry_live = app.telemetry.is_connected;
+    DiagData {
+        version: env!("CARGO_PKG_VERSION"),
+        session: format!("{} / {}", env("XDG_SESSION_TYPE"), env("XDG_CURRENT_DESKTOP")),
+        probe: app.input_probe,
+        physical_open: app.hotkeys.active_keyboards(),
+        kbs: app.kb_list.clone(),
+        snap: app.hotkeys.diag().snapshot(),
+        focus: app.focus.snapshot(),
+        focus_status: app.focus.status(),
+        focus_method: params.method,
+        game_match: params.game_match,
+        mode,
+        telemetry_live,
+        in_game: crate::app::gate_verdict(mode, false, false, telemetry_live, app.focus.focused()),
+    }
+}
+
+/// The copyable diagnostics, always English (it is read by the developer, not the user).
+fn diag_text(d: &DiagData) -> String {
+    use std::fmt::Write;
+    let yn = |b: bool| if b { "yes" } else { "no" };
+    let mut t = String::new();
+    let _ = writeln!(t, "ForzaTelemetryV3 {} hotkey diagnostics", d.version);
+    let _ = writeln!(t, "Session: {}", d.session);
+    let _ = writeln!(
+        t, "Probe: hotkeys_ok={} uinput_ok={} uinput_exists={} in_input_group={} physical_keyboards_open={}",
+        yn(d.probe.hotkeys_ok), yn(d.probe.uinput_ok), yn(d.probe.uinput_exists), yn(d.probe.in_input_group), d.physical_open,
+    );
+    let _ = writeln!(t, "Keyboards (devices with letter keys):");
+    if d.kbs.is_empty() {
+        let _ = writeln!(t, "  none found");
+    }
+    for k in &d.kbs {
+        let _ = writeln!(
+            t, "  {:<8} {} | readable={} open={} virtual={} mouse_or_pad_like={} counts={}",
+            k.node, k.name, yn(k.readable), yn(k.opened), yn(k.is_virtual), yn(k.pointer), yn(k.counts),
+        );
+    }
+    let s = &d.snap;
+    let _ = writeln!(t, "Key presses seen by the backend: {}", s.presses);
+    if let Some((age, dev)) = &s.last_press {
+        let _ = writeln!(t, "Last press: {} on {dev}", ago(*age, false));
+    }
+    match &s.last_key {
+        Some((age, key, dev)) => { let _ = writeln!(t, "Last key (recorded while this card was open): {key} on {dev}, {}", ago(*age, false)); }
+        None => { let _ = writeln!(t, "Last key: none recorded while this card was open"); }
+    }
+    match &s.last_action {
+        Some((age, a)) => { let _ = writeln!(t, "Last bound hotkey sent to the listener thread: {a:?}, {}", ago(*age, false)); }
+        None => { let _ = writeln!(t, "Last bound hotkey sent to the listener thread: none yet"); }
+    }
+    for e in &s.ended {
+        let _ = writeln!(t, "Reader stopped: {e}");
+    }
+    let _ = writeln!(t, "Gate: mode={:?} telemetry_live={} in_game_verdict={:?}", d.mode, yn(d.telemetry_live), d.in_game);
+    let f = &d.focus;
+    let _ = writeln!(
+        t, "Window detection: method={:?} status={:?} game_match={:?}",
+        d.focus_method, d.focus_status, d.game_match,
+    );
+    let _ = writeln!(
+        t, "Active window: {:?} matched={} game last matched: {}",
+        f.window.as_deref().unwrap_or("(none yet)"),
+        f.matched.map_or("?", yn),
+        f.matched_at.map_or("never".to_string(), |at| ago(at.elapsed(), false)),
+    );
+    if let Some(e) = &f.error {
+        let _ = writeln!(t, "Window query error: {e}");
+    }
+    if !f.recent.is_empty() {
+        let list: Vec<String> = f.recent.iter().map(|(n, m)| format!("{n:?}{}", if *m { " [match]" } else { "" })).collect();
+        let _ = writeln!(t, "Recent windows: {}", list.join(", "));
+    }
+    t
+}
+
+/// A status dot followed by a message that wraps inside the card (device names and window
+/// titles are long).
+fn dot_line(ui: &mut Ui, dot: Dot, msg: &str) -> egui::Response {
+    ui.horizontal_wrapped(|ui| {
+        let col = match dot {
+            Dot::Ok => crate::theme::GOOD,
+            Dot::Warn => crate::theme::WARN,
+            Dot::Bad => crate::theme::DANGER,
+        };
+        ui.label(RichText::new("\u{25CF}").color(col));
+        ui.label(RichText::new(msg).size(11.0));
+    })
+    .response
+}
+
+/// The "Hotkey Diagnostics" category (Linux): why hotkeys might not fire, readable at a glance
+/// and copyable. Three questions in order: which keyboards can we read, do key presses arrive,
+/// and does the gate let them through.
+fn hotkey_diag_card(ui: &mut Ui, app: &mut ForzaApp) {
+    app.hotkeys.diag().listen(); // key identities are recorded only while this card is drawn
+    let de = crate::i18n::language_code() == "DE";
+    let d = collect_diag(app);
+
+    sub_heading(ui, tr("Keyboards"));
+    if d.kbs.is_empty() {
+        dot_line(ui, Dot::Warn, tr("No keyboard devices found"));
+    }
+    for k in &d.kbs {
+        let dot = if !k.counts { Dot::Warn } else if k.readable && k.opened { Dot::Ok } else { Dot::Bad };
+        let mut flags = vec![
+            if k.readable { tr("readable") } else { tr("not readable") },
+            if k.opened { tr("open") } else { tr("not open") },
+        ];
+        if k.is_virtual { flags.push(tr("virtual")); }
+        if k.pointer { flags.push(tr("also mouse / pad")); }
+        let resp = dot_line(ui, dot, &format!("{} ({}) \u{00B7} {}", k.name, k.node, flags.join(" \u{00B7} ")));
+        if !k.counts {
+            resp.on_hover_text(tr("Virtual keyboards and mouse / pad interfaces are read too, but they don't count as a working keyboard."));
+        }
+    }
+
+    sub_heading(ui, tr("Hotkey events"));
+    let s = &d.snap;
+    match (&s.last_key, &s.last_press) {
+        (Some((age, key, dev)), _) => {
+            dot_line(ui, Dot::Ok, &format!("{} {key} \u{00B7} {dev} \u{00B7} {}", tr("Last key:"), ago(*age, de)));
+        }
+        (None, Some((age, dev))) => {
+            dot_line(ui, Dot::Ok, &format!("{} {} \u{00B7} {} {dev} \u{00B7} {}", tr("Key presses seen:"), s.presses, tr("last on"), ago(*age, de)));
+        }
+        (None, None) => {
+            dot_line(ui, Dot::Warn, tr("No key press seen yet. Press a key."));
+        }
+    }
+    match &s.last_action {
+        Some((age, a)) => {
+            dot_line(ui, Dot::Ok, &format!("{} {} \u{00B7} {}", tr("Last hotkey sent:"), tr(a.label()), ago(*age, de)));
+        }
+        None => {
+            dot_line(ui, Dot::Warn, tr("No bound hotkey pressed yet."));
+        }
+    }
+    for e in &s.ended {
+        dot_line(ui, Dot::Bad, &format!("{} {e}", tr("Reader stopped:")));
+    }
+
+    sub_heading(ui, tr("Hotkey gate"));
+    use crate::app::GateVerdict::*;
+    let mode = match d.mode {
+        crate::config::GateMode::TelemetryLive => tr("Telemetry live"),
+        crate::config::GateMode::WindowFocus => tr("Game window focused"),
+    };
+    let (dot, verdict) = match d.in_game {
+        Open => (Dot::Ok, tr("In game: hotkeys allowed")),
+        NoTelemetry => (Dot::Warn, tr("Hotkeys blocked: no telemetry")),
+        GameNotFocused => (Dot::Warn, tr("Hotkeys blocked: game not focused")),
+        OurAppTyping => (Dot::Ok, tr("In game: hotkeys allowed")), // not reachable with our window unfocused
+    };
+    dot_line(ui, dot, &format!("{} {mode} \u{00B7} {verdict}", tr("Active if")));
+    if d.focus_status == crate::focus::FocusStatus::Idle {
+        result_line(ui, tr("Window detection is idle (not used by these settings)."));
+    } else {
+        let f = &d.focus;
+        let name = f.window.as_deref().unwrap_or("?");
+        let (dot, m) = match f.matched {
+            Some(true) => (Dot::Ok, tr("matches")),
+            Some(false) => (Dot::Warn, tr("no match")),
+            None => (Dot::Warn, "?"),
+        };
+        let resp = dot_line(ui, dot, &format!("{} \"{name}\" \u{00B7} {m} \"{}\"", tr("Active window:"), d.game_match));
+        if !f.recent.is_empty() {
+            let list: Vec<String> = f.recent.iter().map(|(n, m)| format!("\"{n}\"{}", if *m { " \u{2713}" } else { "" })).collect();
+            resp.on_hover_text(format!("{}\n{}", tr("Recent windows (\u{2713} = matched):"), list.join("\n")));
+        }
+        let seen = f.matched_at.map_or(tr("never").to_string(), |at| ago(at.elapsed(), de));
+        dot_line(ui, if f.matched_at.is_some() { Dot::Ok } else { Dot::Warn }, &format!("{} {seen}", tr("Game window last matched:")));
+        if d.focus_status == crate::focus::FocusStatus::QueryFailed {
+            let e = f.error.as_deref().unwrap_or("?");
+            dot_line(ui, Dot::Bad, &format!("{} {e}", tr("Window query failed (hotkeys stay allowed):")));
+        }
+    }
+
+    ui.add_space(4.0);
+    let copied_id = egui::Id::new("hotkey_diag_copied");
+    let copied = ui.ctx().data(|dt| dt.get_temp::<std::time::Instant>(copied_id)).is_some_and(|t| t.elapsed().as_secs() < 2);
+    let label = if copied { tr("Copied") } else { tr("Copy diagnostics") };
+    if ui.add(crate::theme::secondary_button(label)).clicked() {
+        ui.ctx().copy_text(diag_text(&d));
+        ui.ctx().data_mut(|dt| dt.insert_temp(copied_id, std::time::Instant::now()));
     }
 }
 
@@ -1336,4 +1570,47 @@ fn repo_card(ui: &mut Ui) {
         "https://github.com/dmotz/trystero",
     );
     result_line(ui, tr("Font licences: assets/fonts/"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hotkeys::{DiagSnapshot, KeyboardInfo};
+    use std::time::Duration;
+
+    fn data() -> DiagData {
+        DiagData {
+            version: "0.0.0",
+            session: "wayland / GNOME".into(),
+            probe: crate::input::InputProbe::default(),
+            physical_open: 0,
+            kbs: vec![KeyboardInfo { node: "event24".into(), name: "ydotoold virtual device".into(), readable: true, opened: true, is_virtual: true, pointer: true, counts: false }],
+            snap: DiagSnapshot::default(),
+            focus: crate::focus::FocusSnapshot::default(),
+            focus_status: crate::focus::FocusStatus::Idle,
+            focus_method: crate::config::FocusMethod::Gnome,
+            game_match: "Forza".into(),
+            mode: crate::config::GateMode::TelemetryLive,
+            telemetry_live: false,
+            in_game: crate::app::GateVerdict::NoTelemetry,
+        }
+    }
+
+    #[test]
+    fn ago_formats_seconds_then_minutes() {
+        assert_eq!(ago(Duration::from_secs(3), false), "3 s ago");
+        assert_eq!(ago(Duration::from_secs(150), false), "2 min ago");
+        assert_eq!(ago(Duration::from_secs(3), true), "vor 3 s");
+    }
+
+    #[test]
+    fn diag_text_tells_the_whole_story_in_english() {
+        let t = diag_text(&data());
+        assert!(t.contains("physical_keyboards_open=0"), "{t}");
+        assert!(t.contains("event24  ydotoold virtual device | readable=yes open=yes virtual=yes"), "{t}");
+        assert!(t.contains("Key presses seen by the backend: 0"), "{t}");
+        assert!(t.contains("Last bound hotkey sent to the listener thread: none yet"), "{t}");
+        assert!(t.contains("in_game_verdict=NoTelemetry"), "{t}");
+        assert!(t.contains("game last matched: never"), "{t}");
+    }
 }
