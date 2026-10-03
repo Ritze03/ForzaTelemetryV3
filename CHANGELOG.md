@@ -4,6 +4,12 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.4.2] – 2026-10-04
+
+### Fixed
+- **Hotkeys on GNOME/Fedora: the permission check no longer shows a false green**: *Setup → Input Permissions* counted any readable input device, so a game controller made it green even when the keyboard could not be read, and the "input permissions missing" dialog never appeared while hotkeys stayed dead. It now checks that a **keyboard** is readable (and that hotkeys actually opened one), shows red with the fix commands otherwise, and **Re-check** reopens keyboards without a restart. Not being in the `input` group is only a hint (amber) while everything works.
+- **Automatic gearbox: the detected max RPM (redline) is now locked once calibration finishes**: later over-revs (limiter bounce, downshift spikes) kept raising it and moved the shift point. Only **Clear RPM calibration**, switching cars, or loading a saved per-car calibration changes it now. The Debug tab's Calibration checks show the lock ("Redline not locked" row, heading "locked").
+
 ## [0.4.1] – 2026-10-02
 
 ### Fixed

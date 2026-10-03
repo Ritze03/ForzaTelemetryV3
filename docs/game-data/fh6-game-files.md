@@ -669,7 +669,7 @@ It also settles the 17 scramble / trail routes: all use the `Dirt_*` family, con
 
 **Line rules (source 6; only for what 1-5 leave open: 9 routes in this build).** Features are computed on the trimmed racing line (`racelines.json` points):
 `s_off` = share of line points whose exact terrain triangle (height-matched within 15 m, same sampler as `classify_roads.py`, kind table `fh6surfaces.SURFACES`) is off-road; `t_dirt` = share (by length) of `.owt`
-node `tag[0]` in 272-274. Ordered rules (thresholds fitted by an exhaustive 1-D search on the 85 race-typed marks): `s_off >= 0.124` -> off-road, within that `t_dirt >= 0.148` -> `rally` else `cross_country`;
+node `tag[0]` in 272-274. Ordered rules (thresholds fitted by an exhaustive 1-D search on the 86 race-typed marks): `s_off >= 0.124` -> off-road, within that `t_dirt >= 0.148` -> `rally` else `cross_country`;
 point-to-point and length <= 1844 m -> `drag`; circuit -> `road`; paved point-to-point -> road / street / touge are not separable from the line, so the **route-id thousands digit** is used (2xxx road, 4xxx street, 5xxx touge)
 and the source is labelled `id_convention`. *Why labelled:* the digit is a **naming convention** in the route ids that happens to hold on the 85 marks, **not a game field**; a future build could break it, so the viewer
 says so on every prediction that rests on it (currently only 4301). `extract_predictions.py --refit` re-fits the thresholds after a game update (prints leave-one-out accuracy; writes nothing).
@@ -680,7 +680,7 @@ says so on every prediction that rests on it (currently only 4301). `extract_pre
 |---|---|
 | Full pipeline, all 93 marks | **92 / 93** (98.9 %); the one miss is listed below |
 | Hand-only marks (26 without an exact type) | **25 / 26** |
-| Race-typed marks (85) | 85 / 85 |
+| Race-typed marks (86) | 86 / 86 |
 | AI family alone, no fitted parameter (85 marks with a family) | **83 / 85** (97.6 %); on the 66 exact-typed ones 66 / 66 |
 | Line rules alone, leave-one-out, without the id hint | 67 / 85 = **78.8 %** (road+street merged 91.8 %) |
 | Line rules alone, leave-one-out, with the id hint | 81 / 85 = **95.3 %** |
