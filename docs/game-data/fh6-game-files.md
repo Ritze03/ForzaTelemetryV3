@@ -393,6 +393,8 @@ was wrong: only 27 `ANIM_*` / `STADIUM_FLOOR` objects sit at the origin.)
 | `MASCOTS_REGION_R_NNN` | 200 | mascots (region number kept) |
 | `ESTATE_ENTRANCE_NN` | 37 | estate entrances |
 | `DISCOUNT_BOARD_TREASURE_CHEST_N` | 3 | treasure-chest boards |
+
+The highest-numbered `DISCOUNT_BOARD_TREASURE_CHEST_N` (over `gameobjs.xml` and the GeoChunk; 015 today) is the **current season's treasure chest** (user observation, 2026-10-03). The map viewer picks it at build time and shows it as its own highlighted layer (`treasure_chest_current`, on by default).
 | `BARN_FIND_*` | some | barn-find objects (not extracted by the script) |
 | `ANIM_*`, `STADIUM_FLOOR…` | 27 | at 0,0,0 — ignore |
 

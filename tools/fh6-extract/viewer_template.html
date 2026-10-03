@@ -70,6 +70,7 @@ summary::before{content:"\25B8";display:inline-block;width:14px}details[open]>su
 .lbl.lm{font-size:11px;margin-top:-12px}
 .lbl.rg{font-size:20px;letter-spacing:2px;text-transform:uppercase;opacity:.9;font-weight:700}
 .zlow .lbl.lm{display:none}.zhigh .lbl.rg{opacity:.35}
+.poi-cur{filter:drop-shadow(0 0 4px #fde047) drop-shadow(0 0 8px #f59e0b)}
 .poi-ic{filter:drop-shadow(0 0 2px #000) drop-shadow(0 0 1px #000)}
 .sgn{pointer-events:auto}
 .sgn svg{display:block;overflow:visible}
@@ -130,7 +131,7 @@ const UI = {
         reasoned_note: '~ = reasoned guess, not checked in-game',
         region: 'Region', landmark: 'Landmark', radius: 'Radius', area: 'Area', route: 'Route', circuit: 'circuit', p2p: 'point-to-point', length: 'Length', heading: 'Heading',
         facing: 'Faces', width: 'Half-width', roadd: 'Road distance', cell: 'Source cell', surface: 'Surface', elev: 'Terrain height', layers: 'Layers', model: 'Model', ctx: 'Position',
-        grid_hint: 'Race start grids', goto: 'jump to', nores: 'no matches', basis_guess: 'icon is a guess', basis_ours: 'icon chosen by us', unreachable: 'visual only' },
+        grid_hint: 'Race start grids', board: 'board', goto: 'jump to', nores: 'no matches', basis_guess: 'icon is a guess', basis_ours: 'icon chosen by us', unreachable: 'visual only' },
   de: { season: 'Jahreszeit', lang: 'Namen', basedim: 'Basiskarte', copy: 'x, z kopieren', type: 'Typ', name: 'Name', pos: 'Position (x, z, y)', src: 'Quelle',
         route_line: 'Rennlinie zeigen', surfaces: 'Gelaende-Untergrund', elevation: 'Hoehe (Schummerung)', opacity: 'Deckkraft', roads: 'Strassen', regions: 'Regionen',
         landmarks: 'Wahrzeichen', racelines: 'Rennlinien (Mitte)', ribbons: 'Streckenraender (hineinzoomen)', grids: 'Startaufstellungen', hover: 'Maus ueber die Karte bewegen',
@@ -143,7 +144,7 @@ const UI = {
         reasoned_note: '~ = Vermutung, nicht im Spiel geprueft',
         region: 'Region', landmark: 'Wahrzeichen', radius: 'Radius', area: 'Flaeche', route: 'Route', circuit: 'Rundkurs', p2p: 'Punkt-zu-Punkt', length: 'Laenge', heading: 'Richtung',
         facing: 'Zeigt nach', width: 'Halbbreite', roadd: 'Abstand zur Strasse', cell: 'Quellzelle', surface: 'Untergrund', elev: 'Gelaendehoehe', layers: 'Ebenen', model: 'Modell', ctx: 'Position',
-        grid_hint: 'Startaufstellungen', goto: 'springe zu', nores: 'keine Treffer', basis_guess: 'Symbol geraten', basis_ours: 'Symbol von uns gewaehlt', unreachable: 'nur gesehen' },
+        grid_hint: 'Startaufstellungen', board: 'Tafel', goto: 'springe zu', nores: 'keine Treffer', basis_guess: 'Symbol geraten', basis_ours: 'Symbol von uns gewaehlt', unreachable: 'nur gesehen' },
 };
 const GROUP_EXTRA = { map: ['Map', 'Karte'], signs: ['Speed-limit signs', 'Tempolimit-Schilder'], terrain: ['Terrain', 'Gelaende'] };
 const state = { lang: store.get('lang', 'EN'), season: store.get('season', null), on: store.get('on', {}), op: store.get('op', {}), iso: null };
@@ -251,7 +252,7 @@ function poiPopup(cat, r) {
   if (rid != null && (D.racelines || []).some((q) => q.id === rid)) actions.push([t('route_line'), 'route:' + rid]);
   const m = META.cats[cat];
   if (m && m.icon_basis && m.icon_basis !== 'derived') rows.push(['icon', t(m.icon_basis === 'guessed' ? 'basis_guess' : 'basis_ours')]);
-  return popupHtml({ title: r[3] || catLabel(cat), type: catLabel(cat), x: r[0], z: r[1], y: r[2], src: srcs[r[4]], rows, actions });
+  return popupHtml({ title: catTitle(cat, r), type: catLabel(cat), x: r[0], z: r[1], y: r[2], src: srcs[r[4]], rows, actions });
 }
 
 // ------------------------------------------------------------------------------------------------------------- layer registry
@@ -318,15 +319,18 @@ function catIcon(cat, r) {
   let key = m.icon;
   if (cat === 'race_start' && META.race_icons) key = (r[5] && r[5].circuit ? META.race_icons.circuit : META.race_icons.p2p) || key;
   if (!key || !META.icons[key]) return null;
-  return L.icon({ iconUrl: META.icons[key], iconSize: [26, 26], iconAnchor: [13, 13], popupAnchor: [0, -12], className: 'poi-ic' });
+  const big = cat === 'treasure_chest_current' ? 40 : 26;
+  return L.icon({ iconUrl: META.icons[key], iconSize: [big, big], iconAnchor: [big / 2, big / 2], popupAnchor: [0, -big / 2 + 1], className: 'poi-ic' + (big > 26 ? ' poi-cur' : '') });
 }
+const catTitle = (cat, r) => r[3] || (cat === 'treasure_chest_current' ? catLabel(cat) + ' (' + t('board') + ' ' + r[5].board + ')' : catLabel(cat));
 function makeCat(cat) {
   const m = META.cats[cat], rows = D.poi.cats[cat];
   const g = (m.cluster && MC) ? L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 48, disableClusteringAtZoom: 6, showCoverageOnHover: false }) : L.featureGroup();
   rows.forEach((r) => {
     const p = ll(r[0], r[1]), ic = catIcon(cat, r);
     const mk = ic ? L.marker(p, { icon: ic }) : L.circleMarker(p, { radius: 5, color: '#000', weight: 1, fillColor: m.color, fillOpacity: 0.95 });
-    mk.bindTooltip(() => (r[3] ? r[3] : catLabel(cat)) + (r[3] ? '  (' + catLabel(cat) + ')' : ''));
+    mk.bindTooltip(() => catTitle(cat, r) + (r[3] ? '  (' + catLabel(cat) + ')' : ''));
+    if (cat === 'treasure_chest_current') g.addLayer(L.circleMarker(p, { radius: 24, color: '#f59e0b', weight: 3, fillColor: '#fde047', fillOpacity: 0.2, interactive: false }));
     mk.bindPopup(() => poiPopup(cat, r));
     g.addLayer(mk);
     const ex = r[5];
