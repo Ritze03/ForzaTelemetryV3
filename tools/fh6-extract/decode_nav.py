@@ -67,8 +67,9 @@ for idx, f in roads:
             cur = []
         cur.append(b)
     if len(cur) > 1: polys.append(cur); attrs.append(f)
-json.dump({'note': 'polylines of [x,z] world metres (same space as telemetry PositionX/Z); cls = u32 flags of road record (lo16 kind 4/5/6/8, hi16 unknown id)',
+json.dump({'note': 'polylines of [x,z] world metres (same space as telemetry PositionX/Z); heights = node y per polyline vertex; cls = u32 flags of road record (lo16 kind 4/5/6/8, hi16 unknown id)',
            'polylines': [[[round(float(p[i][0]), 1), round(float(p[i][2]), 1)] for i in q] for q in polys],
+           'heights': [[round(float(p[i][1]), 1) for i in q] for q in polys],
            'cls': [a & 0xffff for a in attrs], 'hi': [a >> 16 for a in attrs]},
           open(OUT + '/roads.json', 'w'), separators=(',', ':'))
 print('polylines', len(polys))

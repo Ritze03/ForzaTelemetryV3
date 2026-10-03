@@ -25,6 +25,7 @@ Steam's `libraryfolders.vdf`, see `fh6common.py`) and `--out DIR` (default `./fh
 | `extract_geochunk.py [--skip-pgeo]` | `geochunk_pois.json` | exact positions: `Ribbon_00/GameObjs.xml` (793 objects: speed traps/zones, drift zones, XP boards, …) + GeoChunk0 `.pgeo` (danger signs, drift-zone posts). Takes ~1 s. |
 | `extract_races.py [--entity-model ZIP]` | `races.json` | start line, 12-slot grid, heading, finish for 169 routes from the `RVAN` block of `AITracks/Route<N>.nav`; names for ~15 routes (more with `--entity-model`). Optional validation vs `roads.json` if it is in `--out`. |
 | `extract_terrain.py [--region X0,Z0,X1,Z1] [--res 4] [--surf-res 8] [--coarse] [--no-elevation] [--no-surfaces]` | `elevation.npy/.json/.png`, `surfaces.npy/.json/.png` | terrain height raster + surface-id raster from GeoChunk0. Full island: minutes and a few GB RAM — use `--region` (world metres) for a quick test, e.g. `--region -87,1460,1413,2960`. `--coarse` = whole-island low-detail elevation (~40 s). Surface names are **ours** (`fh6surfaces.py`: confirmed in-game / seen / reasoned); the class colours only group ids for the preview. |
+| `classify_roads.py [--step 4] [--jobs 8]` | `roadsurf.npz` | terrain surface id under every nav road (exact `.phys` triangle at 4 m spacing, node-height rule for bridges); needs `roads.json` **with `heights`** (current `decode_nav.py`) in `--out`. ~16 s. `build_viewer.py` turns it into paved / off-road / unknown runs (kinds from `fh6surfaces.py`). Method: [fh6-terrain.md](../../docs/game-data/fh6-terrain.md#surface-kind-paved--off-road-and-the-surface-under-the-roads). |
 | `extract_racelines.py [--step 5]` | `racelines.json` | 170 racing lines from `AITracks/Route<N>.owt`, trimmed to one drive / lap (127 point-to-point + 43 circuits), with left/right track edges (half-width vector). Needs `fh6owt.py`. |
 | `extract_speedsigns.py [--roads roads.json] [--variant-map "0=50,1=60"]` | `speedsigns.json` | 2141 speed-limit signs (1659 limit + 217 high-speed + 265 end-of-limit) from GeoChunk0 `signs_do` pgeo cells, with facing and (if `roads.json` present, scipy) road snap. `limit_kmh` stays null unless `--variant-map` — the km/h per variant is **not** in the files. |
 | `extract_cars.py [--lang EN,DE\|all] [--ordinal N ...]` | `cars.json` | `CarOrdinal` → `MediaName` (671 `Cars/*.zip` central directories) → full / model name from `Data_Car.str`. ~0.5 s. |
@@ -47,7 +48,7 @@ python3 -B build_viewer.py --out /some/dir/outside/the/repo      # then open  /s
 - **Output is Playground Games' imagery/data** (~100 MB): keep it outside the repo, do not publish or commit it. The script refuses `--out`/`--work` inside the repo.
 - **Opens from `file://`** (data is `<script src="data/*.js">`, no `fetch`). It needs internet for the Leaflet + markercluster CDN scripts (unpkg).
   Elevation/surface hover lookups use `DecompressionStream` (Chrome/Edge 80+, Firefox 113+, Safari 16.4+).
-- **What it shows:** the game's own tile pyramid as base map (4 seasons, JPEG; zoom 0–3 = levels L0–L3, overzoom to 7), roads by class, regions (outline + names), landmarks (75),
+- **What it shows:** the game's own tile pyramid as base map (4 seasons, JPEG; zoom 0–3 = levels L0–L3, overzoom to 7), roads by surface kind (paved / off-road / unknown, click = nav class, this stretch, whole-road split, dominant ids with confirmed/reasoned status) or by nav class, regions (outline + names), landmarks (75),
   every POI category with the game's own icon where `mapping.json` has one (coloured circle otherwise; dense layers clustered and off by default), race starts (+ 12-slot grids),
   170 race lines with track edges (ribbons appear from zoom 4), speed-limit signs by variant with a heading arrow, stunt gates, surfaces raster (54 ids, our names with
   confirmed / seen / reasoned status; click a legend row to isolate one id), elevation hillshade. EN/DE (and the other 22 languages for landmark / region names) toggle;
@@ -60,7 +61,7 @@ python3 -B build_viewer.py --out /some/dir/outside/the/repo      # then open  /s
 Library modules (imported, not run): `fh6common.py` (install detection, case-insensitive paths, `.nt` / `.tz`
 readers), `pgzp.py` + `lz4b.py` (reader for the 40 GB `GeoChunk*.minizip` PGZP containers — seek-reads single
 entries), `fh6str.py` (string-table reader + key hash), `fh6owt.py` (`.owt` racing-line reader + `RVAN` start/finish block), `fh6surfaces.py` (terrain
-surface-id → name table; each entry is marked confirmed in-game / seen / reasoned), `fh6bxml.py` (binary-XML decoder, only for `--entity-model`).
+surface-id → name + kind table; each entry is marked confirmed in-game / seen / reasoned), `fh6bxml.py` (binary-XML decoder, only for `--entity-model`).
 `pgzp.py` reads all four `GeoChunk*.minizip` (handles the u64-N table of GeoChunk2 and the last entry of the file).
 
 **`--entity-model PATH`** = an *older, readable* `Stripped/EntityModel.zip`. The one in the current install is

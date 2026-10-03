@@ -197,11 +197,13 @@ The 1532nd row is only `{u32 count = 4, u32 flags}` (its two u64 are absent).
 `A[start_r : start_r + count_r]` with a running `start`. `sum(count) == hdr[2]` (asserted).
 **Junction nodes appear in several roads** (shared), which is how connectivity is encoded.
 
-### Road class (`flags & 0xffff`) — partly guessed
+### Road class (`flags & 0xffff`) — NOT a surface type
 
-Values {4, 5, 6, 8}, counts 191 / 1084 / 255 / 2. Guess: **4 = highway, 5 = normal road,
-6 = dirt/track (also the airfield strip), 8 = one oddity.** Not verified against the property
-strings. `flags >> 16` unknown.
+Values {4, 5, 6, 8}, counts 191 / 1084 / 255 / 2. The earlier guess "4 = highway, 5 = normal road, 6 = dirt/track" is **wrong**: the user checked it in the map viewer and every class mixes
+paved and unpaved roads (measured from the terrain surface under the roads, km paved / off-road / unknown: class 4 = 35 / 19 / 4, 5 = 396 / 172 / 37, 6 = 74 / 10 / 21, 8 = 1 / 0 / 0.2).
+Class 8 is two roads, 97 % on id 10 (asphalt variant; the airfield strip / an oddity). What the class means is unknown (not verified against the property strings); `flags >> 16` unknown.
+*Why it matters:* to know whether a road is paved or off-road, sample the terrain surface id under it — `classify_roads.py`, see [fh6-terrain.md](fh6-terrain.md#surface-kind-paved--off-road-and-the-surface-under-the-roads).
+(`decode_nav.py` also exports the node heights `y` per polyline vertex as `roads.json` `heights`; the road-surface sampler needs them.)
 
 ### Splitting into polylines
 
