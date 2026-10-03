@@ -52,7 +52,7 @@ Precision: *exact* = world coordinates straight from the file; *approx* = recons
 | Terrain surface ids | GeoChunk0 `tbheightfield\*_square*.phys` | 34.7 M tris, 54 ids | ids exact; **names ours**: 18 confirmed in-game, 4 seen, 32 reasoned | **no** (table encrypted) | **yes** — [terrain](fh6-terrain.md#surface-names-id-table) |
 | Race start line + 12-slot grid + heading + finish | `OpenWorld/Brio/AITracks/Route<N>.nav` (`RVAN` block) | 169 routes (+ route 99 test) | exact (on racing line < 0.1 m) | partial, see next rows | **yes** |
 | Race racing line + track width | `AITracks/Route<N>.owt` | 170 (127 point-to-point + 43 circuits; 2 off-map, 1 test) | exact; edges = pos ± half-width vector | n/a | **yes** — [Race lines](#race-lines-the-owt-racing-line-files) |
-| Race map pin (activation sphere) | `Tracks/Brio/triggerzones/tz_race_activations/race_triggers.tz` | 36 | exact pin, **not** the start (median 185 m off) | slug `rt<N>` only | **yes** |
+| Race map pin (activation sphere) | `Tracks/Brio/triggerzones/tz_race_activations/race_triggers.tz` (+ `route0.nt` `sidi_touge_event_5411`) | 36 (+1) | exact pin, **not** the start (median 185 m off) | slug `rt<N>` = route id | **yes** — the **only** exact map-pin source ([search results](#race-map-pins-which-routes-have-one)) |
 | Race display names, **exact** (route → name) | `ObjectModelGame.zip` `TrackInfoDataSet` (`InfoByRouteId` → `DisplayName` string id) + `Stripped/StringTables/<LANG>.zip` `CareerTrackInfo.str` | 111 routes, EN + DE (and the other 22 languages) | exact | yes | **yes** — [exact race names and types](#exact-race-names-and-types-objectmodelgamezip) |
 | Race types, **exact** (road / street / rally / cross country / touge / drag) | `ObjectModelGame.zip` `CareerRaceDataSet.UITheme`, `TrackInfoDataSet.UseCrossCountryAI`, `RaceCollectionUIOverridesMap` StreetRace flyer | 67 of the 170 routes | exact, **only what the files state** | n/a | **yes** (same section); the other 103 routes have no stated type |
 | Race display names (older fallback) | `Stripped/StringTables/EN.zip` `CareerRaceCollection.str` | 110 unique | text exact | link route ↔ name only for the ~60 routes without a TrackInfo entry, via the older methods in [Race names](#race-names) | superseded for the 111 TrackInfo routes |
@@ -520,6 +520,26 @@ Validation:
 - The `race_trigger_zone_rt<N>` spheres are **map pins, not starts**: 0–780 m away (median 185 m); for circuits the pin sits anywhere on the loop.
   *Why this matters:* the first version of these notes used the pins as "race starts" — drawing a start line or grid there is wrong.
 - Heading: `atan2(dir.x, dir.z)` in degrees (0 = +z = north, 90 = +x).
+
+### Race map pins: which routes have one
+
+The editor draws each race at the in-game **map pin** (user, 2026-10-03: the pin circles match the in-game map exactly, the RVAN start lines are offset from them). Exact route -> pin links that exist in the install:
+
+| Source | Routes | Link |
+|---|---|---|
+| `race_triggers.tz` `race_trigger_zone_rt<N>` | 36: 71, 101, 121, 131, 141, 161, 201, 281, 301, 311, 351, 352, 1021, 1023, 1171, 1211, 1281, 1421, 2091, 2311, 4351, 4501-4503, 5031, 5041, 5191, 5201, 5555, 6001, 8001-8006 | `<N>` in the name = route id |
+| `route0.nt` `sidi_touge_event_<N>` | 5031, 5041, 5191, 5201, 5411 (4 of them also have a sphere, 7-20 m away; the sphere wins, 5411 uses this locator) | `<N>` in the name = route id |
+
+That is **37 of the 170 routes**. The user's three examples are all in the first table, route ids 1281 Edogawa Cross Country Circuit (start -2126.0, -4603.2 -> pin -2155.4, -4744.1), 1421 Nangan (-1213.4, -8928.8 -> -1263.7, -8894.4) and 4502 Irokawa Space Center Drag Strip (-1052.7, -8731.9 -> -988.1, -8652.9); the viewer now draws them at the pin.
+
+**No other pin source exists in a user install** (searched 2026-10-03, all negative):
+- other `.tz` files: `tz_races/triggers_route_{3333-3336,8001-8005}.tz` are IE route meshes and `bullet_time_trigger` boxes (no pins), the rest are world constraints, creatures, landmarks, Horizon Jobs/Stories, particles, sky;
+- `.nt` locators: `route0.nt` has only the 5 touge events and the 3 `drag_meet_NN_activation` locators (meet `01..03`, no route id; routes 4501-4503 already have spheres) as race-related names; the other `.nt` files are jobs/stories, pinatas, parking, eliminator, arenas, regions;
+- `Ribbon_00/GameObjs.xml` (793 objects) and `Stripped/gs/brio/gameobjs.xml`: no race/route object; `Locators.xml` / `TriggerVolumes.xml` are empty; `Route<N>.nav` strings only contain `start_line`, `finish_line`, `start_location_000..011`;
+- `ObjectModelGame.zip` (all 7121 data sets decoded): the only coordinates are Horizon Story/Job destinations, Stunt Party centres, Hide & Seek spawns, drift waypoints and `FallbackWorldXYZ` (all `0,0,0`); the per-race data sets (`TrackInfoDataSet`, `CareerRaceDataSet`, `EntityIdToChallengeData`, `SlotDataMap`) hold no position, only guid references (`Domain=zip`) into the **encrypted `Stripped/EntityModel.zip`** (585 entries, zip method 22);
+- `ChunkContentsMiniZip*.txt`: asset lists only.
+
+So the remaining 133 routes' pin positions are presumably entity placements in the encrypted `EntityModel.zip` (the creator dump's `campaign_slots.xml` family) - not loadable. The editor keeps those at the RVAN start line and marks them as such. Do **not** fill them by nearest-neighbour matching: it was ruled out by the user, and with the sphere distances above (0-780 m from the start) it would be a guess.
 
 ### Race names
 

@@ -477,6 +477,7 @@ const EDITOR = (function () {
     c_import: 'Importing replaces everything you have painted so far. Continue?', c_nav: 'This file was made for a different nav file (sha1 / node count differ). Edges may not match. Import anyway?',
     s_prefill: 'Prefilled', s_edges: 'edges', s_imp: 'Imported', s_skip: 'skipped (unknown ids)', s_exp: 'Exported', s_undo: 'Undone', s_noundo: 'Nothing to undo',
     s_bad: 'Not a fh6-road-types file', s_conn: 'Link added', s_exists: 'These nodes are already linked', s_nonode: 'No node here - zoom in', s_del: 'Link removed', s_pickA: 'Node A set - click node B',
+    pin_exact: 'Map pin', pin_none: 'No map pin in the game files - marker sits on the start line', at_start: 'start line (no map pin known)', from_start: 'from the start line (the position above)', pinsm: 'Exact map pins',
     racepins: 'Race pins (type marking)', rtype: 'Race type', rt_none: 'not marked', rclear: 'Clear mark',
     prefill_r: 'Prefill race types (exact)', game_says: 'Game files', game_exact: 'exact type from game files', game_none: 'no exact type in the game files - mark by hand', game_diff: 'your mark differs',
     c_prefill_r: 'Your mark differs from the game files on {n} race(s). Prefill overwrites those marks. Continue?', s_prefill_r: 'Prefilled race types', s_same: 'already matching', s_noexact: 'without an exact type (left alone)',
@@ -497,6 +498,7 @@ const EDITOR = (function () {
     c_import: 'Der Import ersetzt alles bisher Gemalte. Fortfahren?', c_nav: 'Diese Datei gehoert zu einer anderen Nav-Datei (sha1 / Knotenzahl weichen ab). Kanten passen evtl. nicht. Trotzdem importieren?',
     s_prefill: 'Vorbefuellt', s_edges: 'Kanten', s_imp: 'Importiert', s_skip: 'uebersprungen (unbekannte IDs)', s_exp: 'Exportiert', s_undo: 'Rueckgaengig gemacht', s_noundo: 'Nichts rueckgaengig zu machen',
     s_bad: 'Keine fh6-road-types-Datei', s_conn: 'Link hinzugefuegt', s_exists: 'Diese Knoten sind schon verbunden', s_nonode: 'Hier ist kein Knoten - hineinzoomen', s_del: 'Link entfernt', s_pickA: 'Knoten A gesetzt - Knoten B anklicken',
+    pin_exact: 'Kartenpin', pin_none: 'Kein Kartenpin in den Spieldateien - Marker liegt auf der Startlinie', at_start: 'Startlinie (kein Kartenpin bekannt)', from_start: 'von der Startlinie (obige Position)', pinsm: 'Exakte Kartenpins',
     racepins: 'Rennpins (Rennart markieren)', rtype: 'Rennart', rt_none: 'nicht markiert', rclear: 'Markierung loeschen',
     prefill_r: 'Rennarten vorbefuellen (exakt)', game_says: 'Spieldateien', game_exact: 'exakte Art aus den Spieldateien', game_none: 'keine exakte Art in den Spieldateien - von Hand markieren', game_diff: 'deine Markierung weicht ab',
     c_prefill_r: 'Deine Markierung weicht bei {n} Rennen von den Spieldateien ab. Vorbefuellen ueberschreibt diese. Fortfahren?', s_prefill_r: 'Rennarten vorbefuellt', s_same: 'stimmten schon', s_noexact: 'ohne exakte Art (unberuehrt)',
@@ -514,6 +516,7 @@ const EDITOR = (function () {
     '#ed_stat{min-height:15px;color:var(--ok)}' +
     '#map.ed-paint,#map.ed-paint .leaflet-interactive,#map.ed-paint .leaflet-grab{cursor:crosshair!important}' +
     '.rpin{position:relative;width:30px;height:30px}.rpin img{width:30px;height:30px;display:block;filter:drop-shadow(0 0 2px #000)}' +
+    '.rpin.px::before,.rpin.sl::before{content:"";position:absolute;inset:-2px;border-radius:50%;pointer-events:none}.rpin.px::before{border:2px solid #ff9f43}.rpin.sl::before{border:1.5px dashed rgba(255,255,255,.6)}' +
     '.rpin.unk img{filter:grayscale(1) brightness(.85) opacity(.55) drop-shadow(0 0 1px #000)}' +
     '.rpin b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:700 17px system-ui;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 6px #000;pointer-events:none}' +
     '.rtpal{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px}.rtpal a.rt{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:2px 6px;display:flex;align-items:center;gap:4px;font-size:12px;background:var(--panel2);color:var(--text)}' +
@@ -782,6 +785,13 @@ const EDITOR = (function () {
 
   // ---------------------------------------------------------------------------------------------------------------- race pins
   const RPOS = RINFO, RMK = {};
+  // route id -> the exact in-game MAP PIN (not the start line): `race_trigger_zone_rt<N>` activation sphere (race_pin, 36 routes) or the `sidi_touge_event_<N>` locator
+  // of route0.nt (touge_pin, route 5411).  Both are linked to the route by id only (no nearest-neighbour guessing).  Routes without one fall back to the RVAN start line.
+  const RPIN = {};
+  const pinSrc = (q) => (D.poi.sources || [])[q[4]] || '';
+  ((D.poi && D.poi.cats.touge_pin) || []).forEach((q) => { if (q[5] && q[5].route_id != null) RPIN[q[5].route_id] = q; });
+  ((D.poi && D.poi.cats.race_pin) || []).forEach((q) => { if (q[5] && q[5].route != null) RPIN[q[5].route] = q; });     // the activation circle wins where both exist
+  const startOf = (id) => { const q = RPOS[id]; return q ? [q[0], q[1]] : null; };
   const rtLabel = (ty) => ty ? t('rt_' + ty) : t('rt_none');
   const exactOf = (id) => { const q = RPOS[id]; return (q && q[5] && q[5].type_exact) || null; };      // type stated by the game files, or null
   const exactIds = () => (D.racelines || []).map((r) => r.id).filter((id) => RT.indexOf(exactOf(id)) >= 0);
@@ -799,7 +809,7 @@ const EDITOR = (function () {
   function racePinIcon(r) {
     const ty = marks[r.id], u = raceIconUrl(r, ty);
     return L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14],
-      html: '<div class="rpin' + (ty ? '' : ' unk') + '">' + (u ? '<img src="' + esc(u) + '" alt="">' : '') + (ty ? '' : '<b>?</b>') + '</div>' });
+      html: '<div class="rpin' + (ty ? '' : ' unk') + (RPIN[r.id] ? ' px' : ' sl') + '">' + (u ? '<img src="' + esc(u) + '" alt="">' : '') + (ty ? '' : '<b>?</b>') + '</div>' });
   }
   function refreshRace(id) { const m = RMK[id]; if (m) m.setIcon(racePinIcon(RL[id])); }
   function refreshAllRaces() { Object.keys(RMK).forEach(refreshRace); }
@@ -807,15 +817,19 @@ const EDITOR = (function () {
   if (HAS_RC) {
     entry({ id: 'racepins', group: 'races', label: () => t('racepins'), color: '#ff5a4d', n: D.racelines.length, on: true,
       make: () => { const g = L.featureGroup();
-        D.racelines.forEach((r) => { const q = RPOS[r.id], p = q ? ll(q[0], q[1]) : ll(r.p[0], r.p[1]);
+        D.racelines.forEach((r) => { const q = RPIN[r.id] || RPOS[r.id], p = q ? ll(q[0], q[1]) : ll(r.p[0], r.p[1]), sp = startOf(r.id);
+          if (RPIN[r.id] && sp && Math.hypot(RPIN[r.id][0] - sp[0], RPIN[r.id][1] - sp[1]) > 8) g.addLayer(L.polyline([p, ll(sp[0], sp[1])], { color: '#ff9f43', weight: 1.5, opacity: 0.7, dashArray: '4 4', interactive: false }));
           const m = L.marker(p, { icon: racePinIcon(r) }); RMK[r.id] = m;
-          m.bindTooltip(() => raceTitle(r) + ' - ' + (r.circuit ? t('circuit') : t('p2p')) + ' - ' + rtLabel(marks[r.id]) + (exactOf(r.id) && marks[r.id] !== exactOf(r.id) ? ' (' + t('game_says') + ': ' + rtLabel(exactOf(r.id)) + ')' : '')); m.bindPopup(() => routePopup(r)); g.addLayer(m); });
+          m.bindTooltip(() => raceTitle(r) + ' - ' + (r.circuit ? t('circuit') : t('p2p')) + ' - ' + rtLabel(marks[r.id]) + (exactOf(r.id) && marks[r.id] !== exactOf(r.id) ? ' (' + t('game_says') + ': ' + rtLabel(exactOf(r.id)) + ')' : '') + (RPIN[r.id] ? '' : ' - ' + t('at_start'))); m.bindPopup(() => routePopup(r)); g.addLayer(m); });
         return g; } });
     const pe = ENTRIES.find((q) => q.id === 'poi_race_start'); if (pe) pe.on = false;      // our pin layer replaces it (one pin per route, type aware)
     const _rp = routePopup;
     routePopup = function (r) {                                       // + race type row; palette only in "Race types" mode
-      const ty = marks[r.id];
-      let h = '<div style="margin-top:6px"><b>' + esc(t('rtype')) + ':</b> ' + esc(rtLabel(ty)) + ' <span class="small">(' + (r.circuit ? t('circuit') : t('p2p')) + ')</span></div>';
+      const ty = marks[r.id], pq = RPIN[r.id], sp = startOf(r.id);
+      let h = '<div class="small" style="margin-top:6px">' + (pq ? '<b>' + esc(t('pin_exact')) + '</b>: ' + pq[0].toFixed(1) + ', ' + pq[1].toFixed(1) + ' (' + esc(pinSrc(pq).split('/').pop()) + ')' +
+          (sp ? ' - ' + Math.round(Math.hypot(pq[0] - sp[0], pq[1] - sp[1])) + ' m ' + esc(t('from_start')) : '')
+        : '<b style="color:var(--warn)">' + esc(t('pin_none')) + '</b>') + '</div>';
+      h += '<div style="margin-top:6px"><b>' + esc(t('rtype')) + ':</b> ' + esc(rtLabel(ty)) + ' <span class="small">(' + (r.circuit ? t('circuit') : t('p2p')) + ')</span></div>';
       const gx = exactOf(r.id);
       h += '<div class="small" style="margin-top:2px">' + (gx ? esc(t('game_says')) + ': <b>' + esc(rtLabel(gx)) + '</b> (' + esc(t('game_exact')) + ')' + (ty && ty !== gx ? ' - <span style="color:var(--warn)">' + esc(t('game_diff')) + '</span>' : '')
         : esc(t('game_none'))) + '</div>';
@@ -859,7 +873,8 @@ const EDITOR = (function () {
     const row = (c, k, v) => '<span><i style="background:' + c + '"></i>' + esc(t(k)) + '</span><b>' + v + '</b>';
     el.innerHTML = (HAS_RD ? row(TCOL[1], 'km_road', km[1].toFixed(1) + ' km') + row(TCOL[2], 'km_offroad', km[2].toFixed(1) + ' km') + row(TCOL[3], 'km_other', km[3].toFixed(1) + ' km') +
       row(TCOL[0], 'km_unset', km[0].toFixed(1) + ' km') + '<span>' + esc(t('added')) + '</span><b>' + add + '</b>' : '') +
-      (HAS_RC ? '<span>' + esc(t('racesm')) + '</span><b>' + Object.keys(marks).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' : '');
+      (HAS_RC ? '<span>' + esc(t('racesm')) + '</span><b>' + Object.keys(marks).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' +
+        '<span>' + esc(t('pinsm')) + '</span><b>' + D.racelines.filter((r) => RPIN[r.id]).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' : '');
   }
   function renderBox() {
     if (!box) return;

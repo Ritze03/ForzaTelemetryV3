@@ -76,8 +76,11 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   touge 5, rally 4, drag 3; source `ObjectModelGame.zip`, see `docs/game-data/fh6-game-files.md#exact-race-names-and-types-objectmodelgamezip`); the other 103 stay unmarked (the 16 scramble/trail
   routes too - a name word is not a type field). It never overwrites a different manual mark without a `confirm()`, and says how many it set. The pin tooltip and popup show the **exact race
   name** in the current language (111 routes, EN + DE; others show `Route <N>`), plus "Game files: Road (exact type from game files)" and, if your mark differs, "your mark differs".
-  One pin per route (170 routes in `racelines.json`; route 99, the test route, has no POI and is placed at the start of its race line; IE routes and Horizon Chases are placed at their start line). The three drag meets and the
-  touge events are separate POI categories without a route id, so they are not among the 170 routes.
+  One pin per route (170 routes in `racelines.json`; route 99, the test route, has no POI and is placed at the start of its race line; IE routes and Horizon Chases are placed at their start line).
+  **Where the pin sits:** at the in-game **map pin** where the game files give one, else on the RVAN start line. Exact map pins: 36 routes from `race_trigger_zone_rt<N>` + route 5411 from the `sidi_touge_event_5411`
+  locator (37 of 170; link = the route id inside the object's name, nothing guessed). Those markers have a solid orange ring and a dashed connector to the start line; the other 133 have a dashed white ring,
+  the tooltip says "start line (no map pin known)" and the popup says so too (the popup also gives the pin source and the pin-to-start distance). The editor panel counts "Exact map pins". Marks stay keyed by route id,
+  so moving a marker never changes the autosave or the export. The three drag meets and the touge events are separate POI categories (the touge events are used as described, the drag meets are not linked).
 - **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json`; **Import** reads it back
   (asks before replacing, warns if the nav sha1 / node count differ).
 - **Export format** (`fh6-road-types`, version 1, ~0.8 MB): ids and types only, **no coordinates**.
