@@ -17,7 +17,7 @@ Layout (little-endian):
        oneway_forward, give_way, ...), ends file.
 Full notes: docs/game-data/fh6-game-files.md
 """
-import argparse, json, os, struct, sys
+import argparse, hashlib, json, os, struct, sys
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -67,9 +67,16 @@ for idx, f in roads:
             cur = []
         cur.append(b)
     if len(cur) > 1: polys.append(cur); attrs.append(f)
-json.dump({'note': 'polylines of [x,z] world metres (same space as telemetry PositionX/Z); heights = node y per polyline vertex; cls = u32 flags of road record (lo16 kind 4/5/6/8, hi16 unknown id)',
+# stable node ids (node struct u16 `a` = id in media/LegacyNavNodeIndexToIdMappings.xml) key the road editor's edges; must be unique
+assert len(set(nodes['a'].tolist())) == N, 'node id `a` is not unique - key edges by node index + nav sha1 instead'
+used = {i for q in polys for i in q}
+json.dump({'note': 'polylines of [x,z] world metres (same space as telemetry PositionX/Z); heights = node y per polyline vertex; ids = stable node id (`a`) per polyline vertex; '
+                   'orphans = [id,x,z] of nodes in no polyline; cls = u32 flags of road record (lo16 kind 4/5/6/8, hi16 unknown id)',
+           'nav': {'file': os.path.basename(NAV), 'sha1': hashlib.sha1(d).hexdigest(), 'nodes': int(N)},
            'polylines': [[[round(float(p[i][0]), 1), round(float(p[i][2]), 1)] for i in q] for q in polys],
            'heights': [[round(float(p[i][1]), 1) for i in q] for q in polys],
+           'ids': [[int(nodes['a'][i]) for i in q] for q in polys],
+           'orphans': [[int(nodes['a'][i]), round(float(p[i][0]), 1), round(float(p[i][2]), 1)] for i in range(N) if i not in used],
            'cls': [a & 0xffff for a in attrs], 'hi': [a >> 16 for a in attrs]},
           open(OUT + '/roads.json', 'w'), separators=(',', ':'))
 print('polylines', len(polys))

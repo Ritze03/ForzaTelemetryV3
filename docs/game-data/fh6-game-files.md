@@ -205,6 +205,11 @@ Class 8 is two roads, 97 % on id 10 (asphalt variant; the airfield strip / an od
 *Why it matters:* to know whether a road is paved or off-road, sample the terrain surface id under it — `classify_roads.py`, see [fh6-terrain.md](fh6-terrain.md#surface-kind-paved--off-road-and-the-surface-under-the-roads).
 (`decode_nav.py` also exports the node heights `y` per polyline vertex as `roads.json` `heights`; the road-surface sampler needs them.)
 
+**Node ids for external keys.** `decode_nav.py` also exports `ids` (the stable node id `a` per polyline vertex), `nav` ({file, sha1, nodes}) and `orphans` (nodes in no polyline; 0 today) in
+`roads.json`. **`a` is unique across all 38 473 nodes** (range 1..52504; the u32 `i` at offset 32 is unique too), and the 1544 polylines contain 39 383 distinct node-to-node edges (no
+duplicates), so an edge can be keyed `"<idA>-<idB>"` (idA < idB). The viewer's road editor exports its hand-painted road types that way (see `tools/fh6-extract/README.md`, "Road editor").
+*Why:* ids instead of coordinates keeps game data out of the export (licensing rule), and the ids stay valid across re-reads of the same nav file.
+
 ### Splitting into polylines
 
 A few consecutive entries are jump links (>60 m apart). `decode_nav.py` **splits a road wherever

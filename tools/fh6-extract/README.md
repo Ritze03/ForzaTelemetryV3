@@ -58,6 +58,42 @@ python3 -B build_viewer.py --out /some/dir/outside/the/repo      # then open  /s
   are used as-is (`tileSize 1024`). Everything vector shares one canvas renderer (several canvases would swallow each other's clicks). Race names are English only
   (no German source in the files).
 
+### Road editor (and race-type marking) in the viewer
+
+The viewer has an **Editor** button (top left) for hand-classifying the nav road network and the race types, then exporting the result. The user wants the data for the app
+(e.g. a "paved / off-road" lookup), and the game files do not give a trustworthy per-road type (see `docs/game-data/fh6-terrain.md`), so a human paints it.
+
+- **Roads** have three types: **Road**, **Offroad**, **Other**; an edge nobody painted is **not set** (magenta, so it is easy to see what is left). An *edge* is the stretch
+  between two consecutive nav nodes (39 383 of them). Modes: **Pan**, **Paint** (pick a brush, click or drag; Shift-click or the "fill" tick paints the whole road between two
+  junctions; hold Space to pan while painting; keys 1-4 = Road / Offroad / Other / Clear), **Connect** (zoom in until the nodes show, click node A then node B: a new *dashed* link
+  gets the current brush type; yellow rings = dead ends, i.e. the usual gaps), **Delete link** (only user-added links; game roads cannot be deleted).
+  **Prefill from surface data** sets paved -> Road and off-road -> Offroad per edge (majority of the smoothed 4 m terrain samples on that edge, from `roadsurf.npz`); unknown edges
+  (no collision mesh / elevated / unidentified id) stay *not set*. It asks before overwriting existing paint. Ctrl+Z undoes (200 actions). Totals in km are shown live.
+- **Races** (mode **Race types**): click a race pin (or its race line) and pick **Road / Street / Rally / Cross Country / Touge / Drag / Midnight Battle** (or "Clear mark"). The pin takes
+  that type's own game icon (Road = asphalt, Rally = mixedsurface, Cross Country = crosscountry, each in its circuit / point-to-point variant; Street, Touge, Drag, Midnight Battle have one icon).
+  **Every race starts unmarked and shows the greyed icon with a "?"** - nothing is inferred from geometry, surface or names. Circuit vs point-to-point is exact (`.owt` header) and not marked
+  by hand. One pin per route (170 routes in `racelines.json`; 13 of them have no `race_start` POI and are placed at the start of their race line). The three drag meets and the
+  touge events are separate POI categories without a route id, so they are not among the 170 routes.
+- **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json`; **Import** reads it back
+  (asks before replacing, warns if the nav sha1 / node count differ).
+- **Export format** (`fh6-road-types`, version 1, ~0.8 MB): ids and types only, **no coordinates**.
+
+```json
+{"format":"fh6-road-types","version":1,"nav":{"file":"Brio_00.nav","sha1":"a88c69f4...","nodes":38473},
+ "types":{"1-2":"offroad","2-3":"offroad","40-41":"road"},
+ "added":[{"a":25028,"b":30062,"type":"offroad"}],
+ "races":{"41":"touge","51":"cross_country","30100":"drag"},
+ "counts":{"km":{"road":502.2,"offroad":200.8,"other":0.1,"not_set":61.3},"edges":{"total":39383,"painted":36303,"added":1},"races":{"marked":3,"total":170}}}
+```
+
+  `types` key = `"<idA>-<idB>"` with idA < idB, both **stable nav node ids** (`a` in the node struct); only painted game edges are listed. `added` = user-made links
+  between two node ids (`type` may be `null` = unset). `races` key = route id, value `road|street|rally|cross_country|touge|drag|midnight`. `counts` is informational.
+  *Why ids and not coordinates:* the export must contain no game data (licensing rule), and positions are re-read from the user's own install when the file is used. Node ids are
+  unique over all 38 473 nodes (checked by `decode_nav.py`), so they are a safe key; the nav sha1 pins the graph version.
+- Implementation: `decode_nav.py` exports `ids` (node id per polyline vertex), `nav` {file, sha1, nodes} and `orphans` into `roads.json`; `build_viewer.py:build_roaded` writes
+  `data/roaded.js` (ids + one prefill digit per edge); the editor is one self-contained block (`EDITOR`) in `viewer_template.html` drawing all edges on its own canvas layer with a
+  grid index for hit tests, so painting 39 k edges stays smooth (no per-edge Leaflet layers).
+
 Library modules (imported, not run): `fh6common.py` (install detection, case-insensitive paths, `.nt` / `.tz`
 readers), `pgzp.py` + `lz4b.py` (reader for the 40 GB `GeoChunk*.minizip` PGZP containers — seek-reads single
 entries), `fh6str.py` (string-table reader + key hash), `fh6owt.py` (`.owt` racing-line reader + `RVAN` start/finish block), `fh6surfaces.py` (terrain
