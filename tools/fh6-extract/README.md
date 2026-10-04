@@ -64,10 +64,10 @@ python3 -B build_viewer.py --out /some/dir/outside/the/repo      # then open  /s
 The viewer has an **Editor** button (top left) for hand-classifying the nav road network and the race types, then exporting the result. The user wants the data for the app
 (e.g. a "paved / off-road" lookup), and the game files do not give a trustworthy per-road type (see `docs/game-data/fh6-terrain.md`), so a human paints it.
 
-- **Roads** have three types: **Road**, **Offroad**, **Other**; an edge nobody painted is **not set** (magenta, so it is easy to see what is left). An *edge* is the stretch
+- **Roads** have nine types (**Road, Offroad, Other, Trail, Cross-country, Tunnel, Jump line, Highway, Turnaround**; meanings and the why: [fh6-map-tooling.md](../../docs/game-data/fh6-map-tooling.md#road-types--what-the-user-means-by-them)); an edge nobody painted is **not set** (magenta, so it is easy to see what is left). An *edge* is the stretch
   between two consecutive nav nodes (39 383 of them). Modes: **Pan**, **Paint** (pick a brush, click or drag; Shift-click or the "fill" tick paints the whole road between two
-  junctions; hold Space to pan while painting; keys 1-4 = Road / Offroad / Other / Clear), **Connect** (zoom in until the nodes show, click node A then node B: a new *dashed* link
-  gets the current brush type; yellow rings = dead ends, i.e. the usual gaps), **Delete link** (only user-added links; game roads cannot be deleted).
+  junctions; hold Space to pan while painting; brush keys below), **Connect** (zoom in until the points show, click A then B: a new link (white outline) gets the current brush type; yellow rings = dead ends, i.e. the usual gaps), **Draw** (chain free points; click an existing point to snap, Alt = no snap; Esc / right-click ends), **Split** (click an edge, drag to place the new point), **Move** (drag any point), **Flip jump**, **Delete link** (also game edges; they go to `removed`).
+  Brush keys: 1-9 = Road, Offroad, Other, Trail, Cross-country, Tunnel, Jump line, Highway, Turnaround and **0 = Clear** (was 4). A "Show turnaround links" checkbox hides turnarounds. Full v2 behaviour (heights, styles): [fh6-map-tooling.md](../../docs/game-data/fh6-map-tooling.md#editor-viewer-editor-block-of-viewer_templatehtml).
   **Prefill from surface data** sets paved -> Road and off-road -> Offroad per edge (majority of the smoothed 4 m terrain samples on that edge, from `roadsurf.npz`); unknown edges
   (no collision mesh / elevated / unidentified id) stay *not set*. It asks before overwriting existing paint. Ctrl+Z undoes (200 actions). Totals in km are shown live.
 - **Races** (mode **Race types**): click a race pin (or its race line) and pick **Road / Street / Rally / Cross Country / Touge / Drag / Story / Wristband event** (or "Clear mark"). The pin takes
@@ -94,7 +94,7 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   install's, it is not loaded, the button is disabled and the panel says so. *Why committed:* it is the user's own work and the only copy that must never be lost; it holds no game data.
 - **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json`; **Import** reads it back
   (asks before replacing, warns if the nav sha1 / node count differ).
-- **Export format** (`fh6-road-types`, version 1, ~0.8 MB): ids and types only, **no coordinates**.
+- **Export format** (`fh6-road-types`): **v2** is written now (`points` / `moved` / `removed` / `jump_from`, and why coordinates are allowed: [fh6-map-tooling.md](../../docs/game-data/fh6-map-tooling.md#fh6-road-types-v2)); v1 files still import. The v1 form, ids and types only with **no coordinates**, looked like this:
 
 ```json
 {"format":"fh6-road-types","version":1,"nav":{"file":"Brio_00.nav","sha1":"a88c69f4...","nodes":38473},
@@ -111,6 +111,28 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
 - Implementation: `decode_nav.py` exports `ids` (node id per polyline vertex), `nav` {file, sha1, nodes} and `orphans` into `roads.json`; `build_viewer.py:build_roaded` writes
   `data/roaded.js` (ids + one prefill digit per edge); the editor is one self-contained block (`EDITOR`) in `viewer_template.html` drawing all edges on its own canvas layer with a
   grid index for hit tests, so painting 39 k edges stays smooth (no per-edge Leaflet layers).
+
+## 2D and 3D previews
+
+Local pages, same licensing rule as the viewer (game data: `--out` outside the repo, never committed; both scripts refuse an `--out` inside it). `build_viewer.py` runs both after the build
+(`python -B <script> --out OUT --work WORK`; a failure is only a warning; `--no-previews` skips); they also run standalone. Why and design history: [fh6-map-tooling.md](../../docs/game-data/fh6-map-tooling.md).
+Viewer data changed for them: `roaded.js` has per-vertex node `y` (0.1 m); `elevation.js` is the full 8 m raster, delta-coded per row (~4.7 MB, was 16 m).
+
+```
+python3 -B preview_2d.py --out OUT --work WORK [--road-types PATH]
+python3 -B preview_3d.py --out OUT --work WORK [--media M] [--road-types PATH] [--seasons S,..] [--tex-size 2048|4096|8192]
+                         [--jpeg-quality Q] [--decim 1|2|4] [--skirt 1000] [--step 5] [--lift 0.6] [--no-coarse]
+```
+
+- `--road-types` default = `data/fh6-road-types.json` (v1 or v2; point it at an editor export to preview unsaved work).
+- **`preview_2d.py`** needs only `<work>/roads.json`; writes one self-contained `OUT/preview-2d.html` (~0.5 MB, no CDN), transparent and frameless (vanilla in-game look). Wheel zoom, drag pan,
+  **F / 0 / double-click** fit, **B** cycles backdrop (none / checker / dark), **T** shows the turnaround links (hidden by default), URL hash `#x,z,scale[,backdrop]`, `window.__P2D`.
+- **`preview_3d.py`** needs `<work>/terr_e/elevation.npy` + `roads.json` and `OUT/tiles/` (from `build_viewer.py`); writes `OUT/preview-3d.html` + `OUT/preview3d/{meta,terrain,roads,tex_<Season>}.js`
+  (script-tag data, so `file://` works). three.js r147 comes from jsdelivr: **needs internet**. `--media` is only used for the coarse hole filler (`--no-coarse` interpolates holes instead;
+  the coarse raster is cached in `OUT/preview3d/cache/terr_c/`, first run ~55 s). Controls: left drag pan, right / middle / Ctrl drag orbit, wheel zoom, WASD / arrows, Q/E rotate, +/- zoom, R reset.
+  Panel: season, road height **Nodes (default) / Terrain (drape)**, "Never below terrain", road thickness 0-20 m (default 3), edge lines, per-type visibility.
+  URL hash (all optional): `v=x,z,dist,yawDeg,pitchDeg`, `season=`, `exag=`, `edges=0`, `types=a,b`, `rh=node|terrain`, `above=1`, `th=<metres>`; console `window.P3D_DEBUG.check(n, mode)` self-checks road heights.
+- **Testing headless:** python `playwright` is not installed; node Playwright works (chromium with `--use-angle=swiftshader --enable-unsafe-swiftshader` for WebGL). The MCP browser blocks `file:` navigation.
 
 Library modules (imported, not run): `fh6common.py` (install detection, case-insensitive paths, `.nt` / `.tz`
 readers), `pgzp.py` + `lz4b.py` (reader for the 40 GB `GeoChunk*.minizip` PGZP containers — seek-reads single
