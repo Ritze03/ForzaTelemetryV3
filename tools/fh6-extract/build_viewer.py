@@ -489,7 +489,8 @@ def build_roaded(work):
         log(f'road editor prefill (km): Road {tot[0]:.1f} / Offroad {tot[1]:.1f} / not set {tot[2]:.1f}')
     else:
         warn('road editor', 'roadsurf.npz missing - the prefill button will have nothing to apply')
-    return dict(nav=r['nav'], ids=r['ids'], pre=pre, orphans=r['orphans'])
+    # y = node height per polyline vertex (same shape as ids; metres, 0.1 m) - the editor needs it for the v2 export of moved nodes and for split heights
+    return dict(nav=r['nav'], ids=r['ids'], y=[[round(float(v), 1) for v in q] for q in r['heights']], pre=pre, orphans=r['orphans'])
 
 
 CANON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fh6-road-types.json')
@@ -499,7 +500,7 @@ def build_canon():
     """The project's hand-classified road + race types (tools/fh6-extract/data/fh6-road-types.json, ids only) -> data/canon.js.  The editor starts from it
     when the browser has no saved work of its own; 'Reset to project data' loads it."""
     o = jl(CANON)
-    assert o.get('format') == 'fh6-road-types' and o.get('version') == 1, 'unexpected canonical file format'
+    assert o.get('format') == 'fh6-road-types' and o.get('version') in (1, 2), 'unexpected canonical file format'
     return o
 
 
@@ -553,10 +554,12 @@ def build_elevation(work, out):
     dst = os.path.join(out, 'overlays', 'elevation.png')
     Image.fromarray(img, 'RGBA').save(dst, optimize=True)
     log(f'overlays/elevation.png {os.path.getsize(dst) / 1e6:.1f} MB {img.shape[1]}x{img.shape[0]}')
-    q = E[::2, ::2]                                              # hover lookup grid: 2x coarser, int16 decimetres, -32768 = no data
-    qi = np.where(np.isfinite(q), np.round(q * 10), -32768).astype('<i2')
+    # lookup grid (hover + the road editor's height-map lookups): full 8 m resolution, int16 decimetres, -32768 = no data, delta-coded along each row
+    # (cumulative sum with int16 wrap-around restores it) so zlib gets ~3.5 MB instead of ~5.6 MB.  The editor interpolates bilinearly between the cell centres.
+    qv = np.where(np.isfinite(E), np.round(E * 10), -32768).astype(np.int32)
+    qi = np.diff(qv, axis=1, prepend=0).astype('<i2')
     return dict(img=dict(file='overlays/elevation.png', x0=ej['x0'], z1=ej['z1'], res=res, w=ej['width'], h=ej['height']),
-                grid=dict(x0=ej['x0'], z1=ej['z1'], res=res * 2, w=qi.shape[1], h=qi.shape[0], data=b64z(qi)),
+                grid=dict(x0=ej['x0'], z1=ej['z1'], res=res, w=qi.shape[1], h=qi.shape[0], delta=1, data=b64z(qi)),
                 zmin=float(np.nanmin(E)), zmax=float(np.nanmax(E)), ramp=[[a, list(b)] for a, b in RAMP])
 
 
@@ -598,6 +601,22 @@ def build_surfaces(work):
 
 
 # -------------------------------------------------------------------------------------------------------------------------- main
+def run_previews(out, work, a):
+    """Optional extra pages generated next to the viewer (preview_2d.py / preview_3d.py in this folder, when present).  A failure is only a warning."""
+    for name in ('preview_2d.py', 'preview_3d.py'):
+        path = os.path.join(HERE, name)
+        if not os.path.isfile(path):
+            continue
+        cmd = [sys.executable, '-B', path, '--out', out, '--work', work]
+        log(f'running {name} ...')
+        try:
+            r = subprocess.run(cmd, cwd=HERE)
+            if r.returncode != 0:
+                warn(name, f'exited with code {r.returncode}')
+        except Exception as e:
+            warn(name, f'{type(e).__name__}: {e}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--media', help='<ForzaHorizon6>/media (default: auto-detect via Steam)')
@@ -607,6 +626,7 @@ def main():
     ap.add_argument('--jpeg-quality', type=int, default=80)
     ap.add_argument('--force', action='store_true', help='re-run extractors and re-encode tiles even if output exists')
     ap.add_argument('--no-terrain', action='store_true', help='skip elevation + surfaces (the slow part)')
+    ap.add_argument('--no-previews', action='store_true', help='do not run preview_2d.py / preview_3d.py (if present next to this script) after the build')
     a = ap.parse_args()
     media = a.media or autodetect_media()
     if not media or not os.path.isdir(media):
@@ -681,6 +701,8 @@ def main():
         log(f'  included  {k}: {v}')
     for k, v in SKIPPED:
         log(f'  SKIPPED   {k}: {v}')
+    if not a.no_previews:
+        run_previews(out, work, a)
 
 
 if __name__ == '__main__':

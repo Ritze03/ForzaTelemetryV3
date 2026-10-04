@@ -183,7 +183,11 @@ const GRID = { surf: null, elev: null };
 async function loadGrids() {
   try {
     if (D.surfaces) { const s = D.surfaces; GRID.surf = { s, a: await inflate(s.data) }; }
-    if (D.elevation) { const g = D.elevation.grid, u = await inflate(g.data); GRID.elev = { g, a: new Int16Array(u.buffer, u.byteOffset, u.byteLength >> 1) }; }
+    if (D.elevation) {
+      const g = D.elevation.grid, u = await inflate(g.data), a = new Int16Array(u.buffer, u.byteOffset, u.byteLength >> 1);
+      if (g.delta) for (let r = 0; r < g.h; r++) { let v = 0; for (let c = 0, i = r * g.w; c < g.w; c++, i++) { v = (v + a[i]) << 16 >> 16; a[i] = v; } }      // row-wise delta, int16 wrap-around
+      GRID.elev = { g, a };
+    }
   } catch (e) { console.warn('terrain lookup grids unavailable (DecompressionStream?)', e); }
 }
 function lookup(x, z) {
@@ -457,7 +461,29 @@ if (D.elevation) {
 // ================================================================================================= ROAD + RACE-TYPE EDITOR
 // Self-contained section (own CSS, strings, state). Touches the rest of the page only through: ENTRIES (race pins layer), routePopup / applyLang (wrapped),
 // the #edtoggle button and window.FH6V.ed.  Edges are keyed by stable nav node ids ("<idA>-<idB>", idA < idB), races by route id - never by coordinates.
-// Export / import / localStorage autosave all use the same JSON ("fh6-road-types" v1, documented in tools/fh6-extract/README.md).
+// Export / import / localStorage autosave all use the same JSON ("fh6-road-types", v2 below; v1 files - no points / moved / removed / jump_from, only the
+// three types road|offroad|other - still import).
+//
+// ---- fh6-road-types v2 ------------------------------------------------------------------------------------------------------------------------------
+// {"format":"fh6-road-types","version":2,
+//  "nav":{"file":"Brio_00.nav","sha1":"...","nodes":38473},          // as v1: the nav file the game-node ids belong to
+//  "types":{"<a>-<b>":"road|offroad|other|trail|crosscountry|tunnel|jump", ...},   // GAME edges only (both ends are game nav nodes, edge exists in the
+//                                                                     // nav file); key = "<smaller id>-<larger id>" exactly as v1; edges not listed = not set
+//  "added":[{"a":id,"b":id,"type":"..."}, ...],                       // user-made links between ANY two points (game or user); a < b; type may be null
+//  "points":{"<id>":[x,z,y], ...},                                    // user-created points; ids >= 1000000 (game node ids stay < 1000000, so no collision)
+//  "moved":{"<id>":[x,z,y], ...},                                     // position overrides of GAME nav nodes (only nodes whose position differs from the nav file)
+//  "removed":["<a>-<b>", ...],                                        // GAME edges that are gone: replaced by a split, or deleted
+//  "jump_from":{"<a>-<b>":<take-off point id>, ...},                  // one entry per jump-typed edge (game or added): the endpoint where the jump starts;
+//                                                                     // the other endpoint is the landing
+//  "races":{"<route id>":"road|street|rally|cross_country|touge|drag|story|wristband", ...},   // as v1
+//  "counts":{...}}                                                    // informational only, ignored on import
+// World coordinates are game metres (x east, z north, y up; same space as roads.json / telemetry), rounded to 0.01 m.  Game nodes are identified by their
+// stable nav id and carry NO coordinates unless moved.  An "added" link, a "jump_from" value or a "moved" entry may name any id that is a game node or a point
+// in "points".  A game edge a-b split at a new point p is stored as removed:["a-b"] + added a-p and p-b (both with a-b's old type; for a jump the take-off
+// stays at the original take-off end and the new middle edge starts at p).  Edge types "tunnel" counts as asphalt for later routing; "jump" is one-way.
+// Heights: game nodes keep their nav height (roads.json) unless moved; new / moved points get the height-map value at their x,z - or, when BOTH neighbours of
+// the point are >= 3 m off the terrain (bridge / tunnel) or an adjacent edge is a tunnel, the linear interpolation of the neighbours' heights.
+// -----------------------------------------------------------------------------------------------------------------------------------------------------
 const EDITOR = (function () {
   const RE = D.roaded, HAS_RD = !!(RE && D.roads && D.roads.lines && RE.ids && RE.ids.length === D.roads.lines.length);
   const HAS_RC = !!(D.racelines && D.racelines.length);
@@ -465,14 +491,22 @@ const EDITOR = (function () {
 
   Object.assign(UI.en, {
     ed: 'Editor', ed_title: 'Road & race editor', m_pan: 'Pan', m_paint: 'Paint', m_connect: 'Connect', m_delete: 'Delete link', m_races: 'Race types',
-    b_road: 'Road', b_offroad: 'Offroad', b_other: 'Other', b_clear: 'Clear', unset: 'not set', fill: 'Fill whole road between junctions (or Shift-click)',
-    prefill: 'Prefill from surface data', undo: 'Undo', export: 'Export', import: 'Import',
+    m_draw: 'Draw', m_split: 'Split', m_move: 'Move', m_flip: 'Flip jump',
+    b_road: 'Road', b_offroad: 'Offroad', b_other: 'Other', b_trail: 'Trail', b_crosscountry: 'Cross-country', b_tunnel: 'Tunnel', b_jump: 'Jump line', b_clear: 'Clear', unset: 'not set', fill: 'Fill whole road between junctions (or Shift-click)',
+    prefill: 'Prefill from surface data (Road / Offroad only)', undo: 'Undo', export: 'Export', import: 'Import',
     h_pan: 'Drag to move the map. Hold Space in any mode to pan.',
-    h_paint: 'Pick a brush, then click or drag over roads. Shift-click (or the fill tick) paints a whole road between two junctions. Space + drag pans. Keys 1-4 = brush, Ctrl+Z = undo.',
-    h_connect: 'Zoom in until the nodes show (yellow rings = dead ends). Click node A, then node B: a new dashed link gets the current brush type. Esc cancels.',
-    h_delete: 'Click a dashed (added) link to remove it. Game roads cannot be deleted.',
+    h_paint: 'Pick a brush, then click or drag over roads. Shift-click (or the fill tick) paints a whole road between two junctions. Space + drag pans. Keys 1-7 = Road, Offroad, Other, Trail, Cross-country, Tunnel, Jump line; 0 = Clear; Ctrl+Z = undo.',
+    h_connect: 'Zoom in until the points show (yellow rings = dead ends). Click point A, then point B: a new link (white outline) gets the current brush type; a Jump line starts at A and lands at B. Esc cancels.',
+    h_draw: 'Free points for Trail / Cross-country / Jump line / any type: pick a type, then click to place points, each chained to the previous one (height from the height map). Click an existing point to connect to it (Alt = do not snap). End the chain with Esc, right-click, or a click on the last point.',
+    h_split: 'Click a link to split it: a new point appears where you click; keep the button down and drag to place it. Bridges and tunnels keep the neighbours\' heights interpolated, other points take the height-map value.',
+    h_move: 'Drag a point (game node or new point) to move it in 2D. Height follows the height map, or is interpolated along a bridge / tunnel. Ctrl+Z undoes a move.',
+    h_flip: 'Click a Jump line to reverse its direction (the arrow points from take-off to landing).',
+    h_delete: 'Click a link to remove it (also game roads; Ctrl+Z brings it back). Points left without any link disappear.',
     h_races: 'Click a race pin (or its race line), then pick a type. Unmarked races show a greyed icon with a "?".',
-    km_road: 'Road', km_offroad: 'Offroad', km_other: 'Other', km_unset: 'Not set', racesm: 'Races marked', of: 'of', added: 'added links',
+    km_road: 'Road', km_offroad: 'Offroad', km_other: 'Other', km_trail: 'Trail', km_crosscountry: 'Cross-country', km_tunnel: 'Tunnel', km_jump: 'Jump line', km_unset: 'Not set', racesm: 'Races marked', of: 'of', added: 'added links',
+    st_pts: 'new points', st_moved: 'moved points', st_removed: 'removed game links',
+    s_split: 'Link split', s_pt: 'Point placed', s_chain: 'Chain started - click to continue it, Esc / right-click to end', s_chain_end: 'Chain ended', s_flip: 'Jump direction reversed', s_nojump: 'That link is not a Jump line',
+    s_noedge: 'No link here', s_noelev: 'The height map is still loading - try again in a moment', s_pickType: 'Pick a link type first (not Clear)', s_nopt: 'No point here - zoom in', s_moved: 'Point moved',
     c_prefill: 'Prefill sets paved -> Road and off-road -> Offroad on the roads that have surface data (unknown roads are left alone). This overwrites existing paint on those roads. Continue?',
     c_import: 'Importing replaces everything you have painted so far. Continue?', c_nav: 'This file was made for a different nav file (sha1 / node count differ). Edges may not match. Import anyway?',
     s_prefill: 'Prefilled', s_edges: 'edges', s_imp: 'Imported', s_skip: 'skipped (unknown ids)', s_exp: 'Exported', s_undo: 'Undone', s_noundo: 'Nothing to undo',
@@ -498,14 +532,22 @@ const EDITOR = (function () {
   });
   Object.assign(UI.de, {
     ed: 'Editor', ed_title: 'Strassen- & Rennen-Editor', m_pan: 'Bewegen', m_paint: 'Malen', m_connect: 'Verbinden', m_delete: 'Link loeschen', m_races: 'Rennarten',
-    b_road: 'Strasse', b_offroad: 'Offroad', b_other: 'Sonstige', b_clear: 'Leeren', unset: 'nicht gesetzt', fill: 'Ganze Strasse zwischen Kreuzungen fuellen (oder Shift-Klick)',
-    prefill: 'Aus Untergrunddaten vorbefuellen', undo: 'Rueckgaengig', export: 'Export', import: 'Import',
+    m_draw: 'Zeichnen', m_split: 'Teilen', m_move: 'Versetzen', m_flip: 'Sprung drehen',
+    b_road: 'Strasse', b_offroad: 'Offroad', b_other: 'Sonstige', b_trail: 'Pfad', b_crosscountry: 'Querfeldein', b_tunnel: 'Tunnel', b_jump: 'Sprunglinie', b_clear: 'Leeren', unset: 'nicht gesetzt', fill: 'Ganze Strasse zwischen Kreuzungen fuellen (oder Shift-Klick)',
+    prefill: 'Aus Untergrunddaten vorbefuellen (nur Strasse / Offroad)', undo: 'Rueckgaengig', export: 'Export', import: 'Import',
     h_pan: 'Ziehen verschiebt die Karte. Leertaste halten = in jedem Modus verschieben.',
-    h_paint: 'Pinsel waehlen, dann Strassen anklicken oder ueberstreichen. Shift-Klick (oder Haken) faerbt eine ganze Strasse zwischen zwei Kreuzungen. Leertaste + Ziehen = verschieben. Tasten 1-4 = Pinsel, Strg+Z = rueckgaengig.',
-    h_connect: 'Hineinzoomen, bis die Knoten erscheinen (gelbe Ringe = Sackgassen). Knoten A, dann Knoten B anklicken: ein neuer gestrichelter Link bekommt den aktuellen Pinseltyp. Esc bricht ab.',
-    h_delete: 'Einen gestrichelten (hinzugefuegten) Link anklicken zum Entfernen. Spielstrassen lassen sich nicht loeschen.',
+    h_paint: 'Pinsel waehlen, dann Strassen anklicken oder ueberstreichen. Shift-Klick (oder Haken) faerbt eine ganze Strasse zwischen zwei Kreuzungen. Leertaste + Ziehen = verschieben. Tasten 1-7 = Strasse, Offroad, Sonstige, Pfad, Querfeldein, Tunnel, Sprunglinie; 0 = Leeren; Strg+Z = rueckgaengig.',
+    h_connect: 'Hineinzoomen, bis die Punkte erscheinen (gelbe Ringe = Sackgassen). Punkt A, dann Punkt B anklicken: ein neuer Link (weisser Rand) bekommt den aktuellen Pinseltyp; eine Sprunglinie startet bei A und landet bei B. Esc bricht ab.',
+    h_draw: 'Freie Punkte fuer Pfad / Querfeldein / Sprunglinie / jeden Typ: Typ waehlen, dann Punkte setzen, jeder mit dem vorigen verkettet (Hoehe aus der Hoehenkarte). Einen vorhandenen Punkt anklicken verbindet mit ihm (Alt = nicht einrasten). Kette beenden mit Esc, Rechtsklick oder Klick auf den letzten Punkt.',
+    h_split: 'Einen Link anklicken, um ihn zu teilen: an der Klickstelle entsteht ein neuer Punkt; Taste gedrueckt halten und ziehen setzt ihn. Bei Bruecken und Tunneln wird die Hoehe aus den Nachbarn interpoliert, sonst aus der Hoehenkarte.',
+    h_move: 'Einen Punkt (Spielknoten oder neuer Punkt) ziehen, um ihn in 2D zu versetzen. Die Hoehe folgt der Hoehenkarte bzw. wird auf Bruecken / in Tunneln interpoliert. Strg+Z macht es rueckgaengig.',
+    h_flip: 'Eine Sprunglinie anklicken, um ihre Richtung umzukehren (der Pfeil zeigt von Absprung zu Landung).',
+    h_delete: 'Einen Link anklicken, um ihn zu entfernen (auch Spielstrassen; Strg+Z holt ihn zurueck). Punkte ohne Link verschwinden.',
     h_races: 'Rennpin (oder Rennlinie) anklicken, dann Art waehlen. Unmarkierte Rennen zeigen ein ausgegrautes Symbol mit "?".',
-    km_road: 'Strasse', km_offroad: 'Offroad', km_other: 'Sonstige', km_unset: 'Nicht gesetzt', racesm: 'Rennen markiert', of: 'von', added: 'hinzugefuegte Links',
+    km_road: 'Strasse', km_offroad: 'Offroad', km_other: 'Sonstige', km_trail: 'Pfad', km_crosscountry: 'Querfeldein', km_tunnel: 'Tunnel', km_jump: 'Sprunglinie', km_unset: 'Nicht gesetzt', racesm: 'Rennen markiert', of: 'von', added: 'hinzugefuegte Links',
+    st_pts: 'neue Punkte', st_moved: 'versetzte Punkte', st_removed: 'entfernte Spiellinks',
+    s_split: 'Link geteilt', s_pt: 'Punkt gesetzt', s_chain: 'Kette gestartet - zum Fortsetzen klicken, Esc / Rechtsklick beendet', s_chain_end: 'Kette beendet', s_flip: 'Sprungrichtung umgekehrt', s_nojump: 'Das ist keine Sprunglinie',
+    s_noedge: 'Hier ist kein Link', s_noelev: 'Die Hoehenkarte laedt noch - gleich nochmal versuchen', s_pickType: 'Erst einen Linktyp waehlen (nicht Leeren)', s_nopt: 'Hier ist kein Punkt - hineinzoomen', s_moved: 'Punkt versetzt',
     c_prefill: 'Vorbefuellen setzt befestigt -> Strasse und Offroad -> Offroad auf allen Strassen mit Untergrunddaten (unbekannte bleiben unberuehrt). Vorhandene Markierungen dort werden ueberschrieben. Fortfahren?',
     c_import: 'Der Import ersetzt alles bisher Gemalte. Fortfahren?', c_nav: 'Diese Datei gehoert zu einer anderen Nav-Datei (sha1 / Knotenzahl weichen ab). Kanten passen evtl. nicht. Trotzdem importieren?',
     s_prefill: 'Vorbefuellt', s_edges: 'Kanten', s_imp: 'Importiert', s_skip: 'uebersprungen (unbekannte IDs)', s_exp: 'Exportiert', s_undo: 'Rueckgaengig gemacht', s_noundo: 'Nichts rueckgaengig zu machen',
@@ -539,6 +581,7 @@ const EDITOR = (function () {
     '#ed_stats{display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:12px}#ed_stats i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}#ed_stats b{text-align:right;font-variant-numeric:tabular-nums}' +
     '#ed_stat{min-height:15px;color:var(--ok)}' +
     '#map.ed-paint,#map.ed-paint .leaflet-interactive,#map.ed-paint .leaflet-grab{cursor:crosshair!important}' +
+    '#map.ed-paint .leaflet-marker-icon,#map.ed-paint .leaflet-tooltip,#map.ed-paint .leaflet-popup{pointer-events:none!important}' +      // map labels / pins / the fading-out info popup must not swallow the clicks of the point and link tools
     '.rpin{position:relative;width:30px;height:30px}.rpin img{width:30px;height:30px;object-fit:contain;display:block;filter:drop-shadow(0 0 2px #000)}' +
     '.rpin.px::before,.rpin.sl::before{content:"";position:absolute;inset:-2px;border-radius:50%;pointer-events:none}.rpin.px::before{border:2px solid #ff9f43}.rpin.sl::before{border:1.5px dashed rgba(255,255,255,.6)}' +
     '.rpin.unk img{filter:grayscale(1) brightness(.85) opacity(.55) drop-shadow(0 0 1px #000)}' +
@@ -554,31 +597,41 @@ const EDITOR = (function () {
   document.head.appendChild(css);
 
   // ---------------------------------------------------------------------------------------------------------------- state
-  const TN = [null, 'road', 'offroad', 'other'], TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80'], TKEY = ['unset', 'road', 'offroad', 'other'];   // type 0 = not set
+  // type index = position in TN (0 = not set).  Colours: Trail is drawn dashed, Tunnel with a dark casing, Jump line with arrows (draw()); user-made links get a white outline.
+  const TN = [null, 'road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump'], NT = TN.length, T_TUNNEL = 6, T_JUMP = 7;
+  const TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80', '#facc15', '#a78bfa', '#e2e8f0', '#f43f5e'];
+  const TLAB = ['km_unset', 'km_road', 'km_offroad', 'km_other', 'km_trail', 'km_crosscountry', 'km_tunnel', 'km_jump'];
+  const USER0 = 1000000, OFFT = 3;      // user point ids start here (game nav ids stay below); "off the terrain" threshold in metres (bridge / tunnel test)
   const RT = ['road', 'street', 'rally', 'cross_country', 'touge', 'drag', 'story', 'wristband'];
   const RTV = { road: ['asphalt_circuit', 'asphalt_p2p'], rally: ['mixedsurface_circuit', 'mixedsurface_p2p'], cross_country: ['crosscountry_circuit', 'crosscountry_p2p'],
                 street: ['streetracing', 'streetracing'], touge: ['touge', 'touge'], drag: ['dragracing', 'dragracing'], story: ['story', 'story'], wristband: ['wristband', 'wristband'] };
   // One-off migration of the first editor versions' 'midnight' type ("Midnight Battle"): the user's hand marking (2026-10-03) showed that those pins are Horizon Stories,
   // except route 8004 "Mech My Day", which is a Wristband event (a showcase, like "Launch Control").  So legacy 'midnight' -> 'story', and route 8004 -> 'wristband'.
   const raceTy = (id, v) => v === 'midnight' ? (String(id) === '8004' ? 'wristband' : 'story') : v;
-  const ed = { on: false, mode: 'pan', brush: 1, fill: false, sel: -1, hover: -1, mouse: null };
+  const ed = { on: false, mode: 'pan', brush: 1, fill: false, sel: -1, hover: -1, mouse: null, chain: -1, hoverE: null, drag: null };
   const marks = {};                       // route id -> race type
-  const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = added edge alive, r = race mark)
+  const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = edge alive, p = user point alive, m = point position [x,z,y], d = jump take-off node, r = race mark)
   let panHeld = false;
 
   // ---------------------------------------------------------------------------------------------------------------- graph
-  const nodeIdx = new Map(), NID = [], NX = [], NY = [], NWX = [], NWZ = [], adj = [];
-  const EA = [], EB = [], ET = [], EL = [], EAD = [], EAL = [], PRE = [], ekey = new Map();
+  const nodeIdx = new Map(), NID = [], NX = [], NY = [], NWX = [], NWZ = [], NH = [], NAL = [], NORIG = [], adj = [];      // NX/NY = map plane units, NWX/NWZ/NH = world x, z, y (m); NAL = alive (user points can be undone away); NORIG = game node's nav position [x,z,y]
+  const EA = [], EB = [], ET = [], EL = [], EAD = [], EAL = [], EDIR = [], PRE = [], ekey = new Map();      // EAD = user-made link, EAL = alive (a removed game edge stays in the arrays, dead), EDIR = jump take-off node index (-1 = none)
   const kkey = (a, b) => (a < b ? a + '-' + b : b + '-' + a);
   const CELL = 24, ck = (cx, cy) => cx * 1024 + cy, gridN = new Map(), gridE = new Map();
-  const gpush = (g, k, v) => { const l = g.get(k); if (l) l.push(v); else g.set(k, [v]); };
-  function node(id, x, z) {
+  const gpush = (g, k, v) => { const l = g.get(k); if (l) { if (l.indexOf(v) < 0) l.push(v); } else g.set(k, [v]); };      // unique: a node / edge moved many times must not pile up in a cell
+  const r2 = (v) => Math.round(v * 100) / 100;
+  function node(id, x, z, h) {
     let i = nodeIdx.get(id);
     if (i === undefined) {
-      i = NID.length; nodeIdx.set(id, i); NID.push(id); NX.push((x - X0) * SC); NY.push((Z1 - z) * SC); NWX.push(x); NWZ.push(z); adj.push([]);
+      i = NID.length; nodeIdx.set(id, i); NID.push(id); NX.push((x - X0) * SC); NY.push((Z1 - z) * SC); NWX.push(x); NWZ.push(z); NH.push(h); NAL.push(1); NORIG.push(id < USER0 ? [x, z, h] : null); adj.push([]);
       gpush(gridN, ck(Math.floor(NX[i] / CELL), Math.floor(NY[i] / CELL)), i);
     }
     return i;
+  }
+  function setPos(i, x, z, h) {                            // move a node (game or user point) and refresh everything that is derived from its position
+    NWX[i] = x; NWZ[i] = z; NH[i] = h; NX[i] = (x - X0) * SC; NY[i] = (Z1 - z) * SC;
+    gpush(gridN, ck(Math.floor(NX[i] / CELL), Math.floor(NY[i] / CELL)), i);      // stale entries in the old cells are harmless: lookups test the real position
+    adj[i].forEach((e) => { EL[e] = Math.hypot(NWX[EA[e]] - NWX[EB[e]], NWZ[EA[e]] - NWZ[EB[e]]); gridEdge(e); });
   }
   function gridEdge(e) {
     const i = EA[e], j = EB[e], x0 = NX[i], y0 = NY[i], x1 = NX[j], y1 = NY[j], n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (CELL / 2))), seen = new Set();
@@ -587,24 +640,27 @@ const EDITOR = (function () {
   function mkEdge(i, j, added, pre) {                       // -> edge index; an existing edge (also a removed added one) is returned as is
     const key = kkey(NID[i], NID[j]); let e = ekey.get(key);
     if (e !== undefined) return e;
-    e = EA.length; EA.push(i); EB.push(j); ET.push(0); EL.push(Math.hypot(NWX[i] - NWX[j], NWZ[i] - NWZ[j])); EAD.push(added ? 1 : 0); EAL.push(added ? 0 : 1); PRE.push(pre == null ? 2 : pre);
+    e = EA.length; EA.push(i); EB.push(j); ET.push(0); EL.push(Math.hypot(NWX[i] - NWX[j], NWZ[i] - NWZ[j])); EAD.push(added ? 1 : 0); EAL.push(added ? 0 : 1); EDIR.push(-1); PRE.push(pre == null ? 2 : pre);
     adj[i].push(e); adj[j].push(e); ekey.set(key, e); gridEdge(e);
     return e;
   }
   if (HAS_RD) {
     D.roads.lines.forEach((a, q) => {
-      const ids = RE.ids[q], pre = RE.pre && RE.pre[q]; let prev = -1;
+      const ids = RE.ids[q], ys = RE.y && RE.y[q], pre = RE.pre && RE.pre[q]; let prev = -1;
       for (let k = 0; 2 * k < a.length; k++) {
-        const n = node(ids[k], a[2 * k], a[2 * k + 1]);
+        const n = node(ids[k], a[2 * k], a[2 * k + 1], ys ? ys[k] : NaN);
         if (k > 0 && n !== prev) mkEdge(prev, n, 0, pre ? Number(pre[k - 1]) : null);
         prev = n;
       }
     });
-    (RE.orphans || []).forEach((o) => node(o[0], o[1], o[2]));
+    (RE.orphans || []).forEach((o) => node(o[0], o[1], o[2], NaN));
   }
   const NGAME = EA.length;
   const alive = (e) => EAL[e] === 1;
   const deg = (i) => { let n = 0; adj[i].forEach((e) => { if (EAL[e]) n++; }); return n; };
+  const dirOf = (e) => EDIR[e] >= 0 ? EDIR[e] : (NID[EA[e]] < NID[EB[e]] ? EA[e] : EB[e]);      // jump take-off node (default: the smaller id, as an import without jump_from gives)
+  const other = (e, i) => EA[e] === i ? EB[e] : EA[e];
+  const nbrs = (i) => adj[i].filter((e) => EAL[e]).map((e) => other(e, i));
 
   // nearest things to a plane point (x, y), radius r in plane units
   function nearEdges(x, y, r, addedOnly) {
@@ -624,7 +680,7 @@ const EDITOR = (function () {
     let best = -1, bd = r;
     for (let cx = Math.floor((x - r) / CELL); cx <= Math.floor((x + r) / CELL); cx++) for (let cy = Math.floor((y - r) / CELL); cy <= Math.floor((y + r) / CELL); cy++) {
       const l = gridN.get(ck(cx, cy)); if (!l) continue;
-      for (const i of l) { const d = Math.hypot(NX[i] - x, NY[i] - y); if (d <= bd) { bd = d; best = i; } }
+      for (const i of l) { if (!NAL[i]) continue; const d = Math.hypot(NX[i] - x, NY[i] - y); if (d <= bd) { bd = d; best = i; } }
     }
     return best;
   }
@@ -641,67 +697,168 @@ const EDITOR = (function () {
     return set;
   }
 
+  // ---------------------------------------------------------------------------------------------------------------- heights (D40)
+  // Height map: the 8 m elevation grid (GRID.elev, int16 decimetres), bilinear between cell centres; cells without data are left out of the weighting.  NaN = no data.
+  function terrainY(x, z) {
+    const E = GRID.elev; if (!E) return NaN;
+    const g = E.g, a = E.a, fx = (x - g.x0) / g.res - 0.5, fz = (g.z1 - z) / g.res - 0.5, c0 = Math.floor(fx), r0 = Math.floor(fz), tx = fx - c0, tz = fz - r0;
+    let sw = 0, sv = 0;
+    for (let dr = 0; dr < 2; dr++) for (let dc = 0; dc < 2; dc++) {
+      const c = c0 + dc, r = r0 + dr; if (c < 0 || r < 0 || c >= g.w || r >= g.h) continue;
+      const v = a[r * g.w + c]; if (v === -32768) continue;
+      const w = (dc ? tx : 1 - tx) * (dr ? tz : 1 - tz); sw += w; sv += w * v / 10;
+    }
+    return sw > 1e-6 ? sv / sw : NaN;
+  }
+  const offTerrain = (n) => !(Math.abs(NH[n] - terrainY(NWX[n], NWZ[n])) < OFFT);          // >= 3 m off the terrain (above: bridge; below: tunnel); no terrain data counts as off
+  function interpY(x, z, a, b) {                          // height of the point (x,z) projected onto the a-b segment, linear between the endpoints
+    const dx = NWX[b] - NWX[a], dz = NWZ[b] - NWZ[a], L2 = dx * dx + dz * dz, u = L2 ? Math.max(0, Math.min(1, ((x - NWX[a]) * dx + (z - NWZ[a]) * dz) / L2)) : 0.5;
+    return NH[a] + u * (NH[b] - NH[a]);
+  }
+  // Height of a new / moved point at (x,z) whose linked neighbours are nb (node indices).  Terrain by default; interpolation between two neighbours when both are
+  // >= OFFT m off the terrain (bridge / tunnel), when the point sits on a tunnel-typed edge, or when there is no terrain data; with a single neighbour that
+  // case copies the neighbour's height.  With more than two neighbours (junction) the two that lie most opposite each other are used.
+  function autoY(x, z, nb, tunnel) {
+    const ty = terrainY(x, z);
+    let a = -1, b = -1;
+    if (nb.length === 2) { a = nb[0]; b = nb[1]; }
+    else if (nb.length > 2) {
+      let best = 2;
+      for (let p = 0; p < nb.length; p++) for (let q = p + 1; q < nb.length; q++) {
+        const ux = NWX[nb[p]] - x, uz = NWZ[nb[p]] - z, vx = NWX[nb[q]] - x, vz = NWZ[nb[q]] - z, c = (ux * vx + uz * vz) / ((Math.hypot(ux, uz) * Math.hypot(vx, vz)) || 1);
+        if (c < best) { best = c; a = nb[p]; b = nb[q]; }
+      }
+    }
+    if (a >= 0 && (tunnel || !isFinite(ty) || (offTerrain(a) && offTerrain(b)))) return interpY(x, z, a, b);
+    if (nb.length === 1 && (tunnel || !isFinite(ty))) return NH[nb[0]];
+    if (isFinite(ty)) return ty;
+    return nb.length ? NH[nb[0]] : 100;
+  }
+  const hasElev = () => { if (GRID.elev) return true; say(t('s_noelev'), 1); return false; };
+
   // ---------------------------------------------------------------------------------------------------------------- history / mutation
   function setType(e, v) { ET[e] = v; }
   function applyOp(op, rev) {
     const v = rev ? op[2] : op[3];
-    if (op[0] === 't') setType(op[1], v); else if (op[0] === 'a') EAL[op[1]] = v; else if (op[0] === 'r') { if (v) marks[op[1]] = v; else delete marks[op[1]]; refreshRace(op[1]); }
+    if (op[0] === 't') setType(op[1], v); else if (op[0] === 'a') EAL[op[1]] = v; else if (op[0] === 'p') NAL[op[1]] = v;
+    else if (op[0] === 'm') setPos(op[1], v[0], v[1], v[2]); else if (op[0] === 'd') EDIR[op[1]] = v;
+    else if (op[0] === 'r') { if (v) marks[op[1]] = v; else delete marks[op[1]]; refreshRace(op[1]); }
   }
   function commit(ops) { if (!ops.length) return; hist.push(ops); if (hist.length > 200) hist.shift(); changed(); }
   function undo() {
     const ops = hist.pop(); if (!ops) { say(t('s_noundo')); return; }
     for (let k = ops.length - 1; k >= 0; k--) applyOp(ops[k], true);
+    if (ed.chain >= 0 && !NAL[ed.chain]) ed.chain = -1;
     say(t('s_undo')); changed();
   }
-  function paintEdges(list, v, ops) { list.forEach((e) => { if (ET[e] !== v) { ops.push(['t', e, ET[e], v]); ET[e] = v; } }); }
+  function paintEdges(list, v, ops) {
+    list.forEach((e) => {
+      if (ET[e] !== v) { ops.push(['t', e, ET[e], v]); ET[e] = v; }
+      if (v === T_JUMP && EDIR[e] < 0) { ops.push(['d', e, -1, EA[e]]); EDIR[e] = EA[e]; }
+    });
+  }
+  // new user point (alive; its id is the next free one >= USER0) / link between two points / drop user points that lost their last link
+  function nextUserId() { let m = USER0 - 1; for (let i = 0; i < NID.length; i++) if (NID[i] >= USER0 && NID[i] > m) m = NID[i]; return m + 1; }
+  function newPoint(x, z, h, ops, id) {
+    const i = node(id == null ? nextUserId() : id, x, z, h); setPos(i, x, z, h); NAL[i] = 1; ops.push(['p', i, 0, 1]); return i;
+  }
+  function link(i, j, type, ops) {                        // -> edge index, or -1 when i and j are already linked.  A Jump line takes off at i and lands at j.
+    const e = mkEdge(i, j, 1);
+    if (EAL[e]) return -1;
+    EAL[e] = 1; ops.push(['a', e, 0, 1]);
+    if (ET[e] !== type) { ops.push(['t', e, ET[e], type]); ET[e] = type; }
+    if (type === T_JUMP && EDIR[e] !== i) { ops.push(['d', e, EDIR[e], i]); EDIR[e] = i; }
+    return e;
+  }
+  function dropLonely(ns, ops) { ns.forEach((i) => { if (NID[i] >= USER0 && NAL[i] && deg(i) === 0) { NAL[i] = 0; ops.push(['p', i, 1, 0]); } }); }
+  function removeEdge(e, ops) { EAL[e] = 0; ops.push(['a', e, 1, 0]); dropLonely([EA[e], EB[e]], ops); }
+  function splitEdge(e, px, py, ops) {                    // px,py = click in plane units; -> new point index
+    const a = EA[e], b = EB[e], dx = NX[b] - NX[a], dy = NY[b] - NY[a], L2 = dx * dx + dy * dy;
+    const u = L2 ? Math.max(0.02, Math.min(0.98, ((px - NX[a]) * dx + (py - NY[a]) * dy) / L2)) : 0.5, type = ET[e], jt = type === T_JUMP ? dirOf(e) : -1;
+    const x = r2(NWX[a] + u * (NWX[b] - NWX[a])), z = r2(NWZ[a] + u * (NWZ[b] - NWZ[a])), h = r2(autoY(x, z, [a, b], type === T_TUNNEL));
+    const pi = newPoint(x, z, h, ops);
+    EAL[e] = 0; ops.push(['a', e, 1, 0]);
+    if (jt === b) { link(b, pi, type, ops); link(pi, a, type, ops); } else { link(a, pi, type, ops); link(pi, b, type, ops); }      // keeps the take-off end
+    return pi;
+  }
   function prefill() {
     if (!HAS_RD || !RE.pre) return;
-    let any = false; for (let e = 0; e < EA.length; e++) if (ET[e]) { any = true; break; }
+    let any = false; for (let e = 0; e < EA.length; e++) if (ET[e] && ET[e] <= 3) { any = true; break; }
     if (any && !confirm(t('c_prefill'))) return;
     const ops = []; let n = 0;
-    for (let e = 0; e < NGAME; e++) { const p = PRE[e]; if (p === 2) continue; n++; if (ET[e] !== p + 1) { ops.push(['t', e, ET[e], p + 1]); ET[e] = p + 1; } }
+    for (let e = 0; e < NGAME; e++) { const p = PRE[e]; if (p === 2 || !EAL[e] || ET[e] > 3) continue; n++; if (ET[e] !== p + 1) { ops.push(['t', e, ET[e], p + 1]); ET[e] = p + 1; } }      // Trail / Cross-country / Tunnel / Jump marks and removed edges stay
     say(t('s_prefill') + ' ' + n + ' ' + t('s_edges')); commit(ops);
   }
 
   // ---------------------------------------------------------------------------------------------------------------- export / import / autosave
   function exportObj() {
-    const types = {}, added = [], km = [0, 0, 0, 0]; let painted = 0;
+    const types = {}, added = [], points = {}, moved = {}, removed = [], jump_from = {}, km = new Array(NT).fill(0); let painted = 0;
+    const cmp = (p, q) => p.a - q.a || p.b - q.b;
     for (let e = 0; e < EA.length; e++) {
-      if (!EAL[e]) continue;
+      const a = Math.min(NID[EA[e]], NID[EB[e]]), b = Math.max(NID[EA[e]], NID[EB[e]]), key = a + '-' + b;
+      if (!EAL[e]) { if (!EAD[e]) removed.push({ a, b }); continue; }
       km[ET[e]] += EL[e] / 1000;
-      const a = Math.min(NID[EA[e]], NID[EB[e]]), b = Math.max(NID[EA[e]], NID[EB[e]]);
-      if (EAD[e]) added.push({ a, b, type: TN[ET[e]] }); else if (ET[e]) { types[a + '-' + b] = TN[ET[e]]; painted++; }
+      if (EAD[e]) added.push({ a, b, type: TN[ET[e]] }); else if (ET[e]) { types[key] = TN[ET[e]]; painted++; }
+      if (ET[e] === T_JUMP) jump_from[key] = NID[dirOf(e)];
+    }
+    added.sort(cmp); removed.sort(cmp);
+    for (let i = 0; i < NID.length; i++) {
+      if (!NAL[i]) continue;
+      const v = [NWX[i], NWZ[i], NH[i]], o = NORIG[i];
+      if (NID[i] >= USER0) points[NID[i]] = v; else if (o && (o[0] !== v[0] || o[1] !== v[1] || o[2] !== v[2])) moved[NID[i]] = v;
     }
     const rm = {}; Object.keys(marks).sort((p, q) => p - q).forEach((k) => { rm[k] = marks[k]; });
-    const r1 = (v) => Math.round(v * 10) / 10;
-    return { format: 'fh6-road-types', version: 1, nav: HAS_RD ? RE.nav : null, types, added, races: rm,
-      counts: { km: { road: r1(km[1]), offroad: r1(km[2]), other: r1(km[3]), not_set: r1(km[0]) }, edges: { total: NGAME, painted, added: added.length },
+    const r1 = (v) => Math.round(v * 10) / 10, kmo = {}; for (let k = 1; k < NT; k++) kmo[TN[k]] = r1(km[k]); kmo.not_set = r1(km[0]);
+    return { format: 'fh6-road-types', version: 2, nav: HAS_RD ? RE.nav : null, types, added, points, moved, removed: removed.map((q) => q.a + '-' + q.b), jump_from, races: rm,
+      counts: { km: kmo, edges: { total: NGAME, painted, added: added.length, removed: removed.length }, points: Object.keys(points).length, moved: Object.keys(moved).length,
                 races: { marked: Object.keys(rm).length, total: HAS_RC ? D.racelines.length : 0 } } };
   }
-  function resetAll() {
-    for (let e = 0; e < EA.length; e++) { ET[e] = 0; if (EAD[e]) EAL[e] = 0; }
+  function resetAll() {                                  // back to the untouched game graph: no types, no user points / links, nothing moved or removed
+    for (let i = 0; i < NID.length; i++) {
+      if (NID[i] >= USER0) NAL[i] = 0;
+      else { const o = NORIG[i]; if (o && (NWX[i] !== o[0] || NWZ[i] !== o[1] || NH[i] !== o[2])) setPos(i, o[0], o[1], o[2]); }
+    }
+    for (let e = 0; e < EA.length; e++) { ET[e] = 0; EDIR[e] = -1; EAL[e] = EAD[e] ? 0 : 1; }
     Object.keys(marks).forEach((k) => { delete marks[k]; });
+    ed.chain = -1;
   }
   const navOk = (o) => !HAS_RD || !o.nav || (o.nav.sha1 === RE.nav.sha1 && o.nav.nodes === RE.nav.nodes);
   function importObj(o, silent, noSave) {
-    if (!o || o.format !== 'fh6-road-types' || o.version !== 1) { say(t('s_bad'), 1); return false; }
+    if (!o || o.format !== 'fh6-road-types' || (o.version !== 1 && o.version !== 2)) { say(t('s_bad'), 1); return false; }      // v1 files simply have none of the v2 keys
     if (HAS_RD && o.nav && (o.nav.sha1 !== RE.nav.sha1 || o.nav.nodes !== RE.nav.nodes) && !silent && !confirm(t('c_nav'))) return false;
     if (HAS_RD && o.nav && silent && (o.nav.sha1 !== RE.nav.sha1 || o.nav.nodes !== RE.nav.nodes)) return false;       // autosave from another nav file: ignore
-    resetAll(); let ok = 0, skip = 0, add = 0;
-    const tix = (s) => TN.indexOf(s);
+    resetAll(); let ok = 0, skip = 0, add = 0, npt = 0, nmv = 0, nrm = 0;
+    const tix = (s) => TN.indexOf(s), okv = (v) => Array.isArray(v) && v.length >= 3 && v.every((q) => typeof q === 'number' && isFinite(q));
+    Object.keys(o.points || {}).forEach((k) => {
+      const id = Number(k), v = o.points[k];
+      if (!(Number.isInteger(id) && id >= USER0) || !okv(v)) { skip++; return; }
+      newPoint(r2(v[0]), r2(v[1]), r2(v[2]), [], id); npt++;
+    });
+    Object.keys(o.moved || {}).forEach((k) => {
+      const i = nodeIdx.get(Number(k)), v = o.moved[k];
+      if (i === undefined || NID[i] >= USER0 || !okv(v)) { skip++; return; }
+      setPos(i, r2(v[0]), r2(v[1]), r2(v[2])); nmv++;
+    });
+    (o.removed || []).forEach((k) => { const e = ekey.get(k); if (e !== undefined && !EAD[e]) { EAL[e] = 0; nrm++; } else skip++; });
     Object.keys(o.types || {}).forEach((k) => {
       const e = ekey.get(k), v = tix(o.types[k]);
-      if (e !== undefined && !EAD[e] && v > 0) { ET[e] = v; ok++; } else skip++;
+      if (e !== undefined && !EAD[e] && EAL[e] && v > 0) { ET[e] = v; ok++; } else skip++;
     });
     (o.added || []).forEach((q) => {
-      const i = nodeIdx.get(q.a), j = nodeIdx.get(q.b);
-      if (i === undefined || j === undefined || i === j) { skip++; return; }
-      const e = mkEdge(i, j, 1); if (EAD[e]) { EAL[e] = 1; ET[e] = Math.max(0, tix(q.type)); add++; } else skip++;
+      const i = nodeIdx.get(q.a), j = nodeIdx.get(q.b), v = q.type == null ? 0 : tix(q.type);
+      if (i === undefined || j === undefined || i === j || !NAL[i] || !NAL[j] || v < 0) { skip++; return; }
+      const e = mkEdge(i, j, 1);
+      if (EAL[e]) { skip++; return; }                          // duplicate
+      EAL[e] = 1; ET[e] = v; add++;                           // (a re-added removed game edge becomes a game edge again, typed by this entry)
     });
+    for (let e = 0; e < EA.length; e++) if (EAL[e] && ET[e] === T_JUMP) {              // jump direction: jump_from, else the smaller id
+      const k = Math.min(NID[EA[e]], NID[EB[e]]) + '-' + Math.max(NID[EA[e]], NID[EB[e]]), i = nodeIdx.get((o.jump_from || {})[k]);
+      EDIR[e] = i === EA[e] || i === EB[e] ? i : (NID[EA[e]] < NID[EB[e]] ? EA[e] : EB[e]);
+    }
     const rid = new Set((D.racelines || []).map((r) => String(r.id)));
     Object.keys(o.races || {}).forEach((k) => { const v = raceTy(k, o.races[k]); if (rid.has(k) && RT.indexOf(v) >= 0) marks[k] = v; else skip++; });
     hist.length = 0; refreshAllRaces();
-    if (!silent) say(t('s_imp') + ': ' + ok + ' ' + t('s_edges') + ', ' + add + ' ' + t('added') + ', ' + Object.keys(marks).length + ' ' + t('racesm') + (skip ? ', ' + skip + ' ' + t('s_skip') : ''), skip ? 1 : 0);
+    if (!silent) say(t('s_imp') + ': ' + ok + ' ' + t('s_edges') + ', ' + add + ' ' + t('added') + (npt || nmv || nrm ? ', ' + npt + ' ' + t('st_pts') + ', ' + nmv + ' ' + t('st_moved') + ', ' + nrm + ' ' + t('st_removed') : '') + ', ' + Object.keys(marks).length + ' ' + t('racesm') + (skip ? ', ' + skip + ' ' + t('s_skip') : ''), skip ? 1 : 0);
     if (noSave) { redraw(); renderStats(); } else changed(true);      // noSave: the untouched project data is not copied into localStorage, so a newer build's project data shows until the user edits
     return true;
   }
@@ -722,6 +879,8 @@ const EDITOR = (function () {
   map.createPane('edpane'); const ep = map.getPane('edpane'); ep.style.zIndex = 390; ep.style.pointerEvents = 'none';
   const cv = document.createElement('canvas'); cv.style.position = 'absolute'; ep.appendChild(cv);
   let raf = 0; const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+  const isMoved = (i) => { const o = NORIG[i]; return !!o && (NWX[i] !== o[0] || NWZ[i] !== o[1] || NH[i] !== o[2]); };
+  const NODE_MODES = ['connect', 'draw', 'move', 'split'];       // modes that work on points: they show the nodes from a lower zoom
   function draw() {
     if (!ed.on || !HAS_RD) return;
     const sz = map.getSize(), cw = Math.round(sz.x * 1.5), ch = Math.round(sz.y * 1.5), dpr = window.devicePixelRatio || 1;
@@ -730,33 +889,64 @@ const EDITOR = (function () {
     L.DomUtil.setPosition(cv, tl);
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, ch);
     const z = map.getZoom(), sc = Math.pow(2, z - 3), o = map.getPixelOrigin(), ox = o.x + tl.x, oy = o.y + tl.y;
-    const px = (i) => NX[i] * sc - ox, py = (i) => NY[i] * sc - oy;
-    const P = []; for (let k = 0; k < 8; k++) P.push(new Path2D());
+    const px = (i) => NX[i] * sc - ox, py = (i) => NY[i] * sc - oy, base = Math.max(1.8, Math.min(5.5, 1.2 + sc * 0.9));
+    const P = []; for (let k = 0; k < NT; k++) P.push(new Path2D());
+    const CS = new Path2D(), CT = new Path2D(), arrows = [];             // white outline of user-made links (CT: the dashed one under Trail links)
     for (let e = 0; e < EA.length; e++) {
       if (!EAL[e]) continue;
       const i = EA[e], j = EB[e], x0 = px(i), y0 = py(i), x1 = px(j), y1 = py(j);
       if ((x0 < -10 && x1 < -10) || (x0 > cw + 10 && x1 > cw + 10) || (y0 < -10 && y1 < -10) || (y0 > ch + 10 && y1 > ch + 10)) continue;
-      const p = P[ET[e] + 4 * EAD[e]]; p.moveTo(x0, y0); p.lineTo(x1, y1);
+      const p = P[ET[e]]; p.moveTo(x0, y0); p.lineTo(x1, y1);
+      if (EAD[e]) { const c = ET[e] === 4 ? CT : CS; c.moveTo(x0, y0); c.lineTo(x1, y1); }
+      if (ET[e] === T_JUMP) arrows.push(dirOf(e) === i ? [x0, y0, x1, y1] : [x1, y1, x0, y0]);
     }
-    g.lineCap = 'round'; g.lineJoin = 'round';
-    for (let k = 0; k < 8; k++) {
-      g.strokeStyle = TCOL[k & 3]; g.lineWidth = (k < 4 ? 1 : 1.3) * Math.max(1.8, Math.min(5.5, 1.2 + sc * 0.9)); g.globalAlpha = k & 3 ? 0.92 : 1;
-      g.setLineDash(k < 4 ? [] : [7, 5]); g.stroke(P[k]);
+    g.lineCap = 'round'; g.lineJoin = 'round'; g.globalAlpha = 1; g.setLineDash([]);
+    g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = base + 3.2; g.stroke(CS);
+    g.lineCap = 'butt'; g.setLineDash([8, 5]); g.stroke(CT);
+    g.lineCap = 'round'; g.setLineDash([]); g.strokeStyle = '#0b1220'; g.lineWidth = base * 2.6; g.stroke(P[T_TUNNEL]);       // tunnel: dark casing, pale core
+    for (let k = 0; k < NT; k++) {
+      g.strokeStyle = TCOL[k]; g.lineWidth = base * (k === T_TUNNEL ? 0.8 : k === T_JUMP ? 1.4 : 1); g.globalAlpha = k && k !== T_TUNNEL ? 0.92 : 1;
+      g.lineCap = k === 4 ? 'butt' : 'round'; g.setLineDash(k === 4 ? [8, 5] : []); g.stroke(P[k]);       // trail: dashed
     }
-    g.setLineDash([]); g.globalAlpha = 1;
-    const showN = z >= (ed.mode === 'connect' ? 3.5 : 4.5), showEnds = ed.mode === 'connect' && z >= 2.5;
-    if (showN || showEnds) {
+    g.setLineDash([]); g.globalAlpha = 1; g.lineCap = 'round';
+    const as = Math.max(7, base * 2.4); g.lineWidth = 1.5;                                                      // jump lines: arrows from take-off to landing
+    for (const [ax, ay, bx, by] of arrows) {
+      const L2 = Math.hypot(bx - ax, by - ay); if (L2 < 3 || L2 > 20000) continue;
+      const ux = (bx - ax) / L2, uy = (by - ay) / L2, nx = -uy, ny = ux, n = Math.min(8, L2 > 120 ? Math.floor(L2 / 90) + 1 : 1);
+      for (let q = 1; q <= n; q++) {
+        const f = q / (n + 1), mx = ax + (bx - ax) * f, my = ay + (by - ay) * f;
+        g.beginPath(); g.moveTo(mx + ux * as, my + uy * as); g.lineTo(mx - ux * as * 0.6 + nx * as * 0.7, my - uy * as * 0.6 + ny * as * 0.7); g.lineTo(mx - ux * as * 0.6 - nx * as * 0.7, my - uy * as * 0.6 - ny * as * 0.7); g.closePath();
+        g.fillStyle = '#fff'; g.strokeStyle = '#be123c'; g.fill(); g.stroke();
+      }
+    }
+    const showN = z >= (NODE_MODES.indexOf(ed.mode) >= 0 ? 3.5 : 4.5), showEnds = ed.mode === 'connect' && z >= 2.5, showU = z >= 2;
+    if (showN || showEnds || showU) {
       for (let i = 0; i < NID.length; i++) {
+        if (!NAL[i]) continue;
         const x = px(i), y = py(i); if (x < -10 || y < -10 || x > cw + 10 || y > ch + 10) continue;
+        if (NID[i] >= USER0) { g.fillStyle = '#a78bfa'; g.strokeStyle = '#fff'; g.lineWidth = 1.6; g.beginPath(); g.arc(x, y, 4.2, 0, 6.3); g.fill(); g.stroke(); continue; }      // user points: always visible
+        if (!(showN || showEnds)) continue;
         const d = deg(i);
         if (showEnds && d === 1) { g.strokeStyle = '#fde047'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, 6.3); g.stroke(); }
-        if (showN) { g.fillStyle = d === 2 ? '#fff' : '#fde047'; g.strokeStyle = '#000'; g.lineWidth = 1; g.beginPath(); g.arc(x, y, d === 2 ? 2.6 : 4, 0, 6.3); g.fill(); g.stroke(); }
+        if (showN) {
+          g.fillStyle = d === 2 ? '#fff' : '#fde047'; g.strokeStyle = '#000'; g.lineWidth = 1; g.beginPath(); g.arc(x, y, d === 2 ? 2.6 : 4, 0, 6.3); g.fill(); g.stroke();
+          if (isMoved(i)) { g.strokeStyle = '#fb923c'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6.5, 0, 6.3); g.stroke(); }
+        }
       }
     }
     const ring = (i, col) => { g.strokeStyle = col; g.lineWidth = 3; g.beginPath(); g.arc(px(i), py(i), 9, 0, 6.3); g.stroke(); };
+    const rubber = (i, col) => { if (ed.mouse) { g.strokeStyle = col; g.lineWidth = 2; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(px(i), py(i)); g.lineTo(ed.mouse.x * sc - ox, ed.mouse.y * sc - oy); g.stroke(); g.setLineDash([]); } };
     if (ed.mode === 'connect') {
-      if (ed.sel >= 0) { ring(ed.sel, '#fff'); if (ed.mouse) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(px(ed.sel), py(ed.sel)); g.lineTo(ed.mouse.x * sc - ox, ed.mouse.y * sc - oy); g.stroke(); g.setLineDash([]); } }
+      if (ed.sel >= 0) { ring(ed.sel, '#fff'); rubber(ed.sel, '#fff'); }
       if (ed.hover >= 0 && ed.hover !== ed.sel) ring(ed.hover, TCOL[ed.brush]);
+    } else if (ed.mode === 'draw') {
+      if (ed.chain >= 0 && NAL[ed.chain]) { ring(ed.chain, '#fff'); rubber(ed.chain, TCOL[ed.brush]); }
+      if (ed.hover >= 0 && ed.hover !== ed.chain) ring(ed.hover, TCOL[ed.brush]);
+    } else if (ed.mode === 'move') {
+      const h = ed.drag ? ed.drag.i : ed.hover; if (h >= 0) ring(h, '#fb923c');
+    } else if (ed.mode === 'split' || ed.mode === 'flip') {
+      if (ed.drag) ring(ed.drag.i, '#fb923c');
+      else if (ed.hoverE) { g.strokeStyle = '#fff'; g.lineWidth = 2.5; g.beginPath(); g.arc(ed.hoverE.x * sc - ox, ed.hoverE.y * sc - oy, 6, 0, 6.3); g.stroke(); }
     }
   }
 
@@ -764,32 +954,83 @@ const EDITOR = (function () {
   const mapEl = map.getContainer();
   const plane = (ev) => { const l = map.mouseEventToLatLng(ev); return { x: l.lng, y: -l.lat }; };
   const pxu = (n) => n / Math.pow(2, map.getZoom() - 3);          // screen px -> plane units
+  const planeToWorld = (p) => ({ x: r2(X0 + p.x / SC), z: r2(Z1 - p.y / SC) });
   let stroke = null;
   function paintAt(x, y, shift, ops) {
     if (shift || ed.fill) { const n = nearEdges(x, y, pxu(12)); if (n.length) paintEdges(runOf(n[0][1]), ed.brush, ops); }
     else paintEdges(nearEdges(x, y, pxu(7)).map((q) => q[1]), ed.brush, ops);
+  }
+  function endChain(quiet) {                              // a lone first point (no link yet) is dropped again: the click that made it is taken back
+    const c = ed.chain; ed.chain = -1;
+    if (c >= 0 && NID[c] >= USER0 && NAL[c] && deg(c) === 0) {
+      const top = hist[hist.length - 1];
+      if (top && top.length === 1 && top[0][0] === 'p' && top[0][1] === c) { hist.pop(); NAL[c] = 0; changed(); }
+    }
+    if (!quiet && c >= 0) say(t('s_chain_end')); redraw();
+  }
+  function drawAt(p, noSnap) {
+    if (!ed.brush) { say(t('s_pickType'), 1); return; }
+    const n = noSnap ? -1 : nearNode(p.x, p.y, pxu(12)), ops = [];
+    if (n >= 0) {
+      if (ed.chain < 0) { ed.chain = n; say(t('s_chain')); }
+      else if (n === ed.chain) { endChain(); return; }
+      else { if (link(ed.chain, n, ed.brush, ops) < 0) say(t('s_exists'), 1); else say(t('s_conn')); commit(ops); ed.chain = n; }
+    } else {
+      if (!hasElev()) return;
+      const w = planeToWorld(p), nb = ed.chain >= 0 && NAL[ed.chain] ? [ed.chain] : [], h = r2(autoY(w.x, w.z, nb, ed.brush === T_TUNNEL)), first = !nb.length;
+      const i = newPoint(w.x, w.z, h, ops); if (!first) link(ed.chain, i, ed.brush, ops);
+      commit(ops); ed.chain = i; say(first ? t('s_chain') : t('s_pt'));
+    }
+    redraw();
   }
   function downAt(ev) {
     const p = plane(ev);
     if (ed.mode === 'paint') {
       stroke = { ops: [], last: p, shift: ev.shiftKey }; paintAt(p.x, p.y, ev.shiftKey, stroke.ops); redraw();
     } else if (ed.mode === 'delete') {
-      const n = nearEdges(p.x, p.y, pxu(10), true);
-      if (n.length) { EAL[n[0][1]] = 0; commit([['a', n[0][1], 1, 0]]); say(t('s_del')); }
+      const n = nearEdges(p.x, p.y, pxu(10));
+      if (n.length) { const ops = []; removeEdge(n[0][1], ops); commit(ops); say(t('s_del')); }
     } else if (ed.mode === 'connect') {
       const n = nearNode(p.x, p.y, pxu(12));
       if (n < 0) { say(t('s_nonode'), 1); return; }
       if (ed.sel < 0) { ed.sel = n; say(t('s_pickA')); redraw(); return; }
       if (n === ed.sel) { ed.sel = -1; redraw(); return; }
       connect(ed.sel, n); ed.sel = -1;
+    } else if (ed.mode === 'draw') {
+      drawAt(p, ev.altKey);
+    } else if (ed.mode === 'move') {
+      const n = nearNode(p.x, p.y, pxu(12));
+      if (n < 0) { say(t('s_nopt'), 1); return; }
+      if (!hasElev()) return;
+      ed.drag = { i: n, old: [NWX[n], NWZ[n], NH[n]], ops: [], created: false, moved: false }; redraw();
+    } else if (ed.mode === 'split') {
+      const n = nearEdges(p.x, p.y, pxu(10));
+      if (!n.length) { say(t('s_noedge'), 1); return; }
+      if (!hasElev()) return;
+      const ops = [], pi = splitEdge(n[0][1], p.x, p.y, ops);
+      ed.drag = { i: pi, old: [NWX[pi], NWZ[pi], NH[pi]], ops, created: true, moved: false }; say(t('s_split')); redraw();      // keep the button down + drag = place the new point
+    } else if (ed.mode === 'flip') {
+      const n = nearEdges(p.x, p.y, pxu(10));
+      if (!n.length) { say(t('s_noedge'), 1); return; }
+      const e = n[0][1]; if (ET[e] !== T_JUMP) { say(t('s_nojump'), 1); return; }
+      const nd = other(e, dirOf(e)); commit([['d', e, EDIR[e], nd]]); EDIR[e] = nd; say(t('s_flip'));
     }
   }
+  function dragTo(p) {                                    // live move of the dragged point: position follows the mouse, height is re-derived (D40) at every step
+    const d = ed.drag, w = planeToWorld(p), i = d.i;
+    setPos(i, w.x, w.z, r2(autoY(w.x, w.z, nbrs(i), adj[i].some((e) => EAL[e] && ET[e] === T_TUNNEL)))); d.moved = true; redraw();
+  }
+  function finishDrag() {
+    const d = ed.drag; ed.drag = null; const cur = [NWX[d.i], NWZ[d.i], NH[d.i]];
+    const same = cur[0] === d.old[0] && cur[1] === d.old[1] && cur[2] === d.old[2];
+    if (d.created) { if (d.moved && !same) d.ops.push(['m', d.i, d.old, cur]); commit(d.ops); }
+    else if (d.moved && !same) { commit([['m', d.i, d.old, cur]]); say(t('s_moved')); }
+    redraw();
+  }
   function connect(i, j) {
-    const e = mkEdge(i, j, 1);
-    if (EAL[e]) { say(t('s_exists'), 1); redraw(); return false; }
-    EAL[e] = 1; ET[e] = ed.brush; commit([['a', e, 0, 1], ['t', e, 0, ed.brush]]);
-    // (undo order is reversed: type first, then alive - both end up as "never existed")
-    say(t('s_conn')); return true;
+    const ops = [], e = link(i, j, ed.brush, ops);
+    if (e < 0) { say(t('s_exists'), 1); redraw(); return false; }
+    commit(ops); say(t('s_conn')); return true;
   }
   mapEl.addEventListener('mousedown', (ev) => {
     if (!ed.on || !HAS_RD || ev.button !== 0 || panHeld || ed.mode === 'pan' || ed.mode === 'races') return;
@@ -799,22 +1040,30 @@ const EDITOR = (function () {
   mapEl.addEventListener('mousemove', (ev) => {
     if (!ed.on) return;
     const p = plane(ev); ed.mouse = p;
+    if (ed.drag) { dragTo(p); return; }
     if (stroke) {
       const l = stroke.last, d = Math.hypot(p.x - l.x, p.y - l.y), step = pxu(5), n = Math.max(1, Math.ceil(d / step));
       for (let s = 1; s <= n; s++) paintAt(l.x + (p.x - l.x) * s / n, l.y + (p.y - l.y) * s / n, stroke.shift, stroke.ops);
       stroke.last = p; redraw();
-    } else if (ed.mode === 'connect') { const h = nearNode(p.x, p.y, pxu(12)); if (h !== ed.hover || ed.sel >= 0) { ed.hover = h; redraw(); } }
+    } else if (ed.mode === 'connect' || ed.mode === 'draw' || ed.mode === 'move') {
+      const h = nearNode(p.x, p.y, pxu(12)); if (h !== ed.hover || ed.sel >= 0 || ed.chain >= 0) { ed.hover = h; redraw(); }
+    } else if (ed.mode === 'split' || ed.mode === 'flip') {
+      const n = nearEdges(p.x, p.y, pxu(10)); let h = null;
+      if (n.length) { const e = n[0][1], a = EA[e], dx = NX[EB[e]] - NX[a], dy = NY[EB[e]] - NY[a], L2 = dx * dx + dy * dy, u = L2 ? Math.max(0.02, Math.min(0.98, ((p.x - NX[a]) * dx + (p.y - NY[a]) * dy) / L2)) : 0.5; h = { x: NX[a] + u * dx, y: NY[a] + u * dy }; }
+      if (h || ed.hoverE) { ed.hoverE = h; redraw(); }
+    }
   });
-  document.addEventListener('mouseup', () => { if (stroke) { const s = stroke; stroke = null; commit(s.ops); } });
-  map.on('popupopen', (e) => { if (ed.on && (ed.mode === 'paint' || ed.mode === 'connect' || ed.mode === 'delete') && e.popup._source instanceof L.Path) map.closePopup(); });
+  mapEl.addEventListener('contextmenu', (ev) => { if (ed.on && HAS_RD && ed.mode === 'draw') { ev.preventDefault(); endChain(); } });       // right-click ends the chain
+  document.addEventListener('mouseup', () => { if (stroke) { const s = stroke; stroke = null; commit(s.ops); } if (ed.drag) finishDrag(); });
+  map.on('popupopen', () => { if (ed.on && HAS_RD && ed.mode !== 'pan' && ed.mode !== 'races') map.closePopup(); });      // the point / link tools click on the map: no info popups (region / road / POI) in their way
   map.on('moveend zoomend resize', () => { cv.style.visibility = 'visible'; redraw(); });
   map.on('zoomstart', () => { cv.style.visibility = 'hidden'; });
   document.addEventListener('keydown', (ev) => {
     if (!ed.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
     if (ev.key === ' ') { ev.preventDefault(); if (!panHeld) { panHeld = true; dragState(); } }
-    else if (ev.key >= '1' && ev.key <= '4') setBrush([1, 2, 3, 0][Number(ev.key) - 1]);
+    else if (ev.key >= '0' && ev.key <= '7' && !ev.ctrlKey && !ev.metaKey) setBrush(Number(ev.key));      // 1-7 = the seven link types, 0 = Clear
     else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
-    else if (ev.key === 'Escape') { ed.sel = -1; redraw(); }
+    else if (ev.key === 'Escape') { ed.sel = -1; if (ed.chain >= 0) endChain(); redraw(); }
   });
   document.addEventListener('keyup', (ev) => { if (ev.key === ' ' && panHeld) { panHeld = false; dragState(); } });
   function dragState() {
@@ -983,7 +1232,7 @@ const EDITOR = (function () {
     }
     store.set('edopen', on ? 1 : 0); dragState(); renderBox(); redraw();
   }
-  function setMode(m) { ed.mode = m; ed.sel = -1; ed.hover = -1; store.set('edmode', m); dragState(); renderBox(); redraw(); }
+  function setMode(m) { endChain(true); ed.drag = null; ed.mode = m; ed.sel = -1; ed.hover = -1; ed.hoverE = null; store.set('edmode', m); dragState(); renderBox(); redraw(); }
   function setBrush(b) { ed.brush = b; renderBox(); }
   let statT = 0;
   function say(s, bad) { const el = document.getElementById('ed_stat'); if (!el) return; el.textContent = s; el.style.color = bad ? 'var(--warn)' : 'var(--ok)'; clearTimeout(statT); statT = setTimeout(() => { el.textContent = ''; }, 6000); }
@@ -991,22 +1240,22 @@ const EDITOR = (function () {
   function changed(now) { redraw(); save(); if (!sraf) sraf = requestAnimationFrame(() => { sraf = 0; renderStats(); if (HAS_RC && HAS_PR) qRefresh(); }); }
   function renderStats() {
     const el = document.getElementById('ed_stats'); if (!el) return;
-    const km = [0, 0, 0, 0]; let add = 0;
-    for (let e = 0; e < EA.length; e++) if (EAL[e]) { km[ET[e]] += EL[e] / 1000; if (EAD[e]) add++; }
-    const row = (c, k, v) => '<span><i style="background:' + c + '"></i>' + esc(t(k)) + '</span><b>' + v + '</b>';
-    el.innerHTML = (HAS_RD ? row(TCOL[1], 'km_road', km[1].toFixed(1) + ' km') + row(TCOL[2], 'km_offroad', km[2].toFixed(1) + ' km') + row(TCOL[3], 'km_other', km[3].toFixed(1) + ' km') +
-      row(TCOL[0], 'km_unset', km[0].toFixed(1) + ' km') + '<span>' + esc(t('added')) + '</span><b>' + add + '</b>' : '') +
+    const km = new Array(NT).fill(0); let add = 0, rem = 0, pts = 0, mv = 0;
+    for (let e = 0; e < EA.length; e++) { if (EAL[e]) { km[ET[e]] += EL[e] / 1000; if (EAD[e]) add++; } else if (!EAD[e]) rem++; }
+    for (let i = 0; i < NID.length; i++) if (NAL[i]) { if (NID[i] >= USER0) pts++; else if (isMoved(i)) mv++; }
+    const row = (c, k, v) => '<span><i style="background:' + c + '"></i>' + esc(t(k)) + '</span><b>' + v + '</b>', cnt = (k, v) => '<span>' + esc(t(k)) + '</span><b>' + v + '</b>';
+    el.innerHTML = (HAS_RD ? [1, 2, 3, 4, 5, 6, 7, 0].map((k) => row(TCOL[k], TLAB[k], km[k].toFixed(1) + ' km')).join('') + cnt('added', add) + cnt('st_pts', pts) + cnt('st_moved', mv) + cnt('st_removed', rem) : '') +
       (HAS_RC ? '<span>' + esc(t('racesm')) + '</span><b>' + Object.keys(marks).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' +
         '<span>' + esc(t('pinsm')) + '</span><b>' + D.racelines.filter((r) => RPIN[r.id]).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' : '');
   }
   function renderBox() {
     if (!box) return;
     tg.textContent = t('ed');
-    const modes = (HAS_RD ? ['pan', 'paint', 'connect', 'delete'] : []).concat(HAS_RC ? ['races'] : []);
+    const modes = (HAS_RD ? ['pan', 'paint', 'connect', 'draw', 'split', 'move', 'flip', 'delete'] : []).concat(HAS_RC ? ['races'] : []);
     if (modes.indexOf(ed.mode) < 0) ed.mode = modes[0];
     box.innerHTML = '<h2>' + esc(t('ed_title')) + '</h2>' +
-      '<div class="seg" id="ed_modes">' + modes.map((m) => '<button data-m="' + m + '" class="' + (ed.mode === m ? 'sel' : '') + '">' + esc(t('m_' + m)) + '</button>').join('') + '</div>' +
-      (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
+      '<div class="seg" id="ed_modes">' + modes.map((m) => '<button data-m="' + m + '" title="' + esc(t('h_' + m)) + '" class="' + (ed.mode === m ? 'sel' : '') + '">' + esc(t('m_' + m)) + '</button>').join('') + '</div>' +
+      (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [4, 'b_trail'], [5, 'b_crosscountry'], [6, 'b_tunnel'], [7, 'b_jump'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
         '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_fill"' + (ed.fill ? ' checked' : '') + '>' + esc(t('fill')) + '</label>' : '') +
       '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') +
         (HAS_RC && exactIds().length ? '<button id="ed_prr" title="' + esc(t('h_prefill_r')) + '">' + esc(t('prefill_r')) + '</button>' : '') + '</div>' +
@@ -1043,7 +1292,9 @@ const EDITOR = (function () {
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
   return { ed, marks, hist, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
-    graph: { NID, EA, EB, ET, EL, EAD, EAL, NGAME, ekey, nodeIdx, NX, NY, PRE } };
+    graph: { NID, EA, EB, ET, EL, EAD, EAL, EDIR, NGAME, ekey, nodeIdx, NX, NY, NWX, NWZ, NH, NAL, NORIG, PRE },
+    // scripting / test hooks (the pointer handlers call exactly these)
+    api: { terrainY, autoY, offTerrain, newPoint, link, splitEdge, removeEdge, setPos, commit, dirOf, nbrs, drawAt, endChain, planeToWorld, isMoved } };
 })();
 
 // -------------------------------------------------------------------------------------------------------------------- panel
@@ -1153,7 +1404,7 @@ sbox.addEventListener('input', () => {
 const loadGridsP = loadGrids();
 ENTRIES.forEach((e) => { const on = state.on[e.id] != null ? !!state.on[e.id] : e.on; if (on) setOn(e, true); else state.on[e.id] = 0; });
 applyLang();
-window.FH6V = { map, ll, world, showRoute, state, ENTRIES, ed: EDITOR };      // handy in the browser console
+window.FH6V = { map, ll, world, showRoute, state, ENTRIES, ed: EDITOR, GRID, loadGridsP, lookup };      // handy in the browser console
 })();
 </script>
 </body>
