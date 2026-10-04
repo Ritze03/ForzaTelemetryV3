@@ -622,7 +622,7 @@ install (not 54 of 75 — 17 slugs just use a different string id, see [names](f
 ### Hand-classified road and race types
 
 The user marked the whole road network and the race types **by hand** in the map viewer's editor on 2026-10-03, against the in-game map. The result is committed as
-`tools/fh6-extract/data/fh6-road-types.json` (ids and types only, **no coordinates**, so no game data; format `fh6-road-types` v1, see `tools/fh6-extract/README.md`). The viewer
+`tools/fh6-extract/data/fh6-road-types.json` (ids and types only, **no coordinates**, so no game data; format `fh6-road-types` v1 when committed; the editor now writes v2, see [fh6-map-tooling.md](fh6-map-tooling.md)). The viewer
 starts from it and has a "Reset to project data" button. Contents (nav sha1 `a88c69f4…`, 38 473 nodes): 39 360 of 39 383 edges painted + 43 added links (road 553.9 km, offroad 207.5,
 other 6.7, not set 0.4) and **93 of 170 races typed**: rally 21, road 21, cross country 19, street 17, story 6, touge 5, drag 3, wristband 1.
 

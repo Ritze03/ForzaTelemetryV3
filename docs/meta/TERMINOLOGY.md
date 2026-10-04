@@ -17,3 +17,5 @@ Project-specific vocabulary. When the user uses a term defined here, use the sam
 - **Category** — a bordered card with a blue uppercase title that groups related controls in a tab (e.g. "SESSION", "RPM Range"). Rendered via `theme::card`. See @docs/ui/STYLING-GUIDE.md.
 - **Minimap** (also "minimap renderer") — the **HUD minimap (M2′)** in the in-game overlay (`src/hud/minimap.rs`). Not the Dashboard's map widget.
 - **Dashboard map** — the Dashboard's Map widget (`show_minimap_widget`, `src/ui/dashboard.rs`; config keys are `minimap_*` for historical reasons). Distinct from the HUD **Minimap**.
+- **Turnaround** — a nav link that exists only so the game's AI can get back onto the right road (roads look cross-connected, the in-game map does not show it). Marked in the road editor for later navigation, hidden from the 2D preview. See `docs/game-data/fh6-map-tooling.md`.
+- **Trail / Cross-country / Highway / Jump line / Tunnel** — road-editor edge types: small game trails (dashed) / user-drawn line for things not in the game, for routing / motorway marked apart from Road / one-way take-off to landing, routing may opt in / counts as asphalt for routing.
