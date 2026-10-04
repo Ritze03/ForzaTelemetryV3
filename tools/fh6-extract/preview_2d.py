@@ -15,12 +15,14 @@ are built here as polylines (consecutive same-type edges of a game polyline are 
 single segments.  v2 extras: `points` (user nodes, ids >= 1000000), `moved` (position override per node id), `removed` (edges dropped),
 `jump_from` (take-off node of a jump edge; the other end is the landing).  Unpainted game edges are drawn as 'unset' (faint dashed grey).
 Coordinates in the page data are integer decimetres (x east, z north).
+`turnaround` edges (AI cross-connections that are not on the in-game map) are kept in the page data and counted, but the page does not draw them
+unless the debug key T is pressed; `highway` is drawn like road, wider.
 """
 import argparse, json, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CANON = os.path.join(HERE, 'data', 'fh6-road-types.json')
-TYPES = ('road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump')
+TYPES = ('road', 'highway', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'turnaround')
 
 
 def load_types(path):
