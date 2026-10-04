@@ -31,7 +31,9 @@ def load_types(path):
     for k in ('points', 'moved', 'jump_from'):
         o.setdefault(k, {})                                     # v2 only; absent in v1
     o.setdefault('removed', [])
-    bad = {t for t in list(o['types'].values()) + [e['type'] for e in o['added']] if t not in TYPES}
+    for e in o['added']:
+        e['type'] = e.get('type') or 'unset'                    # editor v2 may export type:null / no type
+    bad = {t for t in list(o['types'].values()) + [e['type'] for e in o['added']] if t not in TYPES + ('unset',)}
     if bad:
         sys.exit(f'{path}: unknown edge type(s) {sorted(bad)}')
     return o
