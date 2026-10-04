@@ -165,6 +165,36 @@ pub enum FocusMethod {
     Gnome,
 }
 
+/// Pure desktop -> window-detection mapping for a *fresh* config. `current_desktop` is
+/// `XDG_CURRENT_DESKTOP` (colon-separated, any case, e.g. `ubuntu:GNOME`).
+/// Hyprland (signature set or named) -> Hyprland; GNOME -> Gnome; other X11 session -> X11;
+/// anything else (unknown Wayland compositor, nothing set) -> Hyprland, the historical default.
+pub fn focus_method_for_desktop(current_desktop: Option<&str>, session_type: Option<&str>, hyprland_sig: bool) -> FocusMethod {
+    let has = |name: &str| current_desktop.is_some_and(|d| d.split(':').any(|p| p.trim().eq_ignore_ascii_case(name)));
+    if hyprland_sig || has("Hyprland") {
+        FocusMethod::Hyprland
+    } else if has("GNOME") {
+        FocusMethod::Gnome
+    } else if session_type.is_some_and(|t| t.trim().eq_ignore_ascii_case("x11")) {
+        FocusMethod::X11
+    } else {
+        FocusMethod::Hyprland
+    }
+}
+
+/// [`focus_method_for_desktop`] fed from the environment. Windows ignores `FocusMethod`.
+pub fn detect_focus_method() -> FocusMethod {
+    if cfg!(windows) {
+        return FocusMethod::default();
+    }
+    let var = |k: &str| std::env::var(k).ok();
+    focus_method_for_desktop(
+        var("XDG_CURRENT_DESKTOP").as_deref(),
+        var("XDG_SESSION_TYPE").as_deref(),
+        var("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|v| !v.is_empty()),
+    )
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct HotkeyConfig {
     #[serde(default = "default_bindings")]
@@ -242,7 +272,7 @@ impl Default for HotkeyConfig {
         Self {
             bindings: default_bindings(),
             gate_mode: GateMode::default(),
-            focus_method: FocusMethod::default(),
+            focus_method: detect_focus_method(),
             custom_cmd: String::new(),
             game_match: default_game_match(),
             input_focus_gate: false,
@@ -1714,6 +1744,34 @@ mod tests {
         assert_eq!(cfg.coop_name, "Player");
         assert_eq!(cfg.coop_hue, 205.0);
         assert!(cfg.coop_last_code.is_empty());
+    }
+
+    #[test]
+    fn focus_method_for_desktop_mapping() {
+        use FocusMethod::*;
+        let f = focus_method_for_desktop;
+        assert_eq!(f(Some("GNOME"), Some("x11"), true), Hyprland); // signature wins
+        assert_eq!(f(Some("Hyprland"), Some("wayland"), false), Hyprland);
+        assert_eq!(f(Some("hyprland"), None, false), Hyprland);
+        assert_eq!(f(Some("GNOME"), Some("wayland"), false), Gnome);
+        assert_eq!(f(Some("ubuntu:GNOME"), Some("wayland"), false), Gnome);
+        assert_eq!(f(Some("ubuntu:GNOME"), Some("x11"), false), Gnome);
+        assert_eq!(f(Some("KDE"), Some("x11"), false), X11);
+        assert_eq!(f(Some("KDE"), Some("wayland"), false), Hyprland);
+        assert_eq!(f(None, Some("x11"), false), X11);
+        assert_eq!(f(Some(""), Some(""), false), Hyprland);
+        assert_eq!(f(None, None, false), Hyprland);
+    }
+
+    #[test]
+    fn saved_focus_method_is_kept_regardless_of_env() {
+        for (name, m) in [("X11", FocusMethod::X11), ("Hyprland", FocusMethod::Hyprland), ("Gnome", FocusMethod::Gnome)] {
+            let hk: HotkeyConfig = serde_json::from_str(&format!("{{\"focus_method\":\"{name}\"}}")).unwrap();
+            assert_eq!(hk.focus_method, m);
+        }
+        // Field missing from a saved hotkeys object: serde default (Hyprland), not detection.
+        let hk: HotkeyConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(hk.focus_method, FocusMethod::Hyprland);
     }
 
     #[test]

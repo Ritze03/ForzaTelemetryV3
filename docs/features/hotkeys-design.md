@@ -123,7 +123,7 @@ enum FocusMethod { Hyprland, X11, Custom, Gnome }    // how WindowFocus reads ac
 struct HotkeyConfig {
     #[serde(default)] bindings: HashMap<HotkeyAction, HotkeyBinding>, // defaults G, B, Ctrl+S, Ctrl+E
     #[serde(default)] gate_mode: GateMode,           // default TelemetryLive
-    #[serde(default)] focus_method: FocusMethod,     // default Hyprland
+    #[serde(default)] focus_method: FocusMethod,     // default: detected from desktop on a fresh config (see settings.md); serde-missing = Hyprland
     #[serde(default)] custom_cmd: String,            // for FocusMethod::Custom
     #[serde(default)] game_match: String,            // substring, default "Forza"; Detect fills it
     #[serde(default)] input_focus_gate: bool,        // gate synthetic input on focus; default OFF

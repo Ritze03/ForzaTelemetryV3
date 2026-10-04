@@ -74,6 +74,7 @@ alarm is muted with *Don't remind me again*. Details in [[hotkeys]].
 The **Window Detection** card (formerly **Input**; its duplicate "Window Detection"
 sub-heading is gone) holds the focus detection that several features share:
 
+- **Detection method default**: a fresh config picks it from the desktop (`config::focus_method_for_desktop`, fed by `XDG_CURRENT_DESKTOP` / `XDG_SESSION_TYPE` / `HYPRLAND_INSTANCE_SIGNATURE`): Hyprland -> Hyprland, GNOME (incl. `ubuntu:GNOME`) -> GNOME, other X11 session -> X11, unknown Wayland compositor -> Hyprland. Saved configs keep their stored value; a saved `hotkeys` object missing the field gets plain Hyprland (serde default), not detection. *Why:* since overlay + focus-only became default-on, a GNOME user's fresh install ran `hyprctl`, failed, and broke focus gating. The overlay's monitor method (`monitor_method`) still defaults to Hyprland (no GNOME monitor method exists).
 - **Active if** (hotkey gate: Telemetry live / Game window focused); the detection method
   and game window title (with **Detect**), shown when window focus gates something (Active
   if = Game window focused, the input gate, the overlay's focus-only option, or the overlay
