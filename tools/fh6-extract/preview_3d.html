@@ -43,12 +43,15 @@
   <div class="row"><span>Relief light</span><input id="light" type="range" min="0" max="1" step="0.05" value="0.5"></div>
   <label><input id="sea" type="checkbox" checked> Sea (y = 100)</label>
   <h2>Roads</h2>
+  <div class="row"><span title="Road height source">Road y</span><select id="roadh"><option value="node">Nodes (nav data)</option><option value="terrain">Terrain (drape)</option></select></div>
+  <div class="row"><span>Thickness</span><input id="thick" type="range" min="0" max="20" step="0.5" value="3" title="deck thickness: the ribbon is extruded downwards by this many metres (makes bridges / floating roads readable)"><b id="thickv">3.0</b></div>
+  <label id="abovel" title="y = max(node height, terrain height): roads that the 16 m mesh would swallow stay on the surface (also lifts tunnels and underpasses)"><input id="above" type="checkbox"> Never below terrain</label>
   <div id="layers"></div>
   <label><input id="edges" type="checkbox" checked> Bright edge lines</label>
   <div class="row"><span>Width x</span><input id="width" type="range" min="0.5" max="3" step="0.1" value="1"></div>
   <div class="row"><button id="reset">Reset view</button></div>
   <div id="help">Left drag: pan &middot; Right drag (or Ctrl+drag): rotate / tilt &middot; Wheel: zoom to cursor &middot; WASD / arrows: pan, Q/E: rotate, R: reset.<br>
-  Road heights are sampled from the terrain mesh, not from the nav nodes.</div>
+  Road height: <b>Nodes</b> = the nav graph's own node heights (bridges float, tunnels dive, the 16 m mesh may swallow a road in places); <b>Terrain</b> = draped on the mesh.</div>
 </div>
 <div id="hover"></div>
 <script>
@@ -72,6 +75,7 @@ const u32 = u => new Uint32Array(u.buffer.slice(u.byteOffset, u.byteOffset + u.b
 
 // ---- road styles: colour = asphalt / surface, edge = the bright edge line, w = metres wide, px = minimum on-screen width in px
 const STYLE = {
+  highway:      { name: 'Highway',       col: '#2b2e34', edge: '#f1eee0', w: 12,  px: 3.6, dash: 0, on: true },
   road:         { name: 'Road',          col: '#34373d', edge: '#e9e7dc', w: 9,   px: 3.2, dash: 0, on: true },
   offroad:      { name: 'Offroad',       col: '#7c5b38', edge: '#d9b983', w: 7,   px: 2.8, dash: 1, on: true },
   other:        { name: 'Other',         col: '#5a5f68', edge: '#aab1bd', w: 6,   px: 2.4, dash: 0, on: true },
@@ -79,9 +83,10 @@ const STYLE = {
   crosscountry: { name: 'Cross-country', col: '#8f7a3a', edge: '#d8c77a', w: 5,   px: 2.2, dash: 2, on: true },
   tunnel:       { name: 'Tunnel (ghost)', col: '#6fa8dc', edge: '#bfe0ff', w: 9,  px: 2.4, dash: 2, on: false, alpha: 0.45 },
   jump:         { name: 'Jump',          col: '#ff8a1f', edge: '#ffd29a', w: 6,   px: 2.6, dash: 0, on: false },
+  turnaround:   { name: 'Turnaround (AI only)', col: '#d62fd1', edge: '#ff9bff', w: 4, px: 2.2, dash: 2, on: false },
 };
 
-const state = { exag: 1, light: 0.5, sea: true, edges: true, width: 1, season: M.default || null };
+const state = { exag: 1, light: 0.5, sea: true, edges: true, width: 1, season: M.default || null, roadH: 'node', above: false, thick: 3 };   // roadH: 'node' (nav node heights) | 'terrain' (drape)
 const nx = T.nx, nz = T.nz, STEP = T.step, MX0 = T.mx0, MZ0 = T.mz0;
 
 // ---------------------------------------------------------------------------------------------------------------- terrain data
@@ -183,15 +188,19 @@ async function setSeason(name) {
 
 // ---------------------------------------------------------------------------------------------------------------- roads
 const roadMeshes = {};
-const roadVS = `
-attribute vec2 tan2; attribute float side; attribute float sAlong;
-uniform float halfW, minPx, pxScale, liftK;
+const roadVS = (wall) => `
+attribute vec2 tan2; attribute float side; attribute float sAlong; attribute float yN;${wall ? ' attribute float bot;' : ''}
+uniform float halfW, minPx, pxScale, liftK, hTerrain, keepAbove, thick;
 varying float vU, vS, vHW;
 void main() {
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  // position.y = terrain-drape height (+lift), yN = nav-node height (+lift).  Mode switch is a uniform: no geometry rebuild.
+  float yy = hTerrain > 0.5 ? position.y : (keepAbove > 0.5 ? max(yN, position.y) : yN);
+  ${wall ? 'yy -= bot * thick;   // deck side walls / underside: the ribbon extruded straight down by `thick` metres (scaled with the world group, so exaggeration keeps it proportional)' : ''}
+  vec3 base = vec3(position.x, yy, position.z);
+  vec4 mv = modelViewMatrix * vec4(base, 1.0);
   float dist = max(-mv.z, 1.0);
   float hw = max(halfW, minPx * 0.5 * dist * pxScale);           // never thinner than minPx screen pixels
-  vec3 p = position + vec3(-tan2.y, 0.0, tan2.x) * side * hw;
+  vec3 p = base + vec3(-tan2.y, 0.0, tan2.x) * side * hw;
   p.y += liftK * dist;                                            // tiny view-dependent lift: far away the depth buffer is coarser
   vU = side; vS = sAlong; vHW = hw;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
@@ -210,13 +219,19 @@ void main() {
   if (dashMode > 1.5) al *= mix(0.25, 1.0, dash);                // 2: the whole ribbon is dashed
   gl_FragColor = vec4(mix(colA, colB, e), al);
 }`;
+const wallFS = `
+uniform vec3 colA; uniform float alpha, shade;
+varying float vU, vS, vHW;
+void main() { gl_FragColor = vec4(colA * shade, alpha); }`;
 function css(h) { const c = new THREE.Color(h); return new THREE.Vector3(c.r, c.g, c.b); }   // raw sRGB values: ShaderMaterial writes them as-is
 async function buildRoads() {
   if (!R) return;
-  for (const ty of Object.keys(R.types)) {
+  const order = Object.keys(STYLE);
+  for (const ty of Object.keys(R.types).sort((a, b) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99)) {
     const D = R.types[ty], st = STYLE[ty] || STYLE.other;
     const starts = u32(await inflate(D.runs)), xyzs = f32(await inflate(D.xyzs)), n = D.n;
-    const pos = new Float32Array(n * 6), tan = new Float32Array(n * 4), side = new Float32Array(n * 2), sa = new Float32Array(n * 2);
+    const yq = D.yn ? u16(await inflate(D.yn)) : null;   // node heights, uint16 q: y = hmin + q * hstep (roads.js built before the toggle has none: node = terrain)
+    const pos = new Float32Array(n * 6), yN = new Float32Array(n * 2), tan = new Float32Array(n * 4), side = new Float32Array(n * 2), sa = new Float32Array(n * 2);
     let nq = 0; for (let r = 0; r < starts.length - 1; r++) nq += Math.max(starts[r + 1] - starts[r] - 1, 0);
     const idx = new Uint32Array(nq * 6);
     let o = 0;
@@ -229,6 +244,7 @@ async function buildRoads() {
         for (let s = 0; s < 2; s++) {
           const v = 2 * k + s;
           pos[3 * v] = xyzs[4 * k]; pos[3 * v + 1] = xyzs[4 * k + 1]; pos[3 * v + 2] = -xyzs[4 * k + 2];
+          yN[v] = yq ? R.hmin + yq[k] * R.hstep : xyzs[4 * k + 1];
           tan[2 * v] = dx; tan[2 * v + 1] = dz; side[v] = s ? 1 : -1; sa[v] = xyzs[4 * k + 3];
         }
         if (k < b - 1) { const v = 2 * k; idx[o++] = v; idx[o++] = v + 1; idx[o++] = v + 2; idx[o++] = v + 1; idx[o++] = v + 3; idx[o++] = v + 2; }
@@ -236,16 +252,40 @@ async function buildRoads() {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('tan2', new THREE.BufferAttribute(tan, 2));
-    g.setAttribute('side', new THREE.BufferAttribute(side, 1)); g.setAttribute('sAlong', new THREE.BufferAttribute(sa, 1));
+    g.setAttribute('yN', new THREE.BufferAttribute(yN, 1)); g.setAttribute('side', new THREE.BufferAttribute(side, 1)); g.setAttribute('sAlong', new THREE.BufferAttribute(sa, 1));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     const mat = new THREE.ShaderMaterial({
-      vertexShader: roadVS, fragmentShader: roadFS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: roadVS(false), fragmentShader: roadFS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
-      uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 },
+      uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 }, hTerrain: { value: 0 }, keepAbove: { value: 0 }, thick: { value: 0 },
                   colA: { value: css(st.col) }, colB: { value: css(st.edge) }, edgeOn: { value: 1 }, edgeFrac: { value: 0.2 },
                   alpha: { value: st.alpha || 0.96 }, dashMode: { value: st.dash }, dashLen: { value: 18 } },
     });
-    const mesh = new THREE.Mesh(g, mat); mesh.renderOrder = 2; mesh.frustumCulled = false; mesh.visible = st.on; mesh.userData = { ty, st, pos, n };
+    // deck walls + underside: a second geometry (4 verts per sample: top/bottom x left/right) drawn as a child of the ribbon mesh, extruded down by the `thick`
+    // uniform in the vertex shader (live slider, no rebuild).  Depth-tested like the ribbon, so hills still hide it; darker shade of the road colour.
+    const dup = (arr, c) => { const o = new Float32Array(arr.length * 2); for (let i = 0; i < arr.length / c; i++) for (let b = 0; b < 2; b++) for (let q = 0; q < c; q++) o[(2 * i + b) * c + q] = arr[i * c + q]; return o; };
+    const wbot = new Float32Array(n * 4); for (let i = 0; i < n * 4; i++) wbot[i] = i & 1;
+    const widx = new Uint32Array(nq * 18); o = 0;
+    for (let r = 0; r < starts.length - 1; r++) for (let k = starts[r]; k < starts[r + 1] - 1; k++) {
+      const q = 4 * k;
+      for (const [a0, a1, b0, b1] of [[q, q + 1, q + 4, q + 5], [q + 2, q + 3, q + 6, q + 7], [q + 1, q + 3, q + 5, q + 7]]) {
+        widx[o++] = a0; widx[o++] = a1; widx[o++] = b0; widx[o++] = a1; widx[o++] = b1; widx[o++] = b0;
+      }
+    }
+    const wg = new THREE.BufferGeometry();
+    wg.setAttribute('position', new THREE.BufferAttribute(dup(pos, 3), 3)); wg.setAttribute('tan2', new THREE.BufferAttribute(dup(tan, 2), 2));
+    wg.setAttribute('yN', new THREE.BufferAttribute(dup(yN, 1), 1)); wg.setAttribute('side', new THREE.BufferAttribute(dup(side, 1), 1));
+    wg.setAttribute('sAlong', new THREE.BufferAttribute(dup(sa, 1), 1)); wg.setAttribute('bot', new THREE.BufferAttribute(wbot, 1));
+    wg.setIndex(new THREE.BufferAttribute(widx, 1));
+    const wallAlpha = st.alpha || 0.96;
+    const wmat = new THREE.ShaderMaterial({
+      vertexShader: roadVS(true), fragmentShader: wallFS, transparent: true, depthWrite: wallAlpha > 0.9, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+      uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 }, hTerrain: { value: 0 }, keepAbove: { value: 0 }, thick: { value: 0 },
+                  colA: { value: css(st.col) }, alpha: { value: wallAlpha }, shade: { value: 0.72 } },
+    });
+    const wall = new THREE.Mesh(wg, wmat); wall.renderOrder = 2; wall.frustumCulled = false; wall.visible = false;
+    const mesh = new THREE.Mesh(g, mat); mesh.add(wall); mesh.renderOrder = 3; mesh.frustumCulled = false; mesh.visible = st.on; mesh.userData = { ty, st, pos, yN, n, hasNode: !!yq, wall };
     world.add(mesh); roadMeshes[ty] = mesh;
   }
 }
@@ -339,8 +379,11 @@ function hoverUpdate() {
 // ---------------------------------------------------------------------------------------------------------------- UI
 function applyUniforms() {
   for (const m of Object.values(roadMeshes)) {
-    const u = m.material.uniforms, st = m.userData.st;
-    u.halfW.value = st.w * state.width / 2; u.edgeOn.value = state.edges ? 1 : 0;
+    const st = m.userData.st, wu = m.userData.wall.material.uniforms;
+    for (const u of [m.material.uniforms, wu]) {
+      u.halfW.value = st.w * state.width / 2; u.hTerrain.value = state.roadH === 'terrain' ? 1 : 0; u.keepAbove.value = state.above ? 1 : 0; u.thick.value = state.thick;
+    }
+    m.material.uniforms.edgeOn.value = state.edges ? 1 : 0; m.userData.wall.visible = state.thick > 0;
   }
   world.scale.y = state.exag;
   hemi.intensity = 1.0 - 0.35 * state.light; sun.intensity = 1.1 * state.light;
@@ -354,6 +397,10 @@ function buildUI() {
   $('exag').oninput = e => { state.exag = +e.target.value; $('exagv').textContent = state.exag.toFixed(1); applyUniforms(); };
   $('light').oninput = e => { state.light = +e.target.value; applyUniforms(); };
   $('sea').onchange = e => { state.sea = e.target.checked; applyUniforms(); };
+  $('roadh').value = state.roadH; $('above').checked = state.above; $('abovel').style.display = state.roadH === 'node' ? '' : 'none';
+  $('roadh').onchange = e => { state.roadH = e.target.value; $('abovel').style.display = state.roadH === 'node' ? '' : 'none'; applyUniforms(); };
+  $('thick').oninput = e => { state.thick = +e.target.value; $('thickv').textContent = state.thick.toFixed(1); applyUniforms(); };
+  $('above').onchange = e => { state.above = e.target.checked; applyUniforms(); };
   $('edges').onchange = e => { state.edges = e.target.checked; applyUniforms(); };
   $('width').oninput = e => { state.width = +e.target.value; applyUniforms(); };
   $('reset').onclick = () => setView(home.x, home.z, home.dist, 0, 54);
@@ -363,9 +410,10 @@ function buildUI() {
     const st = STYLE[ty] || STYLE.other, l = document.createElement('label');
     l.innerHTML = `<input type="checkbox" ${st.on ? 'checked' : ''}><span class="chip" style="background:${st.col};box-shadow:inset 0 0 0 2px ${st.edge}55"></span>${st.name}<span class="km">${R.types[ty].km} km</span>`;
     l.firstChild.onchange = e => { roadMeshes[ty].visible = e.target.checked; dirty = true; };
+    roadMeshes[ty].userData.cb = l.firstChild;
     box.appendChild(l);
   }
-  $('light').value = state.light;
+  $('light').value = state.light; $('thick').value = state.thick; $('thickv').textContent = state.thick.toFixed(1);
 }
 
 // ---------------------------------------------------------------------------------------------------------------- main
@@ -381,20 +429,24 @@ function frame(now) {
   if (dirty) {
     dirty = false; updateCamera();
     const px = 2 * Math.tan(camera.fov * Math.PI / 360) / h;
-    for (const m of Object.values(roadMeshes)) m.material.uniforms.pxScale.value = px;
+    for (const m of Object.values(roadMeshes)) { m.material.uniforms.pxScale.value = px; m.userData.wall.material.uniforms.pxScale.value = px; }
     renderer.render(scene, camera); hoverDirty = true; window.__p3dFrames = (window.__p3dFrames || 0) + 1;
   }
   hoverUpdate();
 }
 
-// numeric self-check, callable from the console / a test: 5 random road vertices vs the page's own height lookup
-function check(count = 5) {
-  const rows = [], types = Object.keys(roadMeshes);
+// numeric self-check, callable from the console / a test: random road vertices, in the CURRENT road-height mode.  `ok` per row:
+//   terrain mode: road y == heightAt(x, z) + lift;  node mode: the y the shader draws == the shipped node height (and, with "never below terrain", >= terrain + lift).
+// check(n, mode) temporarily evaluates the other mode too (mode = 'node' | 'terrain' | 'above'); the uniforms are not touched, effective y is recomputed in JS.
+function check(count = 5, mode = null) {
+  const rows = [], types = Object.keys(roadMeshes), lift = R.lift;
+  const md = mode || (state.roadH === 'terrain' ? 'terrain' : state.above ? 'above' : 'node');
   for (let n = 0; n < count; n++) {
-    const m = roadMeshes[types[n % types.length]], k = Math.floor(Math.random() * m.userData.n);
-    const x = m.userData.pos[6 * k], y = m.userData.pos[6 * k + 1], z = -m.userData.pos[6 * k + 2];
-    const h = heightAt(x, z);
-    rows.push({ type: m.userData.ty, x: +x.toFixed(1), z: +z.toFixed(1), roadY: +y.toFixed(3), terrainY: +h.toFixed(3), lift: +(y - h).toFixed(3) });
+    const m = roadMeshes[types[n % types.length]], k = Math.floor(Math.random() * m.userData.n), v = 2 * k;
+    const x = m.userData.pos[3 * v], yT = m.userData.pos[3 * v + 1], z = -m.userData.pos[3 * v + 2], yN = m.userData.yN[v], h = heightAt(x, z);
+    const eff = md === 'terrain' ? yT : md === 'above' ? Math.max(yN, yT) : yN;
+    const ok = md === 'terrain' ? Math.abs(yT - (h + lift)) < 0.02 : md === 'above' ? eff >= h + lift - 0.02 && Math.abs(eff - Math.max(yN, h + lift)) < 0.02 : Math.abs(eff - yN) < 1e-4;
+    rows.push({ mode: md, type: m.userData.ty, x: +x.toFixed(1), z: +z.toFixed(1), drawnY: +eff.toFixed(3), nodeY: +yN.toFixed(3), terrainY: +h.toFixed(3), terrainDrapeY: +yT.toFixed(3), drawnMinusTerrain: +(eff - h).toFixed(3), ok });
   }
   return rows;
 }
@@ -414,8 +466,12 @@ function check(count = 5) {
     const q2 = new URLSearchParams(location.hash.slice(1));
     if (q2.has('season')) state.season = q2.get('season');
     if (q2.has('exag')) { state.exag = +q2.get('exag'); $('exag').value = state.exag; $('exagv').textContent = state.exag.toFixed(1); applyUniforms(); }
+    if (q2.get('rh') === 'terrain' || q2.get('rh') === 'node') { state.roadH = q2.get('rh'); }
+    if (q2.get('above') === '1') state.above = true;
+    if (q2.has('th')) { state.thick = Math.min(Math.max(+q2.get('th') || 0, 0), 20); $('thick').value = state.thick; $('thickv').textContent = state.thick.toFixed(1); }
+    $('roadh').value = state.roadH; $('above').checked = state.above; $('abovel').style.display = state.roadH === 'node' ? '' : 'none'; applyUniforms();
     if (q2.get('edges') === '0') { state.edges = false; $('edges').checked = false; applyUniforms(); }
-    if (q2.get('types')) { const on = q2.get('types').split(','); for (const [ty, m] of Object.entries(roadMeshes)) m.visible = on.includes(ty); }
+    if (q2.get('types')) { const on = q2.get('types').split(','); for (const [ty, m] of Object.entries(roadMeshes)) { m.visible = on.includes(ty); m.userData.cb.checked = m.visible; } }
     if (state.season) { $('season').value = state.season; await setSeason(state.season); }
     msg.className = 'hide';
     window.P3D_DEBUG = { check, heightAt, setView, view, camera, state, roadMeshes, terrain, renderer, ready: true };

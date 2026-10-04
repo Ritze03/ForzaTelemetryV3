@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build the LOCAL 3D map preview of the whole FH6 island: the elevation raster as a terrain mesh, the normal season map imagery draped on it,
-and the road graph drawn on top (heights sampled from the terrain, never from the nav node heights).  READ-ONLY on the game; the output contains
+and the road graph drawn on top.  Each road vertex carries TWO heights (page toggle "Road height"): the nav node heights (linear
+interpolation along the edge; default) and the terrain-mesh drape.  READ-ONLY on the game; the output contains
 Playground Games' imagery/data, so write it OUTSIDE the repo and never publish/commit it.
 
     python3 -B preview_3d.py --out <viewer dir> --work <viewer work dir> [--media <...>/ForzaHorizon6/media] [--road-types PATH]
@@ -27,7 +28,7 @@ T0 = time.time()
 HMIN, HSTEP = -5.0, 0.025        # heights are stored as uint16 q = (h - HMIN) / HSTEP + 1 ; 0 = "no terrain here" (open sea beyond the skirt)
 SEA_Y = 100.0                    # sea level in telemetry y
 FLOOR_Y = 40.0                   # height of the filled sea floor beyond the island data
-KNOWN_TYPES = ('road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump')
+KNOWN_TYPES = ('road', 'highway', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'turnaround')   # v2 editor list; anything else -> other
 DEFAULT_TYPES = os.path.join(HERE, 'data', 'fh6-road-types.json')
 
 
@@ -213,8 +214,16 @@ def build_roads(work, out, Hm, meta, types_path, step, lift):
             pos[int(i)] = (float(p[0]), float(p[1]))
     for i, v in T['points'].items():
         pos[i] = (float(v[0]), float(v[1]))
-    for i, v in T['moved'].items():                            # y of moved / user points is ignored on purpose (heights come from the terrain)
+    for i, v in T['moved'].items():
         pos[i] = (float(v[0]), float(v[1]))
+    ny = {}                                                    # node id -> nav node height (roads.json heights; v2 user points / moved nodes: their stored y)
+    for hs, ids in zip(r['heights'], r['ids']):
+        for h, i in zip(hs, ids):
+            ny[int(i)] = float(h)
+    for src in (T['points'], T['moved']):
+        for i, v in src.items():
+            if len(v) > 2 and v[2] is not None:
+                ny[i] = float(v[2])
     key = lambda a, b: f'{min(a, b)}-{max(a, b)}'
     seen, runs = set(), []                                     # runs: (type, [node ids])
     miss = 0
@@ -239,7 +248,7 @@ def build_roads(work, out, Hm, meta, types_path, step, lift):
             continue
         seen.add(k); runs.append((ty, [a, b])); nadd += 1
     log(f'roads: {len(seen)} edges ({miss} unpainted -> other, {nadd} added links, {len(T["removed"])} removed), {len(runs)} runs; types file v{T["version"]}')
-    per = {}
+    per, samples, nofb = {}, [], 0
     for ty, ids in runs:
         P = np.array([pos[i] for i in ids], float)
         d = np.r_[0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
@@ -248,33 +257,80 @@ def build_roads(work, out, Hm, meta, types_path, step, lift):
         t = np.unique(np.r_[d, np.arange(0, d[-1], step)])                          # the original vertices + a uniform step
         x = np.interp(t, d, P[:, 0]); z = np.interp(t, d, P[:, 1])
         y = tri_height(Hm, meta, x, z) + lift
-        per.setdefault(ty, []).append(np.stack([x, y, z, t], 1).astype('<f4'))
+        hn = np.array([ny.get(i, np.nan) for i in ids])           # node heights; a node without one (user point without y) falls back to the terrain
+        bad = np.isnan(hn)
+        if bad.any():
+            nofb += 1
+            hn[bad] = (tri_height(Hm, meta, P[bad, 0], P[bad, 1]))
+        yn = np.interp(t, d, hn) + lift                           # linear along the edge between the two nodes' heights
+        per.setdefault(ty, []).append(np.stack([x, y, z, t, yn], 1).astype('<f4'))
+        samples.append((ty, ids, d, t))
     out_t, stats = {}, {}
     for ty, arrs in per.items():
         starts = np.r_[0, np.cumsum([len(a) for a in arrs])].astype('<u4')
         xyzs = np.concatenate(arrs)
         km = sum(a[-1, 3] for a in arrs) / 1000
-        out_t[ty] = dict(runs=b64z(starts), n=int(len(xyzs)), xyzs=b64z(xyzs), km=round(float(km), 1))
+        # xyz t stay float32 (4 columns); the node-height column is a uint16 quantised like the terrain (0.025 m): float32 would add ~0.4 MB for no visible gain
+        yq = np.clip(np.round((xyzs[:, 4].astype(np.float64) - HMIN) / HSTEP), 0, 65535).astype('<u2')
+        out_t[ty] = dict(runs=b64z(starts), n=int(len(xyzs)), xyzs=b64z(np.ascontiguousarray(xyzs[:, :4])), yn=b64z(yq), km=round(float(km), 1))
         stats[ty] = (len(arrs), len(xyzs), km)
-    write_js(os.path.join(out, 'preview3d', 'roads.js'), 'roads', dict(types=out_t, lift=lift, step=step))
+    write_js(os.path.join(out, 'preview3d', 'roads.js'), 'roads', dict(types=out_t, lift=lift, step=step, hmin=HMIN, hstep=HSTEP))
+    if nofb:
+        log(f'roads: {nofb} runs had a node without a height (fell back to the terrain there)')
     for ty, (n, m, km) in sorted(stats.items()):
         log(f'    {ty:13s} {n:5d} runs {m:7d} samples {km:8.1f} km')
-    return per
+    return per, samples, ny
 
 
-def numeric_check(per, Hm, meta, lift, work, rng=np.random.default_rng(7)):
-    """5 random road samples: y == mesh-triangle height + lift (exact), and how far that is from a plain bilinear height / the nav node height."""
-    flat = np.concatenate([a for v in per.values() for a in v])
-    print('numeric check (5 random road samples): x z | y written | terrain(tri)+lift | terrain(bilinear)+lift | y_tri-y_bil')
-    worst = 0.0
-    for i in rng.choice(len(flat), 5, replace=False):
-        x, y, z, _ = flat[i]
-        tri = float(tri_height(Hm, meta, x, z)) + lift; bil = float(bilinear_height(Hm, meta, x, z)) + lift
-        worst = max(worst, abs(y - tri))
-        print(f'    {x:10.1f} {z:10.1f} | {y:9.3f} | {tri:9.3f} | {bil:9.3f} | {tri - bil:+.3f}')
-    allx = flat[:, 0].astype(float); allz = flat[:, 2].astype(float)
-    dd = np.abs(tri_height(Hm, meta, allx, allz) - bilinear_height(Hm, meta, allx, allz))
-    log(f'numeric check: max |y - (tri + lift)| over the 5 = {worst:.4f} m (float32 rounding); |tri - bilinear| over all samples: median {np.median(dd):.2f} m, p99 {np.percentile(dd, 99):.2f} m')
+def numeric_check(per, samples, ny, Hm, meta, lift, out, rng=np.random.default_rng(7)):
+    """End-to-end check on the WRITTEN roads.js (decoded again): 5 random road samples must satisfy
+         terrain y == mesh-triangle height + lift                      (exact, float32 rounding)
+         node y    == linear interpolation of the two bracketing nav nodes' heights + lift   (0.0125 m quantisation)
+       The node interpolation is recomputed here from the raw node ids / heights, independently of the build loop.  Also prints how far the node heights
+       are from the terrain (sinking / floating) and the steepest node-to-node grades (suspect node heights)."""
+    txt = open(os.path.join(out, 'preview3d', 'roads.js')).read()
+    R = json.loads(txt[txt.index(').roads=') + 8: txt.rindex(';')])
+    dec = lambda b64, dt: np.frombuffer(zlib.decompress(base64.b64decode(b64)), dt)
+    print('numeric check (5 random road samples): type x z | y terrain | tri+lift | y node | interp node+lift | err')
+    worst_t = worst_n = 0.0
+    idx_in_type = {}
+    runs_of = {}
+    for k, (ty, ids, d, t) in enumerate(samples):
+        runs_of.setdefault(ty, []).append(k)
+    for k in rng.choice(len(samples), 5, replace=False):
+        ty, ids, d, t = samples[k]
+        j = runs_of[ty].index(k)
+        D = R['types'][ty]
+        starts = dec(D['runs'], '<u4'); xyzs = dec(D['xyzs'], '<f4').reshape(-1, 4); yq = dec(D['yn'], '<u2')
+        a, b = starts[j], starts[j + 1]
+        m = int(rng.integers(a, b))
+        x, y, z, tt = xyzs[m]
+        yn = R['hmin'] + float(yq[m]) * R['hstep']
+        # independent interpolation: bracketing nodes of distance tt
+        seg = min(max(int(np.searchsorted(d, tt, side='right')) - 1, 0), len(ids) - 2)
+        f = (tt - d[seg]) / (d[seg + 1] - d[seg])
+        h0 = ny.get(ids[seg]); h1 = ny.get(ids[seg + 1])
+        exp = (h0 + (h1 - h0) * f + lift) if h0 is not None and h1 is not None else float('nan')
+        tri = float(tri_height(Hm, meta, x, z)) + lift
+        worst_t = max(worst_t, abs(y - tri)); worst_n = max(worst_n, abs(yn - exp))
+        print(f'    {ty:12s} {x:9.1f} {z:9.1f} | {y:9.3f} | {tri:9.3f} | {yn:9.3f} | {exp:9.3f} | {yn - exp:+.4f}')
+    log(f'numeric check: max |terrain y - (tri + lift)| = {worst_t:.4f} m (float32 rounding); max |node y - interpolated node height - lift| = {worst_n:.4f} m (0.0125 = uint16 step/2)')
+    # how node heights relate to the mesh, over every sample (diagnostic for the report)
+    allx = np.concatenate([a[:, 0] for v in per.values() for a in v]).astype(float); allz = np.concatenate([a[:, 2] for v in per.values() for a in v]).astype(float)
+    ally = np.concatenate([a[:, 4] for v in per.values() for a in v]).astype(float) - lift
+    dn = ally - tri_height(Hm, meta, allx, allz)
+    log(f'node y - terrain(tri) over all samples: median {np.median(dn):+.2f} m, p1 {np.percentile(dn, 1):+.2f}, p99 {np.percentile(dn, 99):+.2f}; '
+        f'{100 * np.mean(dn < -1):.1f}% sink >1 m below the mesh, {100 * np.mean(dn < -3):.1f}% >3 m, {100 * np.mean(dn > 3):.1f}% float >3 m above')
+    worst = []
+    for ty, ids, d, t in samples:
+        if ty == 'tunnel':
+            continue
+        for q in range(len(ids) - 1):
+            a, b = ids[q], ids[q + 1]
+            if a in ny and b in ny and d[q + 1] - d[q] > 0.5:
+                worst.append((abs(ny[b] - ny[a]) / (d[q + 1] - d[q]), ty, a, b, ny[a], ny[b], d[q + 1] - d[q]))
+    worst.sort(reverse=True)
+    log('steepest node-to-node grades (non-tunnel): ' + '; '.join(f'{g * 100:.0f}% {ty} {a}->{b} ({ha:.1f}->{hb:.1f} m over {ln:.1f} m)' for g, ty, a, b, ha, hb, ln in worst[:5]))
 
 
 def main():
@@ -304,8 +360,8 @@ def main():
     q, meta = build_terrain(work, out, coarse, a.decim, a.skirt)
     Hm = deq(q.reshape(meta['nz'], meta['nx']))
     seasons = build_textures(out, [s for s in a.seasons.split(',') if s], a.tex_size, a.jpeg_quality)
-    per = build_roads(work, out, Hm, meta, a.road_types, a.step, a.lift)
-    numeric_check(per, Hm, meta, a.lift, work)
+    per, samples, ny = build_roads(work, out, Hm, meta, a.road_types, a.step, a.lift)
+    numeric_check(per, samples, ny, Hm, meta, a.lift, out)
     write_js(os.path.join(out, 'preview3d', 'meta.js'), 'meta', dict(seasons=seasons, default='Summer' if 'Summer' in seasons else (seasons[0] if seasons else None),
                                                                       tex_size=a.tex_size, built=time.strftime('%Y-%m-%d %H:%M')))
     shutil.copyfile(os.path.join(HERE, 'preview_3d.html'), os.path.join(out, 'preview-3d.html'))
