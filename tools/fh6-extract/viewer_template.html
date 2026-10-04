@@ -467,7 +467,7 @@ if (D.elevation) {
 // ---- fh6-road-types v2 ------------------------------------------------------------------------------------------------------------------------------
 // {"format":"fh6-road-types","version":2,
 //  "nav":{"file":"Brio_00.nav","sha1":"...","nodes":38473},          // as v1: the nav file the game-node ids belong to
-//  "types":{"<a>-<b>":"road|offroad|other|trail|crosscountry|tunnel|jump", ...},   // GAME edges only (both ends are game nav nodes, edge exists in the
+//  "types":{"<a>-<b>":"road|highway|offroad|other|trail|crosscountry|tunnel|jump|turnaround", ...},   // GAME edges only (both ends are game nav nodes, edge exists in the
 //                                                                     // nav file); key = "<smaller id>-<larger id>" exactly as v1; edges not listed = not set
 //  "added":[{"a":id,"b":id,"type":"..."}, ...],                       // user-made links between ANY two points (game or user); a < b; type may be null
 //  "points":{"<id>":[x,z,y], ...},                                    // user-created points; ids >= 1000000 (game node ids stay < 1000000, so no collision)
@@ -481,6 +481,10 @@ if (D.elevation) {
 // stable nav id and carry NO coordinates unless moved.  An "added" link, a "jump_from" value or a "moved" entry may name any id that is a game node or a point
 // in "points".  A game edge a-b split at a new point p is stored as removed:["a-b"] + added a-p and p-b (both with a-b's old type; for a jump the take-off
 // stays at the original take-off end and the new middle edge starts at p).  Edge types "tunnel" counts as asphalt for later routing; "jump" is one-way.
+// "highway" = motorway / expressway, marked apart from ordinary "road" (drawn wider in the 2D preview).  "turnaround" = a link that exists only so the game's AI can get
+// back onto the right road (many roads look cross-connected, which the in-game map does not show): kept for later navigation, never drawn on the in-game-style map
+// (the 2D preview hides it, key T shows it).  Neither is a tunnel (height rule unchanged); routing does not use them yet.
+// Brush keys: 1 road, 2 offroad, 3 other, 4 trail, 5 crosscountry, 6 tunnel, 7 jump, 8 highway, 9 turnaround, 0 clear (the editor's internal type index = key; files store the names).
 // Heights: game nodes keep their nav height (roads.json) unless moved; new / moved points get the height-map value at their x,z - or, when BOTH neighbours of
 // the point are >= 3 m off the terrain (bridge / tunnel) or an adjacent edge is a tunnel, the linear interpolation of the neighbours' heights.
 // -----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -492,18 +496,18 @@ const EDITOR = (function () {
   Object.assign(UI.en, {
     ed: 'Editor', ed_title: 'Road & race editor', m_pan: 'Pan', m_paint: 'Paint', m_connect: 'Connect', m_delete: 'Delete link', m_races: 'Race types',
     m_draw: 'Draw', m_split: 'Split', m_move: 'Move', m_flip: 'Flip jump',
-    b_road: 'Road', b_offroad: 'Offroad', b_other: 'Other', b_trail: 'Trail', b_crosscountry: 'Cross-country', b_tunnel: 'Tunnel', b_jump: 'Jump line', b_clear: 'Clear', unset: 'not set', fill: 'Fill whole road between junctions (or Shift-click)',
+    b_road: 'Road', b_offroad: 'Offroad', b_other: 'Other', b_trail: 'Trail', b_crosscountry: 'Cross-country', b_tunnel: 'Tunnel', b_jump: 'Jump line', b_highway: 'Highway', b_turnaround: 'Turnaround', b_clear: 'Clear', unset: 'not set', fill: 'Fill whole road between junctions (or Shift-click)',
     prefill: 'Prefill from surface data (Road / Offroad only)', undo: 'Undo', export: 'Export', import: 'Import',
     h_pan: 'Drag to move the map. Hold Space in any mode to pan.',
-    h_paint: 'Pick a brush, then click or drag over roads. Shift-click (or the fill tick) paints a whole road between two junctions. Space + drag pans. Keys 1-7 = Road, Offroad, Other, Trail, Cross-country, Tunnel, Jump line; 0 = Clear; Ctrl+Z = undo.',
+    h_paint: 'Pick a brush, then click or drag over roads. Shift-click (or the fill tick) paints a whole road between two junctions. Space + drag pans. Keys 1-9 = Road, Offroad, Other, Trail, Cross-country, Tunnel, Jump line, Highway, Turnaround; 0 = Clear; Ctrl+Z = undo.',
     h_connect: 'Zoom in until the points show (yellow rings = dead ends). Click point A, then point B: a new link (white outline) gets the current brush type; a Jump line starts at A and lands at B. Esc cancels.',
-    h_draw: 'Free points for Trail / Cross-country / Jump line / any type: pick a type, then click to place points, each chained to the previous one (height from the height map). Click an existing point to connect to it (Alt = do not snap). End the chain with Esc, right-click, or a click on the last point.',
+    h_draw: 'Free points for Trail / Cross-country / Jump line / Turnaround / any type: pick a type, then click to place points, each chained to the previous one (height from the height map). Click an existing point to connect to it (Alt = do not snap). End the chain with Esc, right-click, or a click on the last point.',
     h_split: 'Click a link to split it: a new point appears where you click; keep the button down and drag to place it. Bridges and tunnels keep the neighbours\' heights interpolated, other points take the height-map value.',
     h_move: 'Drag a point (game node or new point) to move it in 2D. Height follows the height map, or is interpolated along a bridge / tunnel. Ctrl+Z undoes a move.',
     h_flip: 'Click a Jump line to reverse its direction (the arrow points from take-off to landing).',
     h_delete: 'Click a link to remove it (also game roads; Ctrl+Z brings it back). Points left without any link disappear.',
     h_races: 'Click a race pin (or its race line), then pick a type. Unmarked races show a greyed icon with a "?".',
-    km_road: 'Road', km_offroad: 'Offroad', km_other: 'Other', km_trail: 'Trail', km_crosscountry: 'Cross-country', km_tunnel: 'Tunnel', km_jump: 'Jump line', km_unset: 'Not set', racesm: 'Races marked', of: 'of', added: 'added links',
+    km_road: 'Road', km_offroad: 'Offroad', km_other: 'Other', km_trail: 'Trail', km_crosscountry: 'Cross-country', km_tunnel: 'Tunnel', km_jump: 'Jump line', km_highway: 'Highway', km_turnaround: 'Turnaround', km_unset: 'Not set', racesm: 'Races marked', of: 'of', added: 'added links',
     st_pts: 'new points', st_moved: 'moved points', st_removed: 'removed game links',
     s_split: 'Link split', s_pt: 'Point placed', s_chain: 'Chain started - click to continue it, Esc / right-click to end', s_chain_end: 'Chain ended', s_flip: 'Jump direction reversed', s_nojump: 'That link is not a Jump line',
     s_noedge: 'No link here', s_noelev: 'The height map is still loading - try again in a moment', s_pickType: 'Pick a link type first (not Clear)', s_nopt: 'No point here - zoom in', s_moved: 'Point moved',
@@ -524,7 +528,7 @@ const EDITOR = (function () {
     psrc_copy: 'copy of another route\'s racing line', psrc_line: 'racing-line rules (fitted)', psrc_id_convention: 'route-id convention (not a game field)',
     pp_start: 'predicted: at start line (±{n} m)', pp_start_unverified: 'predicted: at start line (±{n} m, unverified)', pp_start_story_job: 'predicted: at start line (±{n} m, story / job route)',
     pp_event_poi: 'predicted: at the special-event marker (±{n} m)', pp_none: 'no map pin expected (test / tutorial / chase route)',
-    showpred: 'Show predicted types on unmarked pins',
+    showpred: 'Show predicted types on unmarked pins', showturn: 'Show turnaround links (AI only, not on the in-game map)',
     rq_title: 'Review queue', rq_n: '{n} to review', rq_none: 'Nothing left to review.', rq_prev: 'Prev', rq_next: 'Next', rq_accept: 'Accept', rq_mark: 'Mark...', rq_skip: 'Skip',
     rq_restore: 'restore {n} skipped', rq_g1: 'your mark differs from the prediction', rq_g2: 'unmarked, predicted with at least 70 % confidence', rq_g3: 'unmarked, next to a route you marked Story',
     rq_g4: 'unmarked, low-confidence prediction', rq_gap: 'this id sits between story-challenge routes but has no story-challenge entry of its own', rq_acc: 'Accepted',
@@ -533,18 +537,18 @@ const EDITOR = (function () {
   Object.assign(UI.de, {
     ed: 'Editor', ed_title: 'Strassen- & Rennen-Editor', m_pan: 'Bewegen', m_paint: 'Malen', m_connect: 'Verbinden', m_delete: 'Link loeschen', m_races: 'Rennarten',
     m_draw: 'Zeichnen', m_split: 'Teilen', m_move: 'Versetzen', m_flip: 'Sprung drehen',
-    b_road: 'Strasse', b_offroad: 'Offroad', b_other: 'Sonstige', b_trail: 'Pfad', b_crosscountry: 'Querfeldein', b_tunnel: 'Tunnel', b_jump: 'Sprunglinie', b_clear: 'Leeren', unset: 'nicht gesetzt', fill: 'Ganze Strasse zwischen Kreuzungen fuellen (oder Shift-Klick)',
+    b_road: 'Strasse', b_offroad: 'Offroad', b_other: 'Sonstige', b_trail: 'Pfad', b_crosscountry: 'Querfeldein', b_tunnel: 'Tunnel', b_jump: 'Sprunglinie', b_highway: 'Autobahn', b_turnaround: 'Wendeverbindung', b_clear: 'Leeren', unset: 'nicht gesetzt', fill: 'Ganze Strasse zwischen Kreuzungen fuellen (oder Shift-Klick)',
     prefill: 'Aus Untergrunddaten vorbefuellen (nur Strasse / Offroad)', undo: 'Rueckgaengig', export: 'Export', import: 'Import',
     h_pan: 'Ziehen verschiebt die Karte. Leertaste halten = in jedem Modus verschieben.',
-    h_paint: 'Pinsel waehlen, dann Strassen anklicken oder ueberstreichen. Shift-Klick (oder Haken) faerbt eine ganze Strasse zwischen zwei Kreuzungen. Leertaste + Ziehen = verschieben. Tasten 1-7 = Strasse, Offroad, Sonstige, Pfad, Querfeldein, Tunnel, Sprunglinie; 0 = Leeren; Strg+Z = rueckgaengig.',
+    h_paint: 'Pinsel waehlen, dann Strassen anklicken oder ueberstreichen. Shift-Klick (oder Haken) faerbt eine ganze Strasse zwischen zwei Kreuzungen. Leertaste + Ziehen = verschieben. Tasten 1-9 = Strasse, Offroad, Sonstige, Pfad, Querfeldein, Tunnel, Sprunglinie, Autobahn, Wendeverbindung; 0 = Leeren; Strg+Z = rueckgaengig.',
     h_connect: 'Hineinzoomen, bis die Punkte erscheinen (gelbe Ringe = Sackgassen). Punkt A, dann Punkt B anklicken: ein neuer Link (weisser Rand) bekommt den aktuellen Pinseltyp; eine Sprunglinie startet bei A und landet bei B. Esc bricht ab.',
-    h_draw: 'Freie Punkte fuer Pfad / Querfeldein / Sprunglinie / jeden Typ: Typ waehlen, dann Punkte setzen, jeder mit dem vorigen verkettet (Hoehe aus der Hoehenkarte). Einen vorhandenen Punkt anklicken verbindet mit ihm (Alt = nicht einrasten). Kette beenden mit Esc, Rechtsklick oder Klick auf den letzten Punkt.',
+    h_draw: 'Freie Punkte fuer Pfad / Querfeldein / Sprunglinie / Wendeverbindung / jeden Typ: Typ waehlen, dann Punkte setzen, jeder mit dem vorigen verkettet (Hoehe aus der Hoehenkarte). Einen vorhandenen Punkt anklicken verbindet mit ihm (Alt = nicht einrasten). Kette beenden mit Esc, Rechtsklick oder Klick auf den letzten Punkt.',
     h_split: 'Einen Link anklicken, um ihn zu teilen: an der Klickstelle entsteht ein neuer Punkt; Taste gedrueckt halten und ziehen setzt ihn. Bei Bruecken und Tunneln wird die Hoehe aus den Nachbarn interpoliert, sonst aus der Hoehenkarte.',
     h_move: 'Einen Punkt (Spielknoten oder neuer Punkt) ziehen, um ihn in 2D zu versetzen. Die Hoehe folgt der Hoehenkarte bzw. wird auf Bruecken / in Tunneln interpoliert. Strg+Z macht es rueckgaengig.',
     h_flip: 'Eine Sprunglinie anklicken, um ihre Richtung umzukehren (der Pfeil zeigt von Absprung zu Landung).',
     h_delete: 'Einen Link anklicken, um ihn zu entfernen (auch Spielstrassen; Strg+Z holt ihn zurueck). Punkte ohne Link verschwinden.',
     h_races: 'Rennpin (oder Rennlinie) anklicken, dann Art waehlen. Unmarkierte Rennen zeigen ein ausgegrautes Symbol mit "?".',
-    km_road: 'Strasse', km_offroad: 'Offroad', km_other: 'Sonstige', km_trail: 'Pfad', km_crosscountry: 'Querfeldein', km_tunnel: 'Tunnel', km_jump: 'Sprunglinie', km_unset: 'Nicht gesetzt', racesm: 'Rennen markiert', of: 'von', added: 'hinzugefuegte Links',
+    km_road: 'Strasse', km_offroad: 'Offroad', km_other: 'Sonstige', km_trail: 'Pfad', km_crosscountry: 'Querfeldein', km_tunnel: 'Tunnel', km_jump: 'Sprunglinie', km_highway: 'Autobahn', km_turnaround: 'Wendeverbindung', km_unset: 'Nicht gesetzt', racesm: 'Rennen markiert', of: 'von', added: 'hinzugefuegte Links',
     st_pts: 'neue Punkte', st_moved: 'versetzte Punkte', st_removed: 'entfernte Spiellinks',
     s_split: 'Link geteilt', s_pt: 'Punkt gesetzt', s_chain: 'Kette gestartet - zum Fortsetzen klicken, Esc / Rechtsklick beendet', s_chain_end: 'Kette beendet', s_flip: 'Sprungrichtung umgekehrt', s_nojump: 'Das ist keine Sprunglinie',
     s_noedge: 'Hier ist kein Link', s_noelev: 'Die Hoehenkarte laedt noch - gleich nochmal versuchen', s_pickType: 'Erst einen Linktyp waehlen (nicht Leeren)', s_nopt: 'Hier ist kein Punkt - hineinzoomen', s_moved: 'Punkt versetzt',
@@ -565,7 +569,7 @@ const EDITOR = (function () {
     psrc_copy: 'Kopie der Rennlinie einer anderen Route', psrc_line: 'Rennlinien-Regeln (angepasst)', psrc_id_convention: 'Routen-ID-Konvention (kein Spielfeld)',
     pp_start: 'Vorhersage: an der Startlinie (±{n} m)', pp_start_unverified: 'Vorhersage: an der Startlinie (±{n} m, ungeprueft)', pp_start_story_job: 'Vorhersage: an der Startlinie (±{n} m, Story- / Job-Route)',
     pp_event_poi: 'Vorhersage: am Sonderevent-Marker (±{n} m)', pp_none: 'kein Kartenpin zu erwarten (Test- / Tutorial- / Chase-Route)',
-    showpred: 'Vorhergesagte Arten auf unmarkierten Pins zeigen',
+    showpred: 'Vorhergesagte Arten auf unmarkierten Pins zeigen', showturn: 'Wendeverbindungen anzeigen (nur KI, nicht auf der Spielkarte)',
     rq_title: 'Pruefliste', rq_n: '{n} zu pruefen', rq_none: 'Nichts mehr zu pruefen.', rq_prev: 'Zurueck', rq_next: 'Weiter', rq_accept: 'Uebernehmen', rq_mark: 'Markieren...', rq_skip: 'Ueberspringen',
     rq_restore: '{n} uebersprungene wiederherstellen', rq_g1: 'deine Markierung weicht von der Vorhersage ab', rq_g2: 'unmarkiert, Vorhersage mit mindestens 70 % Sicherheit', rq_g3: 'unmarkiert, neben einer Route, die du als Story markiert hast',
     rq_g4: 'unmarkiert, unsichere Vorhersage', rq_gap: 'diese ID liegt zwischen Story-Challenge-Routen, hat aber selbst keinen Story-Challenge-Eintrag', rq_acc: 'Uebernommen',
@@ -597,10 +601,10 @@ const EDITOR = (function () {
   document.head.appendChild(css);
 
   // ---------------------------------------------------------------------------------------------------------------- state
-  // type index = position in TN (0 = not set).  Colours: Trail is drawn dashed, Tunnel with a dark casing, Jump line with arrows (draw()); user-made links get a white outline.
-  const TN = [null, 'road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump'], NT = TN.length, T_TUNNEL = 6, T_JUMP = 7;
-  const TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80', '#facc15', '#a78bfa', '#e2e8f0', '#f43f5e'];
-  const TLAB = ['km_unset', 'km_road', 'km_offroad', 'km_other', 'km_trail', 'km_crosscountry', 'km_tunnel', 'km_jump'];
+  // type index = position in TN (0 = not set).  Colours: Trail is drawn dashed, Tunnel and Highway (wide, amber) with a dark casing, Turnaround dotted (hideable, ed.showTurn), Jump line with arrows (draw()); user-made links get a white outline.
+  const TN = [null, 'road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'highway', 'turnaround'], NT = TN.length, T_TUNNEL = 6, T_JUMP = 7, T_HWY = 8, T_TURN = 9;
+  const TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80', '#facc15', '#a78bfa', '#e2e8f0', '#f43f5e', '#fbbf24', '#d946ef'];
+  const TLAB = ['km_unset', 'km_road', 'km_offroad', 'km_other', 'km_trail', 'km_crosscountry', 'km_tunnel', 'km_jump', 'km_highway', 'km_turnaround'];
   const USER0 = 1000000, OFFT = 3;      // user point ids start here (game nav ids stay below); "off the terrain" threshold in metres (bridge / tunnel test)
   const RT = ['road', 'street', 'rally', 'cross_country', 'touge', 'drag', 'story', 'wristband'];
   const RTV = { road: ['asphalt_circuit', 'asphalt_p2p'], rally: ['mixedsurface_circuit', 'mixedsurface_p2p'], cross_country: ['crosscountry_circuit', 'crosscountry_p2p'],
@@ -608,7 +612,7 @@ const EDITOR = (function () {
   // One-off migration of the first editor versions' 'midnight' type ("Midnight Battle"): the user's hand marking (2026-10-03) showed that those pins are Horizon Stories,
   // except route 8004 "Mech My Day", which is a Wristband event (a showcase, like "Launch Control").  So legacy 'midnight' -> 'story', and route 8004 -> 'wristband'.
   const raceTy = (id, v) => v === 'midnight' ? (String(id) === '8004' ? 'wristband' : 'story') : v;
-  const ed = { on: false, mode: 'pan', brush: 1, fill: false, sel: -1, hover: -1, mouse: null, chain: -1, hoverE: null, drag: null };
+  const ed = { on: false, mode: 'pan', brush: 1, fill: false, showTurn: true, sel: -1, hover: -1, mouse: null, chain: -1, hoverE: null, drag: null };
   const marks = {};                       // route id -> race type
   const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = edge alive, p = user point alive, m = point position [x,z,y], d = jump take-off node, r = race mark)
   let panHeld = false;
@@ -668,7 +672,7 @@ const EDITOR = (function () {
     for (let cx = Math.floor((x - R) / CELL); cx <= Math.floor((x + R) / CELL); cx++) for (let cy = Math.floor((y - R) / CELL); cy <= Math.floor((y + R) / CELL); cy++) {
       const l = gridE.get(ck(cx, cy)); if (!l) continue;
       for (const e of l) {
-        if (seen.has(e) || !EAL[e] || (addedOnly && !EAD[e])) continue; seen.add(e);
+        if (seen.has(e) || !EAL[e] || (addedOnly && !EAD[e]) || (ET[e] === T_TURN && !ed.showTurn)) continue; seen.add(e);      // hidden turnaround links cannot be hit
         const ax = NX[EA[e]], ay = NY[EA[e]], dx = NX[EB[e]] - ax, dy = NY[EB[e]] - ay, L2 = dx * dx + dy * dy;
         const u = L2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0, d = Math.hypot(x - ax - u * dx, y - ay - u * dy);
         if (d <= r) out.push([d, e]);
@@ -786,7 +790,7 @@ const EDITOR = (function () {
     let any = false; for (let e = 0; e < EA.length; e++) if (ET[e] && ET[e] <= 3) { any = true; break; }
     if (any && !confirm(t('c_prefill'))) return;
     const ops = []; let n = 0;
-    for (let e = 0; e < NGAME; e++) { const p = PRE[e]; if (p === 2 || !EAL[e] || ET[e] > 3) continue; n++; if (ET[e] !== p + 1) { ops.push(['t', e, ET[e], p + 1]); ET[e] = p + 1; } }      // Trail / Cross-country / Tunnel / Jump marks and removed edges stay
+    for (let e = 0; e < NGAME; e++) { const p = PRE[e]; if (p === 2 || !EAL[e] || ET[e] > 3) continue; n++; if (ET[e] !== p + 1) { ops.push(['t', e, ET[e], p + 1]); ET[e] = p + 1; } }      // Trail / Cross-country / Tunnel / Jump / Highway / Turnaround marks (type index > 3) and removed edges stay
     say(t('s_prefill') + ' ' + n + ' ' + t('s_edges')); commit(ops);
   }
 
@@ -896,6 +900,7 @@ const EDITOR = (function () {
       if (!EAL[e]) continue;
       const i = EA[e], j = EB[e], x0 = px(i), y0 = py(i), x1 = px(j), y1 = py(j);
       if ((x0 < -10 && x1 < -10) || (x0 > cw + 10 && x1 > cw + 10) || (y0 < -10 && y1 < -10) || (y0 > ch + 10 && y1 > ch + 10)) continue;
+      if (ET[e] === T_TURN && !ed.showTurn) continue;
       const p = P[ET[e]]; p.moveTo(x0, y0); p.lineTo(x1, y1);
       if (EAD[e]) { const c = ET[e] === 4 ? CT : CS; c.moveTo(x0, y0); c.lineTo(x1, y1); }
       if (ET[e] === T_JUMP) arrows.push(dirOf(e) === i ? [x0, y0, x1, y1] : [x1, y1, x0, y0]);
@@ -904,9 +909,10 @@ const EDITOR = (function () {
     g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = base + 3.2; g.stroke(CS);
     g.lineCap = 'butt'; g.setLineDash([8, 5]); g.stroke(CT);
     g.lineCap = 'round'; g.setLineDash([]); g.strokeStyle = '#0b1220'; g.lineWidth = base * 2.6; g.stroke(P[T_TUNNEL]);       // tunnel: dark casing, pale core
+    g.lineWidth = base * 3.6; g.stroke(P[T_HWY]);                                                                 // highway: dark casing, wide amber core
     for (let k = 0; k < NT; k++) {
-      g.strokeStyle = TCOL[k]; g.lineWidth = base * (k === T_TUNNEL ? 0.8 : k === T_JUMP ? 1.4 : 1); g.globalAlpha = k && k !== T_TUNNEL ? 0.92 : 1;
-      g.lineCap = k === 4 ? 'butt' : 'round'; g.setLineDash(k === 4 ? [8, 5] : []); g.stroke(P[k]);       // trail: dashed
+      g.strokeStyle = TCOL[k]; g.lineWidth = base * (k === T_TUNNEL ? 0.8 : k === T_JUMP ? 1.4 : k === T_HWY ? 2.4 : k === T_TURN ? 1.3 : 1); g.globalAlpha = k && k !== T_TUNNEL ? 0.92 : 1;
+      g.lineCap = k === 4 ? 'butt' : 'round'; g.setLineDash(k === 4 ? [8, 5] : k === T_TURN ? [0.1, base * 2.6] : []); g.stroke(P[k]);       // trail: dashed; turnaround: dotted (round caps)
     }
     g.setLineDash([]); g.globalAlpha = 1; g.lineCap = 'round';
     const as = Math.max(7, base * 2.4); g.lineWidth = 1.5;                                                      // jump lines: arrows from take-off to landing
@@ -1061,7 +1067,7 @@ const EDITOR = (function () {
   document.addEventListener('keydown', (ev) => {
     if (!ed.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
     if (ev.key === ' ') { ev.preventDefault(); if (!panHeld) { panHeld = true; dragState(); } }
-    else if (ev.key >= '0' && ev.key <= '7' && !ev.ctrlKey && !ev.metaKey) setBrush(Number(ev.key));      // 1-7 = the seven link types, 0 = Clear
+    else if (ev.key >= '0' && ev.key <= '9' && !ev.ctrlKey && !ev.metaKey) setBrush(Number(ev.key));      // 1-9 = the nine link types, 0 = Clear
     else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
     else if (ev.key === 'Escape') { ed.sel = -1; if (ed.chain >= 0) endChain(); redraw(); }
   });
@@ -1233,7 +1239,8 @@ const EDITOR = (function () {
     store.set('edopen', on ? 1 : 0); dragState(); renderBox(); redraw();
   }
   function setMode(m) { endChain(true); ed.drag = null; ed.mode = m; ed.sel = -1; ed.hover = -1; ed.hoverE = null; store.set('edmode', m); dragState(); renderBox(); redraw(); }
-  function setBrush(b) { ed.brush = b; renderBox(); }
+  function setBrush(b) { ed.brush = b; if (b === T_TURN && !ed.showTurn) { ed.showTurn = true; store.set('showturn', 1); redraw(); }      // painting turnarounds while they are hidden would be invisible
+    renderBox(); }
   let statT = 0;
   function say(s, bad) { const el = document.getElementById('ed_stat'); if (!el) return; el.textContent = s; el.style.color = bad ? 'var(--warn)' : 'var(--ok)'; clearTimeout(statT); statT = setTimeout(() => { el.textContent = ''; }, 6000); }
   let sraf = 0;
@@ -1244,7 +1251,7 @@ const EDITOR = (function () {
     for (let e = 0; e < EA.length; e++) { if (EAL[e]) { km[ET[e]] += EL[e] / 1000; if (EAD[e]) add++; } else if (!EAD[e]) rem++; }
     for (let i = 0; i < NID.length; i++) if (NAL[i]) { if (NID[i] >= USER0) pts++; else if (isMoved(i)) mv++; }
     const row = (c, k, v) => '<span><i style="background:' + c + '"></i>' + esc(t(k)) + '</span><b>' + v + '</b>', cnt = (k, v) => '<span>' + esc(t(k)) + '</span><b>' + v + '</b>';
-    el.innerHTML = (HAS_RD ? [1, 2, 3, 4, 5, 6, 7, 0].map((k) => row(TCOL[k], TLAB[k], km[k].toFixed(1) + ' km')).join('') + cnt('added', add) + cnt('st_pts', pts) + cnt('st_moved', mv) + cnt('st_removed', rem) : '') +
+    el.innerHTML = (HAS_RD ? [1, 8, 2, 3, 4, 5, 6, 7, 9, 0].map((k) => row(TCOL[k], TLAB[k], km[k].toFixed(1) + ' km')).join('') + cnt('added', add) + cnt('st_pts', pts) + cnt('st_moved', mv) + cnt('st_removed', rem) : '') +
       (HAS_RC ? '<span>' + esc(t('racesm')) + '</span><b>' + Object.keys(marks).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' +
         '<span>' + esc(t('pinsm')) + '</span><b>' + D.racelines.filter((r) => RPIN[r.id]).length + ' ' + esc(t('of')) + ' ' + D.racelines.length + '</b>' : '');
   }
@@ -1255,8 +1262,9 @@ const EDITOR = (function () {
     if (modes.indexOf(ed.mode) < 0) ed.mode = modes[0];
     box.innerHTML = '<h2>' + esc(t('ed_title')) + '</h2>' +
       '<div class="seg" id="ed_modes">' + modes.map((m) => '<button data-m="' + m + '" title="' + esc(t('h_' + m)) + '" class="' + (ed.mode === m ? 'sel' : '') + '">' + esc(t('m_' + m)) + '</button>').join('') + '</div>' +
-      (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [4, 'b_trail'], [5, 'b_crosscountry'], [6, 'b_tunnel'], [7, 'b_jump'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
-        '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_fill"' + (ed.fill ? ' checked' : '') + '>' + esc(t('fill')) + '</label>' : '') +
+      (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [4, 'b_trail'], [5, 'b_crosscountry'], [6, 'b_tunnel'], [7, 'b_jump'], [8, 'b_highway'], [9, 'b_turnaround'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
+        '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_fill"' + (ed.fill ? ' checked' : '') + '>' + esc(t('fill')) + '</label>' +
+        '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_turn"' + (ed.showTurn ? ' checked' : '') + '>' + esc(t('showturn')) + '</label>' : '') +
       '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') +
         (HAS_RC && exactIds().length ? '<button id="ed_prr" title="' + esc(t('h_prefill_r')) + '">' + esc(t('prefill_r')) + '</button>' : '') + '</div>' +
       '<div class="seg"><button id="ed_undo">' + esc(t('undo')) + '</button><button id="ed_exp">' + esc(t('export')) + '</button><button id="ed_imp">' + esc(t('import')) + '</button></div>' +
@@ -1267,6 +1275,7 @@ const EDITOR = (function () {
     box.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.m)));
     box.querySelectorAll('[data-b]').forEach((b) => b.addEventListener('click', () => setBrush(Number(b.dataset.b))));
     const f = document.getElementById('ed_fill'); if (f) f.addEventListener('change', () => { ed.fill = f.checked; });
+    const tn_ = document.getElementById('ed_turn'); if (tn_) tn_.addEventListener('change', () => { ed.showTurn = tn_.checked; store.set('showturn', ed.showTurn ? 1 : 0); ed.hover = -1; ed.hoverE = null; redraw(); });
     const pb = document.getElementById('ed_pre'); if (pb) pb.addEventListener('click', prefill);
     const pr = document.getElementById('ed_prr'); if (pr) pr.addEventListener('click', prefillRaces);
     document.getElementById('ed_undo').addEventListener('click', undo);
@@ -1288,7 +1297,7 @@ const EDITOR = (function () {
 
   // restore: the browser's own autosave first (silent; it keeps priority), else the project data (also silent and not autosaved), then the last mode
   const sv = store.get('editor', null); if (!(sv && importObj(sv, true)) && CANON && !canonBad) importObj(CANON, true, true);
-  ed.mode = store.get('edmode', 'pan'); renderBox(); cv.style.display = 'none';
+  ed.mode = store.get('edmode', 'pan'); ed.showTurn = !!store.get('showturn', 1); renderBox(); cv.style.display = 'none';
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
   return { ed, marks, hist, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },

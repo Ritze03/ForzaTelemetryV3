@@ -6,7 +6,7 @@
 <title>FH6 roads (2D preview)</title>
 <link rel="icon" href="data:,">
 <!-- Template for preview_2d.py (it replaces the DATA placeholder below).  Roads only: transparent, frameless, no chrome.
-     Keys: B = cycle backdrop (none / checkerboard / dark), F or double-click = fit island, wheel = zoom, drag = pan. -->
+     Keys: T = show/hide turnaround links (hidden by default - they are not on the in-game map), B = cycle backdrop (none / checkerboard / dark), F or double-click = fit island, wheel = zoom, drag = pan. -->
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
   body { cursor: grab; user-select: none; -webkit-user-select: none; }
@@ -23,7 +23,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">wheel zoom &middot; drag pan &middot; F fit &middot; B backdrop</div>
+<div id="hint">wheel zoom &middot; drag pan &middot; F fit &middot; B backdrop &middot; T turnaround (debug)</div>
 <script>
 'use strict';
 const DATA = /*__DATA__*/null;
@@ -38,14 +38,18 @@ const STYLE = {
   trail:        { col: SAND,      w: 0.65, dash: [6, 4], alpha: 1,    casing: true  },   // dashed off-road line
   tunnel:       { col: ASPHALT,   w: 1.0,  dash: [2, 3], alpha: 0.55, casing: false },   // ghosted / dotted asphalt
   road:         { col: ASPHALT,   w: 1.0,  dash: null,   alpha: 1,    casing: true  },
+  highway:      { col: '#fff6dd',   w: 1.6,  dash: null,   alpha: 1,    casing: true  },   // motorway: like road but wider, faint warm tint
+  turnaround:   { col: '#e040c8',   w: 0.6,  dash: [1, 3], alpha: 0.9,  casing: false },   // debug only (key T): not on the in-game map
 };
-const ORDER = ['unset', 'crosscountry', 'other', 'offroad', 'trail', 'tunnel', 'road'];   // draw order: asphalt on top
+const ORDER = ['unset', 'crosscountry', 'other', 'offroad', 'trail', 'tunnel', 'road', 'highway'];   // draw order: asphalt on top
+const HIDDEN = ['turnaround'];                      // loaded + counted, drawn only while showTurn (key T)
+let showTurn = false;
 const CASING = 'rgba(8,11,16,0.5)', JUMP = '#ff9a3d';
 
 // ---- data -> typed arrays in metres (data is integer decimetres, x east / z north) ----
 const L = {};
 let drawnTotal = 0;
-for (const t of ORDER) {
+for (const t of ORDER.concat(HIDDEN)) {
   L[t] = (DATA.lines[t] || []).map((a) => {
     const f = new Float32Array(a.length); let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
     for (let i = 0; i < a.length; i += 2) {
@@ -60,7 +64,7 @@ const BOUNDS = DATA.bounds.map((v) => v / 10);
 
 // edge counts per type from the loaded geometry vs. the generator's counts from the input file
 const have = { jump: J.length };
-for (const t of ORDER) have[t] = L[t].reduce((n, o) => n + o.p.length / 2 - 1, 0);
+for (const t of ORDER.concat(HIDDEN)) have[t] = L[t].reduce((n, o) => n + o.p.length / 2 - 1, 0);
 const bad = Object.keys(DATA.counts).filter((t) => (have[t] || 0) !== DATA.counts[t]);
 console.log('[preview2d] edges per type: ' + JSON.stringify(have) + (bad.length ? ' MISMATCH vs ' + JSON.stringify(DATA.counts) : ' (matches input file)') + ' src=' + JSON.stringify(DATA.src));
 if (bad.length) console.error('[preview2d] edge count mismatch: ' + bad.join(','));
@@ -132,6 +136,7 @@ function draw() {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const wBase = clampW(s * 7);
   for (const t of ORDER) strokeType(t, wBase);
+  if (showTurn) strokeType('turnaround', wBase);
   drawJumps(wBase);
   ctx.globalAlpha = 1; ctx.setLineDash([]);
 }
@@ -156,6 +161,7 @@ addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (k === 'b') { document.body.classList.remove('bd-check', 'bd-dark'); bd = (bd + 1) % BD.length; if (BD[bd]) document.body.classList.add(BD[bd]); }
+  else if (k === 't') { showTurn = !showTurn; redraw(); }
   else if (k === 'f' || k === '0') fit();
 });
 addEventListener('resize', () => { resize(); redraw(); });
@@ -170,7 +176,7 @@ resize(); fit();
 const hint = document.getElementById('hint');
 setTimeout(() => hint.classList.add('on'), 300); setTimeout(() => hint.classList.remove('on'), 6000);
 // test / debug hook
-window.__P2D = { counts: have, expected: DATA.counts, src: DATA.src, setView: (x, z, sc) => { cx = x; cz = z; s = sc; draw(); }, fit, bounds: BOUNDS };
+window.__P2D = { counts: have, showTurnaround: (v) => { showTurn = !!v; draw(); }, expected: DATA.counts, src: DATA.src, setView: (x, z, sc) => { cx = x; cz = z; s = sc; draw(); }, fit, bounds: BOUNDS };
 </script>
 </body>
 </html>
