@@ -42,7 +42,19 @@ v1 (ids + three types, no coordinates) still imports; `build_viewer.py:build_can
 - **Split** of game edge a-b at new point p is stored as `removed:["a-b"]` + added `a-p` and `p-b`, both with the old type.
 - **Why coordinates are allowed now:** v1 had none so the committed file held no game data. In v2 the coordinates are *user-placed* points (the user's own work, not read from the game),
   game nodes are still ids only, so the licensing rule holds (D48). Moved game nodes store the user's new position, not the original.
-- The canonical `tools/fh6-extract/data/fh6-road-types.json` is the committed copy (see [hand-classified road and race types](fh6-game-files.md#hand-classified-road-and-race-types)).
+- The canonical `tools/fh6-extract/data/fh6-road-types.json` is the committed copy and is **v2** since 2026-10-05 (the user's editor export, then run through `fix_highways.py`): ids plus the user's 12 points (ids >= 1000000) and 80 added links incl. 16 jump links with `jump_from`. Committing the coordinates is fine (D48: the user's own work). In the browser the editor's localStorage autosave keeps the old state until "Reset to project data" (see [hand-classified road and race types](fh6-game-files.md#hand-classified-road-and-race-types)).
+
+## `fix_highways.py` — highway clean-up
+
+`fix_highways.py IN.json OUT.json [--work DIR] [--report BASE] [--dry-run] [--validate] [--no-overmarks] [--no-turnarounds] [--plot PNG [--bbox X0,Z0,X1,Z1]]`. Reads v1/v2, writes v2 (editor key order, `counts` as `exportObj()`), idempotent, refuses a different nav sha1/nodes. Review CSV/JSON/PNG go outside the repo.
+
+**Why:** the editor brush also painted roads stacked under/over a highway, and hand-marking hundreds of crossovers was not wanted.
+
+- **Over-marks (highway -> road):** `OVR_SPILL` = nav road with highway share <= 30 % (tunnel edges excluded); `OVR_ISLAND` = highway piece joined to no other highway/tunnel/turnaround/added link, <= 1500 m, >= 80 % of nodes within 3 m of terrain.
+  *Why no "stacked" rule (2D overlap + height gap):* Tokyo City has real double-deck expressways (nav roads #800/#801, ~9 m apart, lower deck on the ground, each with its own crossovers) and interchanges up to 10 layers; a stack rule would delete real lower decks. Nav `cls` (4/5 direction, 6 ramps), `hi` and terrain height do not separate streets from highways either. Highway marks are nearly always whole nav roads (121/138 polylines 100 % highway), so per-nav-road topology is the reliable signal.
+- **Turnarounds:** nav polyline of 1 edge (<= 30 m) or 2 edges (<= 40 m) typed road/highway/unset, both ends degree-3 nodes whose other two edges are highway and ~collinear (>= 130 deg), strip crossing the carriageway (25-155 deg), end heights within 4 m, ends not joined by <= 150 m of highway. *Why:* the game stores each crossover as its own 2-node road record between two carriageway nodes. Calibrated on the user's 12 hand marks (12/12 re-found with `--validate`).
+- **Needs review (nothing changed):** `REVIEW_HIGHWAY_GAP` (road edges inside mostly-highway nav roads, likely under-marks), `REVIEW_CUT_OFF_PIECE`, `REVIEW_HALF_MARKED`, `REVIEW_TURNAROUND` (strip-like links failing a test, e.g. crossovers inside tunnels).
+- **First run (2026-10-05):** 32 edges / 0.63 km highway -> road (all Tokyo City), 305 new turnarounds, 76 review rows.
 
 ## Editor (viewer, `EDITOR` block of `viewer_template.html`)
 
@@ -86,6 +98,8 @@ A vanilla-in-game-look road map: transparent html/body/canvas, frameless (D34), 
 - **Look:** ribbons keep a screen-space minimum width; asphalt `#34373d`, highway `#2b2e34` 12 m wide, optional bright edge lines; turnaround magenta dashed (off by default); tunnel and jump off by default.
 - **Known limits:** ~39 stretches sink 50-100 m below the terrain in node mode: they are **unmarked tunnels** (e.g. x 2956 z 1051, x -4229 z -5248). Fix: mark them Tunnel in the editor, or enable "Never below terrain".
   152 bridge stretches float, which is correct. The 16 m mesh stair-steps at coasts.
+
+**Road colours (`style=type|map` hash, panel dropdown):** switching only swaps uniforms/material flags, so it is instant. *Type colours* (default): unset red #ff1a1a, highway amber #fbbf24 (18 m + casing), road #38bdf8, offroad #ff8c1a, other #4ade80, trail #facc15 dashed, cross-country #a78bfa, tunnel #e2e8f0 drawn on top (depth test off), jump #f43f5e dashed (no direction arrows: `jump_from` is not read in 3D), turnaround #d946ef dashed; every type is visible. *Map look*: the earlier style and defaults (turnaround / tunnel / jump off). Unpainted edges are their own `unset` type in `preview_3d.py` (drawn like Other in Map look). *Why:* the user wants to QC their marking, so the preview must show the individual road types.
 
 ## Why previews are local pages built next to the viewer (D39)
 
