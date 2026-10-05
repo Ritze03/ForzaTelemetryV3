@@ -532,6 +532,15 @@ const EDITOR = (function () {
     rq_title: 'Review queue', rq_n: '{n} to review', rq_none: 'Nothing left to review.', rq_prev: 'Prev', rq_next: 'Next', rq_accept: 'Accept', rq_mark: 'Mark...', rq_skip: 'Skip',
     rq_restore: 'restore {n} skipped', rq_g1: 'your mark differs from the prediction', rq_g2: 'unmarked, predicted with at least 70 % confidence', rq_g3: 'unmarked, next to a route you marked Story',
     rq_g4: 'unmarked, low-confidence prediction', rq_gap: 'this id sits between story-challenge routes but has no story-challenge entry of its own', rq_acc: 'Accepted',
+    rv_title: 'Review spots', rv_hl: 'Highlight review spots (what fix_highways.py could not decide)', rv_all: 'All categories', rv_n: '{n} spots', rv_none: 'No spots - nothing left to review.', rv_pos: 'spot {i} of {n}',
+    rv_gone: 'The last spot is fixed - Next continues after it.', rv_info: '{n} links, {m} m, nav road #{q}, x {x}, z {z}',
+    rv_hint: 'Computed live from your current paint: fix a spot (paint it, add or remove links), then press Next - the list updates a moment after every edit. Keys N / Shift+N.',
+    rvc_gap: 'Highway gap', rvc_cutoff: 'Cut-off highway piece', rvc_half: 'Half-marked road', rvc_turn: 'Turnaround?', rvc_island: 'Isolated highway piece',
+    r_gap: 'gap in highway nav road #{q} ({a} of {n} links are highway) - highway under-mark?', r_half: 'half-marked nav road #{q}: {a} highway / {b} other links - which half is right?',
+    r_cutoff: 'isolated piece ({l} m) of a longer highway nav road, cut off by non-highway links', r_island: 'isolated highway piece ({l} m), joined to no other highway / tunnel / turnaround ({w})',
+    r_elev: 'elevated', r_noterr: 'no terrain data', r_turn: 'turnaround?', r_len: 'strip {n} m long', r_branch: 'branching intermediate point', r_dz: 'ends {n} m apart in height',
+    r_deg: 'end {e}: {n} links there', r_onty: 'end {e}: on {t} links (not highway)', r_straight: 'end {e}: not a straight carriageway', r_cross: 'end {e}: strip does not cross the carriageway', r_loop: 'ends joined by a short highway path',
+    pv: 'Preview', pv_exit: 'Exit preview', pv_title: 'Preview: the vanilla 2D map look of the current, live edited state (key P)', pv_hint: 'wheel zoom - drag pan - B backdrop (none / checker / dark) - T turnaround links - P / Esc exit. Editing is off.',
     rq_hint: 'Predictions are guesses. Accept copies the prediction into your marks (Ctrl+Z undoes it). Skip is remembered in this browser only, not in the export.',
   });
   Object.assign(UI.de, {
@@ -573,6 +582,15 @@ const EDITOR = (function () {
     rq_title: 'Pruefliste', rq_n: '{n} zu pruefen', rq_none: 'Nichts mehr zu pruefen.', rq_prev: 'Zurueck', rq_next: 'Weiter', rq_accept: 'Uebernehmen', rq_mark: 'Markieren...', rq_skip: 'Ueberspringen',
     rq_restore: '{n} uebersprungene wiederherstellen', rq_g1: 'deine Markierung weicht von der Vorhersage ab', rq_g2: 'unmarkiert, Vorhersage mit mindestens 70 % Sicherheit', rq_g3: 'unmarkiert, neben einer Route, die du als Story markiert hast',
     rq_g4: 'unmarkiert, unsichere Vorhersage', rq_gap: 'diese ID liegt zwischen Story-Challenge-Routen, hat aber selbst keinen Story-Challenge-Eintrag', rq_acc: 'Uebernommen',
+    rv_title: 'Pruefstellen', rv_hl: 'Pruefstellen hervorheben (was fix_highways.py nicht entscheiden konnte)', rv_all: 'Alle Kategorien', rv_n: '{n} Stellen', rv_none: 'Keine Stellen - nichts mehr zu pruefen.', rv_pos: 'Stelle {i} von {n}',
+    rv_gone: 'Die letzte Stelle ist behoben - Weiter geht dahinter weiter.', rv_info: '{n} Links, {m} m, Nav-Strasse #{q}, x {x}, z {z}',
+    rv_hint: 'Live aus deiner aktuellen Markierung berechnet: eine Stelle beheben (malen, Links hinzufuegen oder entfernen), dann Weiter - die Liste aktualisiert sich kurz nach jeder Aenderung. Tasten N / Umschalt+N.',
+    rvc_gap: 'Autobahn-Luecke', rvc_cutoff: 'Abgeschnittenes Autobahnstueck', rvc_half: 'Halb markierte Strasse', rvc_turn: 'Wendeverbindung?', rvc_island: 'Isoliertes Autobahnstueck',
+    r_gap: 'Luecke in der Autobahn-Nav-Strasse #{q} ({a} von {n} Links sind Autobahn) - Autobahn nicht markiert?', r_half: 'halb markierte Nav-Strasse #{q}: {a} Autobahn- / {b} andere Links - welche Haelfte stimmt?',
+    r_cutoff: 'isoliertes Stueck ({l} m) einer laengeren Autobahn-Nav-Strasse, durch Nicht-Autobahn-Links abgeschnitten', r_island: 'isoliertes Autobahnstueck ({l} m), mit keiner Autobahn / keinem Tunnel / keiner Wendeverbindung verbunden ({w})',
+    r_elev: 'erhoeht', r_noterr: 'keine Gelaendedaten', r_turn: 'Wendeverbindung?', r_len: 'Streifen {n} m lang', r_branch: 'verzweigter Zwischenpunkt', r_dz: 'Enden {n} m Hoehenunterschied',
+    r_deg: 'Ende {e}: dort {n} Links', r_onty: 'Ende {e}: an {t}-Links (keine Autobahn)', r_straight: 'Ende {e}: keine gerade Fahrbahn', r_cross: 'Ende {e}: Streifen kreuzt die Fahrbahn nicht', r_loop: 'Enden durch kurzen Autobahnweg verbunden',
+    pv: 'Vorschau', pv_exit: 'Vorschau beenden', pv_title: 'Vorschau: Optik der 2D-Spielkarte fuer den aktuellen, live bearbeiteten Stand (Taste P)', pv_hint: 'Rad zoomen - ziehen verschiebt - B Hintergrund (keiner / Schachbrett / dunkel) - T Wendeverbindungen - P / Esc beenden. Bearbeiten ist aus.',
     rq_hint: 'Vorhersagen sind Schaetzungen. Uebernehmen kopiert die Vorhersage in deine Markierungen (Strg+Z macht es rueckgaengig). Ueberspringen wird nur in diesem Browser gemerkt, nicht im Export.',
   });
 
@@ -597,7 +615,16 @@ const EDITOR = (function () {
     '#ed_rq .card{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;display:flex;flex-direction:column;gap:3px;font-size:12px}' +
     '#ed_rq .card .tt{font-weight:600;cursor:pointer}#ed_rq .card img{width:16px;height:16px;object-fit:contain;vertical-align:-3px}#ed_rq .card .why{color:var(--dim);font-size:11px}' +
     '#ed_rq .row{display:flex;gap:4px}#ed_rq .row button{flex:1 1 auto;padding:4px 6px;font-size:12px}#ed_rq button.pri{border-color:var(--ok);color:var(--ok)}' +
-    '.pbox{margin-top:6px;padding:4px 6px;border:1px dashed var(--line);border-radius:5px}';
+    '.pbox{margin-top:6px;padding:4px 6px;border:1px dashed var(--line);border-radius:5px}' +
+    '#ed_rv{border-top:1px solid var(--line);padding-top:6px;display:flex;flex-direction:column;gap:5px}#ed_rv h3{margin:0;font-size:12px;display:flex;justify-content:space-between}' +
+    '#ed_rv .card{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;display:flex;flex-direction:column;gap:3px;font-size:12px;cursor:pointer}#ed_rv .card b{color:#ff8a4d}' +
+    '#ed_rv .row{display:flex;gap:4px}#ed_rv .row button{flex:1 1 auto;padding:4px 6px;font-size:12px}' +
+    '.rvhalo{animation:rvp 1.3s ease-in-out infinite}@keyframes rvp{0%,100%{opacity:.6}50%{opacity:1}}' +
+    '#pvtoggle{position:absolute;top:10px;left:150px;z-index:1001;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}#pvtoggle.on{border-color:var(--accent);color:var(--accent);left:56px;z-index:1003}' +
+    '#pvhint{position:absolute;left:12px;bottom:10px;z-index:1002;font:11px/1.3 system-ui,sans-serif;color:rgba(128,136,148,.95);text-shadow:0 0 3px rgba(0,0,0,.7);pointer-events:none;display:none}' +
+    'body.pv #pvhint{display:block}body.pv #panel,body.pv #ptoggle,body.pv #edtoggle,body.pv #ed,body.pv #coords,body.pv #msg{display:none!important}' +      // preview mode: only the map's road canvas, the zoom buttons and the exit button stay
+    '#map.pv .leaflet-map-pane>.leaflet-pane:not(.leaflet-edpane-pane){display:none!important}#map.pv{cursor:grab}' +
+    'body.pv.bd0,body.pv.bd0 #map{background:transparent}body.pv.bd1 #map{background-color:#2a2d33;background-image:linear-gradient(45deg,#353941 25%,transparent 25%,transparent 75%,#353941 75%),linear-gradient(45deg,#353941 25%,transparent 25%,transparent 75%,#353941 75%);background-size:24px 24px;background-position:0 0,12px 12px}body.pv.bd2 #map{background:#14171c}';
   document.head.appendChild(css);
 
   // ---------------------------------------------------------------------------------------------------------------- state
@@ -613,6 +640,8 @@ const EDITOR = (function () {
   // except route 8004 "Mech My Day", which is a Wristband event (a showcase, like "Launch Control").  So legacy 'midnight' -> 'story', and route 8004 -> 'wristband'.
   const raceTy = (id, v) => v === 'midnight' ? (String(id) === '8004' ? 'wristband' : 'story') : v;
   const ed = { on: false, mode: 'pan', brush: 1, fill: false, showTurn: true, sel: -1, hover: -1, mouse: null, chain: -1, hoverE: null, drag: null };
+  const rv = { on: false, cat: 'all', i: -1, key: null, spots: [], edges: new Map(), cur: new Set(), t: 0, polyE: null, pm: null };      // review spots (see "review spots" below)
+  const pv = { on: false, bd: Number(store.get('pvbd', 2)), turn: false, saved: null };                                                    // preview mode (see "preview mode" below)
   const marks = {};                       // route id -> race type
   const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = edge alive, p = user point alive, m = point position [x,z,y], d = jump take-off node, r = race mark)
   let panHeld = false;
@@ -863,6 +892,7 @@ const EDITOR = (function () {
     Object.keys(o.races || {}).forEach((k) => { const v = raceTy(k, o.races[k]); if (rid.has(k) && RT.indexOf(v) >= 0) marks[k] = v; else skip++; });
     hist.length = 0; refreshAllRaces();
     if (!silent) say(t('s_imp') + ': ' + ok + ' ' + t('s_edges') + ', ' + add + ' ' + t('added') + (npt || nmv || nrm ? ', ' + npt + ' ' + t('st_pts') + ', ' + nmv + ' ' + t('st_moved') + ', ' + nrm + ' ' + t('st_removed') : '') + ', ' + Object.keys(marks).length + ' ' + t('racesm') + (skip ? ', ' + skip + ' ' + t('s_skip') : ''), skip ? 1 : 0);
+    rvSchedule();
     if (noSave) { redraw(); renderStats(); } else changed(true);      // noSave: the untouched project data is not copied into localStorage, so a newer build's project data shows until the user edits
     return true;
   }
@@ -879,9 +909,228 @@ const EDITOR = (function () {
     say(t('s_exp'));
   }
 
+  // ---------------------------------------------------------------------------------------------------------------- review spots
+  // A LIVE port of the REVIEW_* rules of fix_highways.py (read the script's comments for the calibration), run on the editor's current state instead of an exported file, so the
+  // list shrinks as you paint.  Only the cases the script could not decide are shown (its automatic OVR_SPILL / OVR_ISLAND / TURN_CROSSOVER changes are not "spots"):
+  //   gap      REVIEW_HIGHWAY_GAP      a road / other / unset link inside a nav road that is >= 70 % highway (tunnel links not counted)  -> probably a highway under-mark
+  //   half     REVIEW_HALF_MARKED      the highway links of a nav road that is 30 .. 70 % highway
+  //   cutoff   REVIEW_CUT_OFF_PIECE    a highway-only island <= 1500 m whose nav road has more highway links elsewhere (cut off by gaps)
+  //   island   REVIEW_ISLAND           a highway-only island <= 1500 m, not a piece of a longer highway road, that is NOT clearly on the ground (< 3 nodes with terrain data, or < 80 % within 3 m of it)
+  //   turn     REVIEW_TURNAROUND       a 1-2 link nav road between two highway nodes that fails the crossover test (<= 30 / 40 m, ends within 4 m height, both ends straight carriageway
+  //                                    nodes with exactly 2 other links, both highway, strip crossing at 25..155 deg, ends not joined by <= 150 m of highway)
+  // "nav road" = a polyline of roads.json = RE.ids[q].  Links of one category that touch (share a point) form ONE spot; Prev / Next walk the spots in a stable order
+  // (category, nav road, smallest point id), so Next after fixing a spot (which vanishes) simply goes to what followed it.
+  // Why live and in JS: the script's output is stale the moment you paint; the review is only useful if it shows what is left NOW.
+  const RVC = ['gap', 'cutoff', 'half', 'turn', 'island'];
+  const RVP = { SPILL: 0.3, MOSTLY: 0.7, ISLAND_MAX_M: 1500, GROUND_DZ: 3, GROUND_MIN_FRAC: 0.8, TURN_LEN: [0, 30, 40], TURN_DZ: 4, TURN_THROUGH: 130, TURN_CROSS_MIN: 25, TURN_LOOP_M: 150 };
+  const tf = (k, p) => { let s = t(k); Object.keys(p || {}).forEach((n) => { s = s.split('{' + n + '}').join(p[n]); }); return s; };
+  const angDeg = (u, v) => { const a = Math.hypot(u[0], u[1]), b = Math.hypot(v[0], v[1]); return a && b ? Math.acos(Math.max(-1, Math.min(1, (u[0] * v[0] + u[1] * v[1]) / (a * b)))) * 180 / Math.PI : 0; };
+  function rvPolys() {
+    if (rv.polyE) return;
+    rv.polyE = []; rv.pm = new Map();
+    RE.ids.forEach((ids, q) => {
+      const es = [];
+      for (let k = 0; k + 1 < ids.length; k++) { const e = ekey.get(kkey(ids[k], ids[k + 1])); es.push(e === undefined ? -1 : e); if (e !== undefined) rv.pm.set(e, q); }
+      rv.polyE.push(es);
+    });
+  }
+  const hwN = (n, excl) => { const o = []; adj[n].forEach((e) => { if (EAL[e] && ET[e] === T_HWY) { const m = other(e, n); if (excl.indexOf(m) < 0) o.push(m); } }); return o; };
+  function hwReach(src, dst, lim, skip) {
+    const best = new Map([[src, 0]]), st = [src];
+    while (st.length) { const n = st.pop(); adj[n].forEach((e) => { if (!EAL[e] || ET[e] !== T_HWY || skip.has(e)) return; const m = other(e, n), d = best.get(n) + EL[e]; if (d <= lim && d < (best.has(m) ? best.get(m) : 1e18)) { best.set(m, d); st.push(m); } }); }
+    return best.has(dst);
+  }
+  function endBad(n, lab, sn, sd) {                                  // an end of a would-be crossover must be a through-point of a highway carriageway
+    const oth = []; adj[n].forEach((e) => { if (!EAL[e]) return; const m = other(e, n); if (!sn.has(m)) oth.push([m, e]); });
+    if (oth.length !== 2) return { k: 'r_deg', p: { e: lab, n: oth.length + 1 } };
+    const bad = [...new Set(oth.filter((q) => ET[q[1]] !== T_HWY).map((q) => ET[q[1]]))].sort((x, y) => x - y);
+    if (bad.length) return { k: 'r_onty', p: { e: lab, t: bad.map((b) => t(TLAB[b])).join(' / ') } };
+    const u = oth.map((q) => [NWX[q[0]] - NWX[n], NWZ[q[0]] - NWZ[n]]);
+    if (angDeg(u[0], u[1]) < RVP.TURN_THROUGH) return { k: 'r_straight', p: { e: lab } };
+    const a = angDeg([u[0][0] - u[1][0], u[0][1] - u[1][1]], sd);
+    if (a < RVP.TURN_CROSS_MIN || a > 180 - RVP.TURN_CROSS_MIN) return { k: 'r_cross', p: { e: lab } };
+    return null;
+  }
+  function rvCompute() {
+    rvPolys();
+    const out = new Map(), P = rv.polyE, add = (e, c, k, p) => { if (!out.has(e)) out.set(e, { c, rs: [{ k, p }] }); };
+    const stat = P.map((es) => { const hw = [], rest = []; es.forEach((e) => { if (e < 0 || !EAL[e]) return; if (ET[e] === T_HWY) hw.push(e); else if (ET[e] !== T_TUNNEL) rest.push(e); }); return { hw, rest }; });
+    stat.forEach((s, q) => {                                         // (1) per nav road: half-marked / gap
+      if (!s.hw.length || !s.rest.length) return;
+      const n = s.hw.length + s.rest.length, share = s.hw.length / n;
+      if (share <= RVP.SPILL) return;                                // brush spill: the script turns these into road itself
+      if (share < RVP.MOSTLY) s.hw.forEach((e) => add(e, 'half', 'r_half', { q, a: s.hw.length, b: s.rest.length }));
+      else s.rest.forEach((e) => { if (ET[e] === 0 || ET[e] === 1 || ET[e] === 3) add(e, 'gap', 'r_gap', { q, a: s.hw.length, n }); });
+    });
+    const qual = (e) => EAL[e] && (ET[e] === T_HWY || ET[e] === T_TUNNEL || ET[e] === T_TURN), seen = new Set();      // (2) highway-only islands
+    for (let s0 = 0; s0 < NID.length; s0++) {
+      if (seen.has(s0) || !NAL[s0] || !adj[s0].some(qual)) continue;
+      seen.add(s0); const st = [s0], nodes = [s0], ks = new Set();
+      while (st.length) { const x = st.pop(); adj[x].forEach((e) => { if (!qual(e)) return; ks.add(e); const m = other(e, x); if (!seen.has(m)) { seen.add(m); st.push(m); nodes.push(m); } }); }
+      let hk = 0, L = 0; ks.forEach((e) => { if (ET[e] === T_HWY && !EAD[e]) hk++; L += EL[e]; });
+      if (!hk || hk !== ks.size || L > RVP.ISLAND_MAX_M) continue;     // touches a tunnel / crossover / added link (a real network) or too long
+      const pls = new Set(); ks.forEach((e) => pls.add(rv.pm.get(e)));
+      let other_hw = 0; pls.forEach((q) => { if (q !== undefined) stat[q].hw.forEach((e) => { if (!ks.has(e)) other_hw++; }); });
+      if (other_hw) { ks.forEach((e) => add(e, 'cutoff', 'r_cutoff', { l: Math.round(L) })); continue; }
+      const dz = nodes.map((n) => NH[n] - terrainY(NWX[n], NWZ[n])).filter((v) => !isNaN(v));
+      if (dz.length >= 3 && dz.filter((v) => v < RVP.GROUND_DZ).length / dz.length >= RVP.GROUND_MIN_FRAC) continue;      // on the ground: the script turns it into road itself
+      ks.forEach((e) => add(e, 'island', 'r_island', { l: Math.round(L), w: t(dz.length ? 'r_elev' : 'r_noterr') }));
+    }
+    RE.ids.forEach((ids, q) => {                                     // (3) crossover candidates
+      const ne = ids.length - 1; if (ne < 1 || ne > 2 || ids[0] === ids[ne]) return;
+      const es = P[q]; if (es.some((e) => e < 0 || !EAL[e])) return;
+      const olds = es.map((e) => ET[e]);
+      if (olds.every((o) => o === T_TURN) || olds.some((o) => o !== 0 && o !== 1 && o !== T_HWY && o !== T_TURN)) return;
+      const nd = ids.map((id) => nodeIdx.get(id)), a = nd[0], b = nd[ne];
+      if (nd.some((n) => n === undefined) || !(hwN(a, nd.slice(1, 2)).length && hwN(b, nd.slice(-2, -1)).length)) return;
+      const rs = [], L = es.reduce((s, e) => s + EL[e], 0);
+      if (L > RVP.TURN_LEN[ne]) rs.push({ k: 'r_len', p: { n: Math.round(L) } });
+      if (nd.slice(1, -1).some((n) => deg(n) !== 2)) rs.push({ k: 'r_branch', p: {} });
+      const dzh = Math.abs(NH[a] - NH[b]); if (dzh > RVP.TURN_DZ) rs.push({ k: 'r_dz', p: { n: dzh.toFixed(1) } });
+      const sn = new Set(nd), sd = [NWX[b] - NWX[a], NWZ[b] - NWZ[a]];
+      [[a, 'A'], [b, 'B']].forEach(([n, lab]) => { const r = endBad(n, lab, sn, sd); if (r) rs.push(r); });
+      if (!rs.length && hwReach(a, b, RVP.TURN_LOOP_M, new Set(es))) rs.push({ k: 'r_loop', p: {} });
+      if (rs.length) es.forEach((e) => { if (!out.has(e)) out.set(e, { c: 'turn', rs }); });
+    });
+    // cluster: links of one category that share a point = one spot
+    const by = {}; out.forEach((r, e) => { (by[r.c] = by[r.c] || []).push(e); });
+    const spots = [];
+    RVC.forEach((c, ci) => {
+      const es = by[c]; if (!es) return;
+      const sset = new Set(es), done = new Set();
+      es.forEach((e0) => {
+        if (done.has(e0)) return; done.add(e0);
+        const st = [e0], comp = [e0];
+        while (st.length) { const e = st.pop(); [EA[e], EB[e]].forEach((n) => adj[n].forEach((f) => { if (sset.has(f) && !done.has(f)) { done.add(f); st.push(f); comp.push(f); } })); }
+        comp.sort((x, y) => x - y);
+        let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9, len = 0, mid = 1e12, nav = 1e9;
+        comp.forEach((e) => { [EA[e], EB[e]].forEach((n) => { x0 = Math.min(x0, NWX[n]); x1 = Math.max(x1, NWX[n]); z0 = Math.min(z0, NWZ[n]); z1 = Math.max(z1, NWZ[n]); mid = Math.min(mid, NID[n]); }); len += EL[e]; nav = Math.min(nav, rv.pm.has(e) ? rv.pm.get(e) : 1e9); });
+        spots.push({ c, es: comp, key: [ci, nav, mid], bb: [x0, z0, x1, z1], len, nav, r: out.get(comp[0]) });
+      });
+    });
+    spots.sort((p, q) => rvCmp(p.key, q.key));
+    rv.edges = out; rv.spots = spots; rvSync();
+  }
+  const rvCmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  const rvList = () => rv.cat === 'all' ? rv.spots : rv.spots.filter((s) => s.c === rv.cat);
+  function rvSync() {                                                // find the current spot again after a recompute
+    const L = rvList(); rv.i = rv.key ? L.findIndex((s) => rvCmp(s.key, rv.key) === 0) : -1;
+    rv.cur = new Set(rv.i >= 0 ? L[rv.i].es : []);
+  }
+  const rvText = (r) => (r.c === 'turn' ? t('r_turn') + ' ' : '') + r.rs.map((x) => tf(x.k, x.p)).join('; ');
+  function rvStep(d) {
+    rvCompute(); const L = rvList(); if (!L.length) { rv.key = null; rvSync(); renderReview(); redraw(); return; }
+    let i;
+    if (!rv.key) i = d > 0 ? 0 : L.length - 1;
+    else if (d > 0) { i = L.findIndex((s) => rvCmp(s.key, rv.key) > 0); if (i < 0) i = 0; }
+    else { i = -1; L.forEach((s, k) => { if (rvCmp(s.key, rv.key) < 0) i = k; }); if (i < 0) i = L.length - 1; }
+    rv.key = L[i].key; rvSync(); renderReview(); rvFocus(); redraw();
+  }
+  function rvFocus() {
+    const lst = rvList(), s = lst[rv.i]; if (!s) return;
+    const b = s.bb; map.fitBounds(L.latLngBounds([ll(b[0], b[1]), ll(b[2], b[3])]), { padding: [110, 110], maxZoom: 5.25 });
+  }
+  function rvSchedule() { if (!rv.on) return; clearTimeout(rv.t); rv.t = setTimeout(() => { rvCompute(); renderReview(); redraw(); }, 400); }
+  function rvSetOn(on) { rv.on = !!on; if (rv.on) rvCompute(); else { rv.edges = new Map(); rv.cur = new Set(); } renderReview(); redraw(); }
+  function renderReview() {
+    const el = document.getElementById('ed_rv'); if (!el) return;
+    let h = '<label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="rv_on"' + (rv.on ? ' checked' : '') + '>' + esc(t('rv_hl')) + '</label>';
+    if (rv.on) {
+      const cnt = {}; rv.spots.forEach((s) => { cnt[s.c] = (cnt[s.c] || 0) + 1; });
+      const L = rvList(), s = L[rv.i];
+      h += '<select id="rv_cat"><option value="all">' + esc(t('rv_all') + ' (' + rv.spots.length + ')') + '</option>' + RVC.map((c) => '<option value="' + c + '"' + (rv.cat === c ? ' selected' : '') + '>' + esc(t('rvc_' + c) + ' (' + (cnt[c] || 0) + ')') + '</option>').join('') + '</select>' +
+        '<div class="small" id="rv_n"><b>' + esc(tf('rv_n', { n: L.length })) + '</b>' + (s ? ' - ' + esc(tf('rv_pos', { i: rv.i + 1, n: L.length })) : '') + '</div>' +
+        '<div class="row"><button id="rv_prev">&laquo; ' + esc(t('rq_prev')) + '</button><button id="rv_next">' + esc(t('rq_next')) + ' &raquo;</button></div>';
+      if (s) {
+        const cx = (s.bb[0] + s.bb[2]) / 2, cz = (s.bb[1] + s.bb[3]) / 2;
+        h += '<div class="card" id="rv_card"><div><b>' + esc(t('rvc_' + s.c)) + '</b></div><div>' + esc(rvText(s.r)) + '</div><div class="small">' + esc(tf('rv_info', { n: s.es.length, m: Math.round(s.len), q: s.nav < 1e9 ? s.nav : '-', x: Math.round(cx), z: Math.round(cz) })) + '</div></div>';
+      } else if (rv.key) h += '<div class="small">' + esc(t('rv_gone')) + '</div>';
+      else if (!L.length) h += '<div class="small">' + esc(t('rv_none')) + '</div>';
+      h += '<div class="small">' + esc(t('rv_hint')) + '</div>';
+    }
+    el.innerHTML = '<h3><span>' + esc(t('rv_title')) + '</span></h3>' + h;
+    const on = (id, f) => { const b = document.getElementById(id); if (b) b.addEventListener('click', f); };
+    const c = document.getElementById('rv_on'); if (c) c.addEventListener('change', () => rvSetOn(c.checked));
+    const sc_ = document.getElementById('rv_cat'); if (sc_) sc_.addEventListener('change', () => { rv.cat = sc_.value; rv.key = null; rvSync(); renderReview(); redraw(); });
+    on('rv_prev', () => rvStep(-1)); on('rv_next', () => rvStep(1)); on('rv_card', rvFocus);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------- preview mode
+  // "Preview" = the editor's road canvas restyled like preview_2d.html (the vanilla in-game map look) for the CURRENT, live edited state.  It is a style swap + a UI hide, not a second renderer:
+  // draw() takes the drawPv() branch, CSS hides every pane except the road canvas (tiles, POIs, labels, review halo), the panels and the editor box.  Editing is off (pan / zoom only);
+  // leaving restores the previous UI (editor open or closed, panels, base map).  Styles / widths / draw order below are copied from preview_2d.html (keep them in sync);
+  // turnaround links are hidden like in the 2D preview (T shows them), jump lines are arrows, user-added links look like game links (no white outline).  B cycles the backdrop.
+  // Why not a live 3D preview: preview_3d.html is built in Python (road ribbons, bridge / tunnel geometry, terrain mesh baked into a data blob) - see docs/game-data/fh6-map-tooling.md.
+  const PV_ASPHALT = '#f2f4f7', PV_SAND = '#dcbf80';
+  const PVS = {
+    unset: { col: '#8d96a3', w: 0.55, dash: [5, 4], alpha: 0.6, cas: false }, other: { col: '#8e9aab', w: 0.7, dash: null, alpha: 1, cas: true },
+    crosscountry: { col: '#a6d8ae', w: 0.5, dash: [1, 4], alpha: 0.6, cas: false }, offroad: { col: PV_SAND, w: 0.8, dash: null, alpha: 1, cas: true },
+    trail: { col: PV_SAND, w: 0.65, dash: [6, 4], alpha: 1, cas: true }, tunnel: { col: PV_ASPHALT, w: 1.0, dash: [2, 3], alpha: 0.55, cas: false },
+    road: { col: PV_ASPHALT, w: 1.0, dash: null, alpha: 1, cas: true }, highway: { col: '#fff6dd', w: 1.6, dash: null, alpha: 1, cas: true },
+    turnaround: { col: '#e040c8', w: 0.6, dash: [1, 3], alpha: 0.9, cas: false } };
+  const PVO = ['unset', 'crosscountry', 'other', 'offroad', 'trail', 'tunnel', 'road', 'highway'], PV_CASING = 'rgba(8,11,16,0.5)', PV_JUMP = '#ff9a3d';
+  function drawPv(g, px, py, sc, cw, ch) {
+    const paths = {}, jumps = [], vis = (x0, y0, x1, y1) => !((x0 < -10 && x1 < -10) || (x0 > cw + 10 && x1 > cw + 10) || (y0 < -10 && y1 < -10) || (y0 > ch + 10 && y1 > ch + 10));
+    for (let e = 0; e < EA.length; e++) {
+      if (!EAL[e]) continue;
+      const k = ET[e], i = EA[e], j = EB[e], x0 = px(i), y0 = py(i), x1 = px(j), y1 = py(j);
+      if (!vis(x0, y0, x1, y1)) continue;
+      if (k === T_TURN && !pv.turn) continue;
+      if (k === T_JUMP) { jumps.push(dirOf(e) === i ? [x0, y0, x1, y1] : [x1, y1, x0, y0]); continue; }
+      const name = k === T_TURN ? 'turnaround' : (TN[k] || 'unset'), p = paths[name] || (paths[name] = new Path2D()); p.moveTo(x0, y0); p.lineTo(x1, y1);
+    }
+    const wBase = Math.max(0.9, Math.min(7, sc * SC * 7));
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    PVO.concat(pv.turn ? ['turnaround'] : []).forEach((name) => {
+      const st = PVS[name], p = paths[name]; if (!p) return;
+      const w = wBase * st.w;
+      if (st.cas) { g.setLineDash([]); g.globalAlpha = 1; g.strokeStyle = PV_CASING; g.lineWidth = Math.max(0.7, w) + 1.2; g.stroke(p); }
+      g.strokeStyle = st.col; g.globalAlpha = st.alpha; g.lineWidth = Math.max(0.7, w); g.setLineDash(st.dash ? st.dash.map((d) => d * Math.max(1, w * 0.6)) : []); g.stroke(p);
+    });
+    g.setLineDash([]); g.globalAlpha = 1;
+    const head = Math.max(5, wBase * 2.2);
+    for (const [x0, y0, x1, y1] of jumps) {
+      const ang = Math.atan2(y1 - y0, x1 - x0), len = Math.hypot(x1 - x0, y1 - y0), h = Math.min(head, len * 0.6), hx = x1 - Math.cos(ang) * h, hy = y1 - Math.sin(ang) * h;
+      const arrow = () => { g.beginPath(); g.moveTo(x0, y0); g.lineTo(hx, hy); g.moveTo(x1, y1); g.lineTo(x1 - Math.cos(ang - 0.45) * h, y1 - Math.sin(ang - 0.45) * h); g.moveTo(x1, y1); g.lineTo(x1 - Math.cos(ang + 0.45) * h, y1 - Math.sin(ang + 0.45) * h); };
+      arrow(); g.strokeStyle = PV_CASING; g.lineWidth = Math.max(1.4, wBase * 0.7) + 1.8; g.stroke();
+      arrow(); g.strokeStyle = PV_JUMP; g.lineWidth = Math.max(1.4, wBase * 0.7); g.stroke();
+    }
+  }
+  function pvBackdrop() { document.body.classList.remove('bd0', 'bd1', 'bd2'); document.body.classList.add('bd' + pv.bd); store.set('pvbd', pv.bd); }
+  function pvSet(on) {
+    if (!HAS_RD || on === pv.on) return;
+    const pb = document.getElementById('pvtoggle');
+    if (on) {
+      pv.saved = { open: ed.on, tiles: map.hasLayer(base) };
+      map.closePopup(); endChain(true); ed.drag = null; ed.sel = -1; ed.hover = -1; ed.hoverE = null; stroke = null;
+      if (!ed.on) setOpen(true);                                       // the road canvas lives with the editor
+      pv.on = true; pv.turn = false;
+      if (pv.saved.tiles) map.removeLayer(base);                        // no map imagery (and no tile traffic) while previewing
+      document.body.classList.add('pv'); mapEl.classList.add('pv'); pvBackdrop();
+    } else {
+      pv.on = false; const sv_ = pv.saved; pv.saved = null;
+      document.body.classList.remove('pv', 'bd0', 'bd1', 'bd2'); mapEl.classList.remove('pv');
+      if (sv_ && sv_.tiles) { base.addTo(map); base.bringToBack(); }
+      if (sv_ && !sv_.open) setOpen(false);
+    }
+    if (pb) { pb.classList.toggle('on', pv.on); pb.textContent = pv.on ? t('pv_exit') : t('pv'); }
+    dragState(); redraw();
+  }
+  document.addEventListener('keydown', (ev) => {
+    if (!HAS_RD || ev.ctrlKey || ev.metaKey || ev.altKey || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
+    const k = ev.key.toLowerCase();
+    if (k === 'p') pvSet(!pv.on);
+    else if (pv.on && k === 'escape') pvSet(false);
+    else if (pv.on && k === 'b') { pv.bd = (pv.bd + 1) % 3; pvBackdrop(); }
+    else if (pv.on && k === 't') { pv.turn = !pv.turn; redraw(); }
+    else if (!pv.on && ed.on && rv.on && k === 'n') rvStep(ev.shiftKey ? -1 : 1);
+  });
+
   // ---------------------------------------------------------------------------------------------------------------- canvas layer
   map.createPane('edpane'); const ep = map.getPane('edpane'); ep.style.zIndex = 390; ep.style.pointerEvents = 'none';
   const cv = document.createElement('canvas'); cv.style.position = 'absolute'; ep.appendChild(cv);
+  map.createPane('rvpane'); const rp = map.getPane('rvpane'); rp.style.zIndex = 395; rp.style.pointerEvents = 'none';      // review halos: ABOVE the road canvas (a halo under it is swallowed by the dark casing of neighbouring highways), translucent so the link's own colour still shows through
+  const hv = document.createElement('canvas'); hv.className = 'rvhalo'; hv.style.position = 'absolute'; hv.style.display = 'none'; rp.appendChild(hv);
   let raf = 0; const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
   const isMoved = (i) => { const o = NORIG[i]; return !!o && (NWX[i] !== o[0] || NWZ[i] !== o[1] || NH[i] !== o[2]); };
   const NODE_MODES = ['connect', 'draw', 'move', 'split'];       // modes that work on points: they show the nodes from a lower zoom
@@ -894,6 +1143,8 @@ const EDITOR = (function () {
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, ch);
     const z = map.getZoom(), sc = Math.pow(2, z - 3), o = map.getPixelOrigin(), ox = o.x + tl.x, oy = o.y + tl.y;
     const px = (i) => NX[i] * sc - ox, py = (i) => NY[i] * sc - oy, base = Math.max(1.8, Math.min(5.5, 1.2 + sc * 0.9));
+    if (pv.on) { drawPv(g, px, py, sc, cw, ch); return; }
+    drawHalo(tl, cw, ch, dpr, px, py, base);
     const P = []; for (let k = 0; k < NT; k++) P.push(new Path2D());
     const CS = new Path2D(), CT = new Path2D(), arrows = [];             // white outline of user-made links (CT: the dashed one under Trail links)
     for (let e = 0; e < EA.length; e++) {
@@ -954,6 +1205,31 @@ const EDITOR = (function () {
       if (ed.drag) ring(ed.drag.i, '#fb923c');
       else if (ed.hoverE) { g.strokeStyle = '#fff'; g.lineWidth = 2.5; g.beginPath(); g.arc(ed.hoverE.x * sc - ox, ed.hoverE.y * sc - oy, 6, 0, 6.3); g.stroke(); }
     }
+  }
+
+  function drawHalo(tl, cw, ch, dpr, px, py, base) {                   // review spots: pulsing red-orange halo under the links, the current spot in yellow with a ring
+    const list = rv.on && rv.edges.size ? [...rv.edges].filter(([e, r]) => EAL[e] && (rv.cat === 'all' || r.c === rv.cat)) : [];
+    if (!list.length) { hv.style.display = 'none'; return; }
+    hv.style.display = '';
+    if (hv.width !== Math.round(cw * dpr) || hv.height !== Math.round(ch * dpr)) { hv.width = Math.round(cw * dpr); hv.height = Math.round(ch * dpr); hv.style.width = cw + 'px'; hv.style.height = ch + 'px'; }
+    L.DomUtil.setPosition(hv, tl);
+    const g = hv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, ch);
+    const A = new Path2D(), C = new Path2D(); let cx = 0, cy = 0, cn = 0;
+    for (const [e] of list) {
+      const x0 = px(EA[e]), y0 = py(EA[e]), x1 = px(EB[e]), y1 = py(EB[e]);
+      if ((x0 < -40 && x1 < -40) || (x0 > cw + 40 && x1 > cw + 40) || (y0 < -40 && y1 < -40) || (y0 > ch + 40 && y1 > ch + 40)) continue;
+      const p = rv.cur.has(e) ? C : A; p.moveTo(x0, y0); p.lineTo(x1, y1);
+      if (rv.cur.has(e)) { cx += x0 + x1; cy += y0 + y1; cn += 2; }
+    }
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    g.strokeStyle = 'rgba(255,60,20,.30)'; g.lineWidth = base * 3.6 + 22; g.stroke(A);               // glow
+    g.strokeStyle = 'rgba(255,80,30,.55)'; g.lineWidth = base * 3.6 + 8; g.stroke(A);
+    g.strokeStyle = 'rgba(255,40,20,.95)'; g.lineWidth = base * 1.3 + 1.5; g.stroke(A);               // bright core on the link itself
+    g.strokeStyle = 'rgba(255,40,20,.38)'; g.lineWidth = base * 3.6 + 34; g.stroke(C);               // the current spot: bigger glow, yellow-white core
+    g.strokeStyle = 'rgba(255,90,30,.65)'; g.lineWidth = base * 3.6 + 14; g.stroke(C);
+    g.strokeStyle = 'rgba(255,245,120,.98)'; g.lineWidth = base * 1.6 + 2; g.stroke(C);
+    if (cn) { let r = 0; rv.cur.forEach((e) => { r = Math.max(r, Math.hypot(px(EA[e]) - cx / cn, py(EA[e]) - cy / cn), Math.hypot(px(EB[e]) - cx / cn, py(EB[e]) - cy / cn)); }); r = Math.min(r + 30, 400);
+      g.strokeStyle = '#fff'; g.lineWidth = 2.5; g.setLineDash([7, 5]); g.beginPath(); g.arc(cx / cn, cy / cn, r, 0, 6.3); g.stroke(); g.setLineDash([]); }
   }
 
   // ---------------------------------------------------------------------------------------------------------------- pointer handling
@@ -1039,12 +1315,12 @@ const EDITOR = (function () {
     commit(ops); say(t('s_conn')); return true;
   }
   mapEl.addEventListener('mousedown', (ev) => {
-    if (!ed.on || !HAS_RD || ev.button !== 0 || panHeld || ed.mode === 'pan' || ed.mode === 'races') return;
+    if (!ed.on || pv.on || !HAS_RD || ev.button !== 0 || panHeld || ed.mode === 'pan' || ed.mode === 'races') return;
     if (ev.target.closest('.leaflet-control,.leaflet-popup,.leaflet-marker-icon')) return;
     ev.preventDefault(); downAt(ev);
   });
   mapEl.addEventListener('mousemove', (ev) => {
-    if (!ed.on) return;
+    if (!ed.on || pv.on) return;
     const p = plane(ev); ed.mouse = p;
     if (ed.drag) { dragTo(p); return; }
     if (stroke) {
@@ -1059,13 +1335,13 @@ const EDITOR = (function () {
       if (h || ed.hoverE) { ed.hoverE = h; redraw(); }
     }
   });
-  mapEl.addEventListener('contextmenu', (ev) => { if (ed.on && HAS_RD && ed.mode === 'draw') { ev.preventDefault(); endChain(); } });       // right-click ends the chain
+  mapEl.addEventListener('contextmenu', (ev) => { if (ed.on && !pv.on && HAS_RD && ed.mode === 'draw') { ev.preventDefault(); endChain(); } });       // right-click ends the chain
   document.addEventListener('mouseup', () => { if (stroke) { const s = stroke; stroke = null; commit(s.ops); } if (ed.drag) finishDrag(); });
   map.on('popupopen', () => { if (ed.on && HAS_RD && ed.mode !== 'pan' && ed.mode !== 'races') map.closePopup(); });      // the point / link tools click on the map: no info popups (region / road / POI) in their way
-  map.on('moveend zoomend resize', () => { cv.style.visibility = 'visible'; redraw(); });
-  map.on('zoomstart', () => { cv.style.visibility = 'hidden'; });
+  map.on('moveend zoomend resize', () => { cv.style.visibility = 'visible'; hv.style.visibility = 'visible'; redraw(); });
+  map.on('zoomstart', () => { cv.style.visibility = 'hidden'; hv.style.visibility = 'hidden'; });
   document.addEventListener('keydown', (ev) => {
-    if (!ed.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
+    if (!ed.on || pv.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
     if (ev.key === ' ') { ev.preventDefault(); if (!panHeld) { panHeld = true; dragState(); } }
     else if (ev.key >= '0' && ev.key <= '9' && !ev.ctrlKey && !ev.metaKey) setBrush(Number(ev.key));      // 1-9 = the nine link types, 0 = Clear
     else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
@@ -1073,7 +1349,7 @@ const EDITOR = (function () {
   });
   document.addEventListener('keyup', (ev) => { if (ev.key === ' ' && panHeld) { panHeld = false; dragState(); } });
   function dragState() {
-    const free = !ed.on || !HAS_RD || ed.mode === 'pan' || ed.mode === 'races' || panHeld;
+    const free = !ed.on || pv.on || !HAS_RD || ed.mode === 'pan' || ed.mode === 'races' || panHeld;
     if (free) map.dragging.enable(); else map.dragging.disable();
     mapEl.classList.toggle('ed-paint', !free);
   }
@@ -1233,7 +1509,7 @@ const EDITOR = (function () {
     ed.on = on; tg.classList.toggle('on', on); box.classList.toggle('show', on);
     if (HAS_RD) {
       if (on) { stash = road_ents().filter((q) => q.layer && map.hasLayer(q.layer)); stash.forEach((q) => map.removeLayer(q.layer)); cv.style.display = ''; map.doubleClickZoom.disable(); }
-      else { stash.forEach((q) => q.layer && q.layer.addTo(map)); stash = []; cv.style.display = 'none'; map.doubleClickZoom.enable(); }
+      else { stash.forEach((q) => q.layer && q.layer.addTo(map)); stash = []; cv.style.display = 'none'; hv.style.display = 'none'; map.doubleClickZoom.enable(); }
       renderPanel();
     }
     store.set('edopen', on ? 1 : 0); dragState(); renderBox(); redraw();
@@ -1244,7 +1520,7 @@ const EDITOR = (function () {
   let statT = 0;
   function say(s, bad) { const el = document.getElementById('ed_stat'); if (!el) return; el.textContent = s; el.style.color = bad ? 'var(--warn)' : 'var(--ok)'; clearTimeout(statT); statT = setTimeout(() => { el.textContent = ''; }, 6000); }
   let sraf = 0;
-  function changed(now) { redraw(); save(); if (!sraf) sraf = requestAnimationFrame(() => { sraf = 0; renderStats(); if (HAS_RC && HAS_PR) qRefresh(); }); }
+  function changed(now) { redraw(); save(); rvSchedule(); if (!sraf) sraf = requestAnimationFrame(() => { sraf = 0; renderStats(); if (HAS_RC && HAS_PR) qRefresh(); }); }
   function renderStats() {
     const el = document.getElementById('ed_stats'); if (!el) return;
     const km = new Array(NT).fill(0); let add = 0, rem = 0, pts = 0, mv = 0;
@@ -1264,7 +1540,8 @@ const EDITOR = (function () {
       '<div class="seg" id="ed_modes">' + modes.map((m) => '<button data-m="' + m + '" title="' + esc(t('h_' + m)) + '" class="' + (ed.mode === m ? 'sel' : '') + '">' + esc(t('m_' + m)) + '</button>').join('') + '</div>' +
       (HAS_RD ? '<div class="seg" id="ed_brush">' + [[1, 'b_road'], [2, 'b_offroad'], [3, 'b_other'], [4, 'b_trail'], [5, 'b_crosscountry'], [6, 'b_tunnel'], [7, 'b_jump'], [8, 'b_highway'], [9, 'b_turnaround'], [0, 'b_clear']].map((b) => '<button class="bs ' + (ed.brush === b[0] ? 'sel' : '') + '" data-b="' + b[0] + '" style="--c:' + (b[0] ? TCOL[b[0]] : '#6b7280') + '">' + esc(t(b[1])) + '</button>').join('') + '</div>' +
         '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_fill"' + (ed.fill ? ' checked' : '') + '>' + esc(t('fill')) + '</label>' +
-        '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_turn"' + (ed.showTurn ? ' checked' : '') + '>' + esc(t('showturn')) + '</label>' : '') +
+        '<label class="small" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="ed_turn"' + (ed.showTurn ? ' checked' : '') + '>' + esc(t('showturn')) + '</label>' +
+        '<div id="ed_rv"></div>' : '') +
       '<div class="seg">' + (HAS_RD && RE.pre ? '<button id="ed_pre">' + esc(t('prefill')) + '</button>' : '') +
         (HAS_RC && exactIds().length ? '<button id="ed_prr" title="' + esc(t('h_prefill_r')) + '">' + esc(t('prefill_r')) + '</button>' : '') + '</div>' +
       '<div class="seg"><button id="ed_undo">' + esc(t('undo')) + '</button><button id="ed_exp">' + esc(t('export')) + '</button><button id="ed_imp">' + esc(t('import')) + '</button></div>' +
@@ -1283,7 +1560,7 @@ const EDITOR = (function () {
     document.getElementById('ed_imp').addEventListener('click', () => fin.click());
     const rs = document.getElementById('ed_rst'); if (rs) rs.addEventListener('click', resetToProject);
     const sp_ = document.getElementById('ed_pred'); if (sp_) sp_.addEventListener('change', () => { showPred = sp_.checked; store.set('showpred', showPred ? 1 : 0); refreshAllRaces(); });
-    renderStats(); if (HAS_RC && HAS_PR) qRefresh();
+    renderStats(); renderReview(); if (HAS_RC && HAS_PR) qRefresh();
   }
   const fin = document.createElement('input'); fin.type = 'file'; fin.accept = '.json,application/json'; fin.style.display = 'none'; document.body.appendChild(fin);
   fin.addEventListener('change', () => {
@@ -1293,7 +1570,15 @@ const EDITOR = (function () {
     fin.value = '';
   });
   tg.addEventListener('click', () => setOpen(!ed.on));
-  const _al = applyLang; applyLang = function () { _al(); renderBox(); };
+  if (HAS_RD) {
+    const pb = document.createElement('button'); pb.id = 'pvtoggle'; pb.title = t('pv_title'); pb.textContent = t('pv'); document.body.appendChild(pb);
+    pb.addEventListener('click', () => pvSet(!pv.on));
+    const ph = document.createElement('div'); ph.id = 'pvhint'; ph.textContent = t('pv_hint'); document.body.appendChild(ph);
+  }
+  const _al = applyLang; applyLang = function () {
+    _al(); renderBox();
+    const pb = document.getElementById('pvtoggle'), ph = document.getElementById('pvhint'); if (pb) { pb.title = t('pv_title'); pb.textContent = pv.on ? t('pv_exit') : t('pv'); } if (ph) ph.textContent = t('pv_hint');
+  };
 
   // restore: the browser's own autosave first (silent; it keeps priority), else the project data (also silent and not autosaved), then the last mode
   const sv = store.get('editor', null); if (!(sv && importObj(sv, true)) && CANON && !canonBad) importObj(CANON, true, true);
@@ -1301,6 +1586,7 @@ const EDITOR = (function () {
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
   return { ed, marks, hist, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
+    review: { rv, compute: rvCompute, step: rvStep, setOn: rvSetOn, focus: rvFocus, list: rvList, RVP }, preview: { pv, set: pvSet },
     graph: { NID, EA, EB, ET, EL, EAD, EAL, EDIR, NGAME, ekey, nodeIdx, NX, NY, NWX, NWZ, NH, NAL, NORIG, PRE },
     // scripting / test hooks (the pointer handlers call exactly these)
     api: { terrainY, autoY, offTerrain, newPoint, link, splitEdge, removeEdge, setPos, commit, dirOf, nbrs, drawAt, endChain, planeToWorld, isMoved } };
