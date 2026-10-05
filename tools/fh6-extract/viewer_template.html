@@ -541,6 +541,7 @@ const EDITOR = (function () {
     r_elev: 'elevated', r_noterr: 'no terrain data', r_turn: 'turnaround?', r_len: 'strip {n} m long', r_branch: 'branching intermediate point', r_dz: 'ends {n} m apart in height',
     r_deg: 'end {e}: {n} links there', r_onty: 'end {e}: on {t} links (not highway)', r_straight: 'end {e}: not a straight carriageway', r_cross: 'end {e}: strip does not cross the carriageway', r_loop: 'ends joined by a short highway path',
     pv: 'Preview', pv_exit: 'Exit preview', pv_title: 'Preview: the vanilla 2D map look of the current, live edited state (key P)', pv_hint: 'wheel zoom - drag pan - B backdrop (none / checker / dark) - T turnaround links - P / Esc exit. Editing is off.',
+    p3: '3D', p3_close: 'Back to editor (Esc)', p3_title: '3D preview of the current, live edited state (key G). Needs preview-3d.html next to this page.', p3_load: 'Loading the 3D map ...', p3_build: 'Building the roads ...', p3_err: '3D preview failed',
     rq_hint: 'Predictions are guesses. Accept copies the prediction into your marks (Ctrl+Z undoes it). Skip is remembered in this browser only, not in the export.',
   });
   Object.assign(UI.de, {
@@ -591,6 +592,7 @@ const EDITOR = (function () {
     r_elev: 'erhoeht', r_noterr: 'keine Gelaendedaten', r_turn: 'Wendeverbindung?', r_len: 'Streifen {n} m lang', r_branch: 'verzweigter Zwischenpunkt', r_dz: 'Enden {n} m Hoehenunterschied',
     r_deg: 'Ende {e}: dort {n} Links', r_onty: 'Ende {e}: an {t}-Links (keine Autobahn)', r_straight: 'Ende {e}: keine gerade Fahrbahn', r_cross: 'Ende {e}: Streifen kreuzt die Fahrbahn nicht', r_loop: 'Enden durch kurzen Autobahnweg verbunden',
     pv: 'Vorschau', pv_exit: 'Vorschau beenden', pv_title: 'Vorschau: Optik der 2D-Spielkarte fuer den aktuellen, live bearbeiteten Stand (Taste P)', pv_hint: 'Rad zoomen - ziehen verschiebt - B Hintergrund (keiner / Schachbrett / dunkel) - T Wendeverbindungen - P / Esc beenden. Bearbeiten ist aus.',
+    p3: '3D', p3_close: 'Zurueck zum Editor (Esc)', p3_title: '3D-Vorschau des aktuellen, live bearbeiteten Stands (Taste G). Braucht preview-3d.html neben dieser Seite.', p3_load: 'Lade die 3D-Karte ...', p3_build: 'Baue die Strassen ...', p3_err: '3D-Vorschau fehlgeschlagen',
     rq_hint: 'Vorhersagen sind Schaetzungen. Uebernehmen kopiert die Vorhersage in deine Markierungen (Strg+Z macht es rueckgaengig). Ueberspringen wird nur in diesem Browser gemerkt, nicht im Export.',
   });
 
@@ -621,6 +623,10 @@ const EDITOR = (function () {
     '#ed_rv .row{display:flex;gap:4px}#ed_rv .row button{flex:1 1 auto;padding:4px 6px;font-size:12px}' +
     '.rvhalo{animation:rvp 1.3s ease-in-out infinite}@keyframes rvp{0%,100%{opacity:.6}50%{opacity:1}}' +
     '#pvtoggle{position:absolute;top:10px;left:150px;z-index:1001;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}#pvtoggle.on{border-color:var(--accent);color:var(--accent);left:56px;z-index:1003}' +
+    '#p3toggle{position:absolute;top:10px;left:238px;z-index:1001;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}body.pv #p3toggle{display:none}' +
+    '#p3{position:fixed;inset:0;z-index:2000;background:#0b1118;display:none}#p3.show{display:block}#p3 iframe{position:absolute;inset:0;width:100%;height:100%;border:0}' +
+    '#p3close{position:absolute;top:10px;right:10px;z-index:2001;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}#p3close:hover{border-color:var(--accent)}' +
+    '#p3stat{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:2001;font:13px system-ui,sans-serif;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 12px;display:none}' +
     '#pvhint{position:absolute;left:12px;bottom:10px;z-index:1002;font:11px/1.3 system-ui,sans-serif;color:rgba(128,136,148,.95);text-shadow:0 0 3px rgba(0,0,0,.7);pointer-events:none;display:none}' +
     'body.pv #pvhint{display:block}body.pv #panel,body.pv #ptoggle,body.pv #edtoggle,body.pv #ed,body.pv #coords,body.pv #msg{display:none!important}' +      // preview mode: only the map's road canvas, the zoom buttons and the exit button stay
     '#map.pv .leaflet-map-pane>.leaflet-pane:not(.leaflet-edpane-pane){display:none!important}#map.pv{cursor:grab}' +
@@ -1060,7 +1066,7 @@ const EDITOR = (function () {
   // draw() takes the drawPv() branch, CSS hides every pane except the road canvas (tiles, POIs, labels, review halo), the panels and the editor box.  Editing is off (pan / zoom only);
   // leaving restores the previous UI (editor open or closed, panels, base map).  Styles / widths / draw order below are copied from preview_2d.html (keep them in sync);
   // turnaround links are hidden like in the 2D preview (T shows them), jump lines are arrows, user-added links look like game links (no white outline).  B cycles the backdrop.
-  // Why not a live 3D preview: preview_3d.html is built in Python (road ribbons, bridge / tunnel geometry, terrain mesh baked into a data blob) - see docs/game-data/fh6-map-tooling.md.
+  // The live 3D view is a separate overlay (key G, "3D preview" below): preview_3d.html now builds its roads in JS from an edge list, so the editor can feed it its current state.
   const PV_ASPHALT = '#f2f4f7', PV_SAND = '#dcbf80';
   const PVS = {
     unset: { col: '#8d96a3', w: 0.55, dash: [5, 4], alpha: 0.6, cas: false }, other: { col: '#8e9aab', w: 0.7, dash: null, alpha: 1, cas: true },
@@ -1119,11 +1125,80 @@ const EDITOR = (function () {
   document.addEventListener('keydown', (ev) => {
     if (!HAS_RD || ev.ctrlKey || ev.metaKey || ev.altKey || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
     const k = ev.key.toLowerCase();
+    if (p3.on) return;                                                  // the 3D overlay owns the keys
     if (k === 'p') pvSet(!pv.on);
     else if (pv.on && k === 'escape') pvSet(false);
     else if (pv.on && k === 'b') { pv.bd = (pv.bd + 1) % 3; pvBackdrop(); }
     else if (pv.on && k === 't') { pv.turn = !pv.turn; redraw(); }
     else if (!pv.on && ed.on && rv.on && k === 'n') rvStep(ev.shiftKey ? -1 : 1);
+  });
+
+  // ---------------------------------------------------------------------------------------------------------------- 3D preview
+  // "3D" = a full-window overlay with preview-3d.html (the standalone 3D map page) in an <iframe src="preview-3d.html#live=1">; the page gets the CURRENT, live edited state by postMessage and builds the
+  // road ribbons itself in JS (same code as its standalone mode, which feeds it the baked edge list instead).  Protocol: see the "live mode" comment in preview_3d.html.  We send the edge list:
+  //   nodes Float32Array [x, z, y]*N (every node of the editor; y NaN = none), edges Uint32Array [a, b, type index]*M (ALIVE edges only; a / b = node indices), ids Int32Array (node ids), tn (type names by index), view {x, z, dist}.
+  // Why an iframe + postMessage and not localStorage / a second tab: file:// pages are opaque origins (storage sharing between two file:// pages differs per browser, fetch() is blocked), but
+  // postMessage to an embedded iframe works everywhere.  The iframe is kept alive when closed (the terrain + 6 MB texture are not reloaded) and the data is re-sent on every open only if it changed
+  // (FNV hash of the arrays); the camera is re-sent only if the map view changed since the last open, so the 3D camera stays where you left it otherwise.
+  const p3 = { on: false, el: null, ifr: null, stat: null, close: null, ready: false, pending: false, sent: '', sentView: '', rev: 0, info: null };
+  function p3Payload() {
+    const nN = NID.length, nodes = new Float32Array(nN * 3), ids = new Int32Array(nN); let m = 0;
+    for (let e = 0; e < EA.length; e++) if (EAL[e]) m++;
+    const edges = new Uint32Array(m * 3);
+    for (let i = 0; i < nN; i++) { nodes[3 * i] = NWX[i]; nodes[3 * i + 1] = NWZ[i]; nodes[3 * i + 2] = NH[i]; ids[i] = NID[i]; }
+    for (let e = 0, k = 0; e < EA.length; e++) if (EAL[e]) { edges[3 * k] = EA[e]; edges[3 * k + 1] = EB[e]; edges[3 * k + 2] = ET[e]; k++; }
+    let h = 2166136261; for (const a of [new Uint32Array(nodes.buffer), edges]) for (let i = 0; i < a.length; i++) h = Math.imul(h ^ a[i], 16777619);
+    return { nodes, edges, ids, tn: TN.map((n) => n || 'unset'), hash: (h >>> 0) + ':' + nN + ':' + m };
+  }
+  function p3View() {      // where the 2D map looks, in world metres, and the camera distance that shows the same height of ground (45 deg vertical fov)
+    const c = map.getCenter(), sz = map.getSize(), sc = SC * Math.pow(2, map.getZoom() - 3);
+    return { x: X0 + c.lng / SC, z: Z1 + c.lat / SC, dist: (sz.y / sc) / (2 * Math.tan(22.5 * Math.PI / 180)) };
+  }
+  function p3Stat(s, bad) { if (!p3.stat) return; p3.stat.textContent = s || ''; p3.stat.style.display = s ? 'block' : 'none'; p3.stat.style.color = bad ? 'var(--warn)' : 'var(--dim)'; }
+  function p3Push() {
+    if (!p3.ready) { p3.pending = true; return; }
+    p3.pending = false;
+    const w = p3.ifr.contentWindow, pl = p3Payload(), v = p3View(), vk = Math.round(v.x) + ',' + Math.round(v.z) + ',' + Math.round(v.dist), view = vk !== p3.sentView ? v : null;
+    if (pl.hash !== p3.sent) {
+      p3.rev++; p3Stat(t('p3_build'));
+      w.postMessage({ p3d: 'roads', rev: p3.rev, nodes: pl.nodes, edges: pl.edges, ids: pl.ids, tn: pl.tn, view }, '*');
+      p3.sent = pl.hash;
+    } else if (view) w.postMessage({ p3d: 'view', view }, '*');
+    p3.sentView = vk;
+    w.postMessage({ p3d: 'focus' }, '*'); try { w.focus(); } catch (e) { /* ignore */ }
+  }
+  function p3Set(on) {
+    if (!HAS_RD || on === p3.on) return;
+    if (on) {
+      map.closePopup(); endChain(true); ed.drag = null; ed.sel = -1; ed.hover = -1; ed.hoverE = null; stroke = null;
+      if (!p3.el) {
+        p3.el = document.createElement('div'); p3.el.id = 'p3';
+        p3.ifr = document.createElement('iframe'); p3.ifr.title = '3D preview';
+        const cb = document.createElement('button'); cb.id = 'p3close'; cb.addEventListener('click', () => p3Set(false)); p3.close = cb;
+        p3.stat = document.createElement('div'); p3.stat.id = 'p3stat';
+        p3.el.appendChild(p3.ifr); p3.el.appendChild(cb); p3.el.appendChild(p3.stat); document.body.appendChild(p3.el);
+        p3.ifr.src = 'preview-3d.html#live=1' + (state.season ? '&season=' + encodeURIComponent(state.season) : '');
+        p3Stat(t('p3_load'));
+      }
+      p3.close.textContent = t('p3_close');
+      p3.on = true; p3.el.classList.add('show'); p3.pending = true;
+      if (p3.ready) p3Push();
+    } else {
+      p3.on = false; p3.el.classList.remove('show'); try { window.focus(); if (document.activeElement) document.activeElement.blur(); } catch (e) { /* ignore */ }
+    }
+  }
+  window.addEventListener('message', (ev) => {
+    const d = ev.data;
+    if (!d || !d.p3d || !p3.ifr || ev.source !== p3.ifr.contentWindow) return;
+    if (d.p3d === 'ready') { p3.ready = true; p3.sent = ''; p3.sentView = ''; p3Stat(t('p3_build')); if (p3.pending) p3Push(); }
+    else if (d.p3d === 'built') { p3.info = d; p3Stat(''); }
+    else if (d.p3d === 'close') p3Set(false);
+    else if (d.p3d === 'error') p3Stat(t('p3_err') + ': ' + d.msg, 1);
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (!HAS_RD || ev.ctrlKey || ev.metaKey || ev.altKey || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
+    const k = ev.key.toLowerCase();
+    if (k === 'g') p3Set(!p3.on); else if (p3.on && k === 'escape') p3Set(false);
   });
 
   // ---------------------------------------------------------------------------------------------------------------- canvas layer
@@ -1341,7 +1416,7 @@ const EDITOR = (function () {
   map.on('moveend zoomend resize', () => { cv.style.visibility = 'visible'; hv.style.visibility = 'visible'; redraw(); });
   map.on('zoomstart', () => { cv.style.visibility = 'hidden'; hv.style.visibility = 'hidden'; });
   document.addEventListener('keydown', (ev) => {
-    if (!ed.on || pv.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
+    if (!ed.on || pv.on || p3.on || /^(INPUT|SELECT|TEXTAREA)$/.test((ev.target.tagName || ''))) return;
     if (ev.key === ' ') { ev.preventDefault(); if (!panHeld) { panHeld = true; dragState(); } }
     else if (ev.key >= '0' && ev.key <= '9' && !ev.ctrlKey && !ev.metaKey) setBrush(Number(ev.key));      // 1-9 = the nine link types, 0 = Clear
     else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
@@ -1573,11 +1648,14 @@ const EDITOR = (function () {
   if (HAS_RD) {
     const pb = document.createElement('button'); pb.id = 'pvtoggle'; pb.title = t('pv_title'); pb.textContent = t('pv'); document.body.appendChild(pb);
     pb.addEventListener('click', () => pvSet(!pv.on));
+    const p3b = document.createElement('button'); p3b.id = 'p3toggle'; p3b.title = t('p3_title'); p3b.textContent = t('p3'); document.body.appendChild(p3b);
+    p3b.addEventListener('click', () => p3Set(true));
     const ph = document.createElement('div'); ph.id = 'pvhint'; ph.textContent = t('pv_hint'); document.body.appendChild(ph);
   }
   const _al = applyLang; applyLang = function () {
     _al(); renderBox();
     const pb = document.getElementById('pvtoggle'), ph = document.getElementById('pvhint'); if (pb) { pb.title = t('pv_title'); pb.textContent = pv.on ? t('pv_exit') : t('pv'); } if (ph) ph.textContent = t('pv_hint');
+    const p3b = document.getElementById('p3toggle'); if (p3b) { p3b.title = t('p3_title'); p3b.textContent = t('p3'); } if (p3.close) p3.close.textContent = t('p3_close');
   };
 
   // restore: the browser's own autosave first (silent; it keeps priority), else the project data (also silent and not autosaved), then the last mode

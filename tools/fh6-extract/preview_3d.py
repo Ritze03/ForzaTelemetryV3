@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build the LOCAL 3D map preview of the whole FH6 island: the elevation raster as a terrain mesh, the normal season map imagery draped on it,
-and the road graph drawn on top.  Each road vertex carries TWO heights (page toggle "Road height"): the nav node heights (linear
-interpolation along the edge; default) and the terrain-mesh drape.  READ-ONLY on the game; the output contains
+and the road graph drawn on top.  The roads are shipped as a plain EDGE LIST (nodes + typed edges, preview3d/roads.js); the page turns it into ribbons itself
+(the same code draws the live state of the editor, which postMessage's its edge list into the page).  Each road vertex gets TWO heights (page toggle "Road
+height"): the nav node heights (linear interpolation along the edge; default) and the terrain-mesh drape.  READ-ONLY on the game; the output contains
 Playground Games' imagery/data, so write it OUTSIDE the repo and never publish/commit it.
 
     python3 -B preview_3d.py --out <viewer dir> --work <viewer work dir> [--media <...>/ForzaHorizon6/media] [--road-types PATH]
@@ -13,7 +14,7 @@ Needs (all produced by build_viewer.py / the extractors, nothing is re-extracted
   <work>/roads.json                              nav graph polylines + node ids (decode_nav.py)
   <out>/tiles/<Season>/3/<x>/<y>.jpg             the game's map tiles (build_viewer.py:build_tiles), level 3 = 8x8 tiles of 1024 px = the 8192 px map
   tools/fh6-extract/data/fh6-road-types.json     road types (default; --road-types PATH; version 1 and 2 of the editor export are read)
-Output (<out>/):  preview-3d.html (from preview_3d.html) and preview3d/{meta,terrain,roads,tex_<Season>}.js  (window.P3D.* = ..., loaded by <script>,
+Output (<out>/):  preview-3d.html (from preview_3d.html) and preview3d/{meta,terrain,roads,tex_<Season>}.js (roads = the edge list)  (window.P3D.* = ..., loaded by <script>,
 no fetch(): file:// blocks it).  Notes + the why of the design choices: docs/game-data/fh6-terrain.md / README "3D preview".
 """
 import argparse, base64, io, json, math, os, shutil, subprocess, sys, time, zlib
@@ -203,7 +204,12 @@ def load_types(path):
                 moved={int(k): v for k, v in (t.get('moved') or {}).items()})
 
 
+TN = ('unset', 'road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'highway', 'turnaround')    # the editor's type index order (0 = not set); the page gets the names
+
+
 def build_roads(work, out, Hm, meta, types_path, step, lift):
+    """Writes preview3d/roads.js = the road EDGE LIST (nodes [x, z, nav height], edges [a, b, type index]); the page chains / resamples / drapes it in JS
+    (the same code that draws the editor's live state).  Returns (nodes, edges, node ids) for numeric_check."""
     r = json.load(open(os.path.join(work, 'roads.json')))
     if 'ids' not in r:
         raise RuntimeError('roads.json has no node ids - re-run decode_nav.py')
@@ -225,112 +231,65 @@ def build_roads(work, out, Hm, meta, types_path, step, lift):
             if len(v) > 2 and v[2] is not None:
                 ny[i] = float(v[2])
     key = lambda a, b: f'{min(a, b)}-{max(a, b)}'
-    seen, runs = set(), []                                     # runs: (type, [node ids])
+    tix = {n: k for k, n in enumerate(TN)}
+    seen, edges = set(), []                                    # edges: (a id, b id, type index)
     miss = 0
     for ids in r['ids']:
-        cur = None
         for a, b in zip(ids[:-1], ids[1:]):
             k = key(a, b)
             if k in seen or k in T['removed'] or a not in pos or b not in pos:
-                cur = None; continue
+                continue
             seen.add(k)
             ty = T['types'].get(k)
             if ty is None:
                 ty = 'unset'; miss += 1                        # edge not painted: own type (red in the 3D 'Type colours' style, grey like Other in 'Map look')
-            if cur is not None and cur[0] == ty and cur[1][-1] == a:
-                cur[1].append(b)
-            else:
-                cur = (ty, [a, b]); runs.append(cur)
+            edges.append((a, b, tix[ty]))
     nadd = 0
     for a, b, ty in T['added']:
         k = key(a, b)
         if k in seen or k in T['removed'] or a not in pos or b not in pos:
             continue
-        seen.add(k); runs.append((ty, [a, b])); nadd += 1
-    log(f'roads: {len(seen)} edges ({miss} unpainted -> unset, {nadd} added links, {len(T["removed"])} removed), {len(runs)} runs; types file v{T["version"]}')
-    per, samples, nofb = {}, [], 0
-    for ty, ids in runs:
-        P = np.array([pos[i] for i in ids], float)
-        d = np.r_[0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
-        if d[-1] < 0.5:
-            continue
-        t = np.unique(np.r_[d, np.arange(0, d[-1], step)])                          # the original vertices + a uniform step
-        x = np.interp(t, d, P[:, 0]); z = np.interp(t, d, P[:, 1])
-        y = tri_height(Hm, meta, x, z) + lift
-        hn = np.array([ny.get(i, np.nan) for i in ids])           # node heights; a node without one (user point without y) falls back to the terrain
-        bad = np.isnan(hn)
-        if bad.any():
-            nofb += 1
-            hn[bad] = (tri_height(Hm, meta, P[bad, 0], P[bad, 1]))
-        yn = np.interp(t, d, hn) + lift                           # linear along the edge between the two nodes' heights
-        per.setdefault(ty, []).append(np.stack([x, y, z, t, yn], 1).astype('<f4'))
-        samples.append((ty, ids, d, t))
-    out_t, stats = {}, {}
-    for ty, arrs in per.items():
-        starts = np.r_[0, np.cumsum([len(a) for a in arrs])].astype('<u4')
-        xyzs = np.concatenate(arrs)
-        km = sum(a[-1, 3] for a in arrs) / 1000
-        # xyz t stay float32 (4 columns); the node-height column is a uint16 quantised like the terrain (0.025 m): float32 would add ~0.4 MB for no visible gain
-        yq = np.clip(np.round((xyzs[:, 4].astype(np.float64) - HMIN) / HSTEP), 0, 65535).astype('<u2')
-        out_t[ty] = dict(runs=b64z(starts), n=int(len(xyzs)), xyzs=b64z(np.ascontiguousarray(xyzs[:, :4])), yn=b64z(yq), km=round(float(km), 1))
-        stats[ty] = (len(arrs), len(xyzs), km)
-    write_js(os.path.join(out, 'preview3d', 'roads.js'), 'roads', dict(types=out_t, lift=lift, step=step, hmin=HMIN, hstep=HSTEP))
+        seen.add(k); edges.append((a, b, tix[ty])); nadd += 1
+    used = sorted({i for a, b, _ in edges for i in (a, b)})
+    ix = {i: k for k, i in enumerate(used)}
+    nodes = np.array([[pos[i][0], pos[i][1], ny.get(i, np.nan)] for i in used], '<f4')      # a node without a height (user point without y) falls back to the terrain in the page
+    E = np.array([[ix[a], ix[b], t] for a, b, t in edges], '<u4')
+    L = np.hypot(nodes[E[:, 0], 0].astype(float) - nodes[E[:, 1], 0], nodes[E[:, 0], 1].astype(float) - nodes[E[:, 1], 1])
+    km = {TN[t]: round(float(L[E[:, 2] == t].sum()) / 1000, 1) for t in range(len(TN)) if (E[:, 2] == t).any()}
+    log(f'roads: {len(edges)} edges ({miss} unpainted -> unset, {nadd} added links, {len(T["removed"])} removed), {len(used)} nodes; types file v{T["version"]}')
+    write_js(os.path.join(out, 'preview3d', 'roads.js'), 'roads', dict(nodes=b64z(nodes), edges=b64z(E), tn=list(TN), n_nodes=int(len(used)), n_edges=int(len(E)), lift=lift, step=step, km=km))
+    nofb = int(np.isnan(nodes[:, 2]).sum())
     if nofb:
-        log(f'roads: {nofb} runs had a node without a height (fell back to the terrain there)')
-    for ty, (n, m, km) in sorted(stats.items()):
-        log(f'    {ty:13s} {n:5d} runs {m:7d} samples {km:8.1f} km')
-    return per, samples, ny
+        log(f'roads: {nofb} nodes have no height (the page puts them on the terrain)')
+    for ty, k in sorted(km.items()):
+        log(f'    {ty:13s} {int((E[:, 2] == tix[ty]).sum()):6d} edges {k:8.1f} km')
+    return nodes, E, used
 
 
-def numeric_check(per, samples, ny, Hm, meta, lift, out, rng=np.random.default_rng(7)):
-    """End-to-end check on the WRITTEN roads.js (decoded again): 5 random road samples must satisfy
-         terrain y == mesh-triangle height + lift                      (exact, float32 rounding)
-         node y    == linear interpolation of the two bracketing nav nodes' heights + lift   (0.0125 m quantisation)
-       The node interpolation is recomputed here from the raw node ids / heights, independently of the build loop.  Also prints how far the node heights
-       are from the terrain (sinking / floating) and the steepest node-to-node grades (suspect node heights)."""
+def numeric_check(nodes, E, used, Hm, meta, out):
+    """Checks the WRITTEN roads.js (decoded again): the edge list round-trips (node count, edge count, km per type), every edge end exists, and diagnostics of the nav node
+    heights against the terrain mesh (sinking / floating) and the steepest node-to-node grades (suspect heights).  The page's own P3D_DEBUG.check() verifies the
+    resampled geometry (terrain drape = mesh triangle height + lift, node height = interpolation of the edge's two nodes + lift)."""
     txt = open(os.path.join(out, 'preview3d', 'roads.js')).read()
     R = json.loads(txt[txt.index(').roads=') + 8: txt.rindex(';')])
     dec = lambda b64, dt: np.frombuffer(zlib.decompress(base64.b64decode(b64)), dt)
-    print('numeric check (5 random road samples): type x z | y terrain | tri+lift | y node | interp node+lift | err')
-    worst_t = worst_n = 0.0
-    idx_in_type = {}
-    runs_of = {}
-    for k, (ty, ids, d, t) in enumerate(samples):
-        runs_of.setdefault(ty, []).append(k)
-    for k in rng.choice(len(samples), 5, replace=False):
-        ty, ids, d, t = samples[k]
-        j = runs_of[ty].index(k)
-        D = R['types'][ty]
-        starts = dec(D['runs'], '<u4'); xyzs = dec(D['xyzs'], '<f4').reshape(-1, 4); yq = dec(D['yn'], '<u2')
-        a, b = starts[j], starts[j + 1]
-        m = int(rng.integers(a, b))
-        x, y, z, tt = xyzs[m]
-        yn = R['hmin'] + float(yq[m]) * R['hstep']
-        # independent interpolation: bracketing nodes of distance tt
-        seg = min(max(int(np.searchsorted(d, tt, side='right')) - 1, 0), len(ids) - 2)
-        f = (tt - d[seg]) / (d[seg + 1] - d[seg])
-        h0 = ny.get(ids[seg]); h1 = ny.get(ids[seg + 1])
-        exp = (h0 + (h1 - h0) * f + lift) if h0 is not None and h1 is not None else float('nan')
-        tri = float(tri_height(Hm, meta, x, z)) + lift
-        worst_t = max(worst_t, abs(y - tri)); worst_n = max(worst_n, abs(yn - exp))
-        print(f'    {ty:12s} {x:9.1f} {z:9.1f} | {y:9.3f} | {tri:9.3f} | {yn:9.3f} | {exp:9.3f} | {yn - exp:+.4f}')
-    log(f'numeric check: max |terrain y - (tri + lift)| = {worst_t:.4f} m (float32 rounding); max |node y - interpolated node height - lift| = {worst_n:.4f} m (0.0125 = uint16 step/2)')
-    # how node heights relate to the mesh, over every sample (diagnostic for the report)
-    allx = np.concatenate([a[:, 0] for v in per.values() for a in v]).astype(float); allz = np.concatenate([a[:, 2] for v in per.values() for a in v]).astype(float)
-    ally = np.concatenate([a[:, 4] for v in per.values() for a in v]).astype(float) - lift
-    dn = ally - tri_height(Hm, meta, allx, allz)
-    log(f'node y - terrain(tri) over all samples: median {np.median(dn):+.2f} m, p1 {np.percentile(dn, 1):+.2f}, p99 {np.percentile(dn, 99):+.2f}; '
+    n2 = dec(R['nodes'], '<f4').reshape(-1, 3); e2 = dec(R['edges'], '<u4').reshape(-1, 3)
+    ok = n2.shape == nodes.shape and e2.shape == E.shape and np.array_equal(e2, E) and np.array_equal(n2[:, :2], nodes[:, :2]) and np.allclose(n2[:, 2], nodes[:, 2], equal_nan=True)
+    ok = ok and int(e2[:, :2].max()) < len(n2) and set(np.unique(e2[:, 2])) <= set(range(len(R['tn'])))
+    log(f'numeric check: roads.js round-trip {"OK" if ok else "FAILED"} ({len(n2)} nodes, {len(e2)} edges)')
+    if not ok:
+        raise SystemExit('roads.js does not match what was built')
+    x = nodes[:, 0].astype(float); z = nodes[:, 1].astype(float); h = nodes[:, 2].astype(float)
+    have = ~np.isnan(h)
+    dn = h[have] - tri_height(Hm, meta, x[have], z[have])
+    log(f'node y - terrain(tri) over all nodes: median {np.median(dn):+.2f} m, p1 {np.percentile(dn, 1):+.2f}, p99 {np.percentile(dn, 99):+.2f}; '
         f'{100 * np.mean(dn < -1):.1f}% sink >1 m below the mesh, {100 * np.mean(dn < -3):.1f}% >3 m, {100 * np.mean(dn > 3):.1f}% float >3 m above')
-    worst = []
-    for ty, ids, d, t in samples:
-        if ty == 'tunnel':
-            continue
-        for q in range(len(ids) - 1):
-            a, b = ids[q], ids[q + 1]
-            if a in ny and b in ny and d[q + 1] - d[q] > 0.5:
-                worst.append((abs(ny[b] - ny[a]) / (d[q + 1] - d[q]), ty, a, b, ny[a], ny[b], d[q + 1] - d[q]))
-    worst.sort(reverse=True)
-    log('steepest node-to-node grades (non-tunnel): ' + '; '.join(f'{g * 100:.0f}% {ty} {a}->{b} ({ha:.1f}->{hb:.1f} m over {ln:.1f} m)' for g, ty, a, b, ha, hb, ln in worst[:5]))
+    tun = R['tn'].index('tunnel')
+    a, b = E[:, 0], E[:, 1]
+    L = np.hypot(x[a] - x[b], z[a] - z[b]); both = have[a] & have[b] & (E[:, 2] != tun) & (L > 0.5)
+    g = np.abs(h[a] - h[b])[both] / L[both]
+    sel = np.nonzero(both)[0][np.argsort(-g)[:5]]
+    log('steepest node-to-node grades (non-tunnel): ' + '; '.join(f'{100 * abs(h[a[e]] - h[b[e]]) / L[e]:.0f}% {R["tn"][E[e, 2]]} {used[a[e]]}->{used[b[e]]} ({h[a[e]]:.1f}->{h[b[e]]:.1f} m over {L[e]:.1f} m)' for e in sel))
 
 
 def main():
@@ -344,7 +303,7 @@ def main():
     ap.add_argument('--jpeg-quality', type=int, default=82)
     ap.add_argument('--decim', type=int, default=2, choices=(1, 2, 4), help='terrain mesh = raster / decim (default 2 -> 16 m vertices)')
     ap.add_argument('--skirt', type=float, default=1000, help='metres of smooth skirt beyond the island data (0 = hard crop)')
-    ap.add_argument('--step', type=float, default=5.0, help='road resample step in metres')
+    ap.add_argument('--step', type=float, default=5.0, help='road resample step in metres (written into roads.js; the page resamples)')
     ap.add_argument('--lift', type=float, default=0.6, help='metres the road centreline sits above the terrain')
     ap.add_argument('--no-coarse', action='store_true', help='do not fetch the coarse raster to fill holes (interpolate them instead)')
     a = ap.parse_args()
@@ -360,8 +319,8 @@ def main():
     q, meta = build_terrain(work, out, coarse, a.decim, a.skirt)
     Hm = deq(q.reshape(meta['nz'], meta['nx']))
     seasons = build_textures(out, [s for s in a.seasons.split(',') if s], a.tex_size, a.jpeg_quality)
-    per, samples, ny = build_roads(work, out, Hm, meta, a.road_types, a.step, a.lift)
-    numeric_check(per, samples, ny, Hm, meta, a.lift, out)
+    nodes, E, used = build_roads(work, out, Hm, meta, a.road_types, a.step, a.lift)
+    numeric_check(nodes, E, used, Hm, meta, out)
     write_js(os.path.join(out, 'preview3d', 'meta.js'), 'meta', dict(seasons=seasons, default='Summer' if 'Summer' in seasons else (seasons[0] if seasons else None),
                                                                       tex_size=a.tex_size, built=time.strftime('%Y-%m-%d %H:%M')))
     shutil.copyfile(os.path.join(HERE, 'preview_3d.html'), os.path.join(out, 'preview-3d.html'))

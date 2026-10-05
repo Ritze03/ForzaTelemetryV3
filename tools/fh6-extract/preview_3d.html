@@ -27,6 +27,7 @@
   #msg { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:0 24px; color:var(--dim); background:var(--bg); font-size:15px; z-index:5; }
   #msg.hide { display:none; }
   #panel.min > :not(h1) { display:none; }
+  body.live #back { display:inline-block !important; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="preview3d/meta.js"></script>
@@ -50,7 +51,8 @@
   <div id="layers"></div>
   <label><input id="edges" type="checkbox" checked> Bright edge lines</label>
   <div class="row"><span>Width x</span><input id="width" type="range" min="0.5" max="3" step="0.1" value="1"></div>
-  <div class="row"><button id="reset">Reset view</button></div>
+  <div class="row"><button id="reset">Reset view</button><button id="back" style="display:none">Back to editor (Esc)</button></div>
+  <div id="livei" style="display:none;color:var(--dim);font-size:11px;margin-top:4px">Live from the editor: waiting for the road data...</div>
   <div id="help">Left drag: pan &middot; Right drag (or Ctrl+drag): rotate / tilt &middot; Wheel: zoom to cursor &middot; WASD / arrows: pan, Q/E: rotate, R: reset.<br>
   Road height: <b>Nodes</b> = the nav graph's own node heights (bridges float, tunnels dive, the 16 m mesh may swallow a road in places); <b>Terrain</b> = draped on the mesh.</div>
 </div>
@@ -60,6 +62,7 @@
 'use strict';
 const P = window.P3D || {}, T = P.terrain, R = P.roads, M = P.meta || {};
 const $ = id => document.getElementById(id), msg = $('msg');
+const LIVE = /[#&]live=1/.test(location.hash) && window.parent !== window;   // embedded in the editor (see "live mode" below)
 const fail = e => { console.error(e); msg.className = ''; msg.textContent = 'Could not build the 3D view: ' + (e && e.message || e); };
 if (!window.THREE) { fail(new Error('three.js did not load (needs internet for the CDN script)')); return; }
 if (!T) { fail(new Error('preview3d/terrain.js missing - run preview_3d.py')); return; }
@@ -206,7 +209,6 @@ async function setSeason(name) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------- roads
-const roadMeshes = {};
 const roadVS = (wall) => `
 attribute vec2 tan2; attribute float side; attribute float sAlong; attribute float yN;${wall ? ' attribute float bot;' : ''}
 uniform float halfW, minPx, pxScale, liftK, hTerrain, keepAbove, thick;
@@ -242,71 +244,158 @@ const wallFS = `
 uniform vec3 colA; uniform float alpha, shade;
 varying float vU, vS, vHW;
 void main() { gl_FragColor = vec4(colA * shade, alpha); }`;
-function css(h) { const c = new THREE.Color(h); return new THREE.Vector3(c.r, c.g, c.b); }   // raw sRGB values: ShaderMaterial writes them as-is
-async function buildRoads() {
-  if (!R) return;
-  const order = Object.keys(STYLE);
-  for (const ty of Object.keys(R.types).sort((a, b) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99)) {
-    const D = R.types[ty], st = SEL(ty);
-    const starts = u32(await inflate(D.runs)), xyzs = f32(await inflate(D.xyzs)), n = D.n;
-    const yq = D.yn ? u16(await inflate(D.yn)) : null;   // node heights, uint16 q: y = hmin + q * hstep (roads.js built before the toggle has none: node = terrain)
-    const pos = new Float32Array(n * 6), yN = new Float32Array(n * 2), tan = new Float32Array(n * 4), side = new Float32Array(n * 2), sa = new Float32Array(n * 2);
-    let nq = 0; for (let r = 0; r < starts.length - 1; r++) nq += Math.max(starts[r + 1] - starts[r] - 1, 0);
-    const idx = new Uint32Array(nq * 6);
-    let o = 0;
-    for (let r = 0; r < starts.length - 1; r++) {
-      const a = starts[r], b = starts[r + 1];
-      for (let k = a; k < b; k++) {
-        const p0 = Math.max(k - 1, a), p1 = Math.min(k + 1, b - 1);
-        let dx = xyzs[4 * p1] - xyzs[4 * p0], dz = -(xyzs[4 * p1 + 2] - xyzs[4 * p0 + 2]);          // three z = -world z
-        const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
-        for (let s = 0; s < 2; s++) {
-          const v = 2 * k + s;
-          pos[3 * v] = xyzs[4 * k]; pos[3 * v + 1] = xyzs[4 * k + 1]; pos[3 * v + 2] = -xyzs[4 * k + 2];
-          yN[v] = yq ? R.hmin + yq[k] * R.hstep : xyzs[4 * k + 1];
-          tan[2 * v] = dx; tan[2 * v + 1] = dz; side[v] = s ? 1 : -1; sa[v] = xyzs[4 * k + 3];
-        }
-        if (k < b - 1) { const v = 2 * k; idx[o++] = v; idx[o++] = v + 1; idx[o++] = v + 2; idx[o++] = v + 1; idx[o++] = v + 3; idx[o++] = v + 2; }
+// Roads come from ONE edge list, whatever its source: {nodes: Float32Array [x, z, y]*N (y NaN = no nav height -> terrain), edges: Uint32Array [a, b, type]*M, tn: type names by index, ids?: Int32Array}.
+// Baked source: preview3d/roads.js (preview_3d.py writes it from roads.json + the road-types file).  Live source: the editor's current state, postMessage'd into the iframe (#live=1).
+// Everything below - chaining edges into runs, resampling every 5 m, terrain / node height, ribbon + wall buffers - runs here in JS, so both sources are drawn by the same code.
+const LIFT = (R && R.lift != null) ? R.lift : 0.6, RSTEP = (R && R.step) || 5;
+const roadMeshes = {};
+let SRC = null;          // the current source, plus X / Z / NY (node coordinates, node heights with the terrain fallback applied)
+let ROAD_KM = {};        // type -> km (sum of the edges' 2D lengths)
+
+// Edges of one type -> runs of node indices: a chain continues through every node where exactly two edges of this type meet (so the ribbon is continuous there; at junctions it ends).
+function chainRuns(E, N, nT) {
+  const M = E.length / 3, byType = Array.from({ length: nT }, () => []);
+  for (let e = 0; e < M; e++) if (E[3 * e] !== E[3 * e + 1]) byType[E[3 * e + 2] < nT ? E[3 * e + 2] : 0].push(e);
+  const deg = new Uint8Array(N), ea = new Int32Array(N), eb = new Int32Array(N), used = new Uint8Array(M), out = [];
+  const other = (e, nd) => (E[3 * e] === nd ? E[3 * e + 1] : E[3 * e]);
+  for (let t = 0; t < nT; t++) {
+    const L = byType[t]; if (!L.length) continue;
+    for (const e of L) for (let s = 0; s < 2; s++) { const nd = E[3 * e + s]; if (deg[nd] === 0) ea[nd] = e; else if (deg[nd] === 1) eb[nd] = e; if (deg[nd] < 3) deg[nd]++; }
+    const runs = [];
+    for (const e0 of L) {
+      if (used[e0]) continue; used[e0] = 1;
+      const fwd = [E[3 * e0 + 1]], bwd = [E[3 * e0]];
+      for (const [arr, start] of [[fwd, E[3 * e0 + 1]], [bwd, E[3 * e0]]]) {
+        let cur = start, via = e0;
+        while (deg[cur] === 2) { const nx = ea[cur] === via ? eb[cur] : ea[cur]; if (used[nx]) break; used[nx] = 1; cur = other(nx, cur); arr.push(cur); via = nx; }
       }
+      runs.push(bwd.reverse().concat(fwd));
     }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('tan2', new THREE.BufferAttribute(tan, 2));
-    g.setAttribute('yN', new THREE.BufferAttribute(yN, 1)); g.setAttribute('side', new THREE.BufferAttribute(side, 1)); g.setAttribute('sAlong', new THREE.BufferAttribute(sa, 1));
-    g.setIndex(new THREE.BufferAttribute(idx, 1));
-    const mat = new THREE.ShaderMaterial({
-      vertexShader: roadVS(false), fragmentShader: roadFS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
-      uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 }, hTerrain: { value: 0 }, keepAbove: { value: 0 }, thick: { value: 0 },
-                  colA: { value: css(st.col) }, colB: { value: css(st.edge) }, edgeOn: { value: 1 }, edgeFrac: { value: 0.2 },
-                  alpha: { value: st.alpha || 0.96 }, dashMode: { value: st.dash }, dashLen: { value: 18 } },
-    });
-    // deck walls + underside: a second geometry (4 verts per sample: top/bottom x left/right) drawn as a child of the ribbon mesh, extruded down by the `thick`
-    // uniform in the vertex shader (live slider, no rebuild).  Depth-tested like the ribbon, so hills still hide it; darker shade of the road colour.
-    const dup = (arr, c) => { const o = new Float32Array(arr.length * 2); for (let i = 0; i < arr.length / c; i++) for (let b = 0; b < 2; b++) for (let q = 0; q < c; q++) o[(2 * i + b) * c + q] = arr[i * c + q]; return o; };
-    const wbot = new Float32Array(n * 4); for (let i = 0; i < n * 4; i++) wbot[i] = i & 1;
-    const widx = new Uint32Array(nq * 18); o = 0;
-    for (let r = 0; r < starts.length - 1; r++) for (let k = starts[r]; k < starts[r + 1] - 1; k++) {
-      const q = 4 * k;
-      for (const [a0, a1, b0, b1] of [[q, q + 1, q + 4, q + 5], [q + 2, q + 3, q + 6, q + 7], [q + 1, q + 3, q + 5, q + 7]]) {
-        widx[o++] = a0; widx[o++] = a1; widx[o++] = b0; widx[o++] = a1; widx[o++] = b1; widx[o++] = b0;
-      }
-    }
-    const wg = new THREE.BufferGeometry();
-    wg.setAttribute('position', new THREE.BufferAttribute(dup(pos, 3), 3)); wg.setAttribute('tan2', new THREE.BufferAttribute(dup(tan, 2), 2));
-    wg.setAttribute('yN', new THREE.BufferAttribute(dup(yN, 1), 1)); wg.setAttribute('side', new THREE.BufferAttribute(dup(side, 1), 1));
-    wg.setAttribute('sAlong', new THREE.BufferAttribute(dup(sa, 1), 1)); wg.setAttribute('bot', new THREE.BufferAttribute(wbot, 1));
-    wg.setIndex(new THREE.BufferAttribute(widx, 1));
-    const wallAlpha = st.alpha || 0.96;
-    const wmat = new THREE.ShaderMaterial({
-      vertexShader: roadVS(true), fragmentShader: wallFS, transparent: true, depthWrite: wallAlpha > 0.9, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
-      uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 }, hTerrain: { value: 0 }, keepAbove: { value: 0 }, thick: { value: 0 },
-                  colA: { value: css(st.col) }, alpha: { value: wallAlpha }, shade: { value: 0.72 } },
-    });
-    const wall = new THREE.Mesh(wg, wmat); wall.renderOrder = 2; wall.frustumCulled = false; wall.visible = false;
-    const mesh = new THREE.Mesh(g, mat); mesh.add(wall); mesh.renderOrder = 3; mesh.frustumCulled = false; mesh.visible = st.on; mesh.userData = { ty, pos, yN, n, hasNode: !!yq, wall };
-    world.add(mesh); roadMeshes[ty] = mesh;
+    for (const e of L) { deg[E[3 * e]] = 0; deg[E[3 * e + 1]] = 0; }
+    out[t] = runs;
   }
+  return out;
+}
+
+// Runs -> samples every RSTEP m (the nodes plus a uniform step along the run).  Per sample: x z, distance along the run, terrain y (+LIFT), node y (+LIFT, linear between the two nodes' heights), the edge (a, b) it lies on.
+function resampleRuns(runs, X, Z, NY, totalLen) {
+  let nn = 0; for (const r of runs) nn += r.length;
+  const cap = nn + Math.ceil(totalLen / RSTEP) + runs.length + 8;
+  const sx = new Float32Array(cap), sz = new Float32Array(cap), st = new Float32Array(cap), syT = new Float32Array(cap), syN = new Float32Array(cap), sa = new Int32Array(cap), sb = new Int32Array(cap);
+  const starts = [0]; let c = 0;
+  const put = (a, b, f, d) => {
+    const x = X[a] + (X[b] - X[a]) * f, z = Z[a] + (Z[b] - Z[a]) * f;
+    sx[c] = x; sz[c] = z; st[c] = d; syT[c] = heightAt(x, z) + LIFT; syN[c] = NY[a] + (NY[b] - NY[a]) * f + LIFT; sa[c] = a; sb[c] = b; c++;
+  };
+  for (const r of runs) {
+    const c0 = c; let d = 0, prev = r[0], first = true;
+    for (let i = 1; i < r.length; i++) {
+      const b = r[i], L = Math.hypot(X[b] - X[prev], Z[b] - Z[prev]);
+      if (L < 0.05) continue;                                              // coincident nodes: nothing to draw
+      if (first) { put(prev, b, 0, 0); first = false; }
+      for (let k = (Math.floor(d / RSTEP) + 1) * RSTEP; k < d + L - 0.01; k += RSTEP) put(prev, b, (k - d) / L, k);
+      d += L; put(prev, b, 1, d); prev = b;
+    }
+    if (c - c0 >= 2) starts.push(c); else c = c0;                           // a run that collapsed to a point
+  }
+  return { starts: Uint32Array.from(starts), n: c, x: sx, z: sz, t: st, yT: syT, yN: syN, sa, sb };
+}
+
+function css(h) { const c = new THREE.Color(h); return new THREE.Vector3(c.r, c.g, c.b); }   // raw sRGB values: ShaderMaterial writes them as-is
+function makeTypeMesh(ty, S, st, visible) {
+  const starts = S.starts, n = S.n;
+  const pos = new Float32Array(n * 6), yN = new Float32Array(n * 2), tan = new Float32Array(n * 4), side = new Float32Array(n * 2), sa = new Float32Array(n * 2);
+  let nq = 0; for (let r = 0; r < starts.length - 1; r++) nq += Math.max(starts[r + 1] - starts[r] - 1, 0);
+  const idx = new Uint32Array(nq * 6);
+  let o = 0;
+  for (let r = 0; r < starts.length - 1; r++) {
+    const a = starts[r], b = starts[r + 1];
+    for (let k = a; k < b; k++) {
+      const p0 = Math.max(k - 1, a), p1 = Math.min(k + 1, b - 1);
+      let dx = S.x[p1] - S.x[p0], dz = -(S.z[p1] - S.z[p0]);          // three z = -world z
+      const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+      for (let s = 0; s < 2; s++) {
+        const v = 2 * k + s;
+        pos[3 * v] = S.x[k]; pos[3 * v + 1] = S.yT[k]; pos[3 * v + 2] = -S.z[k];
+        yN[v] = S.yN[k];
+        tan[2 * v] = dx; tan[2 * v + 1] = dz; side[v] = s ? 1 : -1; sa[v] = S.t[k];
+      }
+      if (k < b - 1) { const v = 2 * k; idx[o++] = v; idx[o++] = v + 1; idx[o++] = v + 2; idx[o++] = v + 1; idx[o++] = v + 3; idx[o++] = v + 2; }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('tan2', new THREE.BufferAttribute(tan, 2));
+  g.setAttribute('yN', new THREE.BufferAttribute(yN, 1)); g.setAttribute('side', new THREE.BufferAttribute(side, 1)); g.setAttribute('sAlong', new THREE.BufferAttribute(sa, 1));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: roadVS(false), fragmentShader: roadFS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+    uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 }, hTerrain: { value: 0 }, keepAbove: { value: 0 }, thick: { value: 0 },
+                colA: { value: css(st.col) }, colB: { value: css(st.edge) }, edgeOn: { value: 1 }, edgeFrac: { value: 0.2 },
+                alpha: { value: st.alpha || 0.96 }, dashMode: { value: st.dash }, dashLen: { value: 18 } },
+  });
+  // deck walls + underside: a second geometry (4 verts per sample: top/bottom x left/right) drawn as a child of the ribbon mesh, extruded down by the `thick`
+  // uniform in the vertex shader (live slider, no rebuild).  Depth-tested like the ribbon, so hills still hide it; darker shade of the road colour.
+  const dup = (arr, c) => { const o = new Float32Array(arr.length * 2); for (let i = 0; i < arr.length / c; i++) for (let b = 0; b < 2; b++) for (let q = 0; q < c; q++) o[(2 * i + b) * c + q] = arr[i * c + q]; return o; };
+  const wbot = new Float32Array(n * 4); for (let i = 0; i < n * 4; i++) wbot[i] = i & 1;
+  const widx = new Uint32Array(nq * 18); o = 0;
+  for (let r = 0; r < starts.length - 1; r++) for (let k = starts[r]; k < starts[r + 1] - 1; k++) {
+    const q = 4 * k;
+    for (const [a0, a1, b0, b1] of [[q, q + 1, q + 4, q + 5], [q + 2, q + 3, q + 6, q + 7], [q + 1, q + 3, q + 5, q + 7]]) {
+      widx[o++] = a0; widx[o++] = a1; widx[o++] = b0; widx[o++] = a1; widx[o++] = b1; widx[o++] = b0;
+    }
+  }
+  const wg = new THREE.BufferGeometry();
+  wg.setAttribute('position', new THREE.BufferAttribute(dup(pos, 3), 3)); wg.setAttribute('tan2', new THREE.BufferAttribute(dup(tan, 2), 2));
+  wg.setAttribute('yN', new THREE.BufferAttribute(dup(yN, 1), 1)); wg.setAttribute('side', new THREE.BufferAttribute(dup(side, 1), 1));
+  wg.setAttribute('sAlong', new THREE.BufferAttribute(dup(sa, 1), 1)); wg.setAttribute('bot', new THREE.BufferAttribute(wbot, 1));
+  wg.setIndex(new THREE.BufferAttribute(widx, 1));
+  const wallAlpha = st.alpha || 0.96;
+  const wmat = new THREE.ShaderMaterial({
+    vertexShader: roadVS(true), fragmentShader: wallFS, transparent: true, depthWrite: wallAlpha > 0.9, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+    uniforms: { halfW: { value: st.w / 2 }, minPx: { value: st.px }, pxScale: { value: 0.001 }, liftK: { value: 0.0006 }, hTerrain: { value: 0 }, keepAbove: { value: 0 }, thick: { value: 0 },
+                colA: { value: css(st.col) }, alpha: { value: wallAlpha }, shade: { value: 0.72 } },
+  });
+  const wall = new THREE.Mesh(wg, wmat); wall.renderOrder = 2; wall.frustumCulled = false; wall.visible = false;
+  const mesh = new THREE.Mesh(g, mat); mesh.add(wall); mesh.renderOrder = 3; mesh.frustumCulled = false; mesh.visible = visible;
+  mesh.userData = { ty, pos, yN, n, wall, sa: S.sa, sb: S.sb, runs: starts.length - 1 };
+  return mesh;
+}
+
+function clearRoads() {
+  for (const [ty, m] of Object.entries(roadMeshes)) {
+    world.remove(m); m.geometry.dispose(); m.material.dispose(); m.userData.wall.geometry.dispose(); m.userData.wall.material.dispose(); delete roadMeshes[ty];
+  }
+}
+// Build (or rebuild) every road mesh from an edge list.  Keeps the per-type visibility the user set; returns timing / counts.
+function setRoads(src) {
+  const t0 = performance.now(), vis = {};
+  for (const [ty, m] of Object.entries(roadMeshes)) vis[ty] = m.visible;
+  clearRoads();
+  const N = src.nodes.length / 3, M = src.edges.length / 3, nodes = src.nodes, X = new Float32Array(N), Z = new Float32Array(N), NY = new Float32Array(N);
+  let nofb = 0;
+  for (let i = 0; i < N; i++) {
+    X[i] = nodes[3 * i]; Z[i] = nodes[3 * i + 1]; const h = nodes[3 * i + 2];
+    if (h === h) NY[i] = h; else { NY[i] = heightAt(X[i], Z[i]); nofb++; }              // a node without a nav height (user point without y) sits on the terrain
+  }
+  SRC = { nodes, edges: src.edges, tn: src.tn, ids: src.ids || null, X, Z, NY };
+  const E = src.edges, nT = src.tn.length, len = new Float64Array(nT);
+  for (let e = 0; e < M; e++) { const a = E[3 * e], b = E[3 * e + 1]; len[E[3 * e + 2] < nT ? E[3 * e + 2] : 0] += Math.hypot(X[a] - X[b], Z[a] - Z[b]); }
+  const runs = chainRuns(E, N, nT), order = Object.keys(STYLE);
+  ROAD_KM = {};
+  const rank = (ty) => { const q = order.indexOf(ty); return q < 0 ? 99 : q; };
+  const types = []; for (let t = 0; t < nT; t++) if (runs[t]) types.push(t);
+  types.sort((p, q) => rank(src.tn[p]) - rank(src.tn[q]));
+  let samples = 0;
+  for (const t of types) {
+    const ty = src.tn[t], st = SEL(ty), S = resampleRuns(runs[t], X, Z, NY, len[t]);
+    if (S.n < 2) continue;
+    const mesh = makeTypeMesh(ty, S, st, vis[ty] !== undefined ? vis[ty] : st.on);
+    world.add(mesh); roadMeshes[ty] = mesh; ROAD_KM[ty] = len[t] / 1000; samples += S.n;
+  }
+  buildLayers(); applyStyle(false);
+  return { ms: Math.round(performance.now() - t0), edges: M, nodes: N, samples, noHeight: nofb, km: { ...ROAD_KM } };
 }
 
 // ---------------------------------------------------------------------------------------------------------------- camera / controls
@@ -378,7 +467,9 @@ canvas.addEventListener('wheel', e => {
   view.tx = p.x + (view.tx - p.x) * k; view.tz = p.z + (view.tz - p.z) * k; view.dist = nd; dirty = true;
 }, { passive: false });
 const keys = {};
-window.addEventListener('keydown', e => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; keys[e.key.toLowerCase()] = true; if (e.key.toLowerCase() === 'r') setView(home.x, home.z, home.dist, 0, 54); });
+window.addEventListener('keydown', e => {
+  if (LIVE && (e.key === 'Escape' || (e.key.toLowerCase() === 'g' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT'))) { window.parent.postMessage({ p3d: 'close' }, '*'); return; }   // live mode: the editor owns the overlay
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; keys[e.key.toLowerCase()] = true; if (e.key.toLowerCase() === 'r') setView(home.x, home.z, home.dist, 0, 54); });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 function keyStep(dt) {
   const s = view.dist * 0.9 * dt, c = Math.cos(view.yaw), sn = Math.sin(view.yaw);
@@ -419,6 +510,17 @@ function applyUniforms() {
   hemi.intensity = 1.0 - 0.35 * state.light; sun.intensity = 1.1 * state.light;
   seaMesh.visible = state.sea; dirty = true;
 }
+function buildLayers() {   // legend + per-type checkboxes, rebuilt with every road rebuild (the checkbox state lives in mesh.visible)
+  const box = $('layers'); box.innerHTML = '';
+  for (const ty of Object.keys(roadMeshes)) {
+    const st = SEL(ty), l = document.createElement('label'), m = roadMeshes[ty];
+    l.innerHTML = `<input type="checkbox" ${m.visible ? 'checked' : ''}><span class="chip" style="background:${st.col};box-shadow:inset 0 0 0 2px ${st.edge}cc"></span><span class="nm">${st.name}</span><span class="km">${ROAD_KM[ty].toFixed(1)} km</span>`;
+    m.userData.lab = { chip: l.querySelector('.chip'), name: l.querySelector('.nm') };
+    l.firstChild.onchange = e => { m.visible = e.target.checked; dirty = true; };
+    m.userData.cb = l.firstChild;
+    box.appendChild(l);
+  }
+}
 function buildUI() {
   const sel = $('season');
   (M.seasons || []).forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
@@ -437,15 +539,6 @@ function buildUI() {
   $('min').onclick = () => $('panel').classList.toggle('min');
   $('style').value = state.style;
   $('style').onchange = e => { state.style = e.target.value; applyStyle(true); };
-  const box = $('layers');
-  for (const ty of Object.keys(roadMeshes)) {
-    const st = SEL(ty), l = document.createElement('label');
-    l.innerHTML = `<input type="checkbox" ${st.on ? 'checked' : ''}><span class="chip" style="background:${st.col};box-shadow:inset 0 0 0 2px ${st.edge}cc"></span><span class="nm">${st.name}</span><span class="km">${R.types[ty].km} km</span>`;
-    roadMeshes[ty].userData.lab = { chip: l.querySelector('.chip'), name: l.querySelector('.nm') };
-    l.firstChild.onchange = e => { roadMeshes[ty].visible = e.target.checked; dirty = true; };
-    roadMeshes[ty].userData.cb = l.firstChild;
-    box.appendChild(l);
-  }
   $('light').value = state.light; $('thick').value = state.thick; $('thickv').textContent = state.thick.toFixed(1);
 }
 
@@ -469,19 +562,71 @@ function frame(now) {
 }
 
 // numeric self-check, callable from the console / a test: random road vertices, in the CURRENT road-height mode.  `ok` per row:
-//   terrain mode: road y == heightAt(x, z) + lift;  node mode: the y the shader draws == the shipped node height (and, with "never below terrain", >= terrain + lift).
+//   terrain mode: road y == heightAt(x, z) + lift;  node mode / always: the vertex's node y == linear interpolation of the two nodes of its edge (recomputed here from the edge list, independent
+//   of the resampler) + lift;  "never below terrain" mode: y == max(node y, terrain + lift).
 // check(n, mode) temporarily evaluates the other mode too (mode = 'node' | 'terrain' | 'above'); the uniforms are not touched, effective y is recomputed in JS.
 function check(count = 5, mode = null) {
-  const rows = [], types = Object.keys(roadMeshes), lift = R.lift;
+  const rows = [], types = Object.keys(roadMeshes);
+  if (!types.length || !SRC) return rows;
   const md = mode || (state.roadH === 'terrain' ? 'terrain' : state.above ? 'above' : 'node');
   for (let n = 0; n < count; n++) {
-    const m = roadMeshes[types[n % types.length]], k = Math.floor(Math.random() * m.userData.n), v = 2 * k;
-    const x = m.userData.pos[3 * v], yT = m.userData.pos[3 * v + 1], z = -m.userData.pos[3 * v + 2], yN = m.userData.yN[v], h = heightAt(x, z);
+    const m = roadMeshes[types[n % types.length]], u = m.userData, k = Math.floor(Math.random() * u.n), v = 2 * k;
+    const x = u.pos[3 * v], yT = u.pos[3 * v + 1], z = -u.pos[3 * v + 2], yN = u.yN[v], h = heightAt(x, z);
+    const a = u.sa[k], b = u.sb[k], dx = SRC.X[b] - SRC.X[a], dz = SRC.Z[b] - SRC.Z[a], L2 = dx * dx + dz * dz;
+    const f = L2 ? Math.min(Math.max(((x - SRC.X[a]) * dx + (z - SRC.Z[a]) * dz) / L2, 0), 1) : 0, expN = SRC.NY[a] + (SRC.NY[b] - SRC.NY[a]) * f + LIFT;   // node y from the two nodes of the edge
     const eff = md === 'terrain' ? yT : md === 'above' ? Math.max(yN, yT) : yN;
-    const ok = md === 'terrain' ? Math.abs(yT - (h + lift)) < 0.02 : md === 'above' ? eff >= h + lift - 0.02 && Math.abs(eff - Math.max(yN, h + lift)) < 0.02 : Math.abs(eff - yN) < 1e-4;
-    rows.push({ mode: md, type: m.userData.ty, x: +x.toFixed(1), z: +z.toFixed(1), drawnY: +eff.toFixed(3), nodeY: +yN.toFixed(3), terrainY: +h.toFixed(3), terrainDrapeY: +yT.toFixed(3), drawnMinusTerrain: +(eff - h).toFixed(3), ok });
+    const nodeOk = Math.abs(yN - expN) < 0.02;
+    const ok = nodeOk && (md === 'terrain' ? Math.abs(yT - (h + LIFT)) < 0.02 : md === 'above' ? eff >= h + LIFT - 0.02 && Math.abs(eff - Math.max(yN, h + LIFT)) < 0.02 : true);
+    rows.push({ mode: md, type: u.ty, x: +x.toFixed(1), z: +z.toFixed(1), drawnY: +eff.toFixed(3), nodeY: +yN.toFixed(3), expectedNodeY: +expN.toFixed(3), terrainY: +h.toFixed(3), terrainDrapeY: +yT.toFixed(3),
+                 drawnMinusTerrain: +(eff - h).toFixed(3), ok });
   }
   return rows;
+}
+// debug / test hooks over the current road source: the edge nearest to (x, z) with its type, and the drawn road vertex nearest to (x, z)
+function edgeAt(x, z, r = 25) {
+  if (!SRC) return null;
+  const E = SRC.edges, X = SRC.X, Z = SRC.Z; let best = null, bd = r;
+  for (let e = 0; e < E.length / 3; e++) {
+    const a = E[3 * e], b = E[3 * e + 1], dx = X[b] - X[a], dz = Z[b] - Z[a], L2 = dx * dx + dz * dz;
+    const u = L2 ? Math.min(Math.max(((x - X[a]) * dx + (z - Z[a]) * dz) / L2, 0), 1) : 0, d = Math.hypot(x - X[a] - u * dx, z - Z[a] - u * dz);
+    if (d < bd) { bd = d; best = { type: SRC.tn[E[3 * e + 2]], a: SRC.ids ? SRC.ids[a] : a, b: SRC.ids ? SRC.ids[b] : b, d: +d.toFixed(2), len: +Math.sqrt(L2).toFixed(1) }; }
+  }
+  return best;
+}
+function vertexNear(x, z) {
+  let best = null, bd = 1e18;
+  for (const m of Object.values(roadMeshes)) { const u = m.userData;
+    for (let k = 0; k < u.n; k++) { const d = (u.pos[6 * k] - x) ** 2 + (-u.pos[6 * k + 2] - z) ** 2; if (d < bd) { bd = d; best = { type: u.ty, x: u.pos[6 * k], z: -u.pos[6 * k + 2], terrainY: u.pos[6 * k + 1], nodeY: u.yN[2 * k] }; } } }
+  if (best) best.d = +Math.sqrt(bd).toFixed(2);
+  return best;
+}
+function nodeById(id) {   // live source: the node with this editor id -> {x, z, y} (y = nav height, NaN-fallback applied)
+  if (!SRC || !SRC.ids) return null;
+  const i = SRC.ids.indexOf(id); return i < 0 ? null : { x: SRC.X[i], z: SRC.Z[i], y: SRC.NY[i], rawY: SRC.nodes[3 * i + 2] };
+}
+
+// ---------------------------------------------------------------------------------------------------------------- live mode (inside the editor's iframe)
+// The editor (index.html) embeds this page as <iframe src="preview-3d.html#live=1">.  Protocol, all via postMessage (file:// pages are opaque origins: nothing else is shared):
+//   iframe -> parent  {p3d:'ready'}                         terrain is up, send the roads
+//                     {p3d:'built', rev, ms, edges, km}     the roads of message `rev` are drawn (km per type)
+//                     {p3d:'close'}                         Esc / G pressed inside the iframe (the parent owns the overlay)
+//   parent -> iframe  {p3d:'roads', rev, nodes, edges, tn, ids, view}   the live edge list (see the roads block above); view = {x, z, dist} or null: where the editor's map is looking
+//                     {p3d:'view', view}                    only the camera (the road data did not change since the last open)
+//                     {p3d:'focus'}                         give the canvas the keyboard focus (the overlay was just opened)
+let liveInfo = null;
+function editorView(v) { if (v && isFinite(v.x) && isFinite(v.z) && isFinite(v.dist)) setView(v.x, v.z, Math.min(Math.max(v.dist, 150), 70000), 0, 55); }
+function onMessage(ev) {
+  const d = ev.data;
+  if (!d || ev.source !== window.parent || !d.p3d) return;
+  try {
+    if (d.p3d === 'roads') {
+      const info = setRoads({ nodes: d.nodes, edges: d.edges, tn: d.tn, ids: d.ids });
+      liveInfo = { rev: d.rev, ...info }; editorView(d.view);
+      $('livei').textContent = `Live from the editor: ${info.edges} links, ${info.samples} road samples, built in ${info.ms} ms`;
+      window.parent.postMessage({ p3d: 'built', rev: d.rev, ms: info.ms, edges: info.edges, km: info.km }, '*');
+    } else if (d.p3d === 'view') editorView(d.view);
+    else if (d.p3d === 'focus') { canvas.focus(); dirty = true; }
+  } catch (e) { console.error(e); window.parent.postMessage({ p3d: 'error', msg: String(e && e.message || e) }, '*'); }
 }
 
 (async () => {
@@ -490,8 +635,8 @@ function check(count = 5, mode = null) {
     HM = new Float32Array(Q.length);
     for (let k = 0; k < Q.length; k++) HM[k] = Q[k] ? T.hmin + (Q[k] - 1) * T.hstep : T.floor;
     buildTerrain();
-    await buildRoads();
     { const q0 = new URLSearchParams(location.hash.slice(1)); if (q0.get('style') === 'map' || q0.get('style') === 'type') state.style = q0.get('style'); }
+    if (!LIVE && R) setRoads({ nodes: f32(await inflate(R.nodes)), edges: u32(await inflate(R.edges)), tn: R.tn });      // standalone: the baked edge list; live: wait for the editor's
     buildUI(); applyStyle(true);
     home = { x: MX0 + (nx - 1) * STEP / 2, z: MZ0 - (nz - 1) * STEP / 2, dist: Math.max(nx, nz) * STEP * 1.25 };
     setView(home.x, home.z, home.dist, 0, 54);
@@ -508,9 +653,16 @@ function check(count = 5, mode = null) {
     if (q2.get('types')) { const on = q2.get('types').split(','); for (const [ty, m] of Object.entries(roadMeshes)) { m.visible = on.includes(ty); m.userData.cb.checked = m.visible; } }
     if (state.season) { $('season').value = state.season; await setSeason(state.season); }
     msg.className = 'hide';
-    window.P3D_DEBUG = { check, applyStyle, heightAt, setView, view, camera, state, roadMeshes, terrain, renderer, ready: true };
+    window.P3D_DEBUG = { check, applyStyle, heightAt, setView, view, camera, state, roadMeshes, terrain, renderer, ready: true, live: LIVE, setRoads, edgeAt, vertexNear, nodeById,
+                         src: () => SRC, liveInfo: () => liveInfo, km: () => ({ ...ROAD_KM }) };
     requestAnimationFrame(frame);
-  } catch (e) { fail(e); }
+    if (LIVE) {
+      document.body.classList.add('live'); $('livei').style.display = '';
+      $('back').onclick = () => window.parent.postMessage({ p3d: 'close' }, '*');
+      window.addEventListener('message', onMessage);
+      window.parent.postMessage({ p3d: 'ready' }, '*');
+    }
+  } catch (e) { fail(e); if (LIVE) window.parent.postMessage({ p3d: 'error', msg: String(e && e.message || e) }, '*'); }
 })();
 })();
 </script>
