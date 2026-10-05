@@ -117,7 +117,11 @@ specific to a computer, so it is excluded from profile export/import (like
 
 Settings save automatically — there is no Save button. A change is written within ~1 s
 (`config::AutoSave`, polled once per frame in `ForzaApp::update`; also on a clean exit and at the
-explicit save points such as closing Mini-Settings or switching profile).
+explicit save points such as closing Mini-Settings or switching profile). While a check is held
+back by the 1 s interval, `AutoSave::recheck_in` makes `update()` call `request_repaint_after`, so
+one more frame arrives when it ends. *Why:* egui is reactive; without it an edit made <1 s after
+the last check sat unsaved until the next input. Idle cost is nil (no change, no wake-ups). While
+the window is minimised redraws may not be delivered, so the save is not guaranteed then.
 
 *Why a content-compare autosave:* most Setup edit sites (the Window Detection text box, the
 Detect button, ports, sliders) just mutate `app.config.*` and never called `save()`, so a value

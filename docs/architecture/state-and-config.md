@@ -73,7 +73,12 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
    from `ForzaApp::update`, compares the config's compact JSON with the last written copy at
    most once per second and `save()`s on a difference (so an edit that never calls `save()`
    itself, like the Window Detection title, still lands within ~1 s; *why:* before this, only
-   explicit call sites and `on_exit` saved, and a non-graceful close lost every other edit);
+   explicit call sites and `on_exit` saved, and a non-graceful close lost every other edit).
+   While a check is held back by the 1 s interval, `AutoSave::recheck_in` returns the time left
+   and `update()` schedules `ctx.request_repaint_after(wait)`, so the check runs even when no
+   other frame is drawn (egui is reactive; otherwise an edit <1 s after the last check waited
+   for the next input). Caveat: a minimised window may get no redraws, so not guaranteed there;
+   `on_exit` still saves;
    (b) explicit calls after a change that should stick — `src/ui/settings.rs`,
    `src/ui/dashboard.rs`, `src/ui/gearbox.rs`, `src/ui/coop.rs`, `app.rs` (closing
    Mini-Settings, Reset Layout, ...) and the profile operations in `config.rs`; (c)
