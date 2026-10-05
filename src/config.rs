@@ -1598,6 +1598,44 @@ pub fn app_data_dir() -> PathBuf {
         .join("ForzaTelemetryV3")
 }
 
+/// Change-triggered autosave. The UI edits `AppConfig` fields in place (text boxes, sliders,
+/// the Detect button) and most of those edit sites never call `save()`, so without this a
+/// setting only reached disk on a handful of explicit actions or a graceful exit.
+///
+/// `due` is polled once per frame; at most once per `INTERVAL` it compares the config's
+/// compact JSON with the last one written and says whether a `save()` is needed. Comparing
+/// content (instead of a dirty flag set at every edit site) also covers edits made in code
+/// paths that were never wired to a flag. It is a pure decision (no IO) so it is unit-testable.
+pub struct AutoSave {
+    saved: String,
+    last_check: std::time::Instant,
+}
+
+impl AutoSave {
+    /// Longest a changed setting waits before it is written (typing saves at most this often).
+    pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// `cfg` is the config as just loaded, so the first poll doesn't write needlessly.
+    pub fn new(cfg: &AppConfig, now: std::time::Instant) -> Self {
+        Self { saved: serde_json::to_string(cfg).unwrap_or_default(), last_check: now }
+    }
+
+    /// True when `cfg` differs from what was last written and `INTERVAL` has passed since the
+    /// last check; the caller must then `cfg.save()` (the new state is recorded here).
+    pub fn due(&mut self, cfg: &AppConfig, now: std::time::Instant) -> bool {
+        if now.duration_since(self.last_check) < Self::INTERVAL {
+            return false;
+        }
+        self.last_check = now;
+        let Ok(cur) = serde_json::to_string(cfg) else { return false };
+        if cur == self.saved {
+            return false;
+        }
+        self.saved = cur;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1687,6 +1725,44 @@ mod tests {
         assert_eq!(cfg.coop_transport, CoopTransport::Trystero);
         assert!(cfg.coop_room.is_empty());
         assert!(!cfg.coop_autoconnect);
+    }
+
+    #[test]
+    fn game_match_survives_serialize_and_merge_load() {
+        // The field itself round-trips through the same merge path `load()` uses, so a lost
+        // title is a missing save, not a (de)serialization problem.
+        let mut cfg = AppConfig::default();
+        cfg.hotkeys.game_match = "steam_app_2483190".to_string();
+        let data = serde_json::to_string_pretty(&cfg).unwrap();
+        let mut val: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let (serde_json::Value::Object(saved), serde_json::Value::Object(defaults)) =
+            (&mut val, serde_json::to_value(AppConfig::default()).unwrap()) else { panic!() };
+        for (k, v) in defaults { saved.entry(k).or_insert(v); }
+        let mut back: AppConfig = serde_json::from_value(val).unwrap();
+        inject_missing_hotkeys(&mut back.hotkeys);
+        assert_eq!(back.hotkeys.game_match, "steam_app_2483190");
+    }
+
+    #[test]
+    fn autosave_flags_a_changed_setting_once_per_interval() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut cfg = AppConfig::default();
+        let mut a = AutoSave::new(&cfg, t0);
+        let tick = Duration::from_millis(100);
+        // Nothing changed: never due, however long we wait.
+        assert!(!a.due(&cfg, t0 + AutoSave::INTERVAL * 5));
+        // The Window Detection title is edited (what the Setup text box / Detect button do).
+        cfg.hotkeys.game_match = "gamescope".to_string();
+        // Polled again before the interval has elapsed: held back (cheap, no save per keystroke).
+        assert!(!a.due(&cfg, t0 + AutoSave::INTERVAL * 5 + tick));
+        // Due once the interval has passed since the last check, exactly once.
+        let t1 = t0 + AutoSave::INTERVAL * 6 + tick;
+        assert!(a.due(&cfg, t1));
+        assert!(!a.due(&cfg, t1 + AutoSave::INTERVAL * 2), "unchanged config is not rewritten");
+        // A further edit is picked up again.
+        cfg.hotkeys.game_match = "Forza".to_string();
+        assert!(a.due(&cfg, t1 + AutoSave::INTERVAL * 4));
     }
 
     #[test]

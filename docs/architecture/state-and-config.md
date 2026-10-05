@@ -69,10 +69,15 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
 3. **Save** — `AppConfig::save()` serializes the whole struct back to pretty JSON and
    writes `config.json` **and** mirrors the same bytes into
    `profiles/<active_profile>.json` (the Profile Manager's continuous-save — see
-   [[profiles]]). It is **not** autosaved every frame; call sites trigger it explicitly
-   after a change that should stick — e.g. `src/ui/settings.rs`, `src/ui/dashboard.rs`,
-   `src/ui/gearbox.rs`, `src/ui/coop.rs`, several spots in `app.rs`'s mini-settings popup
-   — plus unconditionally in `ForzaApp::on_exit` as a final catch-all.
+   [[profiles]]). Triggers: (a) **autosave** — `config::AutoSave::due`, polled each frame
+   from `ForzaApp::update`, compares the config's compact JSON with the last written copy at
+   most once per second and `save()`s on a difference (so an edit that never calls `save()`
+   itself, like the Window Detection title, still lands within ~1 s; *why:* before this, only
+   explicit call sites and `on_exit` saved, and a non-graceful close lost every other edit);
+   (b) explicit calls after a change that should stick — `src/ui/settings.rs`,
+   `src/ui/dashboard.rs`, `src/ui/gearbox.rs`, `src/ui/coop.rs`, `app.rs` (closing
+   Mini-Settings, Reset Layout, ...) and the profile operations in `config.rs`; (c)
+   unconditionally in `ForzaApp::on_exit`. It is not written every frame.
 4. **Profiles** — a profile is a full `AppConfig` snapshot at `profiles/<name>.json`;
    `active_profile` (in `config.json`) names the live one. `load()` seeds a file for the
    active profile if none exists, so `profiles/` is never empty. CRUD +

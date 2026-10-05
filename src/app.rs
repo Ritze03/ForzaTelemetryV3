@@ -439,6 +439,8 @@ pub struct CoopSeen {
 
 pub struct ForzaApp {
     pub config: AppConfig,
+    /// Decides when a changed setting is written to disk (`AppConfig::save`), see `update`.
+    autosave: crate::config::AutoSave,
     pub engines: Vec<EngineRecord>,
     pub labels: crate::labels::Labels,
     pub telemetry: TelemetryState,
@@ -800,6 +802,7 @@ impl ForzaApp {
         );
 
         Self {
+            autosave: crate::config::AutoSave::new(&config, std::time::Instant::now()),
             config,
             engines,
             labels: crate::labels::Labels::load(&_cc.egui_ctx),
@@ -1422,6 +1425,12 @@ impl ForzaApp {
 impl eframe::App for ForzaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.config.language);
+        // Persist any setting changed since the last write (within ~1 s). Edit sites like the
+        // Window Detection text box never call `save()` themselves, and `on_exit` only runs on
+        // a graceful close, so without this a kill / crash / compositor close lost the edit.
+        if self.autosave.due(&self.config, std::time::Instant::now()) {
+            self.config.save();
+        }
         self.sync_listener_view();
         self.sync_overlay();
         self.gamepad.set_params(crate::gamepad::PadParams::from_config(&self.config.gamepad));
