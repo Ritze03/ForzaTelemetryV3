@@ -197,7 +197,7 @@ def load_types(path):
     norm = lambda v: v if v in KNOWN_TYPES else 'other'
     return dict(version=t.get('version', 1),
                 types={k: norm(v) for k, v in (t.get('types') or {}).items()},
-                added=[(int(e['a']), int(e['b']), norm(e.get('type'))) for e in (t.get('added') or [])],
+                added=[(int(e['a']), int(e['b']), norm(e.get('type')) if e.get('type') else 'unset') for e in (t.get('added') or [])],
                 removed=set(t.get('removed') or []),
                 points={int(k): v for k, v in (t.get('points') or {}).items()},
                 moved={int(k): v for k, v in (t.get('moved') or {}).items()})
@@ -236,7 +236,7 @@ def build_roads(work, out, Hm, meta, types_path, step, lift):
             seen.add(k)
             ty = T['types'].get(k)
             if ty is None:
-                ty = 'other'; miss += 1                        # edge not painted in the project data
+                ty = 'unset'; miss += 1                        # edge not painted: own type (red in the 3D 'Type colours' style, grey like Other in 'Map look')
             if cur is not None and cur[0] == ty and cur[1][-1] == a:
                 cur[1].append(b)
             else:
@@ -247,7 +247,7 @@ def build_roads(work, out, Hm, meta, types_path, step, lift):
         if k in seen or k in T['removed'] or a not in pos or b not in pos:
             continue
         seen.add(k); runs.append((ty, [a, b])); nadd += 1
-    log(f'roads: {len(seen)} edges ({miss} unpainted -> other, {nadd} added links, {len(T["removed"])} removed), {len(runs)} runs; types file v{T["version"]}')
+    log(f'roads: {len(seen)} edges ({miss} unpainted -> unset, {nadd} added links, {len(T["removed"])} removed), {len(runs)} runs; types file v{T["version"]}')
     per, samples, nofb = {}, [], 0
     for ty, ids in runs:
         P = np.array([pos[i] for i in ids], float)
