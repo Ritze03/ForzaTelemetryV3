@@ -1620,6 +1620,15 @@ impl AutoSave {
         Self { saved: serde_json::to_string(cfg).unwrap_or_default(), last_check: now }
     }
 
+    /// `Some(remaining)` while a check is being held back by the interval: the caller must
+    /// schedule another frame that far ahead (egui is reactive, so with no further input the
+    /// held-back edit would otherwise never be looked at). `None` right when a real check is
+    /// due, so a quiet app wakes at most once after its last frame, not in a 1 Hz loop.
+    /// Call before `due`.
+    pub fn recheck_in(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        Self::INTERVAL.checked_sub(now.duration_since(self.last_check)).filter(|d| !d.is_zero())
+    }
+
     /// True when `cfg` differs from what was last written and `INTERVAL` has passed since the
     /// last check; the caller must then `cfg.save()` (the new state is recorded here).
     pub fn due(&mut self, cfg: &AppConfig, now: std::time::Instant) -> bool {
@@ -1755,9 +1764,12 @@ mod tests {
         // The Window Detection title is edited (what the Setup text box / Detect button do).
         cfg.hotkeys.game_match = "gamescope".to_string();
         // Polled again before the interval has elapsed: held back (cheap, no save per keystroke).
-        assert!(!a.due(&cfg, t0 + AutoSave::INTERVAL * 5 + tick));
+        let t_skip = t0 + AutoSave::INTERVAL * 5 + tick;
+        assert_eq!(a.recheck_in(t_skip), Some(AutoSave::INTERVAL - tick), "held back: asks for a re-check");
+        assert!(!a.due(&cfg, t_skip));
         // Due once the interval has passed since the last check, exactly once.
         let t1 = t0 + AutoSave::INTERVAL * 6 + tick;
+        assert_eq!(a.recheck_in(t1), None, "real check is due: no extra wake-up requested");
         assert!(a.due(&cfg, t1));
         assert!(!a.due(&cfg, t1 + AutoSave::INTERVAL * 2), "unchanged config is not rewritten");
         // A further edit is picked up again.
