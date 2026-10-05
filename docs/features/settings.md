@@ -115,4 +115,14 @@ specific to a computer, so it is excluded from profile export/import (like
 
 ## Save
 
-Settings save automatically (on change and on exit) — there is no Save button.
+Settings save automatically — there is no Save button. A change is written within ~1 s
+(`config::AutoSave`, polled once per frame in `ForzaApp::update`; also on a clean exit and at the
+explicit save points such as closing Mini-Settings or switching profile).
+
+*Why a content-compare autosave:* most Setup edit sites (the Window Detection text box, the
+Detect button, ports, sliders) just mutate `app.config.*` and never called `save()`, so a value
+only reached disk when Mini-Settings closed or the app exited gracefully — closing any other
+way (launcher kill, compositor close, SIGTERM, crash) lost it ("Window Detection title never
+saves", bug report). A per-site `save()` would have to be remembered for every new widget; comparing
+the config's JSON once a second needs no cooperation from the edit site, and typing saves at
+most once per second instead of per keystroke.
