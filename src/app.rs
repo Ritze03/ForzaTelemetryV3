@@ -1428,7 +1428,13 @@ impl eframe::App for ForzaApp {
         // Persist any setting changed since the last write (within ~1 s). Edit sites like the
         // Window Detection text box never call `save()` themselves, and `on_exit` only runs on
         // a graceful close, so without this a kill / crash / compositor close lost the edit.
-        if self.autosave.due(&self.config, std::time::Instant::now()) {
+        // Why the repaint: egui only runs `update` on demand, so an edit made right after a
+        // check (check skipped, nothing else repainting) would sit unsaved until the next input.
+        let now = std::time::Instant::now();
+        if let Some(wait) = self.autosave.recheck_in(now) {
+            ctx.request_repaint_after(wait);
+        }
+        if self.autosave.due(&self.config, now) {
             self.config.save();
         }
         self.sync_listener_view();
