@@ -43,6 +43,7 @@
   <div class="row"><span>Relief light</span><input id="light" type="range" min="0" max="1" step="0.05" value="0.5"></div>
   <label><input id="sea" type="checkbox" checked> Sea (y = 100)</label>
   <h2>Roads</h2>
+  <div class="row"><span title="Type colours: every road type in its editor colour (to check the marking); Map look: asphalt-like">Road colours</span><select id="style"><option value="type">Type colours</option><option value="map">Map look</option></select></div>
   <div class="row"><span title="Road height source">Road y</span><select id="roadh"><option value="node">Nodes (nav data)</option><option value="terrain">Terrain (drape)</option></select></div>
   <div class="row"><span>Thickness</span><input id="thick" type="range" min="0" max="20" step="0.5" value="3" title="deck thickness: the ribbon is extruded downwards by this many metres (makes bridges / floating roads readable)"><b id="thickv">3.0</b></div>
   <label id="abovel" title="y = max(node height, terrain height): roads that the 16 m mesh would swallow stay on the surface (also lifts tunnels and underpasses)"><input id="above" type="checkbox"> Never below terrain</label>
@@ -79,6 +80,7 @@ const STYLE = {
   road:         { name: 'Road',          col: '#34373d', edge: '#e9e7dc', w: 9,   px: 3.2, dash: 0, on: true },
   offroad:      { name: 'Offroad',       col: '#7c5b38', edge: '#d9b983', w: 7,   px: 2.8, dash: 1, on: true },
   other:        { name: 'Other',         col: '#5a5f68', edge: '#aab1bd', w: 6,   px: 2.4, dash: 0, on: true },
+  unset:        { name: 'Not set',       col: '#5a5f68', edge: '#aab1bd', w: 6,   px: 2.4, dash: 0, on: true },
   trail:        { name: 'Trail',         col: '#a8814c', edge: '#e0c99c', w: 4,   px: 2.2, dash: 2, on: true },
   crosscountry: { name: 'Cross-country', col: '#8f7a3a', edge: '#d8c77a', w: 5,   px: 2.2, dash: 2, on: true },
   tunnel:       { name: 'Tunnel (ghost)', col: '#6fa8dc', edge: '#bfe0ff', w: 9,  px: 2.4, dash: 2, on: false, alpha: 0.45 },
@@ -86,7 +88,24 @@ const STYLE = {
   turnaround:   { name: 'Turnaround (AI only)', col: '#d62fd1', edge: '#ff9bff', w: 4, px: 2.2, dash: 2, on: false },
 };
 
-const state = { exag: 1, light: 0.5, sea: true, edges: true, width: 1, season: M.default || null, roadH: 'node', above: false, thick: 3 };   // roadH: 'node' (nav node heights) | 'terrain' (drape)
+// ---- "Type colours" style (QC of the road-type marking): the editor's palette (viewer_template.html TCOL), casing = dark edge, tunnel ghosted on top (no depth test).
+// Deviations from the editor: highway keeps amber but is 18 m wide with a dark casing (trail yellow is thin + dashed); "not set" is pure red (editor: pink #e11d95, too close to
+// turnaround fuchsia / jump rose); jump is dashed (no direction arrows).
+const TSTYLE = {
+  unset:        { name: 'Not set',       col: '#ff1a1a', edge: '#400000', w: 12,  px: 3.6, dash: 0, on: true },
+  highway:      { name: 'Highway',       col: '#fbbf24', edge: '#1c1403', w: 18,  px: 4.6, dash: 0, on: true },
+  road:         { name: 'Road',          col: '#38bdf8', edge: '#06222f', w: 9,   px: 3.2, dash: 0, on: true },
+  offroad:      { name: 'Offroad',       col: '#ff8c1a', edge: '#3a1c00', w: 7,   px: 2.8, dash: 0, on: true },
+  other:        { name: 'Other',         col: '#4ade80', edge: '#06260f', w: 6,   px: 2.6, dash: 0, on: true },
+  trail:        { name: 'Trail',         col: '#facc15', edge: '#3a3000', w: 4,   px: 2.4, dash: 2, on: true },
+  crosscountry: { name: 'Cross-country', col: '#a78bfa', edge: '#1e1240', w: 5,   px: 2.4, dash: 0, on: true },
+  tunnel:       { name: 'Tunnel (on top)', col: '#e2e8f0', edge: '#0b0e14', w: 9, px: 3.0, dash: 0, on: true, alpha: 0.85, ghost: true },
+  jump:         { name: 'Jump',          col: '#f43f5e', edge: '#3a0610', w: 7,   px: 2.8, dash: 2, on: true },
+  turnaround:   { name: 'Turnaround',    col: '#d946ef', edge: '#2e0630', w: 5,   px: 2.8, dash: 2, on: true },
+};
+const SEL = (ty) => ((state.style === 'type' ? TSTYLE : STYLE)[ty] || (state.style === 'type' ? TSTYLE : STYLE).other);
+
+const state = { style: 'type',  exag: 1, light: 0.5, sea: true, edges: true, width: 1, season: M.default || null, roadH: 'node', above: false, thick: 3 };   // roadH: 'node' (nav node heights) | 'terrain' (drape)
 const nx = T.nx, nz = T.nz, STEP = T.step, MX0 = T.mx0, MZ0 = T.mz0;
 
 // ---------------------------------------------------------------------------------------------------------------- terrain data
@@ -228,7 +247,7 @@ async function buildRoads() {
   if (!R) return;
   const order = Object.keys(STYLE);
   for (const ty of Object.keys(R.types).sort((a, b) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99)) {
-    const D = R.types[ty], st = STYLE[ty] || STYLE.other;
+    const D = R.types[ty], st = SEL(ty);
     const starts = u32(await inflate(D.runs)), xyzs = f32(await inflate(D.xyzs)), n = D.n;
     const yq = D.yn ? u16(await inflate(D.yn)) : null;   // node heights, uint16 q: y = hmin + q * hstep (roads.js built before the toggle has none: node = terrain)
     const pos = new Float32Array(n * 6), yN = new Float32Array(n * 2), tan = new Float32Array(n * 4), side = new Float32Array(n * 2), sa = new Float32Array(n * 2);
@@ -285,7 +304,7 @@ async function buildRoads() {
                   colA: { value: css(st.col) }, alpha: { value: wallAlpha }, shade: { value: 0.72 } },
     });
     const wall = new THREE.Mesh(wg, wmat); wall.renderOrder = 2; wall.frustumCulled = false; wall.visible = false;
-    const mesh = new THREE.Mesh(g, mat); mesh.add(wall); mesh.renderOrder = 3; mesh.frustumCulled = false; mesh.visible = st.on; mesh.userData = { ty, st, pos, yN, n, hasNode: !!yq, wall };
+    const mesh = new THREE.Mesh(g, mat); mesh.add(wall); mesh.renderOrder = 3; mesh.frustumCulled = false; mesh.visible = st.on; mesh.userData = { ty, pos, yN, n, hasNode: !!yq, wall };
     world.add(mesh); roadMeshes[ty] = mesh;
   }
 }
@@ -377,13 +396,24 @@ function hoverUpdate() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------- UI
+function applyStyle(resetVis) {   // instant: uniforms / material flags only, no geometry rebuild
+  for (const [ty, m] of Object.entries(roadMeshes)) {
+    const st = SEL(ty), u = m.material.uniforms, wm = m.userData.wall.material;
+    u.colA.value = css(st.col); u.colB.value = css(st.edge); u.alpha.value = st.alpha || 0.96; u.dashMode.value = st.dash; u.minPx.value = st.px;
+    wm.uniforms.colA.value = css(st.col); wm.uniforms.alpha.value = st.alpha || 0.96; wm.uniforms.minPx.value = st.px; wm.depthWrite = !st.alpha;
+    m.material.depthTest = !st.ghost; wm.depthTest = !st.ghost; m.renderOrder = st.ghost ? 8 : 3; m.userData.wall.renderOrder = st.ghost ? 7 : 2;
+    if (resetVis) { m.visible = st.on; if (m.userData.cb) m.userData.cb.checked = st.on; }
+    const l = m.userData.lab; if (l) { l.chip.style.background = st.col; l.chip.style.boxShadow = `inset 0 0 0 2px ${st.edge}${state.style === 'type' ? 'cc' : '55'}`; l.name.textContent = st.name; }
+  }
+  applyUniforms();
+}
 function applyUniforms() {
-  for (const m of Object.values(roadMeshes)) {
-    const st = m.userData.st, wu = m.userData.wall.material.uniforms;
+  for (const [ty, m] of Object.entries(roadMeshes)) {
+    const st = SEL(ty), wu = m.userData.wall.material.uniforms;
     for (const u of [m.material.uniforms, wu]) {
       u.halfW.value = st.w * state.width / 2; u.hTerrain.value = state.roadH === 'terrain' ? 1 : 0; u.keepAbove.value = state.above ? 1 : 0; u.thick.value = state.thick;
     }
-    m.material.uniforms.edgeOn.value = state.edges ? 1 : 0; m.userData.wall.visible = state.thick > 0;
+    m.material.uniforms.edgeOn.value = state.edges ? 1 : 0; m.userData.wall.visible = state.thick > 0 && !st.ghost;
   }
   world.scale.y = state.exag;
   hemi.intensity = 1.0 - 0.35 * state.light; sun.intensity = 1.1 * state.light;
@@ -405,10 +435,13 @@ function buildUI() {
   $('width').oninput = e => { state.width = +e.target.value; applyUniforms(); };
   $('reset').onclick = () => setView(home.x, home.z, home.dist, 0, 54);
   $('min').onclick = () => $('panel').classList.toggle('min');
+  $('style').value = state.style;
+  $('style').onchange = e => { state.style = e.target.value; applyStyle(true); };
   const box = $('layers');
   for (const ty of Object.keys(roadMeshes)) {
-    const st = STYLE[ty] || STYLE.other, l = document.createElement('label');
-    l.innerHTML = `<input type="checkbox" ${st.on ? 'checked' : ''}><span class="chip" style="background:${st.col};box-shadow:inset 0 0 0 2px ${st.edge}55"></span>${st.name}<span class="km">${R.types[ty].km} km</span>`;
+    const st = SEL(ty), l = document.createElement('label');
+    l.innerHTML = `<input type="checkbox" ${st.on ? 'checked' : ''}><span class="chip" style="background:${st.col};box-shadow:inset 0 0 0 2px ${st.edge}cc"></span><span class="nm">${st.name}</span><span class="km">${R.types[ty].km} km</span>`;
+    roadMeshes[ty].userData.lab = { chip: l.querySelector('.chip'), name: l.querySelector('.nm') };
     l.firstChild.onchange = e => { roadMeshes[ty].visible = e.target.checked; dirty = true; };
     roadMeshes[ty].userData.cb = l.firstChild;
     box.appendChild(l);
@@ -458,7 +491,8 @@ function check(count = 5, mode = null) {
     for (let k = 0; k < Q.length; k++) HM[k] = Q[k] ? T.hmin + (Q[k] - 1) * T.hstep : T.floor;
     buildTerrain();
     await buildRoads();
-    buildUI(); applyUniforms();
+    { const q0 = new URLSearchParams(location.hash.slice(1)); if (q0.get('style') === 'map' || q0.get('style') === 'type') state.style = q0.get('style'); }
+    buildUI(); applyStyle(true);
     home = { x: MX0 + (nx - 1) * STEP / 2, z: MZ0 - (nz - 1) * STEP / 2, dist: Math.max(nx, nz) * STEP * 1.25 };
     setView(home.x, home.z, home.dist, 0, 54);
     const h = location.hash.match(/v=(-?[\d.]+),(-?[\d.]+),([\d.]+),(-?[\d.]+),(-?[\d.]+)/);   // #v=x,z,dist,yawDeg,pitchDeg
@@ -474,7 +508,7 @@ function check(count = 5, mode = null) {
     if (q2.get('types')) { const on = q2.get('types').split(','); for (const [ty, m] of Object.entries(roadMeshes)) { m.visible = on.includes(ty); m.userData.cb.checked = m.visible; } }
     if (state.season) { $('season').value = state.season; await setSeason(state.season); }
     msg.className = 'hide';
-    window.P3D_DEBUG = { check, heightAt, setView, view, camera, state, roadMeshes, terrain, renderer, ready: true };
+    window.P3D_DEBUG = { check, applyStyle, heightAt, setView, view, camera, state, roadMeshes, terrain, renderer, ready: true };
     requestAnimationFrame(frame);
   } catch (e) { fail(e); }
 })();
