@@ -37,7 +37,8 @@ TURN_MAX_EDGES = 2
 TURN_MAX_DZ = 4.0          # m height difference between the two ends (examples <= 0.1; accepted look-alikes <= 3.1)
 TURN_THROUGH_DEG = 130.0   # the two highway edges at each end must be ~collinear (a carriageway passing through): angle between them >= this
 TURN_CROSS_MIN = 25.0      # the strip must cross the carriageway: angle between strip and carriageway axis within [25, 155] (rejects slip-road merges)
-TURN_LOOP_M = 150.0        # the ends must not be joined by <= this much highway path (a tiny loop, not two carriageways)
+TURN_SHORT_MAX = 30.0      # TURN_SHORT_LINK: a 1-edge nav polyline up to this long whose both ends touch a highway/tunnel edge is a turnaround, no further tests
+TURN_LOOP_M = 150.0       # the ends must not be joined by <= this much highway path (a tiny loop, not two carriageways)
 
 # over-marks
 OVER_SHARE_MAX = 0.30      # a nav polyline (= one road record) with <= this share of highway edges (tunnel edges not counted) is a road with brush spill
@@ -227,6 +228,31 @@ def find_turnarounds(net):
             for k, o in zip(ks, olds):
                 review.append((k, o, 'REVIEW_TURNAROUND', 'turnaround? ' + '; '.join(reasons)))
     return changes, review
+
+
+def find_short_links(net):
+    """The user's simple rule (TURN_SHORT_LINK), at EDGE level: an edge <= TURN_SHORT_MAX m whose both end nodes also touch some other edge typed highway or
+    tunnel is a turnaround when EITHER it is a nav polyline of its own (2 nodes; old type road / unset / highway / other) OR (inside a longer polyline;
+    old type road / unset / other only) every other edge at both ends is highway / tunnel / turnaround, so a ramp or street that merely touches the
+    highway is left alone.  (Short highway edges inside a carriageway polyline are the carriageway itself, hence excluded.)
+    Why: the game has such point-to-point links from carriageway to carriageway everywhere; the strict crossover rule above (collinear carriageways, crossing
+    angle, height, no short loop, no tunnel ends) rejected ~22 of them and the user wanted every one marked.  -> {edge key: (old, 'turnaround', code, text)}"""
+    HT = ('highway', 'tunnel')
+    one = {ek(ids[0], ids[1]) for ids in net.polys if len(ids) == 2 and ids[0] != ids[1]}
+    changes = {}
+    for k, (a, b, _) in net.edges.items():
+        o = net.ty.get(k)
+        if k in net.removed or o == 'turnaround' or net.length(a, b) > TURN_SHORT_MAX:
+            continue
+        if o not in ((None, 'road', 'highway', 'other') if k in one else (None, 'road', 'other')):
+            continue
+        ends = ((a, b), (b, a))
+        if not all(any(m != o2 and net.type_of(n, m) in HT for m in net.adj[n]) for n, o2 in ends):
+            continue
+        if k not in one and not all(net.type_of(n, m) in HT + ('turnaround',) for n, o2 in ends for m in net.adj[n] if m != o2):
+            continue
+        changes[k] = (o, 'turnaround', 'TURN_SHORT_LINK', 'short link between two highway/tunnel edges')
+    return changes
 
 
 # ------------------------------------------------------------------------------------------------------------------ rule: over-marks
@@ -468,6 +494,10 @@ def run_rules(net, over=True, turn=True):
         c, r = find_turnarounds(net)
         changes.update(c); review += r
         net.apply(c)
+        c = find_short_links(net)
+        changes.update(c)
+        net.apply(c)
+        review = [x for x in review if x[0] not in changes]            # a review row for an edge the short-link rule now converted is moot
     return changes, review
 
 
