@@ -14,7 +14,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     let role = app.coop.role();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.columns(2, |cols| {
+        crate::theme::columns(ui, 2, |cols| {
             identity_and_pacing(&mut cols[0], app);
             session_panel(&mut cols[1], app, role);
         });
@@ -26,7 +26,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
     crate::theme::card(ui, tr("Your Identity"), |ui| {
         // Name: label | text field, in the same two-column layout as the colour
         // row below, so the field lines up with (and matches the width of) the slider.
-        let name_changed = ui.columns(2, |c| {
+        let name_changed = crate::theme::columns(ui, 2, |c| {
             crate::theme::row_label(&mut c[0], tr("Player name"));
             c[1].add(
                 egui::TextEdit::singleline(&mut app.config.coop_name)
@@ -42,7 +42,7 @@ fn identity_and_pacing(ui: &mut Ui, app: &mut ForzaApp) {
 
         // Colour: label | slider + a swatch preview pinned to the right (where a
         // value spinner sits on other rows).
-        let changed = ui.columns(2, |c| {
+        let changed = crate::theme::columns(ui, 2, |c| {
             crate::theme::row_label(&mut c[0], tr("Player color"));
             c[1].horizontal(|ui| {
                 const SW: f32 = 22.0;
@@ -240,7 +240,7 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
     // transport switch and only shows while Cloudflare is selected.
     if app.config.coop_transport == CoopTransport::Cloudflare {
         crate::theme::card(ui, tr("Cloudflare"), |ui| {
-            ui.columns(2, |c| {
+            crate::theme::columns(ui, 2, |c| {
                 crate::theme::row_label(&mut c[0], tr("Host port"));
                 c[1].horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

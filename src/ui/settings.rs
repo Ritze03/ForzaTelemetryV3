@@ -11,7 +11,7 @@ use crate::i18n::{tr, Language};
 /// `right_to_left(Center)` centers its content across the column's full height
 /// and the control drifts to the vertical middle of the panel.
 fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         crate::theme::row_label(&mut c[0], label);
         c[1].horizontal(|ui| right(ui));
     });
@@ -20,7 +20,7 @@ fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
 /// [`control_row`] with a tooltip on the label (the explanation that would otherwise be a
 /// helper line under the control; see the styling guide's "No helper text under options").
 fn control_row_tip(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui)) {
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         crate::theme::row_label(&mut c[0], label).on_hover_text(tip);
         c[1].horizontal(|ui| right(ui));
     });
@@ -93,7 +93,7 @@ fn captured_scroll<R>(
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
-        ui.columns(2, |cols| {
+        crate::theme::columns(ui, 2, |cols| {
             // ── LEFT COLUMN ──────────────────────────────────────────
             let left = &mut cols[0];
             left.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
@@ -234,7 +234,7 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
     ui.add_space(6.0);
 
     // Four equal-width action buttons — each opens a modal dialog.
-    ui.columns(4, |c| {
+    crate::theme::columns(ui, 4, |c| {
         if c[0].add_sized([c[0].available_width(), 24.0], egui::Button::new(tr("New"))).clicked() {
             open_profile_dialog(app, ProfileDialog::New, String::new());
         }
@@ -255,7 +255,7 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
     // Export / Import each open a large two-pane modal instead of living inline,
     // so the card stays compact (see [`profile_io_modal`]).
     ui.add_space(6.0);
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         if c[0].add_sized([c[0].available_width(), 24.0],
             egui::Button::new(format!("{}  {}", crate::icons::COPY, tr("Export")))).clicked()
         {
@@ -835,7 +835,7 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
             ui.set_width(760.0);
             if is_export {
                 // Single split: What to export (left) | Preview (right).
-                ui.columns(2, |c| {
+                crate::theme::columns(ui, 2, |c| {
                     {
                         let ui = &mut c[0];
                         ui.set_min_height(PANE_H);
@@ -861,7 +861,7 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
                     egui::vec2(ui.available_width(), TOP_H),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.columns(2, |c| {
+                        crate::theme::columns(ui, 2, |c| {
                             {
                                 let ui = &mut c[0];
                                 ui.set_min_height(TOP_H);
@@ -876,7 +876,7 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
                     },
                 );
                 ui.add_space(8.0);
-                ui.columns(2, |c| {
+                crate::theme::columns(ui, 2, |c| {
                     {
                         let ui = &mut c[0];
                         ui.set_min_height(BOT_H);

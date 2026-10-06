@@ -342,7 +342,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::app::ForzaApp) {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     let app = &*app;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.columns(2, |cols| {
+        crate::theme::columns(ui, 2, |cols| {
             raw_card(&mut cols[0], app);
             derived_card(&mut cols[1], app);
         });
