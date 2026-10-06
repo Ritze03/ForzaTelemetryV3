@@ -278,14 +278,16 @@ function chainRuns(E, N, nT) {
 }
 
 // Runs -> samples every RSTEP m (the nodes plus a uniform step along the run).  Per sample: x z, distance along the run, terrain y (+LIFT), node y (+LIFT, linear between the two nodes' heights), the edge (a, b) it lies on.
-function resampleRuns(runs, X, Z, NY, totalLen, drape) {   // drape: node y = terrain y (cross-country always follows the ground)
+// mode: 'drape' = node y := terrain y (cross-country always follows the ground);  'string' = jump: each run (one edge) becomes a taut string between its two end
+// points that rests on the terrain wherever the ground rises above the straight line (upper convex hull), written into BOTH heights so every Road-y mode shows it.
+function resampleRuns(runs, X, Z, NY, totalLen, mode, step = RSTEP) {
   let nn = 0; for (const r of runs) nn += r.length;
-  const cap = nn + Math.ceil(totalLen / RSTEP) + runs.length + 8;
+  const cap = nn + Math.ceil(totalLen / step) + 2 * runs.length + 8;
   const sx = new Float32Array(cap), sz = new Float32Array(cap), st = new Float32Array(cap), syT = new Float32Array(cap), syN = new Float32Array(cap), sa = new Int32Array(cap), sb = new Int32Array(cap);
   const starts = [0]; let c = 0;
   const put = (a, b, f, d) => {
     const x = X[a] + (X[b] - X[a]) * f, z = Z[a] + (Z[b] - Z[a]) * f;
-    sx[c] = x; sz[c] = z; st[c] = d; syT[c] = heightAt(x, z) + LIFT; syN[c] = drape ? syT[c] : NY[a] + (NY[b] - NY[a]) * f + LIFT; sa[c] = a; sb[c] = b; c++;
+    sx[c] = x; sz[c] = z; st[c] = d; syT[c] = heightAt(x, z) + LIFT; syN[c] = mode === 'drape' ? syT[c] : NY[a] + (NY[b] - NY[a]) * f + LIFT; sa[c] = a; sb[c] = b; c++;
   };
   for (const r of runs) {
     const c0 = c; let d = 0, prev = r[0], first = true;
@@ -293,12 +295,34 @@ function resampleRuns(runs, X, Z, NY, totalLen, drape) {   // drape: node y = te
       const b = r[i], L = Math.hypot(X[b] - X[prev], Z[b] - Z[prev]);
       if (L < 0.05) continue;                                              // coincident nodes: nothing to draw
       if (first) { put(prev, b, 0, 0); first = false; }
-      for (let k = (Math.floor(d / RSTEP) + 1) * RSTEP; k < d + L - 0.01; k += RSTEP) put(prev, b, (k - d) / L, k);
+      for (let k = (Math.floor(d / step) + 1) * step; k < d + L - 0.01; k += step) put(prev, b, (k - d) / L, k);
       d += L; put(prev, b, 1, d); prev = b;
     }
+    if (c - c0 >= 2 && mode === 'string') tautString(c0, c, st, syT, syN);
     if (c - c0 >= 2) starts.push(c); else c = c0;                           // a run that collapsed to a point
   }
   return { starts: Uint32Array.from(starts), n: c, x: sx, z: sz, t: st, yT: syT, yN: syN, sa, sb };
+}
+
+// Jump line = a string stretched from take-off to landing over the terrain: y(s) = upper convex hull of the two end points (node y + LIFT, never below the ground)
+// and every sample's terrain (+LIFT).  Monotone chain over the samples (already sorted by s), then linear interpolation along the hull.  Writes yT and yN.
+// Why: the user wants jumps "like a string wrapped around the terrain of its two connecting points" - a straight chord would cut through a cliff edge.
+function tautString(i0, i1, st, yT, yN) {
+  const ys = new Float32Array(i1 - i0);
+  for (let i = i0; i < i1; i++) ys[i - i0] = yT[i];
+  ys[0] = Math.max(yN[i0], yT[i0]); ys[ys.length - 1] = Math.max(yN[i1 - 1], yT[i1 - 1]);   // end points: their own height, but not underground
+  const H = [];
+  for (let k = 0; k < ys.length; k++) {
+    while (H.length >= 2) {
+      const p = H[H.length - 2], q = H[H.length - 1];
+      if ((st[i0 + q] - st[i0 + p]) * (ys[k] - ys[p]) - (ys[q] - ys[p]) * (st[i0 + k] - st[i0 + p]) >= 0) H.pop(); else break;   // q on / below the line p-k: not on the upper hull
+    }
+    H.push(k);
+  }
+  for (let h = 0; h < H.length - 1; h++) {
+    const p = H[h], q = H[h + 1], sp = st[i0 + p], sq = st[i0 + q];
+    for (let k = p; k <= q; k++) { const y = sq > sp ? ys[p] + (ys[q] - ys[p]) * (st[i0 + k] - sp) / (sq - sp) : ys[k]; yT[i0 + k] = y; yN[i0 + k] = y; }
+  }
 }
 
 function css(h) { const c = new THREE.Color(h); return new THREE.Vector3(c.r, c.g, c.b); }   // raw sRGB values: ShaderMaterial writes them as-is
@@ -359,7 +383,7 @@ function makeTypeMesh(ty, S, st, visible) {
   });
   const wall = new THREE.Mesh(wg, wmat); wall.renderOrder = 2; wall.frustumCulled = false; wall.visible = false;
   const mesh = new THREE.Mesh(g, mat); mesh.add(wall); mesh.renderOrder = 3; mesh.frustumCulled = false; mesh.visible = visible;
-  mesh.userData = { ty, pos, yN, n, wall, sa: S.sa, sb: S.sb, runs: starts.length - 1 };
+  mesh.userData = { ty, pos, yN, n, wall, sa: S.sa, sb: S.sb, starts, runs: starts.length - 1 };
   return mesh;
 }
 
@@ -389,7 +413,9 @@ function setRoads(src) {
   types.sort((p, q) => rank(src.tn[p]) - rank(src.tn[q]));
   let samples = 0;
   for (const t of types) {
-    const ty = src.tn[t], st = SEL(ty), S = resampleRuns(runs[t], X, Z, NY, len[t], ty === 'crosscountry');
+    const ty = src.tn[t], st = SEL(ty);
+    if (ty === 'jump') { runs[t] = []; for (let e = 0; e < M; e++) if (E[3 * e + 2] === t && E[3 * e] !== E[3 * e + 1]) runs[t].push([E[3 * e], E[3 * e + 1]]); }   // jump: one run per edge (string between ITS two points), not chained
+    const S = ty === 'jump' ? resampleRuns(runs[t], X, Z, NY, len[t], 'string', 2) : resampleRuns(runs[t], X, Z, NY, len[t], ty === 'crosscountry' ? 'drape' : null);
     if (S.n < 2) continue;
     const mesh = makeTypeMesh(ty, S, st, vis[ty] !== undefined ? vis[ty] : st.on);
     world.add(mesh); roadMeshes[ty] = mesh; ROAD_KM[ty] = len[t] / 1000; samples += S.n;
@@ -575,6 +601,16 @@ function check(count = 5, mode = null) {
     const a = u.sa[k], b = u.sb[k], dx = SRC.X[b] - SRC.X[a], dz = SRC.Z[b] - SRC.Z[a], L2 = dx * dx + dz * dz;
     const f = L2 ? Math.min(Math.max(((x - SRC.X[a]) * dx + (z - SRC.Z[a]) * dz) / L2, 0), 1) : 0, expN = u.ty === 'crosscountry' ? h + LIFT : SRC.NY[a] + (SRC.NY[b] - SRC.NY[a]) * f + LIFT;   // node y from the two nodes of the edge
     const eff = md === 'terrain' ? yT : md === 'above' ? Math.max(yN, yT) : yN;
+    if (u.ty === 'jump') {   // taut string: both heights equal, never below terrain + lift, end points = their node y (not underground), concave (= the hull) in between
+      let r = 0; while (u.starts[r + 1] <= k) r++;
+      const s0 = u.starts[r], s1 = u.starts[r + 1] - 1, y = (j) => u.yN[2 * j], t = (j) => u.pos[6 * j + 1];
+      const end = k === s0 ? a : k === s1 ? b : -1, expE = end >= 0 ? Math.max(SRC.NY[end], h) + LIFT : null;
+      let okJ = Math.abs(yN - yT) < 0.02 && yN >= h + LIFT - 0.05 && (end < 0 || Math.abs(yN - expE) < 0.05);
+      if (end < 0) { const sl = (j) => Math.hypot(u.pos[6 * j] - x, u.pos[6 * j + 2] + z), d0 = sl(k - 1), d1 = sl(k + 1);   // concavity vs the two neighbours (2D distance along the edge)
+        okJ = okJ && yN >= (y(k - 1) * d1 + y(k + 1) * d0) / (d0 + d1 || 1) - 0.02; }
+      rows.push({ mode: md, type: u.ty, x: +x.toFixed(1), z: +z.toFixed(1), drawnY: +yN.toFixed(3), terrainY: +h.toFixed(3), endNodeY: expE == null ? null : +expE.toFixed(3), drawnMinusTerrain: +(yN - h).toFixed(3), ok: okJ });
+      continue;
+    }
     const nodeOk = Math.abs(yN - expN) < 0.02;
     const ok = nodeOk && (md === 'terrain' ? Math.abs(yT - (h + LIFT)) < 0.02 : md === 'above' ? eff >= h + LIFT - 0.02 && Math.abs(eff - Math.max(yN, h + LIFT)) < 0.02 : true);
     rows.push({ mode: md, type: u.ty, x: +x.toFixed(1), z: +z.toFixed(1), drawnY: +eff.toFixed(3), nodeY: +yN.toFixed(3), expectedNodeY: +expN.toFixed(3), terrainY: +h.toFixed(3), terrainDrapeY: +yT.toFixed(3),
