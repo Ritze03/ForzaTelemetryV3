@@ -534,8 +534,12 @@ const EDITOR = (function () {
     rq_g4: 'unmarked, low-confidence prediction', rq_gap: 'this id sits between story-challenge routes but has no story-challenge entry of its own', rq_acc: 'Accepted',
     rv_title: 'Review spots', rv_hl: 'Highlight review spots (what fix_highways.py could not decide)', rv_all: 'All categories', rv_n: '{n} spots', rv_none: 'No spots - nothing left to review.', rv_pos: 'spot {i} of {n}',
     rv_gone: 'The last spot is fixed - Next continues after it.', rv_info: '{n} links, {m} m, nav road #{q}, x {x}, z {z}',
-    rv_hint: 'Computed live from your current paint: fix a spot (paint it, add or remove links), then press Next - the list updates a moment after every edit. Keys N / Shift+N.',
+    rv_hint: 'Computed live from your current paint: fix a spot (paint it, add or remove links), then press Next - the list updates a moment after every edit. Keys N / Shift+N. Open ends (a point with one link): magenta = another road passes close by (likely unconnected, dashed line = suggestion, key C connects it), amber = plain dead end.',
     rvc_gap: 'Highway gap', rvc_cutoff: 'Cut-off highway piece', rvc_half: 'Half-marked road', rvc_turn: 'Turnaround?', rvc_island: 'Isolated highway piece',
+    rvc_opennear: 'Open end - near another road (likely unconnected)', rvc_open: 'Open end - dead end',
+    ro_near: 'open end {d} m from {w}, {z}', ro_node: 'point #{id}', ro_edge: 'a link (type {t})', ro_dz0: 'same height', ro_dz: '{z} m height difference',
+    ro_dead: 'only one link here - a genuine dead end, trail end or map edge, unless a road is missing', ro_jump: 'end of a jump line (take-off / landing) - naturally open',
+    ro_info: 'its link: type {t}, {m} m long, nav road #{q}, x {x}, z {z}', ro_conn: 'Connect to suggested', ro_conn_h: 'Add a link of the same type from this end to the suggested target (key C; Undo takes it back)',
     r_gap: 'gap in highway nav road #{q} ({a} of {n} links are highway) - highway under-mark?', r_half: 'half-marked nav road #{q}: {a} highway / {b} other links - which half is right?',
     r_cutoff: 'isolated piece ({l} m) of a longer highway nav road, cut off by non-highway links', r_island: 'isolated highway piece ({l} m), joined to no other highway / tunnel / turnaround ({w})',
     r_elev: 'elevated', r_noterr: 'no terrain data', r_turn: 'turnaround?', r_len: 'strip {n} m long', r_branch: 'branching intermediate point', r_dz: 'ends {n} m apart in height',
@@ -585,8 +589,12 @@ const EDITOR = (function () {
     rq_g4: 'unmarkiert, unsichere Vorhersage', rq_gap: 'diese ID liegt zwischen Story-Challenge-Routen, hat aber selbst keinen Story-Challenge-Eintrag', rq_acc: 'Uebernommen',
     rv_title: 'Pruefstellen', rv_hl: 'Pruefstellen hervorheben (was fix_highways.py nicht entscheiden konnte)', rv_all: 'Alle Kategorien', rv_n: '{n} Stellen', rv_none: 'Keine Stellen - nichts mehr zu pruefen.', rv_pos: 'Stelle {i} von {n}',
     rv_gone: 'Die letzte Stelle ist behoben - Weiter geht dahinter weiter.', rv_info: '{n} Links, {m} m, Nav-Strasse #{q}, x {x}, z {z}',
-    rv_hint: 'Live aus deiner aktuellen Markierung berechnet: eine Stelle beheben (malen, Links hinzufuegen oder entfernen), dann Weiter - die Liste aktualisiert sich kurz nach jeder Aenderung. Tasten N / Umschalt+N.',
+    rv_hint: 'Live aus deiner aktuellen Markierung berechnet: eine Stelle beheben (malen, Links hinzufuegen oder entfernen), dann Weiter - die Liste aktualisiert sich kurz nach jeder Aenderung. Tasten N / Umschalt+N. Offene Enden (ein Punkt mit nur einem Link): magenta = eine andere Strasse liegt ganz in der Naehe (wohl nicht verbunden, gestrichelte Linie = Vorschlag, Taste C verbindet), bernstein = einfache Sackgasse.',
     rvc_gap: 'Autobahn-Luecke', rvc_cutoff: 'Abgeschnittenes Autobahnstueck', rvc_half: 'Halb markierte Strasse', rvc_turn: 'Wendeverbindung?', rvc_island: 'Isoliertes Autobahnstueck',
+    rvc_opennear: 'Offenes Ende - nahe einer anderen Strasse (wohl nicht verbunden)', rvc_open: 'Offenes Ende - Sackgasse',
+    ro_near: 'offenes Ende {d} m von {w}, {z}', ro_node: 'Punkt #{id}', ro_edge: 'einem Link ({t})', ro_dz0: 'gleiche Hoehe', ro_dz: '{z} m Hoehenunterschied',
+    ro_dead: 'nur ein Link hier - echte Sackgasse, Pfadende oder Kartenrand, ausser es fehlt eine Strasse', ro_jump: 'Ende einer Sprunglinie (Absprung / Landung) - von Natur aus offen',
+    ro_info: 'sein Link: Art {t}, {m} m lang, Nav-Strasse #{q}, x {x}, z {z}', ro_conn: 'Mit Vorschlag verbinden', ro_conn_h: 'Fuegt einen Link gleicher Art von diesem Ende zum vorgeschlagenen Ziel hinzu (Taste C; Rueckgaengig nimmt ihn zurueck)',
     r_gap: 'Luecke in der Autobahn-Nav-Strasse #{q} ({a} von {n} Links sind Autobahn) - Autobahn nicht markiert?', r_half: 'halb markierte Nav-Strasse #{q}: {a} Autobahn- / {b} andere Links - welche Haelfte stimmt?',
     r_cutoff: 'isoliertes Stueck ({l} m) einer laengeren Autobahn-Nav-Strasse, durch Nicht-Autobahn-Links abgeschnitten', r_island: 'isoliertes Autobahnstueck ({l} m), mit keiner Autobahn / keinem Tunnel / keiner Wendeverbindung verbunden ({w})',
     r_elev: 'erhoeht', r_noterr: 'keine Gelaendedaten', r_turn: 'Wendeverbindung?', r_len: 'Streifen {n} m lang', r_branch: 'verzweigter Zwischenpunkt', r_dz: 'Enden {n} m Hoehenunterschied',
@@ -646,7 +654,7 @@ const EDITOR = (function () {
   // except route 8004 "Mech My Day", which is a Wristband event (a showcase, like "Launch Control").  So legacy 'midnight' -> 'story', and route 8004 -> 'wristband'.
   const raceTy = (id, v) => v === 'midnight' ? (String(id) === '8004' ? 'wristband' : 'story') : v;
   const ed = { on: false, mode: 'pan', brush: 1, fill: false, showTurn: true, sel: -1, hover: -1, mouse: null, chain: -1, hoverE: null, drag: null };
-  const rv = { on: false, cat: 'all', i: -1, key: null, spots: [], edges: new Map(), cur: new Set(), t: 0, polyE: null, pm: null };      // review spots (see "review spots" below)
+  const rv = { on: false, cat: 'all', i: -1, key: null, spots: [], pts: [], edges: new Map(), cur: new Set(), t: 0, polyE: null, pm: null };      // review spots (see "review spots" below)
   const pv = { on: false, bd: Number(store.get('pvbd', 2)), turn: false, saved: null };                                                    // preview mode (see "preview mode" below)
   const marks = {};                       // route id -> race type
   const hist = [];                        // undo stack: arrays of ops [kind, idx, old, new]  (t = edge type, a = edge alive, p = user point alive, m = point position [x,z,y], d = jump take-off node, r = race mark)
@@ -926,9 +934,14 @@ const EDITOR = (function () {
   //                                    nodes with exactly 2 other links, both highway, strip crossing at 25..155 deg, ends not joined by <= 150 m of highway)
   // "nav road" = a polyline of roads.json = RE.ids[q].  Links of one category that touch (share a point) form ONE spot; Prev / Next walk the spots in a stable order
   // (category, nav road, smallest point id), so Next after fixing a spot (which vanishes) simply goes to what followed it.
+  //   opennear / open   (new, no script counterpart) every point with exactly ONE live link of any type ("open end").  opennear = a link of another road (not jump / turnaround / tunnel) passes within
+  //                      OPEN_NEAR_M = 25 m horizontally and OPEN_DZ = 4 m vertically (so a bridge above is not suggested) AND is not part of the open end's own neighbourhood (anything reachable
+  //                      along links within OPEN_OWN_M = 100 m of path, so a spur beside its own junction is not flagged) -> "likely unconnected"; the suggested target is the nearest such link
+  //                      (its endpoint when the nearest point is within OPEN_SNAP_M = 3 m of it, else a split point inside the link).  open = all other open ends (genuine dead ends, trail ends, map edge,
+  //                      and ends of jump lines, which are naturally open - kept in this bucket, not excluded).  Spots are per POINT, not per link: key = (category, nav road of the link, point id).
   // Why live and in JS: the script's output is stale the moment you paint; the review is only useful if it shows what is left NOW.
-  const RVC = ['gap', 'cutoff', 'half', 'turn', 'island'];
-  const RVP = { SPILL: 0.3, MOSTLY: 0.7, ISLAND_MAX_M: 1500, GROUND_DZ: 3, GROUND_MIN_FRAC: 0.8, TURN_LEN: [0, 30, 40], TURN_DZ: 4, TURN_THROUGH: 130, TURN_CROSS_MIN: 25, TURN_LOOP_M: 150 };
+  const RVC = ['gap', 'cutoff', 'half', 'turn', 'island', 'opennear', 'open'], RVOC = { opennear: 1, open: 1 };      // opennear / open = open ends (a point with exactly ONE live link), node-based spots, see rvOpenEnds()
+  const RVP = { SPILL: 0.3, MOSTLY: 0.7, ISLAND_MAX_M: 1500, GROUND_DZ: 3, GROUND_MIN_FRAC: 0.8, TURN_LEN: [0, 30, 40], TURN_DZ: 4, TURN_THROUGH: 130, TURN_CROSS_MIN: 25, TURN_LOOP_M: 150, OPEN_NEAR_M: 25, OPEN_DZ: 4, OPEN_OWN_M: 100, OPEN_SNAP_M: 3 };
   const tf = (k, p) => { let s = t(k); Object.keys(p || {}).forEach((n) => { s = s.split('{' + n + '}').join(p[n]); }); return s; };
   const angDeg = (u, v) => { const a = Math.hypot(u[0], u[1]), b = Math.hypot(v[0], v[1]); return a && b ? Math.acos(Math.max(-1, Math.min(1, (u[0] * v[0] + u[1] * v[1]) / (a * b)))) * 180 / Math.PI : 0; };
   function rvPolys() {
@@ -1014,8 +1027,54 @@ const EDITOR = (function () {
         spots.push({ c, es: comp, key: [ci, nav, mid], bb: [x0, z0, x1, z1], len, nav, r: out.get(comp[0]) });
       });
     });
+    rvOpenEnds(spots);
     spots.sort((p, q) => rvCmp(p.key, q.key));
-    rv.edges = out; rv.spots = spots; rvSync();
+    rv.edges = out; rv.spots = spots; rv.pts = spots.filter((q) => RVOC[q.c]); rvSync();
+  }
+  function rvOpenEnds(spots) {
+    const ci0 = RVC.indexOf('opennear'), R = RVP.OPEN_NEAR_M * SC, ends = [];
+    for (let n = 0; n < NID.length; n++) { if (!NAL[n]) continue; let c = 0, le = -1; for (const e of adj[n]) if (EAL[e]) { c++; le = e; } if (c === 1) ends.push([n, le]); }
+    for (const [n, le] of ends) {
+      let tg = null;
+      if (ET[le] !== T_JUMP) {
+        const reach = new Map([[n, 0]]), st = [n];                      // the open end's own neighbourhood: everything within OPEN_OWN_M of link path (already connected there)
+        while (st.length) { const a = st.pop(), da = reach.get(a); adj[a].forEach((e) => { if (!EAL[e]) return; const m = other(e, a), d = da + EL[e]; if (d <= RVP.OPEN_OWN_M && d < (reach.has(m) ? reach.get(m) : 1e18)) { reach.set(m, d); st.push(m); } }); }
+        const x = NWX[n], z = NWZ[n], cx0 = Math.floor((NX[n] - R - CELL / 4) / CELL), cx1 = Math.floor((NX[n] + R + CELL / 4) / CELL), cy0 = Math.floor((NY[n] - R - CELL / 4) / CELL), cy1 = Math.floor((NY[n] + R + CELL / 4) / CELL), seen = new Set();
+        for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+          const l = gridE.get(ck(cx, cy)); if (!l) continue;
+          for (const e of l) {
+            if (seen.has(e)) continue; seen.add(e);
+            const ty = ET[e]; if (!EAL[e] || ty === T_JUMP || ty === T_TURN || ty === T_TUNNEL || reach.has(EA[e]) || reach.has(EB[e])) continue;
+            const a = EA[e], b = EB[e], dx = NWX[b] - NWX[a], dz = NWZ[b] - NWZ[a], L2 = dx * dx + dz * dz, u = L2 ? Math.max(0, Math.min(1, ((x - NWX[a]) * dx + (z - NWZ[a]) * dz) / L2)) : 0;
+            const d = Math.hypot(x - NWX[a] - u * dx, z - NWZ[a] - u * dz); if (d > RVP.OPEN_NEAR_M || (tg && d >= tg.d)) continue;
+            const dh = NH[n] - (NH[a] + u * (NH[b] - NH[a])); if (isFinite(dh) && Math.abs(dh) > RVP.OPEN_DZ) continue;      // no height data -> no height test
+            tg = { e, u, d, dh: isFinite(dh) ? dh : 0, n: -1 };
+          }
+        }
+        if (tg) { const la = tg.u * EL[tg.e], lb = (1 - tg.u) * EL[tg.e]; if (la <= RVP.OPEN_SNAP_M) tg.n = EA[tg.e]; else if (lb <= RVP.OPEN_SNAP_M) tg.n = EB[tg.e]; }
+      }
+      const c = tg ? 'opennear' : 'open', nav = rv.pm.has(le) ? rv.pm.get(le) : 1e9;
+      const tx = tg ? NWX[EA[tg.e]] + tg.u * (NWX[EB[tg.e]] - NWX[EA[tg.e]]) : NWX[n], tz = tg ? NWZ[EA[tg.e]] + tg.u * (NWZ[EB[tg.e]] - NWZ[EA[tg.e]]) : NWZ[n];
+      if (tg) { tg.x = tx; tg.z = tz; }
+      spots.push({ c, es: [le], key: [ci0 + (tg ? 0 : 1), nav, NID[n]], bb: [Math.min(NWX[n], tx), Math.min(NWZ[n], tz), Math.max(NWX[n], tx), Math.max(NWZ[n], tz)], len: EL[le], nav, node: n, tg,
+        r: { c, rs: [] } });
+    }
+  }
+  function rvOpenText(s) {
+    const n = s.node, le = s.es[0];
+    if (!s.tg) return ET[le] === T_JUMP ? t('ro_jump') : t('ro_dead');
+    const g = s.tg, w = g.n >= 0 ? tf('ro_node', { id: NID[g.n] }) : tf('ro_edge', { t: t(TLAB[ET[g.e]]) }), dz = Math.abs(g.dh) < 0.05 ? t('ro_dz0') : tf('ro_dz', { z: Math.abs(g.dh).toFixed(1) });
+    return tf('ro_near', { d: g.d.toFixed(1), w, z: dz });
+  }
+  function rvConnect() {                                              // "Connect to suggested": link from the current open end to its suggested target (a split point inside a link when the target is not a point)
+    rvCompute(); const L_ = rvList(), s = L_[rv.i];
+    if (!s || s.c !== 'opennear' || !s.tg || !NAL[s.node]) return false;
+    const g = s.tg, ops = [], ty = ET[s.es[0]];                      // same type as the link the open end belongs to (never a jump: those have no target); a split keeps the split link's type on both halves
+    let tn = g.n;
+    if (tn < 0) { const a = EA[g.e], b = EB[g.e]; tn = splitEdge(g.e, NX[a] + g.u * (NX[b] - NX[a]), NY[a] + g.u * (NY[b] - NY[a]), ops); }
+    if (link(s.node, tn, ty, ops) < 0) { say(t('s_exists'), 1); return false; }
+    commit(ops); say(t('s_conn'));
+    rvStep(1); return true;
   }
   const rvCmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
   const rvList = () => rv.cat === 'all' ? rv.spots : rv.spots.filter((s) => s.c === rv.cat);
@@ -1037,7 +1096,7 @@ const EDITOR = (function () {
     const b = s.bb; map.fitBounds(L.latLngBounds([ll(b[0], b[1]), ll(b[2], b[3])]), { padding: [110, 110], maxZoom: 5.25 });
   }
   function rvSchedule() { if (!rv.on) return; clearTimeout(rv.t); rv.t = setTimeout(() => { rvCompute(); renderReview(); redraw(); }, 400); }
-  function rvSetOn(on) { rv.on = !!on; if (rv.on) rvCompute(); else { rv.edges = new Map(); rv.cur = new Set(); } renderReview(); redraw(); }
+  function rvSetOn(on) { rv.on = !!on; if (rv.on) rvCompute(); else { rv.edges = new Map(); rv.pts = []; rv.cur = new Set(); } renderReview(); redraw(); }
   function renderReview() {
     const el = document.getElementById('ed_rv'); if (!el) return;
     let h = '<label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="rv_on"' + (rv.on ? ' checked' : '') + '>' + esc(t('rv_hl')) + '</label>';
@@ -1049,6 +1108,11 @@ const EDITOR = (function () {
         '<div class="row"><button id="rv_prev">&laquo; ' + esc(t('rq_prev')) + '</button><button id="rv_next">' + esc(t('rq_next')) + ' &raquo;</button></div>';
       if (s) {
         const cx = (s.bb[0] + s.bb[2]) / 2, cz = (s.bb[1] + s.bb[3]) / 2;
+        if (RVOC[s.c]) {
+          const nx = NWX[s.node], nz = NWZ[s.node];
+          h += '<div class="card" id="rv_card"><div><b>' + esc(t('rvc_' + s.c)) + '</b></div><div>' + esc(rvOpenText(s)) + '</div><div class="small">' + esc(tf('ro_info', { t: t(TLAB[ET[s.es[0]]]), m: Math.round(s.len), q: s.nav < 1e9 ? s.nav : '-', x: Math.round(nx), z: Math.round(nz) })) + '</div></div>';
+          if (s.tg) h += '<div class="row"><button id="rv_conn" title="' + esc(t('ro_conn_h')) + '">' + esc(t('ro_conn')) + ' (C)</button></div>';
+        } else
         h += '<div class="card" id="rv_card"><div><b>' + esc(t('rvc_' + s.c)) + '</b></div><div>' + esc(rvText(s.r)) + '</div><div class="small">' + esc(tf('rv_info', { n: s.es.length, m: Math.round(s.len), q: s.nav < 1e9 ? s.nav : '-', x: Math.round(cx), z: Math.round(cz) })) + '</div></div>';
       } else if (rv.key) h += '<div class="small">' + esc(t('rv_gone')) + '</div>';
       else if (!L.length) h += '<div class="small">' + esc(t('rv_none')) + '</div>';
@@ -1058,7 +1122,7 @@ const EDITOR = (function () {
     const on = (id, f) => { const b = document.getElementById(id); if (b) b.addEventListener('click', f); };
     const c = document.getElementById('rv_on'); if (c) c.addEventListener('change', () => rvSetOn(c.checked));
     const sc_ = document.getElementById('rv_cat'); if (sc_) sc_.addEventListener('change', () => { rv.cat = sc_.value; rv.key = null; rvSync(); renderReview(); redraw(); });
-    on('rv_prev', () => rvStep(-1)); on('rv_next', () => rvStep(1)); on('rv_card', rvFocus);
+    on('rv_prev', () => rvStep(-1)); on('rv_conn', rvConnect); on('rv_next', () => rvStep(1)); on('rv_card', rvFocus);
   }
 
   // ---------------------------------------------------------------------------------------------------------------- preview mode
@@ -1131,6 +1195,7 @@ const EDITOR = (function () {
     else if (pv.on && k === 'b') { pv.bd = (pv.bd + 1) % 3; pvBackdrop(); }
     else if (pv.on && k === 't') { pv.turn = !pv.turn; redraw(); }
     else if (!pv.on && ed.on && rv.on && k === 'n') rvStep(ev.shiftKey ? -1 : 1);
+    else if (!pv.on && ed.on && rv.on && k === 'c' && !ev.shiftKey) rvConnect();
   });
 
   // ---------------------------------------------------------------------------------------------------------------- 3D preview
@@ -1219,7 +1284,7 @@ const EDITOR = (function () {
     const z = map.getZoom(), sc = Math.pow(2, z - 3), o = map.getPixelOrigin(), ox = o.x + tl.x, oy = o.y + tl.y;
     const px = (i) => NX[i] * sc - ox, py = (i) => NY[i] * sc - oy, base = Math.max(1.8, Math.min(5.5, 1.2 + sc * 0.9));
     if (pv.on) { drawPv(g, px, py, sc, cw, ch); return; }
-    drawHalo(tl, cw, ch, dpr, px, py, base);
+    drawHalo(tl, cw, ch, dpr, px, py, base, sc, ox, oy);
     const P = []; for (let k = 0; k < NT; k++) P.push(new Path2D());
     const CS = new Path2D(), CT = new Path2D(), arrows = [];             // white outline of user-made links (CT: the dashed one under Trail links)
     for (let e = 0; e < EA.length; e++) {
@@ -1282,9 +1347,10 @@ const EDITOR = (function () {
     }
   }
 
-  function drawHalo(tl, cw, ch, dpr, px, py, base) {                   // review spots: pulsing red-orange halo under the links, the current spot in yellow with a ring
+  function drawHalo(tl, cw, ch, dpr, px, py, base, sc, ox, oy) {                   // review spots: pulsing red-orange halo under the links, the current spot in yellow with a ring
     const list = rv.on && rv.edges.size ? [...rv.edges].filter(([e, r]) => EAL[e] && (rv.cat === 'all' || r.c === rv.cat)) : [];
-    if (!list.length) { hv.style.display = 'none'; return; }
+    const pts = rv.on ? rv.pts.filter((q) => (rv.cat === 'all' || q.c === rv.cat) && NAL[q.node]) : [];
+    if (!list.length && !pts.length) { hv.style.display = 'none'; return; }
     hv.style.display = '';
     if (hv.width !== Math.round(cw * dpr) || hv.height !== Math.round(ch * dpr)) { hv.width = Math.round(cw * dpr); hv.height = Math.round(ch * dpr); hv.style.width = cw + 'px'; hv.style.height = ch + 'px'; }
     L.DomUtil.setPosition(hv, tl);
@@ -1305,6 +1371,24 @@ const EDITOR = (function () {
     g.strokeStyle = 'rgba(255,245,120,.98)'; g.lineWidth = base * 1.6 + 2; g.stroke(C);
     if (cn) { let r = 0; rv.cur.forEach((e) => { r = Math.max(r, Math.hypot(px(EA[e]) - cx / cn, py(EA[e]) - cy / cn), Math.hypot(px(EB[e]) - cx / cn, py(EB[e]) - cy / cn)); }); r = Math.min(r + 30, 400);
       g.strokeStyle = '#fff'; g.lineWidth = 2.5; g.setLineDash([7, 5]); g.beginPath(); g.arc(cx / cn, cy / cn, r, 0, 6.3); g.stroke(); g.setLineDash([]); }
+    // open ends: a ring on the point (magenta = likely unconnected, with a thin dashed line to the suggested target; amber = plain dead end); the current one is yellow-white with the big dashed ring
+    const tpx = (x) => (x - X0) * SC * sc - ox, tpy = (z) => (Z1 - z) * SC * sc - oy, vis = [], cur = rv.i >= 0 ? rvList()[rv.i] : null;
+    for (const q of pts) { const x = px(q.node), y = py(q.node); if (x < -60 || x > cw + 60 || y < -60 || y > ch + 60) continue; vis.push([q, x, y]); }
+    g.setLineDash([5, 4]); g.lineWidth = 1.6; g.strokeStyle = 'rgba(255,90,240,.8)'; g.beginPath();
+    for (const [q, x, y] of vis) if (q.tg && q !== cur) { g.moveTo(x, y); g.lineTo(tpx(q.tg.x), tpy(q.tg.z)); }
+    g.stroke(); g.setLineDash([]);
+    const ring = (x, y, r, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.arc(x, y, r, 0, 6.3); g.stroke(); };
+    for (const [q, x, y] of vis) {
+      if (q === cur) continue;
+      if (q.tg) { g.fillStyle = 'rgba(255,60,230,.28)'; g.beginPath(); g.arc(x, y, base * 2 + 9, 0, 6.3); g.fill(); ring(x, y, base * 1.4 + 3, 'rgba(255,90,240,.98)', 2.4); }
+      else ring(x, y, base * 1.1 + 2.5, 'rgba(255,170,40,.95)', 1.8);
+    }
+    if (cur && RVOC[cur.c] && NAL[cur.node]) {
+      const x = px(cur.node), y = py(cur.node);
+      if (cur.tg) { const X = tpx(cur.tg.x), Y = tpy(cur.tg.z); g.setLineDash([7, 4]); g.strokeStyle = 'rgba(120,235,255,.98)'; g.lineWidth = 2.2; g.beginPath(); g.moveTo(x, y); g.lineTo(X, Y); g.stroke(); g.setLineDash([]); ring(X, Y, 6, 'rgba(120,235,255,.98)', 2.2); }
+      g.fillStyle = 'rgba(255,245,120,.35)'; g.beginPath(); g.arc(x, y, base * 2 + 14, 0, 6.3); g.fill(); ring(x, y, base * 1.5 + 4, 'rgba(255,245,120,1)', 3);
+      g.setLineDash([7, 5]); ring(x, y, 34, '#fff', 2.5); g.setLineDash([]);
+    }
   }
 
   // ---------------------------------------------------------------------------------------------------------------- pointer handling
@@ -1664,7 +1748,7 @@ const EDITOR = (function () {
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
   return { ed, marks, hist, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
-    review: { rv, compute: rvCompute, step: rvStep, setOn: rvSetOn, focus: rvFocus, list: rvList, RVP }, preview: { pv, set: pvSet },
+    review: { rv, compute: rvCompute, step: rvStep, connect: rvConnect, setOn: rvSetOn, focus: rvFocus, list: rvList, RVP }, preview: { pv, set: pvSet },
     graph: { NID, EA, EB, ET, EL, EAD, EAL, EDIR, NGAME, ekey, nodeIdx, NX, NY, NWX, NWZ, NH, NAL, NORIG, PRE },
     // scripting / test hooks (the pointer handlers call exactly these)
     api: { terrainY, autoY, offTerrain, newPoint, link, splitEdge, removeEdge, setPos, commit, dirOf, nbrs, drawAt, endChain, planeToWorld, isMoved } };
