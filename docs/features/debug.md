@@ -1,6 +1,6 @@
 # Debug
 
-The tab is split into two columns (`ui.columns(2)`): **left** the raw packet (below), **right** the
+The tab is split into two columns (`crate::theme::columns(ui, 2, …)`, the self-contained-pane helper — see `docs/ui/STYLING-GUIDE.md` "Panes"): **left** the raw packet (below), **right** the
 "Derived from telemetry" card (see the end of this page).
 
 A top-level tab just left of Setup (bug icon, `icons::BUG` = fa-bug U+F188). It shows every field of
