@@ -278,14 +278,14 @@ function chainRuns(E, N, nT) {
 }
 
 // Runs -> samples every RSTEP m (the nodes plus a uniform step along the run).  Per sample: x z, distance along the run, terrain y (+LIFT), node y (+LIFT, linear between the two nodes' heights), the edge (a, b) it lies on.
-function resampleRuns(runs, X, Z, NY, totalLen) {
+function resampleRuns(runs, X, Z, NY, totalLen, drape) {   // drape: node y = terrain y (cross-country always follows the ground)
   let nn = 0; for (const r of runs) nn += r.length;
   const cap = nn + Math.ceil(totalLen / RSTEP) + runs.length + 8;
   const sx = new Float32Array(cap), sz = new Float32Array(cap), st = new Float32Array(cap), syT = new Float32Array(cap), syN = new Float32Array(cap), sa = new Int32Array(cap), sb = new Int32Array(cap);
   const starts = [0]; let c = 0;
   const put = (a, b, f, d) => {
     const x = X[a] + (X[b] - X[a]) * f, z = Z[a] + (Z[b] - Z[a]) * f;
-    sx[c] = x; sz[c] = z; st[c] = d; syT[c] = heightAt(x, z) + LIFT; syN[c] = NY[a] + (NY[b] - NY[a]) * f + LIFT; sa[c] = a; sb[c] = b; c++;
+    sx[c] = x; sz[c] = z; st[c] = d; syT[c] = heightAt(x, z) + LIFT; syN[c] = drape ? syT[c] : NY[a] + (NY[b] - NY[a]) * f + LIFT; sa[c] = a; sb[c] = b; c++;
   };
   for (const r of runs) {
     const c0 = c; let d = 0, prev = r[0], first = true;
@@ -389,7 +389,7 @@ function setRoads(src) {
   types.sort((p, q) => rank(src.tn[p]) - rank(src.tn[q]));
   let samples = 0;
   for (const t of types) {
-    const ty = src.tn[t], st = SEL(ty), S = resampleRuns(runs[t], X, Z, NY, len[t]);
+    const ty = src.tn[t], st = SEL(ty), S = resampleRuns(runs[t], X, Z, NY, len[t], ty === 'crosscountry');
     if (S.n < 2) continue;
     const mesh = makeTypeMesh(ty, S, st, vis[ty] !== undefined ? vis[ty] : st.on);
     world.add(mesh); roadMeshes[ty] = mesh; ROAD_KM[ty] = len[t] / 1000; samples += S.n;
@@ -573,7 +573,7 @@ function check(count = 5, mode = null) {
     const m = roadMeshes[types[n % types.length]], u = m.userData, k = Math.floor(Math.random() * u.n), v = 2 * k;
     const x = u.pos[3 * v], yT = u.pos[3 * v + 1], z = -u.pos[3 * v + 2], yN = u.yN[v], h = heightAt(x, z);
     const a = u.sa[k], b = u.sb[k], dx = SRC.X[b] - SRC.X[a], dz = SRC.Z[b] - SRC.Z[a], L2 = dx * dx + dz * dz;
-    const f = L2 ? Math.min(Math.max(((x - SRC.X[a]) * dx + (z - SRC.Z[a]) * dz) / L2, 0), 1) : 0, expN = SRC.NY[a] + (SRC.NY[b] - SRC.NY[a]) * f + LIFT;   // node y from the two nodes of the edge
+    const f = L2 ? Math.min(Math.max(((x - SRC.X[a]) * dx + (z - SRC.Z[a]) * dz) / L2, 0), 1) : 0, expN = u.ty === 'crosscountry' ? h + LIFT : SRC.NY[a] + (SRC.NY[b] - SRC.NY[a]) * f + LIFT;   // node y from the two nodes of the edge
     const eff = md === 'terrain' ? yT : md === 'above' ? Math.max(yN, yT) : yN;
     const nodeOk = Math.abs(yN - expN) < 0.02;
     const ok = nodeOk && (md === 'terrain' ? Math.abs(yT - (h + LIFT)) < 0.02 : md === 'above' ? eff >= h + LIFT - 0.02 && Math.abs(eff - Math.max(yN, h + LIFT)) < 0.02 : true);

@@ -643,7 +643,7 @@ const EDITOR = (function () {
 
   // ---------------------------------------------------------------------------------------------------------------- state
   // type index = position in TN (0 = not set).  Colours: Trail is drawn dashed, Tunnel and Highway (wide, amber) with a dark casing, Turnaround dotted (hideable, ed.showTurn), Jump line with arrows (draw()); user-made links get a white outline.
-  const TN = [null, 'road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'highway', 'turnaround'], NT = TN.length, T_TUNNEL = 6, T_JUMP = 7, T_HWY = 8, T_TURN = 9;
+  const TN = [null, 'road', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'highway', 'turnaround'], NT = TN.length, T_XC = 5, T_TUNNEL = 6, T_JUMP = 7, T_HWY = 8, T_TURN = 9;
   const TCOL = ['#e11d95', '#38bdf8', '#ff8c1a', '#4ade80', '#facc15', '#a78bfa', '#e2e8f0', '#f43f5e', '#fbbf24', '#d946ef'];
   const TLAB = ['km_unset', 'km_road', 'km_offroad', 'km_other', 'km_trail', 'km_crosscountry', 'km_tunnel', 'km_jump', 'km_highway', 'km_turnaround'];
   const USER0 = 1000000, OFFT = 3;      // user point ids start here (game nav ids stay below); "off the terrain" threshold in metres (bridge / tunnel test)
@@ -765,8 +765,9 @@ const EDITOR = (function () {
   // Height of a new / moved point at (x,z) whose linked neighbours are nb (node indices).  Terrain by default; interpolation between two neighbours when both are
   // >= OFFT m off the terrain (bridge / tunnel), when the point sits on a tunnel-typed edge, or when there is no terrain data; with a single neighbour that
   // case copies the neighbour's height.  With more than two neighbours (junction) the two that lie most opposite each other are used.
-  function autoY(x, z, nb, tunnel) {
+  function autoY(x, z, nb, tunnel, xc) {
     const ty = terrainY(x, z);
+    if (xc && isFinite(ty)) return ty;                      // cross-country-only point: always the ground (never the bridge interpolation)
     let a = -1, b = -1;
     if (nb.length === 2) { a = nb[0]; b = nb[1]; }
     else if (nb.length > 2) {
@@ -780,6 +781,14 @@ const EDITOR = (function () {
     if (nb.length === 1 && (tunnel || !isFinite(ty))) return NH[nb[0]];
     if (isFinite(ty)) return ty;
     return nb.length ? NH[nb[0]] : 100;
+  }
+  const onlyXC = (i) => { let n = 0; for (const e of adj[i]) if (EAL[e]) { if (ET[e] !== T_XC) return false; n++; } return n > 0; };   // every live link is cross-country
+  // user points whose links are all cross-country take the terrain height (user data, so safe to re-derive; the next export is then clean).  Runs on import and again once the
+  // height grid has loaded (the autosave restore happens before it, when terrainY is still NaN).  Not autosaved by itself.  Returns the number of points changed.
+  function snapXC() {
+    let n = 0;
+    for (let i = 0; i < NID.length; i++) if (NID[i] >= USER0 && NAL[i] && onlyXC(i)) { const ty = terrainY(NWX[i], NWZ[i]); if (isFinite(ty) && Math.abs(NH[i] - ty) > 0.5) { setPos(i, NWX[i], NWZ[i], r2(ty)); n++; } }
+    return n;
   }
   const hasElev = () => { if (GRID.elev) return true; say(t('s_noelev'), 1); return false; };
 
@@ -822,7 +831,7 @@ const EDITOR = (function () {
   function splitEdge(e, px, py, ops) {                    // px,py = click in plane units; -> new point index
     const a = EA[e], b = EB[e], dx = NX[b] - NX[a], dy = NY[b] - NY[a], L2 = dx * dx + dy * dy;
     const u = L2 ? Math.max(0.02, Math.min(0.98, ((px - NX[a]) * dx + (py - NY[a]) * dy) / L2)) : 0.5, type = ET[e], jt = type === T_JUMP ? dirOf(e) : -1;
-    const x = r2(NWX[a] + u * (NWX[b] - NWX[a])), z = r2(NWZ[a] + u * (NWZ[b] - NWZ[a])), h = r2(autoY(x, z, [a, b], type === T_TUNNEL));
+    const x = r2(NWX[a] + u * (NWX[b] - NWX[a])), z = r2(NWZ[a] + u * (NWZ[b] - NWZ[a])), h = r2(autoY(x, z, [a, b], type === T_TUNNEL, type === T_XC));
     const pi = newPoint(x, z, h, ops);
     EAL[e] = 0; ops.push(['a', e, 1, 0]);
     if (jt === b) { link(b, pi, type, ops); link(pi, a, type, ops); } else { link(a, pi, type, ops); link(pi, b, type, ops); }      // keeps the take-off end
@@ -904,6 +913,7 @@ const EDITOR = (function () {
     }
     const rid = new Set((D.racelines || []).map((r) => String(r.id)));
     Object.keys(o.races || {}).forEach((k) => { const v = raceTy(k, o.races[k]); if (rid.has(k) && RT.indexOf(v) >= 0) marks[k] = v; else skip++; });
+    snapXC();
     hist.length = 0; refreshAllRaces();
     if (!silent) say(t('s_imp') + ': ' + ok + ' ' + t('s_edges') + ', ' + add + ' ' + t('added') + (npt || nmv || nrm ? ', ' + npt + ' ' + t('st_pts') + ', ' + nmv + ' ' + t('st_moved') + ', ' + nrm + ' ' + t('st_removed') : '') + ', ' + Object.keys(marks).length + ' ' + t('racesm') + (skip ? ', ' + skip + ' ' + t('s_skip') : ''), skip ? 1 : 0);
     rvSchedule();
@@ -1418,7 +1428,7 @@ const EDITOR = (function () {
       else { if (link(ed.chain, n, ed.brush, ops) < 0) say(t('s_exists'), 1); else say(t('s_conn')); commit(ops); ed.chain = n; }
     } else {
       if (!hasElev()) return;
-      const w = planeToWorld(p), nb = ed.chain >= 0 && NAL[ed.chain] ? [ed.chain] : [], h = r2(autoY(w.x, w.z, nb, ed.brush === T_TUNNEL)), first = !nb.length;
+      const w = planeToWorld(p), nb = ed.chain >= 0 && NAL[ed.chain] ? [ed.chain] : [], h = r2(autoY(w.x, w.z, nb, ed.brush === T_TUNNEL, ed.brush === T_XC)), first = !nb.length;
       const i = newPoint(w.x, w.z, h, ops); if (!first) link(ed.chain, i, ed.brush, ops);
       commit(ops); ed.chain = i; say(first ? t('s_chain') : t('s_pt'));
     }
@@ -1459,7 +1469,7 @@ const EDITOR = (function () {
   }
   function dragTo(p) {                                    // live move of the dragged point: position follows the mouse, height is re-derived (D40) at every step
     const d = ed.drag, w = planeToWorld(p), i = d.i;
-    setPos(i, w.x, w.z, r2(autoY(w.x, w.z, nbrs(i), adj[i].some((e) => EAL[e] && ET[e] === T_TUNNEL)))); d.moved = true; redraw();
+    setPos(i, w.x, w.z, r2(autoY(w.x, w.z, nbrs(i), adj[i].some((e) => EAL[e] && ET[e] === T_TUNNEL), onlyXC(i)))); d.moved = true; redraw();
   }
   function finishDrag() {
     const d = ed.drag; ed.drag = null; const cur = [NWX[d.i], NWZ[d.i], NH[d.i]];
@@ -1747,7 +1757,7 @@ const EDITOR = (function () {
   ed.mode = store.get('edmode', 'pan'); ed.showTurn = !!store.get('showturn', 1); renderBox(); cv.style.display = 'none';
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
-  return { ed, marks, hist, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
+  return { ed, marks, hist, snapXC, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
     review: { rv, compute: rvCompute, step: rvStep, connect: rvConnect, setOn: rvSetOn, focus: rvFocus, list: rvList, RVP }, preview: { pv, set: pvSet },
     graph: { NID, EA, EB, ET, EL, EAD, EAL, EDIR, NGAME, ekey, nodeIdx, NX, NY, NWX, NWZ, NH, NAL, NORIG, PRE },
     // scripting / test hooks (the pointer handlers call exactly these)
@@ -1859,6 +1869,7 @@ sbox.addEventListener('input', () => {
 
 // ------------------------------------------------------------------------------------------------------------------ start
 const loadGridsP = loadGrids();
+loadGridsP.then(() => { try { window.__xcSnapped = EDITOR.snapXC(); } catch (e) { console.error(e); } });
 ENTRIES.forEach((e) => { const on = state.on[e.id] != null ? !!state.on[e.id] : e.on; if (on) setOn(e, true); else state.on[e.id] = 0; });
 applyLang();
 window.FH6V = { map, ll, world, showRoute, state, ENTRIES, ed: EDITOR, GRID, loadGridsP, lookup };      // handy in the browser console
