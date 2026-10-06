@@ -93,7 +93,7 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   `build_viewer.py` embeds it as `data/canon.js`; when the browser has **no saved editor work** the editor starts from it (not copied into `localStorage` until you edit, so a newer build's project data
   shows through), and the **Reset to project data** button (with `confirm()`) loads it over the current state. Saved `localStorage` work keeps priority. If its nav sha1 / node count differ from the
   install's, it is not loaded, the button is disabled and the panel says so. *Why committed:* it is the user's own work and the only copy that must never be lost; it holds no game data.
-- **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json`; **Import** reads it back
+- **Autosave** to `localStorage` (guarded; `file://` may block it) after every change and restored on load; **Export** downloads `fh6-road-types.json` (one entry per line, same layout as `fix_highways.py` and the committed canonical file, so PR diffs show only changed entries); **Import** reads it back
   (asks before replacing, warns if the nav sha1 / node count differ).
 - **Export format** (`fh6-road-types`): **v2** is written now (`points` / `moved` / `removed` / `jump_from`, and why coordinates are allowed: [fh6-map-tooling.md](../../docs/game-data/fh6-map-tooling.md#fh6-road-types-v2)); v1 files still import. The v1 form, ids and types only with **no coordinates**, looked like this:
 
