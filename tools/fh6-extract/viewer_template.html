@@ -536,7 +536,7 @@ const EDITOR = (function () {
     rv_gone: 'The last spot is fixed - Next continues after it.', rv_info: '{n} links, {m} m, nav road #{q}, x {x}, z {z}',
     rv_hint: 'Computed live from your current paint: fix a spot (paint it, add or remove links), then press Next - the list updates a moment after every edit. Keys N / Shift+N. Open ends (a point with one link): magenta = another road passes close by (likely unconnected, dashed line = suggestion, key C connects it), amber = plain dead end.',
     rvc_gap: 'Highway gap', rvc_cutoff: 'Cut-off highway piece', rvc_half: 'Half-marked road', rvc_turn: 'Turnaround?', rvc_island: 'Isolated highway piece',
-    rvc_opennear: 'Open end - near another road (likely unconnected)', rvc_open: 'Open end - dead end',
+    rvc_opennear: 'Open end - near another road (likely unconnected)', rvc_open: 'Open end - dead end', rvc_unset: 'Unmarked (no type)', r_unset: 'no road type set on these links',
     ro_near: 'open end {d} m from {w}, {z}', ro_node: 'point #{id}', ro_edge: 'a link (type {t})', ro_dz0: 'same height', ro_dz: '{z} m height difference',
     ro_dead: 'only one link here - a genuine dead end, trail end or map edge, unless a road is missing', ro_jump: 'end of a jump line (take-off / landing) - naturally open',
     ro_info: 'its link: type {t}, {m} m long, nav road #{q}, x {x}, z {z}', ro_conn: 'Connect to suggested', ro_conn_h: 'Add a link of the same type from this end to the suggested target (key C; Undo takes it back)',
@@ -591,7 +591,7 @@ const EDITOR = (function () {
     rv_gone: 'Die letzte Stelle ist behoben - Weiter geht dahinter weiter.', rv_info: '{n} Links, {m} m, Nav-Strasse #{q}, x {x}, z {z}',
     rv_hint: 'Live aus deiner aktuellen Markierung berechnet: eine Stelle beheben (malen, Links hinzufuegen oder entfernen), dann Weiter - die Liste aktualisiert sich kurz nach jeder Aenderung. Tasten N / Umschalt+N. Offene Enden (ein Punkt mit nur einem Link): magenta = eine andere Strasse liegt ganz in der Naehe (wohl nicht verbunden, gestrichelte Linie = Vorschlag, Taste C verbindet), bernstein = einfache Sackgasse.',
     rvc_gap: 'Autobahn-Luecke', rvc_cutoff: 'Abgeschnittenes Autobahnstueck', rvc_half: 'Halb markierte Strasse', rvc_turn: 'Wendeverbindung?', rvc_island: 'Isoliertes Autobahnstueck',
-    rvc_opennear: 'Offenes Ende - nahe einer anderen Strasse (wohl nicht verbunden)', rvc_open: 'Offenes Ende - Sackgasse',
+    rvc_opennear: 'Offenes Ende - nahe einer anderen Strasse (wohl nicht verbunden)', rvc_open: 'Offenes Ende - Sackgasse', rvc_unset: 'Nicht markiert (kein Typ)', r_unset: 'kein Strassentyp auf diesen Links gesetzt',
     ro_near: 'offenes Ende {d} m von {w}, {z}', ro_node: 'Punkt #{id}', ro_edge: 'einem Link ({t})', ro_dz0: 'gleiche Hoehe', ro_dz: '{z} m Hoehenunterschied',
     ro_dead: 'nur ein Link hier - echte Sackgasse, Pfadende oder Kartenrand, ausser es fehlt eine Strasse', ro_jump: 'Ende einer Sprunglinie (Absprung / Landung) - von Natur aus offen',
     ro_info: 'sein Link: Art {t}, {m} m lang, Nav-Strasse #{q}, x {x}, z {z}', ro_conn: 'Mit Vorschlag verbinden', ro_conn_h: 'Fuegt einen Link gleicher Art von diesem Ende zum vorgeschlagenen Ziel hinzu (Taste C; Rueckgaengig nimmt ihn zurueck)',
@@ -869,6 +869,17 @@ const EDITOR = (function () {
       counts: { km: kmo, edges: { total: NGAME, painted, added: added.length, removed: removed.length }, points: Object.keys(points).length, moved: Object.keys(moved).length,
                 races: { marked: Object.keys(rm).length, total: HAS_RC ? D.racelines.length : 0 } } };
   }
+  function exportText() {                               // same layout as fix_highways.py write_v2: one entry per line, so a PR diff shows only the changed entries (Why: contributions via pull request)
+    const o = exportObj(), J = JSON.stringify, L = ['{"format":"fh6-road-types","version":2,', '"nav":' + J(o.nav) + ','];
+    const block = (name, items) => { L.push('"' + name + '":{'); items.forEach(([k, v], i) => L.push(J(k) + ':' + J(v) + (i < items.length - 1 ? ',' : ''))); L.push('},'); };
+    block('types', Object.entries(o.types));
+    L.push('"added":['); o.added.forEach((q, i) => L.push(J(q) + (i < o.added.length - 1 ? ',' : ''))); L.push('],');
+    block('points', Object.entries(o.points)); block('moved', Object.entries(o.moved));
+    L.push('"removed":' + J(o.removed) + ','); block('jump_from', Object.entries(o.jump_from));
+    L.push('"races":{'); const rs = Object.entries(o.races); rs.forEach(([k, v], i) => L.push(J(k) + ':' + J(v) + (i < rs.length - 1 ? ',' : ''))); L.push('},');
+    L.push('"counts":' + J(o.counts) + '}');
+    return L.join('\n') + '\n';
+  }
   function resetAll() {                                  // back to the untouched game graph: no types, no user points / links, nothing moved or removed
     for (let i = 0; i < NID.length; i++) {
       if (NID[i] >= USER0) NAL[i] = 0;
@@ -928,7 +939,7 @@ const EDITOR = (function () {
   let saveT = 0;
   function save() { clearTimeout(saveT); saveT = setTimeout(() => store.set('editor', exportObj()), 500); }
   function download() {
-    const b = new Blob([JSON.stringify(exportObj())], { type: 'application/json' }), a = document.createElement('a');
+    const b = new Blob([exportText()], { type: 'application/json' }), a = document.createElement('a');
     a.href = URL.createObjectURL(b); a.download = 'fh6-road-types.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     say(t('s_exp'));
   }
@@ -950,7 +961,7 @@ const EDITOR = (function () {
   //                      (its endpoint when the nearest point is within OPEN_SNAP_M = 3 m of it, else a split point inside the link).  open = all other open ends (genuine dead ends, trail ends, map edge,
   //                      and ends of jump lines, which are naturally open - kept in this bucket, not excluded).  Spots are per POINT, not per link: key = (category, nav road of the link, point id).
   // Why live and in JS: the script's output is stale the moment you paint; the review is only useful if it shows what is left NOW.
-  const RVC = ['gap', 'cutoff', 'half', 'turn', 'island', 'opennear', 'open'], RVOC = { opennear: 1, open: 1 };      // opennear / open = open ends (a point with exactly ONE live link), node-based spots, see rvOpenEnds()
+  const RVC = ['gap', 'cutoff', 'half', 'turn', 'island', 'opennear', 'open', 'unset'], RVOC = { opennear: 1, open: 1 };      // opennear / open = open ends (a point with exactly ONE live link), node-based spots, see rvOpenEnds()
   const RVP = { SPILL: 0.3, MOSTLY: 0.7, ISLAND_MAX_M: 1500, GROUND_DZ: 3, GROUND_MIN_FRAC: 0.8, TURN_LEN: [0, 30, 40], TURN_DZ: 4, TURN_THROUGH: 130, TURN_CROSS_MIN: 25, TURN_LOOP_M: 150, OPEN_NEAR_M: 25, OPEN_DZ: 4, OPEN_OWN_M: 100, OPEN_SNAP_M: 3 };
   const tf = (k, p) => { let s = t(k); Object.keys(p || {}).forEach((n) => { s = s.split('{' + n + '}').join(p[n]); }); return s; };
   const angDeg = (u, v) => { const a = Math.hypot(u[0], u[1]), b = Math.hypot(v[0], v[1]); return a && b ? Math.acos(Math.max(-1, Math.min(1, (u[0] * v[0] + u[1] * v[1]) / (a * b)))) * 180 / Math.PI : 0; };
@@ -1023,6 +1034,8 @@ const EDITOR = (function () {
     });
     // cluster: links of one category that share a point = one spot
     const by = {}; out.forEach((r, e) => { (by[r.c] = by[r.c] || []).push(e); });
+    const uset = new Set(), URS = { c: 'unset', rs: [{ k: 'r_unset', p: {} }] };            // unmarked = every live link with no type (independent of the other categories: a gap link can also be unmarked)
+    for (let e = 0; e < EA.length; e++) if (EAL[e] && ET[e] === 0) { uset.add(e); (by.unset = by.unset || []).push(e); }
     const spots = [];
     RVC.forEach((c, ci) => {
       const es = by[c]; if (!es) return;
@@ -1034,12 +1047,12 @@ const EDITOR = (function () {
         comp.sort((x, y) => x - y);
         let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9, len = 0, mid = 1e12, nav = 1e9;
         comp.forEach((e) => { [EA[e], EB[e]].forEach((n) => { x0 = Math.min(x0, NWX[n]); x1 = Math.max(x1, NWX[n]); z0 = Math.min(z0, NWZ[n]); z1 = Math.max(z1, NWZ[n]); mid = Math.min(mid, NID[n]); }); len += EL[e]; nav = Math.min(nav, rv.pm.has(e) ? rv.pm.get(e) : 1e9); });
-        spots.push({ c, es: comp, key: [ci, nav, mid], bb: [x0, z0, x1, z1], len, nav, r: out.get(comp[0]) });
+        spots.push({ c, es: comp, key: [ci, nav, mid], bb: [x0, z0, x1, z1], len, nav, r: c === 'unset' ? URS : out.get(comp[0]) });
       });
     });
     rvOpenEnds(spots);
     spots.sort((p, q) => rvCmp(p.key, q.key));
-    rv.edges = out; rv.spots = spots; rv.pts = spots.filter((q) => RVOC[q.c]); rvSync();
+    rv.edges = out; rv.uset = uset; rv.spots = spots; rv.pts = spots.filter((q) => RVOC[q.c]); rvSync();
   }
   function rvOpenEnds(spots) {
     const ci0 = RVC.indexOf('opennear'), R = RVP.OPEN_NEAR_M * SC, ends = [];
@@ -1106,7 +1119,7 @@ const EDITOR = (function () {
     const b = s.bb; map.fitBounds(L.latLngBounds([ll(b[0], b[1]), ll(b[2], b[3])]), { padding: [110, 110], maxZoom: 5.25 });
   }
   function rvSchedule() { if (!rv.on) return; clearTimeout(rv.t); rv.t = setTimeout(() => { rvCompute(); renderReview(); redraw(); }, 400); }
-  function rvSetOn(on) { rv.on = !!on; if (rv.on) rvCompute(); else { rv.edges = new Map(); rv.pts = []; rv.cur = new Set(); } renderReview(); redraw(); }
+  function rvSetOn(on) { rv.on = !!on; if (rv.on) rvCompute(); else { rv.edges = new Map(); rv.uset = new Set(); rv.pts = []; rv.cur = new Set(); } renderReview(); redraw(); }
   function renderReview() {
     const el = document.getElementById('ed_rv'); if (!el) return;
     let h = '<label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="rv_on"' + (rv.on ? ' checked' : '') + '>' + esc(t('rv_hl')) + '</label>';
@@ -1359,6 +1372,7 @@ const EDITOR = (function () {
 
   function drawHalo(tl, cw, ch, dpr, px, py, base, sc, ox, oy) {                   // review spots: pulsing red-orange halo under the links, the current spot in yellow with a ring
     const list = rv.on && rv.edges.size ? [...rv.edges].filter(([e, r]) => EAL[e] && (rv.cat === 'all' || r.c === rv.cat)) : [];
+    if (rv.on && rv.uset && (rv.cat === 'all' || rv.cat === 'unset')) rv.uset.forEach((e) => { if (EAL[e] && (rv.cat === 'unset' || !rv.edges.has(e))) list.push([e]); });
     const pts = rv.on ? rv.pts.filter((q) => (rv.cat === 'all' || q.c === rv.cat) && NAL[q.node]) : [];
     if (!list.length && !pts.length) { hv.style.display = 'none'; return; }
     hv.style.display = '';
@@ -1757,7 +1771,7 @@ const EDITOR = (function () {
   ed.mode = store.get('edmode', 'pan'); ed.showTurn = !!store.get('showturn', 1); renderBox(); cv.style.display = 'none';
   if (store.get('edopen', 0)) setTimeout(() => setOpen(true), 0);      // after the panel / layers exist
 
-  return { ed, marks, hist, snapXC, exportObj, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
+  return { ed, marks, hist, snapXC, exportObj, exportText, importObj, prefill, prefillRaces, exactOf, undo, setMode, setBrush, setOpen, nearEdges, nearNode, runOf, connect: (a, b) => connect(nodeIdx.get(a), nodeIdx.get(b)), setRace: (id, ty) => { const old = marks[id] || null; if (ty) marks[id] = ty; else delete marks[id]; refreshRace(id); commit([['r', id, old, ty || null]]); },
     review: { rv, compute: rvCompute, step: rvStep, connect: rvConnect, setOn: rvSetOn, focus: rvFocus, list: rvList, RVP }, preview: { pv, set: pvSet },
     graph: { NID, EA, EB, ET, EL, EAD, EAL, EDIR, NGAME, ekey, nodeIdx, NX, NY, NWX, NWZ, NH, NAL, NORIG, PRE },
     // scripting / test hooks (the pointer handlers call exactly these)
