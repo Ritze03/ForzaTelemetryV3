@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.4.3] – 2026-10-06
+
+### Fixed
+- **Settings no longer spill out of their boxes when you resize the window**: on the Overlay tab the Drift Counter's *Style* choices were wider than their box, so the box grew into the next column and drew over the Notifications box, and the *Gain chip interval* value went missing. Every column and every box on the Overlay, Setup, Co-Op, Gearbox and Debug tabs now keeps to its own width: controls shrink, wrap or stack onto a second line when space is tight, and nothing draws into a neighbouring box at any window size.
+
 ## [0.4.2] – 2026-10-04
 
 ### Fixed

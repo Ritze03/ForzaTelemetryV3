@@ -8,7 +8,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     // Two columns (controls | live viz) with a fixed spacer between them.
     const GAP: f32 = 8.0;
     ui.spacing_mut().item_spacing.x = GAP; // ui.columns uses item_spacing.x as the inter-column gap
-    ui.columns(2, |cols| {
+    crate::theme::columns(ui, 2, |cols| {
     // ── Left column: controls ───────────────────────────────────────
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -398,7 +398,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 /// A settings row: label (with a What/When hover tooltip) in the left half, control filling the
 /// right half. For a combobox; sliders use `slider_row`.
 fn setting_row(ui: &mut Ui, label: &str, what: &str, when: &str, add: impl FnOnce(&mut Ui)) {
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         hover(crate::theme::row_label(&mut c[0], label), what, when);
         let w = c[1].available_width();
         c[1].spacing_mut().slider_width = (w - 52.0).max(40.0);
@@ -423,7 +423,7 @@ fn slider_row(
     // Wide enough that the DragValue never grows at its widest value ("100.0%"),
     // which would otherwise push the row layout as digits are added.
     const VALUE_W: f32 = 72.0;
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         hover(crate::theme::row_label(&mut c[0], label), what, when);
         c[1].horizontal(|ui| {
             // Pin the fixed-width spinner to the right and let the slider fill the

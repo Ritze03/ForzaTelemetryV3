@@ -29,7 +29,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     };
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
-        ui.columns(cols.len(), |uis| {
+        crate::theme::columns(ui, cols.len(), |uis| {
             for (ui, cards) in uis.iter_mut().zip(cols) {
                 ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
                 for card in *cards {
@@ -63,7 +63,7 @@ fn status_line(ui: &mut Ui, col: Color32, msg: &str) {
 
 /// Label in the left half, `right` in the right half (Setup's `control_row`).
 fn control_row<R>(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         theme::row_label(&mut c[0], label);
         c[1].horizontal(right).inner
     })
@@ -71,7 +71,7 @@ fn control_row<R>(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui) -> R) ->
 
 /// [`control_row`] with a tooltip on the label (the explanation, instead of a helper line).
 fn control_row_tip<R>(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         theme::row_label(&mut c[0], label).on_hover_text(tip);
         c[1].horizontal(right).inner
     })
@@ -93,22 +93,22 @@ fn pct_row(ui: &mut Ui, label: &str, v: &mut f32, lo: f32, hi: f32, step: f64, t
 /// greyed while the module's own "Enabled" is off. `tip` is the tooltip of its "Enabled" box.
 fn module_card(
     ui: &mut Ui,
-    app: &mut ForzaApp,
+    o: &mut OverlayConfig,
     title: &str,
     on: fn(&mut OverlayConfig) -> &mut bool,
     tip: Option<&str>,
-    body: impl FnOnce(&mut Ui, &mut ForzaApp),
+    body: impl FnOnce(&mut Ui, &mut OverlayConfig),
 ) {
-    let overlay_on = app.config.overlay.enabled;
+    let overlay_on = o.enabled;
     ui.add_enabled_ui(overlay_on, |ui| {
         theme::card(ui, title, |ui| {
-            let flag = on(&mut app.config.overlay);
+            let flag = on(o);
             let resp = theme::checkbox_row(ui, flag, tr("Enabled"));
             if let Some(text) = tip {
                 resp.on_hover_text(text);
             }
             let module_on = *flag;
-            ui.add_enabled_ui(module_on, |ui| body(ui, app));
+            ui.add_enabled_ui(module_on, |ui| body(ui, o));
         });
     });
 }
@@ -449,8 +449,11 @@ pub fn clear_layout_selection(ctx: &egui::Context) {
 }
 
 fn layout(ui: &mut Ui, app: &mut ForzaApp) {
+    layout_card(ui, &mut app.config.overlay);
+}
+
+fn layout_card(ui: &mut Ui, o: &mut OverlayConfig) {
     theme::card(ui, tr("Layout"), |ui| {
-        let o = &mut app.config.overlay;
         let sel_id = Id::new(LAYOUT_SEL_KEY);
         let mut sel: Option<Module> = ui.data(|d| d.get_temp(sel_id)).flatten();
         layout_grid(ui, o, &mut sel);
@@ -603,9 +606,11 @@ fn layout_grid(ui: &mut Ui, o: &mut OverlayConfig, sel: &mut Option<Module>) {
 // ── Module cards ─────────────────────────────────────────────────────────────
 
 fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
-    module_card(ui, app, tr("Drive Cluster"), |o| &mut o.cluster_on, None, |ui, app| {
-        let use_mph = app.config.use_mph;
-        let o = &mut app.config.overlay;
+    cluster_card(ui, &mut app.config.overlay, app.config.use_mph);
+}
+
+fn cluster_card(ui: &mut Ui, o: &mut OverlayConfig, use_mph: bool) {
+    module_card(ui, o, tr("Drive Cluster"), |o| &mut o.cluster_on, None, |ui, o| {
         control_row(ui, tr("Style"), |ui| {
             let label = |s: ClusterStyle| match s {
                 ClusterStyle::Pill => tr("Pill"),
@@ -645,8 +650,11 @@ fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
-    module_card(ui, app, tr("Minimap"), |o| &mut o.minimap_on, None, |ui, app| {
-        let o = &mut app.config.overlay;
+    minimap_card(ui, &mut app.config.overlay);
+}
+
+fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig) {
+    module_card(ui, o, tr("Minimap"), |o| &mut o.minimap_on, None, |ui, o| {
         // Greyed while the Dashboard's values are in use (Mini-Settings → Overlay ticks).
         let (map_own, coop_own) = (!o.map_use_dashboard, !o.coop_use_dashboard);
         ui.add_enabled_ui(map_own, |ui| {
@@ -662,9 +670,12 @@ fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 fn race(ui: &mut Ui, app: &mut ForzaApp) {
+    race_card(ui, &mut app.config.overlay);
+}
+
+fn race_card(ui: &mut Ui, o: &mut OverlayConfig) {
     let tip = tr("Swaps to the drift counter by itself when drifting is detected. Placed as Race / Drift in Layout.");
-    module_card(ui, app, tr("Race Block"), |o| &mut o.race_on, Some(tip), |ui, app| {
-        let o = &mut app.config.overlay;
+    module_card(ui, o, tr("Race Block"), |o| &mut o.race_on, Some(tip), |ui, o| {
         theme::checkbox_row(ui, &mut o.lap_delta, tr("Lap delta chip"));
         theme::checkbox_row(ui, &mut o.place_colour, tr("Place-change colour"))
             .on_hover_text(tr("Green fade when you gain a place, red when you lose one."));
@@ -672,13 +683,20 @@ fn race(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 fn drift(ui: &mut Ui, app: &mut ForzaApp) {
+    drift_card(ui, &mut app.config.overlay);
+}
+
+fn drift_card(ui: &mut Ui, o: &mut OverlayConfig) {
     let tip = tr("Replaces the race block automatically while you drift, in the same spot.");
-    module_card(ui, app, tr("Drift Counter"), |o| &mut o.drift_on, Some(tip), |ui, app| {
-        let o = &mut app.config.overlay;
+    module_card(ui, o, tr("Drift Counter"), |o| &mut o.drift_on, Some(tip), |ui, o| {
         let style_tip = tr("Position + Gain shows your place and the points of the last interval, counting up. Total shows the event score, which Forza also shows itself.");
         control_row_tip(ui, tr("Style"), style_tip, |ui| {
-            theme::styled_radio(ui, &mut o.drift_style, DriftStyle::PositionGain, tr("Position + Gain"));
-            theme::styled_radio(ui, &mut o.drift_style, DriftStyle::Total, tr("Total score"));
+            // Wraps: side by side when the half fits both, stacked in a narrow column.
+            theme::radio_group(
+                ui,
+                &mut o.drift_style,
+                &[(DriftStyle::PositionGain, tr("Position + Gain")), (DriftStyle::Total, tr("Total score"))],
+            );
         });
         theme::slider_row(ui, tr("Gain chip interval"), &mut o.drift_chip_secs, 1.0..=10.0, 1.0, 0, " s");
         let bar = format!("{} ({:.0} s)", tr("Progress bar"), o.drift_chip_secs);
@@ -689,9 +707,13 @@ fn drift(ui: &mut Ui, app: &mut ForzaApp) {
 /// D26: the master switch and the stack's anchor. The per-event toggles live in
 /// Mini-Settings → Overlay (`app.rs`), where they're one click from the game.
 fn notifications(ui: &mut Ui, app: &mut ForzaApp) {
-    module_card(ui, app, tr("Notifications"), |o| &mut o.notif_on, None, |ui, app| {
+    notifications_card(ui, &mut app.config.overlay);
+}
+
+fn notifications_card(ui: &mut Ui, o: &mut OverlayConfig) {
+    module_card(ui, o, tr("Notifications"), |o| &mut o.notif_on, None, |ui, o| {
         ui.label(theme::section_label(tr("Position")));
-        anchor_picker(ui, &mut app.config.overlay.notif_cell);
+        anchor_picker(ui, &mut o.notif_cell);
     });
 }
 
@@ -792,5 +814,92 @@ mod tests {
         assert!(module_on(&o, Module::Race), "drift still on keeps the Race / Drift chip lit");
         o.drift_on = false;
         assert!(!module_on(&o, Module::Race));
+    }
+
+    /// The Overlay page's real cards (General stands in with the same row helpers — it needs
+    /// the whole app) at the 800 px minimum, the 1100 px column switch and the user's 1235 px:
+    /// nothing paints into another column, every card frame is exactly its column wide, and
+    /// no text is cut off at a pane edge (everything genuinely fits, not just clipped).
+    #[test]
+    fn overlay_page_stays_inside_its_panes() {
+        use crate::ui::test_render;
+        for (w, h) in [(800.0, 1500.0), (1100.0, 1100.0), (1235.0, 1056.0)] {
+            let ctx = test_render::context();
+            let mut o = OverlayConfig::default();
+            let mut cols_seen = Vec::new();
+            let (out, tex) = test_render::run(&ctx, w, h, |ui| {
+                cols_seen.clear();
+                let three = ui.available_width() >= THREE_COLS_MIN_W;
+                ui.spacing_mut().item_spacing.x = 8.0;
+                theme::columns(ui, if three { 3 } else { 2 }, |uis| {
+                    for ui in uis.iter_mut() {
+                        cols_seen.push(ui.max_rect());
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                    }
+                    let general = |ui: &mut Ui, o: &mut OverlayConfig| {
+                        theme::card(ui, tr("General"), |ui| {
+                            theme::checkbox_row(ui, &mut o.enabled, tr("Enable overlay"));
+                            status_line(ui, theme::GOOD, tr("Overlay running"));
+                            control_row(ui, "Hide HUD", |ui| ui.add_sized([ui.available_width(), 22.0], egui::Button::new("J")));
+                            pct_row(ui, tr("Scale"), &mut o.scale, 50.0, 200.0, 5.0, None);
+                            pct_row(ui, tr("Plate opacity"), &mut o.plate_opacity, 0.0, 100.0, 1.0, None);
+                            theme::checkbox_row(ui, &mut o.fade, tr("Fade on show / hide"));
+                            theme::checkbox_row(ui, &mut o.focus_only, tr("Only when game window is focused"));
+                        });
+                    };
+                    if three {
+                        general(&mut uis[0], &mut o);
+                        layout_card(&mut uis[1], &mut o);
+                        race_card(&mut uis[1], &mut o);
+                        drift_card(&mut uis[1], &mut o);
+                        cluster_card(&mut uis[2], &mut o, false);
+                        minimap_card(&mut uis[2], &mut o);
+                        notifications_card(&mut uis[2], &mut o);
+                    } else {
+                        layout_card(&mut uis[0], &mut o);
+                        general(&mut uis[0], &mut o);
+                        cluster_card(&mut uis[1], &mut o, false);
+                        minimap_card(&mut uis[1], &mut o);
+                        race_card(&mut uis[1], &mut o);
+                        drift_card(&mut uis[1], &mut o);
+                        notifications_card(&mut uis[1], &mut o);
+                    }
+                });
+            });
+            test_render::snapshot(&ctx, &out, &tex, w as u32, h as u32, &format!("overlay_{w}"));
+
+            for r in test_render::visible_rects(&out) {
+                assert!(
+                    cols_seen.iter().any(|c| r.left() >= c.left() - 4.5 && r.right() <= c.right() + 4.5),
+                    "at {w} px a shape paints across columns: {r:?}"
+                );
+            }
+            let mut frames = 0;
+            for c in &out.shapes {
+                match &c.shape {
+                    egui::Shape::Rect(r) if r.stroke.color == theme::BORDER && r.corner_radius == egui::CornerRadius::same(7) => {
+                        frames += 1;
+                        let col = cols_seen.iter().find(|col| col.x_range().contains(r.rect.center().x)).unwrap();
+                        assert!(
+                            (r.rect.width() - col.width()).abs() <= 1.0,
+                            "at {w} px a card is {} wide in a {} column",
+                            r.rect.width(),
+                            col.width()
+                        );
+                    }
+                    egui::Shape::Text(t) => {
+                        let b = t.visual_bounding_rect();
+                        assert!(
+                            b.left() >= c.clip_rect.left() - 0.5 && b.right() <= c.clip_rect.right() + 0.5,
+                            "at {w} px text {:?} is cut off at a pane edge ({b:?} vs clip {:?})",
+                            t.galley.text(),
+                            c.clip_rect
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(frames, 7, "at {w} px: expected 7 card frames");
+        }
     }
 }

@@ -105,20 +105,96 @@ pub fn placeholder(text: impl Into<String>) -> RichText {
     RichText::new(text.into()).color(DIM)
 }
 
+// ---- Panes: columns & cards ---------------------------------------------
+//
+// The containment rule (docs/ui/STYLING-GUIDE.md → "Panes: everything stays in its
+// container"): every page column and every card is a *pane* with a fixed width taken from
+// its parent, and its contents are clipped to it. Why: egui grows a `Ui` (and every
+// enclosing `Ui`) to fit a widget that is wider than the space it was given, and plain
+// `ui.columns` doesn't clip — so one too-wide row (the Overlay tab's Drift Counter radios)
+// used to widen its card past the column and paint over the neighbouring column. Inside a
+// pane only the pane's own width counts: rows shrink, wrap or stack to it, and whatever
+// still doesn't fit is cut at the pane edge instead of spilling into another pane.
+
+/// A child `Ui` exactly `rect.width()` wide (top at `rect.top()`, growing down), painted
+/// only inside `clip_x` horizontally. Its overflow never reaches the parent: the caller
+/// allocates the fixed width itself.
+fn pane_ui(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    clip_x: egui::Rangef,
+    layout: egui::Layout,
+    salt: impl std::hash::Hash,
+) -> egui::Ui {
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(rect).layout(layout));
+    child.set_width(rect.width()); // min == max: the pane neither shrinks nor grows
+    let clip = child.clip_rect();
+    child.shrink_clip_rect(egui::Rect::from_x_y_ranges(clip_x, clip.y_range()));
+    child
+}
+
+/// Like `ui.columns`, but each column is a contained pane: exactly `1/n` of the width (minus
+/// the `item_spacing.x` gaps), clipped to its own slot, and the row allocates exactly the
+/// available width — a too-wide widget in one column can neither widen it nor paint into
+/// the next. Use it for page columns *and* for the label | control halves of a row.
+pub fn columns<R>(ui: &mut egui::Ui, n: usize, add: impl FnOnce(&mut [egui::Ui]) -> R) -> R {
+    let n = n.max(1);
+    let gap = ui.spacing().item_spacing.x;
+    let total = ui.available_width().max(0.0);
+    let col_w = ((total - gap * (n as f32 - 1.0)) / n as f32).max(0.0);
+    let top_left = ui.cursor().min;
+    let bottom = ui.max_rect().bottom().max(top_left.y);
+    let salt = ui.next_auto_id();
+    let mut cols: Vec<egui::Ui> = (0..n)
+        .map(|i| {
+            let x = top_left.x + i as f32 * (col_w + gap);
+            let rect = egui::Rect::from_min_max(egui::pos2(x, top_left.y), egui::pos2(x + col_w, bottom));
+            // Half the gap of slack each side: focus rings / hover washes stay visible, but
+            // two neighbouring columns' clip rects never overlap.
+            let clip_x = egui::Rangef::new(x - gap * 0.5, x + col_w + gap * 0.5);
+            let layout = egui::Layout::top_down_justified(egui::Align::LEFT);
+            pane_ui(ui, rect, clip_x, layout, (salt, "theme_col", i))
+        })
+        .collect();
+    let r = add(&mut cols);
+    let h = cols.iter().map(|c| c.min_rect().bottom() - top_left.y).fold(0.0_f32, f32::max);
+    ui.advance_cursor_after_rect(egui::Rect::from_min_size(top_left, egui::vec2(total, h)));
+    r
+}
+
 /// A bordered card with a blue [`section_label`] title, followed by a uniform
 /// 8px gap — the Co-Op tab's category styling, reused across tabs.
+///
+/// The card is a pane: exactly as wide as its parent's available width (its column), and
+/// its body is laid out in, and clipped to, the card's inner width — a row that is too
+/// wide is cut at the card edge, it never widens the card. Size the body's rows from
+/// `ui.available_width()` (the row helpers below all do).
 ///
 /// The 8px trailing space is the *only* inter-card gap, so callers must zero
 /// the container's vertical item spacing (`ui.spacing_mut().item_spacing.y = 0.0`)
 /// before stacking cards; otherwise egui adds its own spacing on top. The card
 /// sets its own inner spacing, independent of that outer zero.
 pub fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    ui.group(|ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 4.0; // comfortable spacing inside the card
-        ui.label(section_label(title));
-        ui.add_space(4.0);
-        body(ui);
+    let frame = egui::Frame::group(ui.style());
+    let margin = frame.total_margin();
+    let inner_w = (ui.available_width() - margin.sum().x).max(0.0);
+    frame.show(ui, |ui| {
+        let top_left = ui.cursor().min;
+        let rect = egui::Rect::from_min_max(
+            top_left,
+            egui::pos2(top_left.x + inner_w, ui.max_rect().bottom().max(top_left.y)),
+        );
+        // Clip just inside the frame's stroke, so hover washes in the inner margin show.
+        let slack = (margin.left - frame.stroke.width - 1.0).max(0.0);
+        let clip_x = egui::Rangef::new(rect.left() - slack, rect.right() + slack);
+        let salt = ui.auto_id_with("theme_card");
+        let mut body_ui = pane_ui(ui, rect, clip_x, *ui.layout(), salt);
+        body_ui.spacing_mut().item_spacing.y = 4.0; // comfortable spacing inside the card
+        body_ui.label(section_label(title));
+        body_ui.add_space(4.0);
+        body(&mut body_ui);
+        let h = (body_ui.min_rect().bottom() - top_left.y).max(0.0);
+        ui.advance_cursor_after_rect(egui::Rect::from_min_size(top_left, egui::vec2(inner_w, h)));
     });
     ui.add_space(8.0);
 }
@@ -242,6 +318,20 @@ pub fn styled_radio_w<T: PartialEq>(
     resp
 }
 
+/// A one-of-N choice as a row of [`styled_radio`]s that **wraps**: the options sit side by
+/// side while they fit the available width and stack onto further lines when they don't
+/// (a narrow column), so the group never pokes out of its pane. Returns true on change.
+pub fn radio_group<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str)]) -> bool {
+    ui.horizontal_wrapped(|ui| {
+        let mut changed = false;
+        for &(value, label) in options {
+            changed |= styled_radio(ui, current, value, label).changed();
+        }
+        changed
+    })
+    .inner
+}
+
 /// Checkbox behaviour on top of [`mark_ui`]: toggles `*checked` on click.
 fn checkbox_ui(
     ui: &mut egui::Ui,
@@ -279,6 +369,12 @@ fn mark_ui(
     // pass a min of half the card (so short ones read a uniform width) and a max
     // of the card (so a long label never forces the card wider — it wraps first).
     // The content-sized entry points pass [0, ∞] to stay content-sized.
+    // Never wider than the space the row has (the pane rule): a content-sized mark in a
+    // narrow pane wraps its label instead of growing past the edge. In a wrapping layout the
+    // limit is the whole line, so an option that doesn't fit moves to the next line first.
+    let limit = if ui.layout().main_wrap { ui.max_rect().width() } else { ui.available_size_before_wrap().x };
+    let max_w = max_w.min(limit).max(BOX);
+    let min_w = min_w.min(max_w);
     let no_wrap = ui.painter().layout_no_wrap(label.clone(), font.clone(), TEXT);
     let content_w = BOX + GAP + no_wrap.size().x;
     let w = content_w.clamp(min_w, max_w);
@@ -287,7 +383,7 @@ fn mark_ui(
     } else {
         ui.painter().layout(label, font, TEXT, (w - BOX - GAP).max(0.0))
     };
-    let stretched = max_w.is_finite();
+    let stretched = min_w > 0.0; // the half-width category rows (checkbox_row)
     let gsize = galley.size();
     // Occupy the standard control row height so it lines up with sliders / comboboxes
     // sharing its row (the mark + label stay centered within it).
@@ -375,7 +471,7 @@ pub fn checkbox_row_with(
     right: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let label = label.into();
-    ui.columns(2, |c| {
+    columns(ui, 2, |c| {
         let half = c[0].available_width();
         let resp = checkbox_ui(&mut c[0], checked, label, half, half, true);
         right(&mut c[1]);
@@ -427,7 +523,7 @@ pub fn slider_row<N: egui::emath::Numeric>(
     decimals: usize,
     suffix: &str,
 ) -> egui::Response {
-    ui.columns(2, |c| {
+    columns(ui, 2, |c| {
         row_label(&mut c[0], label);
         c[1].horizontal(|ui| {
             // Pin the fixed-width spinner to the right and let the slider fill the

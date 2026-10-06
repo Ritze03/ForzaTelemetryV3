@@ -8,3 +8,5 @@ pub mod gearbox;
 pub mod overlay_tab;
 pub mod power_curve;
 pub mod settings;
+#[cfg(test)]
+pub mod test_render;
