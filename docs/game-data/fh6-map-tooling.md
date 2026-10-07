@@ -42,8 +42,32 @@ v1 (ids + three types, no coordinates) still imports; `build_viewer.py:build_can
 - **Split** of game edge a-b at new point p is stored as `removed:["a-b"]` + added `a-p` and `p-b`, both with the old type.
 - **Why coordinates are allowed now:** v1 had none so the committed file held no game data. In v2 the coordinates are *user-placed* points (the user's own work, not read from the game),
   game nodes are still ids only, so the licensing rule holds (D48). Moved game nodes store the user's new position, not the original.
-- The canonical `tools/fh6-extract/data/fh6-road-types.json` is the committed copy and is **v2** since 2026-10-05 (the user's editor export, then run through `fix_highways.py`): ids plus the user's 42 points (ids >= 1000000), 116 added links (incl. the jump links with `jump_from`), 1 removed edge and 94 of 170 race marks (refreshed 2026-10-06 = user export (7) + `fix_highways.py` + restored race marks). Game edges by type: road 21747, offroad 11115, highway 4979, tunnel 904, other 317, turnaround 340 since the short-link rule (km: road 425.8, offroad 207.1, highway 103.4, tunnel 18.1, other 6, turnaround 7.2, cross-country 2.4, jump 6.8). Committing the coordinates is fine (D48: the user's own work). In the browser the editor's localStorage autosave keeps the old state until "Reset to project data" (see [hand-classified road and race types](fh6-game-files.md#hand-classified-road-and-race-types)).
+- The canonical **`assets/map/fh6-road-types.json`** (the *project file*; moved from `tools/fh6-extract/data/` in I25, D55: the app embeds it with `include_str!`, so it lives with the other app assets) is the committed copy and is **v2** since 2026-10-05 (the user's editor export, then run through `fix_highways.py`; latest refresh = user export (12), commit `198c13e`). Verified contents: 39 382 typed game edges (road 21 670, offroad 7 236, highway 4 979, trail 3 936, tunnel 904, turnaround 340, other 317; cross-country exists only as added links), **124 user points** (ids >= 1 000 000), **218 added links** (cross-country 144, road 31, jump 18, highway 17, trail 7, offroad 1), **1 moved** node, **1 removed** edge, **18 `jump_from`** entries and **94 race marks** (of 170 races: rally 21, road 21, cross-country 19, street 17, story 6, touge 5, drag 3, wristband 2). Network totals (`counts.km`): road 424.9 km, offroad 138.7, highway 103.4, trail 69.4, tunnel 18.1, cross-country 8, jump 7.3, turnaround 7.2, other 6. Committing the coordinates is fine (D48: the user's own work). In the browser the editor's localStorage autosave keeps the old state until "Reset to project data" (see [hand-classified road and race types](fh6-game-files.md#hand-classified-road-and-race-types)).
 - **File layout: one entry per line.** The canonical file is stored one entry per line, and the editor's Export (`exportText()` in `viewer_template.html`) writes exactly the same layout as `fix_highways.py` (`write_v2`), byte for byte, so replacing the file with a fresh export keeps pull-request diffs down to the entries that changed. *Why:* contributions come in as pull requests; the editor used to export one 900 kB line, which made every PR a whole-file diff. Import is plain JSON and still accepts old single-line files. Key order inside `types` / `jump_from` follows the editor's edge order (game edges, then added links), so a file written from a long session may be re-ordered once on the first re-export.
+
+### Rust reader and the "current" road types (`src/gamedata/roadtypes.rs`, I25)
+
+The app reads the format in Rust (`RoadTypes::parse`, lenient like the editor's `importObj`: unknown type names, bad keys and out-of-range ids are skipped and counted in `warnings` / `skipped`; only malformed JSON or a wrong `format` / `version` is an error) and writes it back with `RoadTypes::to_json_string()`, which reproduces `fix_highways.py write_v2` / the editor's `exportText` line for line. A unit test parses the embedded project file and writes it back **byte-identical**, so the one-entry-per-line layout is pinned by a test. Entry order (types, added, jump_from, races) is kept, so those are `Vec`s / order lists, not hash maps. The `races` block is an **opaque passthrough** (`Vec<(String, serde_json::Value)>`, never interpreted): the file holds 94 marks and no load → save may lose them. `counts` is kept as the raw JSON text (informational, not recomputed). Number printing follows JS (`10`, not `10.0`).
+
+Three states of the data, all in `roadtypes.rs`:
+
+| Name | What | API |
+|---|---|---|
+| **project** | the committed file, embedded (`include_str!("../../assets/map/fh6-road-types.json")`) | `RoadTypes::project()` |
+| **raw** (D57) | the bare nav graph: every edge unset, no points / links / moves / removals / race marks, no `nav` block | `RoadTypes::raw()` |
+| **current** (D57) | project, **replaced wholesale** by the user's override when that is valid | `RoadTypes::current(&override_path(), &nav)` -> `Current { types, source, note, project_updated_since_save }` |
+
+The override is `<app_data_dir>/map_editor/fh6-road-types.user.json` (`override_path()`), written by the editor's Save (I26b).
+
+**The override replaces the project file wholesale; there is no per-entry merge (D60, user decision 2026-10-07).** *Why:* the editor always saves the *complete* state (all typed edges, the full `removed` list). "This edge is now unset" and "this added link was deleted" are expressed by **absence**, which a per-entry overlay cannot represent: the project's entry would resurrect. An overlay would need tombstones, i.e. new format surface for little gain. Rules:
+
+1. No override file: current = project.
+2. Override present, parses, `version` 1 or 2, and its `nav` block matches the installed nav (SHA-1 and node count, the editor's `navOk`; a file with no `nav` block counts as matching): current = override.
+3. Override unparsable or for another nav: **ignored, never deleted or modified**; current = project; `Current.note` explains why in plain words (Setup shows it, I27).
+4. The project file's own `nav` differs from the installed one (game update): still used, with a note.
+5. **Drawback:** users who saved an override do not get later project improvements. Mitigation: Save stamps `"based_on": "<sha1 of the embedded project file>"` into the override (`RoadTypes::project_sha1()`; the writer emits it on its own line after `nav`), and `Current.project_updated_since_save` is true when the override's `based_on` differs (a missing `based_on` counts as false) so Setup can offer "Reset to project data".
+
+`RoadTypes::validate_for_save(text, &nav)` is the Save endpoint's check: parse + a `nav` block that matches + no skipped entries.
 
 ## `fix_highways.py` — highway clean-up
 

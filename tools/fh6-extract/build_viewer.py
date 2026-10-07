@@ -493,11 +493,11 @@ def build_roaded(work):
     return dict(nav=r['nav'], ids=r['ids'], y=[[round(float(v), 1) for v in q] for q in r['heights']], pre=pre, orphans=r['orphans'])
 
 
-CANON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fh6-road-types.json')
+CANON = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'assets', 'map', 'fh6-road-types.json')
 
 
 def build_canon():
-    """The project's hand-classified road + race types (tools/fh6-extract/data/fh6-road-types.json, ids only) -> data/canon.js.  The editor starts from it
+    """The project's hand-classified road + race types (assets/map/fh6-road-types.json, ids only) -> data/canon.js.  The editor starts from it
     when the browser has no saved work of its own; 'Reset to project data' loads it."""
     o = jl(CANON)
     assert o.get('format') == 'fh6-road-types' and o.get('version') in (1, 2), 'unexpected canonical file format'

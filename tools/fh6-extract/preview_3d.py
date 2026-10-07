@@ -13,7 +13,7 @@ Needs (all produced by build_viewer.py / the extractors, nothing is re-extracted
   <work>/terr_e/elevation.npy + elevation.json   the 8 m elevation raster (extract_terrain.py)
   <work>/roads.json                              nav graph polylines + node ids (decode_nav.py)
   <out>/tiles/<Season>/3/<x>/<y>.jpg             the game's map tiles (build_viewer.py:build_tiles), level 3 = 8x8 tiles of 1024 px = the 8192 px map
-  tools/fh6-extract/data/fh6-road-types.json     road types (default; --road-types PATH; version 1 and 2 of the editor export are read)
+  assets/map/fh6-road-types.json                 road types (default; --road-types PATH; version 1 and 2 of the editor export are read)
 Output (<out>/):  preview-3d.html (from preview_3d.html) and preview3d/{meta,terrain,roads,tex_<Season>}.js (roads = the edge list)  (window.P3D.* = ..., loaded by <script>,
 no fetch(): file:// blocks it).  Notes + the why of the design choices: docs/game-data/fh6-terrain.md / README "3D preview".
 """
@@ -30,7 +30,7 @@ HMIN, HSTEP = -5.0, 0.025        # heights are stored as uint16 q = (h - HMIN) /
 SEA_Y = 100.0                    # sea level in telemetry y
 FLOOR_Y = 40.0                   # height of the filled sea floor beyond the island data
 KNOWN_TYPES = ('road', 'highway', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'turnaround')   # v2 editor list; anything else -> other
-DEFAULT_TYPES = os.path.join(HERE, 'data', 'fh6-road-types.json')
+DEFAULT_TYPES = os.path.join(HERE, '..', '..', 'assets', 'map', 'fh6-road-types.json')
 
 
 def log(*a):

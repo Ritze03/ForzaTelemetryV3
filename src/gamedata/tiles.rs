@@ -122,10 +122,20 @@ fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, MapLoadError>
 
 fn read_entry<R: Read + std::io::Seek>(z: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec<u8>, MapLoadError> {
     let mut f = z.by_name(name).map_err(|e| MapLoadError::Decode(format!("{name}: {e}")))?;
-    let mut v = Vec::with_capacity(f.size() as usize);
-    f.read_to_end(&mut v).map_err(|e| MapLoadError::Decode(format!("{name}: {e}")))?;
+    // The zip's declared size is untrusted (a corrupt zip must not OOM-abort us): cap the
+    // pre-allocation and the read. Real tiles are ~525-700 KB.
+    let mut v = Vec::with_capacity((f.size() as usize).min(MAX_ENTRY_PREALLOC));
+    f.by_ref().take(MAX_ENTRY_BYTES + 1).read_to_end(&mut v).map_err(|e| MapLoadError::Decode(format!("{name}: {e}")))?;
+    if v.len() as u64 > MAX_ENTRY_BYTES {
+        return Err(MapLoadError::Decode(format!("{name}: entry larger than {} MB", MAX_ENTRY_BYTES >> 20)));
+    }
     Ok(v)
 }
+
+/// Largest zip entry [`read_entry`] accepts, bytes (real tiles are ~0.5 MB).
+const MAX_ENTRY_BYTES: u64 = 16 << 20;
+/// Largest buffer pre-allocated from a zip entry's declared size, bytes.
+const MAX_ENTRY_PREALLOC: usize = 8 << 20;
 
 /// One whole tile row of `level`, decoded into `band` (`TILE_PX` rows of `size` px, RGBA).
 fn decode_row(zip_path: &Path, level: u32, row: usize, size: usize, band: &mut [u8]) -> Result<(), MapLoadError> {

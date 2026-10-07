@@ -7,7 +7,7 @@ no map imagery, no panels - like the in-game map.  A preview of what the road da
     then open  <out>/preview-2d.html  in a browser (file://, no CDN, no fetch).
 
 Inputs: <work>/roads.json (nav graph from decode_nav.py / build_viewer.py - geometry) + the road-type file (default
-tools/fh6-extract/data/fh6-road-types.json; ids only, format `fh6-road-types` v1 or v2 - e.g. a fresh export from the viewer's road editor).
+assets/map/fh6-road-types.json; ids only, format `fh6-road-types` v1 or v2 - e.g. a fresh export from the viewer's road editor).
 Output: <out>/preview-2d.html (data inlined, ~1 MB).
 
 Edge model (same as the road editor): an *edge* = two consecutive nav nodes of a roads.json polyline, key "<min id>-<max id>".  Per-type draw lists
@@ -21,7 +21,7 @@ unless the debug key T is pressed; `highway` is drawn like road, wider.
 import argparse, json, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CANON = os.path.join(HERE, 'data', 'fh6-road-types.json')
+CANON = os.path.join(HERE, '..', '..', 'assets', 'map', 'fh6-road-types.json')
 TYPES = ('road', 'highway', 'offroad', 'other', 'trail', 'crosscountry', 'tunnel', 'jump', 'turnaround')
 
 

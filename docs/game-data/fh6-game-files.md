@@ -453,6 +453,7 @@ strip the build-machine prefix and the `|n` suffix (`n` is *not* the entry index
 - Entry data starts at `segment_start + off`. **Compressed size** = (next row's `off`) − `off` inside a segment, or (next segment start) − this start for the last row.
 - `flags & 0xff` selects the codec: **`0x1f` = raw LZ4 block** (no frame header; decoded size = `usize`), **`0x08` = raw deflate** (zlib `wbits = −15`), **`0x00` = stored** (terrain `.phys` entries often are). The upper 24 bits are unknown (look like a running counter / hint).
 - *Why a hand decoder:* no Python/Rust zip crate reads this; the LZ4 block format is ~25 lines (`lz4b.py`), deflate is `flate2`.
+- *Rust (I25):* `src/gamedata/{lz4,pgzp,burg}.rs` port `lz4b.py` / `pgzp.py` / the `burG` helpers of `extract_terrain.py`. Raw deflate (`flags & 0xff == 0x08`) is **not** implemented (no entry the app needs uses it; adding it would mean `flate2`). The road graph is read by `src/gamedata/nav.rs` (port of `decode_nav.py`: polylines split at > 60 m, stable ids, SHA-1 of the whole file, reference 38 473 nodes / 1 544 polylines / 39 383 edges). See [terrain](fh6-terrain.md#rust-implementation-notes) and [map tooling](fh6-map-tooling.md#rust-reader-and-the-current-road-types-srcgamedataroadtypesrs-i25).
 
 **`.pgeo` layout** (decoded entry; one "section" per file; `extract_geochunk.py:parse_pgeo`):
 
@@ -623,7 +624,7 @@ install (not 54 of 75 — 17 slugs just use a different string id, see [names](f
 ### Hand-classified road and race types
 
 The user marked the whole road network and the race types **by hand** in the map viewer's editor on 2026-10-03, against the in-game map. The result is committed as
-`tools/fh6-extract/data/fh6-road-types.json` (ids and types only, **no coordinates**, so no game data; format `fh6-road-types` v1 when committed; the editor now writes v2, see [fh6-map-tooling.md](fh6-map-tooling.md)). The viewer
+`assets/map/fh6-road-types.json` (moved there from `tools/fh6-extract/data/` in I25; originally ids and types only, **no coordinates**, so no game data; format `fh6-road-types` v1 when first committed, v2 now with the user's own points, see [fh6-map-tooling.md](fh6-map-tooling.md); read in Rust by `src/gamedata/roadtypes.rs`). The viewer
 starts from it and has a "Reset to project data" button. Contents (nav sha1 `a88c69f4…`, 38 473 nodes): 39 360 of 39 383 edges painted + 43 added links (road 553.9 km, offroad 207.5,
 other 6.7, not set 0.4) and **93 of 170 races typed**: rally 21, road 21, cross country 19, street 17, story 6, touge 5, drag 3, wristband 1.
 
