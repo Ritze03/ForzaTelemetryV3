@@ -13,9 +13,9 @@
 //! URLs are never mapped onto the filesystem (static table + strictly parsed generated paths).
 
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use crate::gamedata::nav::Nav;
 use crate::gamedata::roadtypes::{self, Current, RoadTypes, Source};
 
-use super::data::{write_atomic, EditorData, Served};
+use super::data::{sweep_stale_tmp, write_atomic, EditorData, Served};
 
 /// Request head cap (request line + headers).
 const MAX_HEAD: usize = 16 * 1024;
@@ -32,9 +32,16 @@ const MAX_HEAD: usize = 16 * 1024;
 const MAX_BODY: usize = 16 * 1024 * 1024;
 /// Per-read timeout and total time allowed for receiving a request.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Most connections served at once; more are closed on accept. Why: every accepted connection
+/// gets a thread before any token check, so a local process could otherwise exhaust threads / fds.
+/// (The browser opens ~6 at once, Leaflet's tile bursts queue behind them.)
+const MAX_CONNS: usize = 64;
+/// How often the (non-blocking) accept loop looks at the stop flag.
+const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
 const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
-img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'; worker-src blob:";
+img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'; worker-src blob:; \
+object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 
 // ------------------------------------------------------------------------------------------------ embedded pages
 
@@ -88,7 +95,8 @@ pub enum StartFrom {
 /// What the server tells the app (over the channel given to [`MapServer::start`]).
 #[derive(Clone, PartialEq, Debug)]
 pub enum MapEvent {
-    /// The data is built; the app should open `url` in the browser.
+    /// The data is built; the app should open `url` in the browser. `url` contains the secret
+    /// token: never print this event with `{:?}`.
     Ready { url: String },
     /// A Save was written and is now the app's current road types. `edges` = typed game edges +
     /// user links, `points` = user points, `bytes` = size of the file written.
@@ -187,6 +195,12 @@ impl MapServer {
 
     /// Bind and serve with no backend yet (503 until [`MapServer::install`]).
     pub(crate) fn bind(ctx: egui::Context, paths: Paths, events: Sender<MapEvent>) -> io::Result<MapServer> {
+        Self::bind_capped(ctx, paths, events, MAX_CONNS)
+    }
+
+    /// [`MapServer::bind`] with a configurable connection cap (tests).
+    pub(crate) fn bind_capped(ctx: egui::Context, paths: Paths, events: Sender<MapEvent>, max_conns: usize) -> io::Result<MapServer> {
+        sweep_stale_tmp(&paths.override_file);
         let listener = bind_sticky(&paths.port_file)?;
         let port = listener.local_addr()?.port();
         let mut tok = [0u8; 16];
@@ -200,6 +214,8 @@ impl MapServer {
             index: index_html(),
             paths,
             stop: AtomicBool::new(false),
+            conns: AtomicUsize::new(0),
+            max_conns,
             progress: AtomicU32::new(0f32.to_bits()),
             state: RwLock::new(Inner { backend: None, current: None, failed: None }),
             save_lock: Mutex::new(()),
@@ -249,10 +265,10 @@ impl MapServer {
 
 impl Drop for MapServer {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
-        // accept() blocks: connect once so the loop sees the flag (same idea as network.rs's
-        // stop flag, which relies on a read timeout instead).
-        let _ = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, self.port)), Duration::from_millis(500));
+        self.shared.stop.store(true, Ordering::Release);
+        // The accept loop polls the flag every ACCEPT_POLL (non-blocking listener), so this join
+        // is bounded: it can never hang the UI thread. In-flight connection threads finish on
+        // their own (each has a deadline) and are ignored.
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -277,6 +293,9 @@ struct Shared {
     index: String,
     paths: Paths,
     stop: AtomicBool,
+    /// Connections currently being served (see [`MAX_CONNS`]).
+    conns: AtomicUsize,
+    max_conns: usize,
     progress: AtomicU32,
     state: RwLock<Inner>,
     /// One Save at a time (write + state swap are one step).
@@ -333,20 +352,51 @@ fn bind_sticky(port_file: &Path) -> io::Result<TcpListener> {
     Ok(l)
 }
 
+/// Decrements the in-flight counter when a connection thread ends (or never starts).
+struct ConnGuard(Arc<Shared>);
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.conns.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 fn accept_loop(listener: TcpListener, sh: Arc<Shared>) {
-    for conn in listener.incoming() {
-        if sh.stop.load(Ordering::Relaxed) {
-            break;
-        }
-        match conn {
-            Ok(stream) => {
+    // Non-blocking + poll, so Drop only has to set the flag and join (no self-connect to wake us).
+    if listener.set_nonblocking(true).is_err() {
+        return;
+    }
+    while !sh.stop.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Accepted sockets may inherit non-blocking mode (Windows): the handler wants blocking + timeouts.
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
+                if sh.conns.fetch_add(1, Ordering::AcqRel) >= sh.max_conns {
+                    sh.conns.fetch_sub(1, Ordering::AcqRel);
+                    continue; // over the cap: dropping the stream closes it
+                }
+                let guard = ConnGuard(sh.clone());
                 let sh = sh.clone();
                 // Thread per connection: the browser opens ~6 at once, Leaflet asks for dozens of tiles.
-                let _ = thread::Builder::new().name("mapedit-conn".into()).spawn(move || handle(&sh, stream));
+                let _ = thread::Builder::new().name("mapedit-conn".into()).spawn(move || {
+                    let _guard = guard;
+                    handle(&sh, stream)
+                });
             }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => thread::sleep(ACCEPT_POLL),
             Err(_) => thread::sleep(Duration::from_millis(20)), // e.g. out of fds: don't spin
         }
     }
+}
+
+/// Arm the read timeout for the next read: `min(IO_TIMEOUT, time left)`. `false` = deadline passed.
+/// Why: checking the deadline only between reads let a drip-feeding client hold a thread for up
+/// to a whole extra `IO_TIMEOUT` past it.
+fn arm_read(s: &TcpStream, deadline: Instant) -> bool {
+    let left = deadline.saturating_duration_since(Instant::now());
+    !left.is_zero() && s.set_read_timeout(Some(left.min(IO_TIMEOUT))).is_ok()
 }
 
 // ------------------------------------------------------------------------------------------------ HTTP
@@ -448,7 +498,7 @@ fn read_head(s: &mut TcpStream, deadline: Instant) -> Result<(Request, Vec<u8>),
         if buf.len() > MAX_HEAD {
             return Err(HeadError::TooLarge);
         }
-        if Instant::now() > deadline {
+        if !arm_read(s, deadline) {
             return Err(HeadError::Gone);
         }
         match s.read(&mut chunk) {
@@ -551,6 +601,10 @@ fn get(sh: &Shared, path: &str) -> Resp {
 }
 
 fn save(sh: &Shared, req: &Request, mut body: Vec<u8>, s: &mut TcpStream, deadline: Instant) -> Resp {
+    // A Save in flight when the server is dropped must not write after the app let go of it.
+    if sh.stop.load(Ordering::Acquire) {
+        return Resp::err(503, "server is stopping");
+    }
     // Only our own page may POST: a foreign page can't send application/json without a
     // preflight (which we never answer), and the Origin check covers the rest.
     if req.header("origin").is_some_and(|o| o != sh.origin) {
@@ -559,6 +613,9 @@ fn save(sh: &Shared, req: &Request, mut body: Vec<u8>, s: &mut TcpStream, deadli
     let is_json = req.header("content-type").is_some_and(|c| c.split(';').next().is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json")));
     if !is_json {
         return Resp::err(415, "Content-Type must be application/json");
+    }
+    if req.count("content-length") > 1 {
+        return Resp::err(400, "duplicate Content-Length");
     }
     if req.header("transfer-encoding").is_some() {
         return Resp::err(411, "Content-Length required");
@@ -571,7 +628,7 @@ fn save(sh: &Shared, req: &Request, mut body: Vec<u8>, s: &mut TcpStream, deadli
     }
     let mut chunk = [0u8; 16 * 1024];
     while body.len() < len {
-        if Instant::now() > deadline {
+        if !arm_read(s, deadline) {
             return Resp::err(400, "request timed out");
         }
         match s.read(&mut chunk) {
@@ -584,6 +641,9 @@ fn save(sh: &Shared, req: &Request, mut body: Vec<u8>, s: &mut TcpStream, deadli
     let Ok(text) = String::from_utf8(body) else { return Resp::err(400, "not UTF-8") };
 
     let _one_at_a_time = sh.save_lock.lock().unwrap_or_else(|e| e.into_inner());
+    if sh.stop.load(Ordering::Acquire) {
+        return Resp::err(503, "server is stopping");
+    }
     // Format, version, known types, and that it is for *this* game's road graph.
     let mut rt = match RoadTypes::validate_for_save(&text, backend.nav()) {
         Ok(rt) => rt,
@@ -615,6 +675,8 @@ fn save(sh: &Shared, req: &Request, mut body: Vec<u8>, s: &mut TcpStream, deadli
 mod tests {
     use super::*;
     use crate::gamedata::tempdir;
+    use crate::mapedit::data::sweep_stale_tmp;
+    use std::net::SocketAddr;
     use sha1::{Digest, Sha1};
     use std::sync::mpsc::{channel, Receiver};
 
@@ -1064,6 +1126,112 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_content_length_is_400() {
+        let r = rig("dupcl");
+        let rep = r.post_with("save", "Content-Type: application/json\r\nContent-Length: 2\r\n", b"{}");
+        assert_eq!(rep.status, 400, "{}", rep.text());
+        assert!(!r.override_file().exists());
+    }
+
+    #[test]
+    fn save_after_stop_is_503_and_writes_nothing() {
+        let r = rig("afterstop");
+        r.server.shared.stop.store(true, Ordering::Release);
+        let _ = r.rx.try_recv();
+        // The accept loop has stopped, so call the handler directly over a loopback pair.
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (srv, _) = l.accept().unwrap();
+        let body = RoadTypes::project().to_json_string();
+        let req = format!("POST {}save HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", r.base, r.host(), body.len());
+        c.write_all(req.as_bytes()).unwrap();
+        handle(&r.server.shared, srv.try_clone().unwrap());
+        let _ = srv.shutdown(Shutdown::Both);
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out);
+        assert!(out.starts_with("HTTP/1.1 503"), "{out}");
+        assert!(!r.override_file().exists());
+        assert!(r.fake.set.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn csp_has_the_lockdown_directives() {
+        let r = rig("csp");
+        let csp = r.get("").header("content-security-policy").unwrap();
+        for d in ["object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'self'"] {
+            assert!(csp.contains(d), "{csp}");
+        }
+    }
+
+    #[test]
+    fn connection_cap_refuses_extras_and_recovers() {
+        let dir = tempdir("cap");
+        let (tx, _rx) = channel();
+        let paths = Paths { override_file: dir.join("map_editor").join("o.json"), port_file: dir.join("map_editor").join("port") };
+        let server = MapServer::bind_capped(egui::Context::default(), paths, tx, 3).unwrap();
+        let port = server.port();
+        let idle: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap()).collect();
+        let sh = server.shared.clone();
+        let t0 = Instant::now();
+        while sh.conns.load(Ordering::Acquire) < 3 {
+            assert!(t0.elapsed() < Duration::from_secs(5), "idle conns never counted");
+            thread::sleep(Duration::from_millis(10));
+        }
+        // Over the cap: closed without a response.
+        let mut extra = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        extra.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let _ = extra.write_all(b"GET / HTTP/1.1\r\n\r\n");
+        let mut buf = Vec::new();
+        let _ = extra.read_to_end(&mut buf);
+        assert!(buf.is_empty(), "{buf:?}");
+        assert!(sh.conns.load(Ordering::Acquire) <= 3);
+        // Idle ones go away -> the guard frees the slots -> served again.
+        drop(idle);
+        let t0 = Instant::now();
+        while sh.conns.load(Ordering::Acquire) > 0 {
+            assert!(t0.elapsed() < Duration::from_secs(5), "slots never freed");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let rep = raw(port, format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes());
+        assert_eq!(rep.status, 404);
+    }
+
+    #[test]
+    fn drop_returns_quickly_with_idle_connections() {
+        let r = rig("dropidle");
+        let _idle: Vec<TcpStream> = (0..8).map(|_| TcpStream::connect((Ipv4Addr::LOCALHOST, r.server.port())).unwrap()).collect();
+        let t0 = Instant::now();
+        drop(r.server);
+        assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn stale_tmp_files_are_swept_but_nothing_else() {
+        let dir = tempdir("sweep");
+        let d = dir.join("map_editor");
+        std::fs::create_dir_all(&d).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let mk = |name: &str, aged: bool| {
+            let p = d.join(name);
+            std::fs::write(&p, b"x").unwrap();
+            if aged {
+                std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
+            }
+        };
+        for n in ["o.tmp123_4", "o.tmp9_0"] {
+            mk(n, true);
+        }
+        for n in ["o.json", "port", "o.tmp123", "o.tmpabc_1", "other.tmp1_2", "o.json.tmp1_2", "o.tmp1_2.bak"] {
+            mk(n, true);
+        }
+        mk("o.tmp777_8", false); // fresh: maybe another instance's
+        sweep_stale_tmp(&d.join("o.json"));
+        let mut left: Vec<String> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["o.json", "o.json.tmp1_2", "o.tmp123", "o.tmp1_2.bak", "o.tmp777_8", "o.tmpabc_1", "other.tmp1_2", "port"]);
+    }
+
+    #[test]
     fn concurrent_requests() {
         let r = rig("conc");
         let (port, base, host) = (r.server.port(), r.base.clone(), r.host());
@@ -1116,7 +1284,7 @@ mod tests {
             let end = Instant::now() + Duration::from_secs(secs);
             while Instant::now() < end {
                 if let Ok(ev) = rx.recv_timeout(Duration::from_millis(200)) {
-                    println!("MAPEDIT_EVENT={ev:?}");
+                    println!("MAPEDIT_EVENT={}", if matches!(ev, MapEvent::Ready { .. }) { "Ready".to_string() } else { format!("{ev:?}") }); // Ready holds the token
                 }
             }
         }

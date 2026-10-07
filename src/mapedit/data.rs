@@ -876,10 +876,39 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension(format!("tmp{}_{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::write(&tmp, bytes)?;
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        let r = f.write_all(bytes).and_then(|_| f.sync_all()); // data on disk before the rename publishes it
+        if let Err(e) = r {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    }
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// Delete leftover `write_atomic` temp files of `path` (a crash between write and rename):
+/// exactly `<stem>.tmp<digits>_<digits>` in `path`'s folder, older than a minute (a younger one may
+/// be another running instance's). Never touches `path` itself or anything else.
+pub(crate) fn sweep_stale_tmp(path: &Path) {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let prefix = format!("{stem}.tmp");
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix(&prefix)) else { continue };
+        let Some((pid, n)) = rest.split_once('_') else { continue };
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        if !digits(pid) || !digits(n) || !e.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|d| d > std::time::Duration::from_secs(60)));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 #[cfg(test)]
