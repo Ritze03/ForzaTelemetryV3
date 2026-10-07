@@ -22,8 +22,9 @@ The map, road graph and POI positions are **Playground Games' IP**. Decision: th
 `libraryfolders.vdf`, folder-picker fallback) instead of bundling extracted data.
 
 - *Why:* we cannot redistribute the data; reading the user's copy sidesteps that entirely.
-- *Bonus:* once the map comes from the install, the ~110 MB of bundled `assets/maps/*.jpg` can be
-  dropped (they are re-encodes of the same imagery — see [Map imagery](#2-map-imagery)).
+- *Done for the map:* the app reads the season map tiles from the install (`src/gamedata/tiles.rs`) and no
+  longer bundles the ~110 MB of `assets/maps/*.jpg` (re-encodes of the same imagery — see
+  [Map imagery](#2-map-imagery); `docs/features/minimap.md`).
 - **Never commit extracted output** (json/png/npy) to the repo. The scripts default to `./fh6-out`;
   point `--out` outside the repo.
 - Everything is read-only on the install. Never write into the game directory.
@@ -239,7 +240,7 @@ Each holds **85 entries** `<level>-<row>-<col>.swatchbin` (row first), a tile py
 | L0 | 1 | 1024² |
 | L1 | 2×2 | 2048² |
 | L2 | 4×4 | 4096² |
-| L3 | 8×8 | **8192²** (the full map; = the bundled jpg size) |
+| L3 | 8×8 | **8192²** (the full map; = the size of the former bundled jpgs) |
 
 Every tile is 1024×1024. Lower levels are cheaper in RAM (L2 4096 px, L1 2048 px).
 
@@ -276,15 +277,15 @@ with an optional `texture2ddecoder` fallback). Rust: no BCn in the `image` crate
 
 ### Validation
 
-Decoded L3 is pixel-identical (JPEG-noise level) to the bundled `assets/maps/*.jpg` — so those
-jpgs are re-encodes of this data and `MapCalibration::DEFAULT` applies unchanged.
+Decoded L3 is pixel-identical (JPEG-noise level) to the former bundled `assets/maps/*.jpg` (since
+removed) — so those jpgs were re-encodes of this data and `MapCalibration::DEFAULT` applies unchanged.
 
 ### Rust implementation notes
 
-- Need a zip reader: the **`zip` crate (deflate)** is not in `Cargo.toml` (`flate2`/`miniz_oxide` are
-  only transitive).
-- Need a BC1 decoder: ~40 lines by hand, or `texpresso` / `bcdec_rs`. The `image` 0.25 crate
-  cannot decode BC1.
+- Implemented in `src/gamedata/tiles.rs`: zip reading with the **`zip` crate (deflate)**, already in
+  `Cargo.toml`; one thread per tile row, each with its own `ZipArchive` (L3 ~60 ms release).
+- BC1 is decoded by hand (~40 lines, no crate); the `image` 0.25 crate cannot decode BC1.
+  `parse_swatchbin` rejects a wrong magic, a total-size mismatch and any pixel format other than 0 (BC1).
 - `decode_bc1()` in `extract_map.py` is a compact reference (RGB565 endpoints, 4-colour mode when
   `c0 > c1`, else 3-colour; 2-bit indices LSB first).
 

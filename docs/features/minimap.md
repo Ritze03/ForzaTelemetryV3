@@ -18,18 +18,46 @@ automatically when the in-game season changes.
 
 ## Map image source
 
-The four bundled season maps (`assets/maps/{spring,summer,autumn,winter}.jpg`, 8192²,
-embedded via `include_bytes!` in `src/minimap.rs`) are the hi-res seasonal FH6 maps
-published by Reddit user **Le0_X8**:
-<https://www.reddit.com/r/ForzaHorizon/comments/1td6qzb/8096x_hires_seasonal_maps_of_fh6_from_the_early/>
+The season maps are **read from the user's own Forza Horizon 6 install at runtime**
+(`src/gamedata/tiles.rs`): `<media>/UI/Textures/Data_Bound/Map_Brio_<Season>.zip` holds a
+tile pyramid of BC1 `swatchbin` tiles (format: `docs/game-data/fh6-game-files.md` §2). Level 3
+(8×8 tiles) is the 8192² map, level 2 the 4096² one. Which level feeds which **Image quality**:
 
-The credit is shown in the app: **Setup** tab → **Repository / Credits** category
-(`repo_card` in `src/ui/settings.rs`), as the link "Le0_X8 — seasonal map images" under
-"Credits".
+| Quality | Source level | Cached size |
+|---|---|---|
+| 100 % | L3 mosaic | 8192² |
+| 50 % (the HUD's, and a Dashboard set to 50 %) | L2 directly | 4096² |
+| anything else | L3, triangle-resized | quality % of 8192 |
 
-**Why it matters:** if the images are replaced, re-cropped, or used to derive other data
-(e.g. road extraction), keep that credit (or update it to the new source) — the maps are
-someone else's work.
+The cache header's "original size" is **always 8192²**, whatever the cached size, because
+`MapCalibration` works in 8192-px space (`MapCalibration::DEFAULT` was calibrated on the
+bundled jpgs, which are re-encodes of level 3, so it applies unchanged).
+
+*Why from the install (D1):* the app used to bundle four 8192² JPEGs (~109 MB, the binary was
+145 MB; now ~31 MB). The map is Playground Games' IP, so the app must not ship it; it reads
+the user's own copy instead (licensing rule, see `docs/game-data/fh6-game-files.md`). A bonus:
+decoding the tiles is ~60 ms (one thread per tile row, `std::thread::scope`) against ~2.3 s
+for the JPEG decode. *Why L2 directly for 50 %:* resizing level 3 down to 4096² costs ~1.7 s
+(longer than the whole level-3 decode) and level 2 is the same imagery.
+
+*Why the credit for the bundled images is gone:* the credits link (Setup → Repository /
+Credits) thanking the Reddit user whose seasonal map images were bundled was kept only while
+those images were used, and left with them (plan decision D49).
+
+**No install:** the map needs the game on this machine (found through Setup → Game Install,
+`FH6_INSTALL_DIR` or Steam). Without it, and without a cache from an older build, the load
+fails with a `MapLoadError` (`NoInstall`, `NotReadable`, `MissingZip`, `Decode`):
+- the **Dashboard map** shows "Map needs your Forza Horizon 6 install" / "Set it in Setup →
+  Game Install" instead of the spinner (`ForzaApp::minimap_error`); it retries on **Reload
+  Map**, **Rebuild Map Cache**, when the Map widget is re-enabled, when the season changes,
+  and when the Game Install folder changes;
+- the **HUD minimap** just stays without a map; its loader forgets the failed attempt so the
+  once-a-minute season check retries.
+
+The install folder reaches the two loader threads (they have no config access) through a
+process-wide `install::set_user_dir`, which the app sets from `config.fh6_install_dir` at
+startup and whenever it changes; `find_media` tries the explicit argument, that folder,
+`FH6_INSTALL_DIR`, then Steam.
 
 ## Shared code (`src/minimap.rs`)
 
@@ -37,8 +65,10 @@ The season logic, the image loading/cache and the map maths live in `src/minimap
 shared by this widget and the in-game HUD overlay's minimap ([[overlay]]). Nothing in it
 takes `&ForzaApp`, so the overlay thread can call it.
 
-- **Cache:** `load_map_color_image(season, quality)` decodes the 8192² JPEG once, writes
-  `map_cache/<season>_q<quality>.bin`, and reads that file afterwards. The write is
+- **Cache:** `load_map_color_image(season, quality)` builds the image from the install's tiles
+  once (`decode_and_cache_season`), writes `map_cache/<season>_q<quality>.bin` (format and path
+  unchanged from the JPEG era, so older caches stay valid and keep working without an
+  install), and reads that file afterwards. Both return `Result<_, MapLoadError>`. The write is
   **atomic** (unique temp file, then rename). *Why:* the Dashboard loader and the overlay's
   `hud-map` thread can build or read the same file at once, and a reader must never see a
   partial file.

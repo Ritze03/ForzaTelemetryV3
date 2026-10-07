@@ -4,6 +4,15 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.5.0] – 2026-10-07
+
+### Removed
+- **Bundled map images**: the Dashboard map and the HUD minimap now read the maps from your Forza Horizon 6 install instead of four images shipped inside the app, so the app download is about 100 MB smaller. The credits link for the old map images is gone with them.
+
+### Info
+- **The maps need your Forza Horizon 6 install**: the Dashboard map shows "Map needs your Forza Horizon 6 install" (set it in Setup → Game Install) when the game can't be found, and it loads by itself once you set the folder or press **Reload Map**; the HUD minimap tries again every minute. Maps already built by an older version keep working without the game.
+- **First map load is much faster**: building a season's map takes a fraction of a second instead of a couple of seconds.
+
 ## [0.4.3] – 2026-10-06
 
 ### Fixed

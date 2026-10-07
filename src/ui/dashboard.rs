@@ -2540,8 +2540,36 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let cy = rect.center().y;
 
     let Some(texture) = &app.minimap_texture else {
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
         let center = rect.center();
+        // The last load failed (no FH6 install to read the tiles from): say so instead of
+        // spinning. Retried by Reload Map and when the install folder changes (`app.rs`).
+        if let Some(err) = &app.minimap_error {
+            use crate::minimap::MapLoadError as E;
+            let (label, sub) = match err {
+                E::NoInstall | E::NotReadable(_) | E::MissingZip(_) => (
+                    tr("Map needs your Forza Horizon 6 install"),
+                    tr("Set it in Setup → Game Install").to_string(),
+                ),
+                E::Decode(e) => (tr("Map could not be loaded"), e.clone()),
+            };
+            let p = ui.painter_at(rect);
+            p.text(
+                center + vec2(0.0, -4.0),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(13.0),
+                crate::theme::TEXT_DIM,
+            );
+            p.text(
+                center + vec2(0.0, 14.0),
+                egui::Align2::CENTER_CENTER,
+                sub,
+                egui::FontId::proportional(11.0),
+                crate::theme::TEXT_FAINT,
+            );
+            return;
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
         // Spinner — identical position to the regular "Loading map…" screen
         ui.put(
             egui::Rect::from_center_size(center + vec2(0.0, -16.0), Vec2::splat(32.0)),

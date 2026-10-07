@@ -56,10 +56,11 @@ described below.
   own thread:** like the listener, it must keep working while the game covers the main
   window. Helpers: `overlay-start` (runs the blocking `OverlayHandle::spawn`, up to 5 s),
   `overlay-drop` (drop = shutdown + join, kept off the UI thread), `hud-map` (loads the
-  season map for the HUD minimap). See [[overlay]].
-- **Short-lived background threads** — the Dashboard's seasonal minimap image decode
-  (`app.rs:map_load_thread` → `minimap.rs:load_map_color_image`, results returned over its
-  own `mpsc` channel of `MapLoadMessage`), and Co-Op's WebSocket relay + cloudflared tunnel
+  season map for the HUD minimap, from the FH6 install's tiles). See [[overlay]].
+- **Short-lived background threads** — the Dashboard's seasonal minimap image load
+  (`app.rs:map_load_thread` → `minimap.rs:load_map_color_image` → `gamedata/tiles.rs`, which
+  decodes the install's map tiles with one scoped thread per tile row; results returned over
+  its own `mpsc` channel of `MapLoadMessage`), and Co-Op's WebSocket relay + cloudflared tunnel
   (`coop.rs`, see [[coop]]). Synthetic keypress emission (`input.rs:InputSender`) also
   runs on its own worker thread, as does the focus poll (`focus.rs`), which also runs the
   overlay's monitor detection and sends `OverlayCmd::SetOutput` to the overlay thread.
@@ -251,7 +252,7 @@ might produce.
 | `hotkeys.rs` | `HotkeyListener` — background global key capture (Linux evdev read / Windows `GetAsyncKeyState`), matches configured combos → mpsc channel, whose `Receiver` `new()` hands to the listener thread; also the sysfs device inventory (physical vs virtual keyboards) behind the Setup hotkeys light. See [[hotkeys]]. |
 | `gamepad.rs` | `Gamepad` — controller backend (Linux evdev on the physical pad with 2 s hot-plug rescan / Windows XInput poll). Pure `Processor` (deadzones, hysteresis, rising edges) → `PadControl` presses → `HotkeyAction`s sent on the hotkey channel (`HotkeyListener::action_sender`), plus the shared right-stick vector `right_stick()`. See [[gamepad]]. |
 | `focus.rs` | `FocusDetector` — "is the game the focused window?" poll thread (Hyprland/X11/GNOME/Custom/Windows); reused by the hotkey gate, the input gate and the overlay's focus-only option. Also runs the overlay's **monitor detection** (`monitor_tick`, `query_monitor`, `parse_hyprland_monitor`), only while the game is focused. See [[hotkeys]], [[overlay]]. |
-| `minimap.rs` | Season detection (`current_season`), the on-disk map cache (`load_map_color_image`, atomic write), the overlay's 4096² mipmapped copy (`overlay_map_image`), and the world↔UV / heading-up maths (`MapCalibration`, `MapView`, easing). Shared by the Dashboard map and the HUD minimap. See [[minimap]]. |
+| `minimap.rs` | Season detection (`current_season`), the on-disk map cache (`load_map_color_image` builds it from the install's tiles; atomic write), the overlay's 4096² mipmapped copy (`overlay_map_image`), and the world↔UV / heading-up maths (`MapCalibration`, `MapView`, easing). Shared by the Dashboard map and the HUD minimap. See [[minimap]]. |
 | `coop.rs` (+ `coop/{nostr,rtc,mesh}.rs`) | `CoopState` — WebSocket relay over a cloudflared quick tunnel, or a Trystero-style P2P WebRTC mesh signalled over Nostr relays (`start_trystero`); roster, remote players. `CoopReader` is the cross-thread handle (the listener sends through it, the overlay reads teammates through it). See [[coop]]. |
 | `engines.rs` | `engines.csv` loader (`EngineRecord`) for the Engine Swaps table. |
 
@@ -290,7 +291,8 @@ might produce.
 
 | File | What it does |
 | --- | --- |
-| `install.rs` | Steam detection of the FH6 install (+ `FH6_INSTALL_DIR` override). |
+| `install.rs` | Steam detection of the FH6 install (+ `FH6_INSTALL_DIR` override, and `set_user_dir`: the Setup folder, mirrored from `config.fh6_install_dir` by `app.rs` so the map-loader threads can find the install). |
+| `tiles.rs` | Map tiles from `Map_Brio_<Season>.zip`: swatchbin parse, hand-written BC1 decode, `load_mosaic(media, season, level)` (parallel per tile row), `MapLoadError`. Used by `minimap.rs`. Docs: `docs/features/minimap.md`, `docs/game-data/fh6-game-files.md` §2. |
 | `strtable.rs` | `.str` string-table parser + `strhash`. |
 | `cars.rs` | `CarDb::load(lang)` / `lookup(ordinal)`: CarOrdinal → make + model, JSON-cached in `app_data_dir()`. Blocks the caller, so load it on a background thread (the Debug tab does). Docs: `docs/game-data/fh6-cars-names-icons.md`. |
 
