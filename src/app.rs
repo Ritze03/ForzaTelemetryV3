@@ -582,6 +582,15 @@ pub struct ForzaApp {
     pub minimap_look: crate::minimap::LookAround, // right-stick look-around; owns the drawn view yaw
     pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
+    /// The map editor's local web server (I26b), once started; `None` = never started / stopped.
+    /// See `start_map_editor`.
+    #[allow(dead_code)] // read by the I27 accessors below; nothing calls them yet
+    map_editor: Option<crate::mapedit::MapServer>,
+    /// Events of `map_editor` (polled once a frame in `poll_map_editor`).
+    map_editor_rx: Option<Receiver<crate::mapedit::MapEvent>>,
+    /// The last `Saved` / `Error` event of the map editor, for the Setup card (I27) to show.
+    /// There is no app-side toast to use instead.
+    pub map_editor_last: Option<crate::mapedit::MapEvent>,
     /// Why the last map load failed (shown instead of the spinner while no load is running).
     pub minimap_error: Option<MapLoadError>,
     /// The `fh6_install_dir` last handed to `gamedata::install::set_user_dir`.
@@ -907,6 +916,9 @@ impl ForzaApp {
             minimap_look: Default::default(),
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
+            map_editor: None,
+            map_editor_rx: None,
+            map_editor_last: None,
             debug_cars: Default::default(),
             fh6_setup: Default::default(),
             minimap_cache_progress: None,
@@ -934,6 +946,79 @@ impl ForzaApp {
     pub fn restart_receiver(&mut self, port: u16) {
         self._network = start_receiver(port, self.packet_tx.clone());
         self.config.listen_port = port;
+    }
+
+    /// Open the map editor in the browser (I26b). Starts the local server and builds the map data
+    /// on a background thread first (the browser opens when that is done: `MapEvent::Ready`, see
+    /// `poll_map_editor`); with a server already running it just re-opens its page, whatever
+    /// `start_from` says (call `stop_map_editor` first to switch mode: that makes the old browser
+    /// tab useless). Problems land in `map_editor_last` as `MapEvent::Error`.
+    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    pub fn start_map_editor(&mut self, ctx: &Context, start_from: crate::mapedit::StartFrom) {
+        use crate::mapedit::{MapEvent, MapServerState};
+        if let Some(server) = &self.map_editor {
+            match server.state() {
+                MapServerState::Ready => {
+                    ctx.open_url(egui::OpenUrl::new_tab(server.url()));
+                    return;
+                }
+                MapServerState::Preparing { .. } => return, // Ready will open it
+                MapServerState::Failed(_) => self.stop_map_editor(), // retry from scratch
+            }
+        }
+        let Some(media) = crate::gamedata::install::find_media(None) else {
+            self.map_editor_last = Some(MapEvent::Error("FH6 install not found".into()));
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        match crate::mapedit::MapServer::start(ctx.clone(), media, start_from, tx) {
+            Ok(server) => {
+                self.map_editor = Some(server);
+                self.map_editor_rx = Some(rx);
+                self.map_editor_last = None;
+            }
+            Err(e) => self.map_editor_last = Some(MapEvent::Error(format!("could not start the map editor server: {e}"))),
+        }
+    }
+
+    /// Stop the map editor's server (an open editor tab stops working).
+    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    pub fn stop_map_editor(&mut self) {
+        self.map_editor = None;
+        self.map_editor_rx = None;
+    }
+
+    /// State of the map editor server for the Setup card: `None` = not running.
+    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    pub fn map_editor_state(&self) -> Option<crate::mapedit::MapServerState> {
+        self.map_editor.as_ref().map(|s| s.state())
+    }
+
+    /// The editor's URL (contains the session token: open it, don't show or log it).
+    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    pub fn map_editor_url(&self) -> Option<&str> {
+        self.map_editor.as_ref().map(|s| s.url())
+    }
+
+    /// The road types the app uses now, as the running editor server knows them (updated on every
+    /// Save, before the window repaints). `None` while no server runs or it is still preparing:
+    /// use `gamedata::roadtypes::RoadTypes::current` then.
+    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    pub fn map_editor_current(&self) -> Option<Arc<crate::gamedata::roadtypes::Current>> {
+        self.map_editor.as_ref().and_then(|s| s.current())
+    }
+
+    /// Once a frame: drain the map editor's events (open the browser on `Ready`, remember
+    /// `Saved` / `Error` in `map_editor_last`).
+    fn poll_map_editor(&mut self, ctx: &Context) {
+        use crate::mapedit::MapEvent;
+        let Some(rx) = &self.map_editor_rx else { return };
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                MapEvent::Ready { url } => ctx.open_url(egui::OpenUrl::new_tab(url)),
+                ev @ (MapEvent::Saved { .. } | MapEvent::Error(_)) => self.map_editor_last = Some(ev),
+            }
+        }
     }
 
     /// Whether the virtual keyboard for key sending really exists (`None` = still starting).
@@ -1463,6 +1548,8 @@ impl eframe::App for ForzaApp {
         self.update_minimap_trails();
         // Live input status (every ~2 s): Setup lights, the modal's self-close and re-show.
         crate::ui::settings::refresh_input_facts(self, false);
+
+        self.poll_map_editor(ctx);
 
         // Poll minimap image receiver — drain all pending messages this frame
         if self.minimap_img_receiver.is_some() {

@@ -2,9 +2,11 @@
 //! decrypted). See `docs/game-data/` for the file formats and `docs/game-data/fh6-cars-names-icons.md`
 //! for the car-name pipeline.
 
-// The map-editor data layer (I25), consumed by `mapedit::data` (I26a); burg and lz4 are fully
-// used through it. nav / pgzp / roadtypes / terrain keep their dead_code allowances for the parts
-// only the later consumers (I26b server, I27 Setup card) call. Remove them as those land.
+// The map-editor data layer (I25), consumed by `mapedit::data` (I26a) and the local server
+// (I26b); burg and lz4 are fully used through it. nav / pgzp / roadtypes / terrain keep their
+// dead_code allowances (checked after I26b: removing them still warns) for the few leftovers only
+// I27's Setup card reads (`Current::note` & co, `Elevation::valid_fraction`) or nothing does yet
+// (`Nav::edges`, `RoadType::from_index`, `Terrain` stats). Remove them as those land.
 pub mod burg;
 pub mod cars;
 pub mod install;

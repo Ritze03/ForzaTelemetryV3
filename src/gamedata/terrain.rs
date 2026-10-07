@@ -93,7 +93,7 @@ impl Elevation {
 
     /// Terrain height (m) at world (`x`, `z`): bilinear between the four nearest pixel centres,
     /// pixels without data left out of the weights; `None` when none of them has data. This is
-    /// the editor's `terrainY` (`viewer_template.html`), so Rust and JS agree.
+    /// the editor's `terrainY` (`assets/editor/index.html`), so Rust and JS agree.
     pub fn height(&self, x: f64, z: f64) -> Option<f32> {
         let fx = (x - self.x0) / self.res - 0.5;
         let fz = (self.z1 - z) / self.res - 0.5;
