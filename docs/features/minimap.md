@@ -33,7 +33,7 @@ The cache header's "original size" is **always 8192²**, whatever the cached siz
 `MapCalibration` works in 8192-px space (`MapCalibration::DEFAULT` was calibrated on the
 bundled jpgs, which are re-encodes of level 3, so it applies unchanged).
 
-*Why from the install (D1):* the app used to bundle four 8192² JPEGs (~109 MB, the binary was
+*Why from the install:* the app used to bundle four 8192² JPEGs (~109 MB, the binary was
 145 MB; now ~31 MB). The map is Playground Games' IP, so the app must not ship it; it reads
 the user's own copy instead (licensing rule, see `docs/game-data/fh6-game-files.md`). A bonus:
 decoding the tiles is ~60 ms (one thread per tile row, `std::thread::scope`) against ~2.3 s
@@ -42,7 +42,9 @@ for the JPEG decode. *Why L2 directly for 50 %:* resizing level 3 down to 4096²
 
 *Why the credit for the bundled images is gone:* the credits link (Setup → Repository /
 Credits) thanking the Reddit user whose seasonal map images were bundled was kept only while
-those images were used, and left with them (plan decision D49).
+those images were used, and left with them.
+
+**Rebuild Map Cache** is disabled without an install. Why: it deletes `map_cache/`, which without an install is the only copy of the map.
 
 **No install:** the map needs the game on this machine (found through Setup → Game Install,
 `FH6_INSTALL_DIR` or Steam). Without it, and without a cache from an older build, the load

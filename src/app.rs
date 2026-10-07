@@ -2542,7 +2542,13 @@ impl eframe::App for ForzaApp {
                                             self.minimap_img_receiver = Some(map_rx);
                                             self.minimap_loaded_season = s;
                                         }
-                                        if ui.button(tr("Rebuild Map Cache")).clicked() {
+                                        // Why: rebuilding deletes the cache, which without an install is the only copy of the map.
+                                        let have_install = crate::gamedata::install::find_media(None).is_some();
+                                        if ui
+                                            .add_enabled(have_install, egui::Button::new(tr("Rebuild Map Cache")))
+                                            .on_disabled_hover_text(tr("Needs your Forza Horizon 6 install — the map is read from it"))
+                                            .clicked()
+                                        {
                                             let cache_dir = crate::config::app_data_dir().join("map_cache");
                                             let _ = std::fs::remove_dir_all(&cache_dir);
                                             let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();

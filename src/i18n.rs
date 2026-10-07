@@ -365,6 +365,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Map needs your Forza Horizon 6 install" => "Karte benötigt deine Forza-Horizon-6-Installation",
         "Set it in Setup → Game Install" => "Lege sie unter Setup → Spiel-Installation fest",
         "Map could not be loaded" => "Karte konnte nicht geladen werden",
+        "Needs your Forza Horizon 6 install — the map is read from it" => "Benötigt deine Forza-Horizon-6-Installation — die Karte wird daraus gelesen",
 
         // ── Gearbox tab: General ───────────────────────────────────────
         "Lets the box send shift inputs. Stays hands-off until you do one full \

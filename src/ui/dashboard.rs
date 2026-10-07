@@ -2546,11 +2546,13 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         if let Some(err) = &app.minimap_error {
             use crate::minimap::MapLoadError as E;
             let (label, sub) = match err {
-                E::NoInstall | E::NotReadable(_) | E::MissingZip(_) => (
+                E::NoInstall => (
                     tr("Map needs your Forza Horizon 6 install"),
                     tr("Set it in Setup → Game Install").to_string(),
                 ),
-                E::Decode(e) => (tr("Map could not be loaded"), e.clone()),
+                E::NotReadable(_) | E::MissingZip(_) | E::Decode(_) => {
+                    (tr("Map could not be loaded"), err.to_string())
+                }
             };
             let p = ui.painter_at(rect);
             p.text(
