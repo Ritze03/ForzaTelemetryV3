@@ -11,7 +11,7 @@ Needs numpy (matplotlib only for --plot).  Every threshold below says what it wa
 
 Usage:  fix_highways.py IN.json OUT.json [--work DIR] [--report PATH] [--dry-run] [--validate] [--no-overmarks] [--no-turnarounds] [--plot PNG [--bbox X0,Z0,X1,Z1]]
   IN / OUT      fh6-road-types files (v2; v1 is accepted and written as v2).  OUT may equal IN.  OUT is written in the editor's own key order, one entry
-                per line (diff-friendly, like data/fh6-road-types.json); `counts` is recomputed the way the editor's exportObj() does.  Only `types`
+                per line (diff-friendly, like assets/map/fh6-road-types.json); `counts` is recomputed the way the editor's exportObj() does.  Only `types`
                 values and `counts` can differ from IN: points / moved / removed / added / jump_from / races are passed through untouched.
   --work DIR    extractor outputs (default ./fh6-out-work): roads.json (needs `ids` + `heights`), terr_e/elevation.npy (optional: without it the
                 ground-level test of the island rule is skipped, so that rule only reports), regions.json (optional: region name column)
@@ -384,7 +384,7 @@ def dumps(o):
 
 
 def write_v2(path, obj, types, counts):
-    """the editor's key order, one entry per line (same layout as data/fh6-road-types.json)"""
+    """the editor's key order, one entry per line (same layout as assets/map/fh6-road-types.json)"""
     L = ['{"format":"fh6-road-types","version":2,', '"nav":' + dumps(obj['nav']) + ',']
 
     def block(name, items, last=False):

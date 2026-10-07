@@ -89,7 +89,7 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   **Accept** sets your mark to the prediction (an ordinary mark: Ctrl+Z undoes it), **Mark...** opens the type palette on the pin, **Skip** hides the entry (kept in `localStorage` key `fh6viewer.rqskip`, never in the export;
   "restore N skipped" brings them back). The queue is rebuilt from the *current* marks, in this order: (1) marked but the prediction disagrees (race-type marks before story / wristband marks), (2) unmarked, predicted
   at >= 70 % (story routes the game files state outright are not queued), (3) unmarked story routes next to a route you marked Story, (4) unmarked, low-confidence. Predictions never change your marks by themselves.
-- **Project data** (`tools/fh6-extract/data/fh6-road-types.json`, committed, **v2**: ids + types, plus the user's own points / added links): the user's finished hand classification (see `docs/game-data/fh6-game-files.md#hand-classified-road-and-race-types`).
+- **Project data** (`assets/map/fh6-road-types.json` (moved from `tools/fh6-extract/data/` in I25; the app embeds it too), committed, **v2**: ids + types, plus the user's own points / added links): the user's finished hand classification (see `docs/game-data/fh6-game-files.md#hand-classified-road-and-race-types`).
   `build_viewer.py` embeds it as `data/canon.js`; when the browser has **no saved editor work** the editor starts from it (not copied into `localStorage` until you edit, so a newer build's project data
   shows through), and the **Reset to project data** button (with `confirm()`) loads it over the current state. Saved `localStorage` work keeps priority. If its nav sha1 / node count differ from the
   install's, it is not loaded, the button is disabled and the panel says so. *Why committed:* it is the user's own work and the only copy that must never be lost; it holds no game data.
@@ -125,7 +125,7 @@ python3 -B preview_3d.py --out OUT --work WORK [--media M] [--road-types PATH] [
                          [--jpeg-quality Q] [--decim 1|2|4] [--skirt 1000] [--step 5] [--lift 0.6] [--no-coarse]
 ```
 
-- `--road-types` default = `data/fh6-road-types.json` (v1 or v2; point it at an editor export to preview unsaved work).
+- `--road-types` default = `assets/map/fh6-road-types.json` (repo root) (v1 or v2; point it at an editor export to preview unsaved work).
 - **`preview_2d.py`** needs only `<work>/roads.json`; writes one self-contained `OUT/preview-2d.html` (~0.5 MB, no CDN), transparent and frameless (vanilla in-game look). Wheel zoom, drag pan,
   **F / 0 / double-click** fit, **B** cycles backdrop (none / checker / dark), **T** shows the turnaround links (hidden by default), URL hash `#x,z,scale[,backdrop]`, `window.__P2D`.
 - **`preview_3d.py`** needs `<work>/terr_e/elevation.npy` + `roads.json` and `OUT/tiles/` (from `build_viewer.py`); writes `OUT/preview-3d.html` + `OUT/preview3d/{meta,terrain,roads,tex_<Season>}.js`

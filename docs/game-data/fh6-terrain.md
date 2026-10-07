@@ -5,7 +5,7 @@ sections first — everything here is read out of `Tracks/Brio/GeoChunk0.minizip
 [`tools/fh6-extract/extract_terrain.py`](../../tools/fh6-extract/extract_terrain.py) (**the script is the ground truth**; if this doc and
 the script disagree, trust the script and fix the doc).
 
-Status: research only — nothing in `src/` reads game files yet. The user checked both renders (elevation, surfaces) against the
+Status: the **elevation** raster is read at runtime in Rust (`src/gamedata/terrain.rs`, I25; see [Rust implementation notes](#rust-implementation-notes)); surfaces are still research only (Python). The user checked both renders (elevation, surfaces) against the
 in-game world and they look right: **the ids and heights are trusted; the surface *names* are ours** — 18 ids confirmed in-game, 4 seen, 32 reasoned
 (see [Surface names](#surface-names-id-table)).
 
@@ -209,8 +209,16 @@ Notes on the surprises (several pre-survey guesses were wrong):
 
 ## Rust implementation notes
 
-- Needs: PGZP reader (u32/u64 tables + three codecs), a raw **LZ4 block** decoder (~25 lines, see `lz4b.py`) and `flate2` raw deflate (already
-  transitive). No zip crate needed for GeoChunk.
-- Elevation ≈ 1–2 days: parse `burG` Mesh/IndB/VerB, rasterise, **bake once to a cache file** (don't redo it every start; it is minutes of work).
-- Surfaces: moderate–high — needs the `.phys` decode; names: a `confirmed`/`seen`/`reasoned` flag per id lets the UI hedge (show reasoned names with a "?" or not at all).
-- Cache location: the app data dir, never the repo (the data is Playground Games IP; see the licensing section of the main doc).
+Implemented (I25): elevation only, in `src/gamedata/` — `lz4.rs` (LZ4 block decoder, port of `lz4b.py`, no crate), `pgzp.rs` (PGZP v101 reader, port of
+`pgzp.py`; GeoChunk0 is ~40 GB so only the ~10 MB index is read and entries are fetched one by one, one `File` handle per thread; deflate-flagged entries
+(`flags & 0xff == 0x08`) are **not** supported because no needed entry uses them — measured: the 5 431 `tbheightfield` and 486 `uberheightfield` models are
+`0x1f` LZ4 or `0x00` stored — which avoids pulling in `flate2`), `burg.rs` (`burG` container + `terrain_mesh`, bounds-checked: malformed data gives `None`, never a panic)
+and `terrain.rs` (`Elevation`).
+
+- **8 m only, `i16` decimetres.** `Elevation { x0, z1, res, w, h, dm }` is a 2752 × 2752 raster (15 MB) of `round_ties_even(h * 10)`, `-32768` = no data: exactly the map editor's lookup grid.
+  *Why 8 m:* both consumers need nothing finer (the editor's grid is the 8 m raster; the 3D mesh is the 8 m raster block-averaged to 16 m). *Why decimetres:* 0.05 m rounding is far below the 0.17 m accuracy of the data and halves the memory against `f32`.
+- **Algorithm** = `extract_terrain.py`: max height per pixel, pixel-centre barycentric test (slack 1e-6), `cb` cluster where it has data else `ul`; `Elevation::build(media, coarse, progress)` with `coarse = true` rasterises the `uberheightfield` LOD instead (486 models, 2 048 m cells). A work-stealing index over the (segment, offset)-sorted entry list on up to 8 threads, each rasterising into a local patch that is max-merged under a mutex. Cold build 2.2 s on this machine's SSD (5 431 files, 5 852 162 triangles, 215 MB read); `progress` is called from the worker threads (0.0..1.0), so run it off the UI thread.
+- **Cache:** `Elevation::load_or_build` keeps `<app_data_dir>/map_editor/cache/elevation_8m.bin` (and `elevation_coarse_8m.bin`): header `FH6E`, version, w, h, res, x0, z1, source length and mtime of `GeoChunk0.minizip`, then the `i16` grid; a header mismatch rebuilds; atomic write (temp + rename); hit = 6 ms. *Why cache:* on a spinning disk the cold build is ~5 400 scattered 40 KB reads (tens of seconds) while the result is 15 MB. The cache lives in the app data dir, never the repo (the data is Playground Games IP; see the licensing section of the main doc).
+- **`Elevation::height(x, z)`** is the editor's `terrainY`: bilinear between the four nearest pixel centres, pixels without data left out of the weights, `None` when none has data. Rust and the editor therefore agree.
+- Verified against the Python raster (`/home/mo/fh6-viewer-work/terr_e/elevation.npy`): 0 of 7 573 504 no-data mismatches, max |dy| 0.051 m (f32 against f64 rounding). Tests (`cargo test --release -- --ignored`) pin 10 sampled heights within 0.5 m, the two no-data points, the 60.29 % valid fraction and the triangle counts.
+- Not done: **surfaces** (needs the `.phys` decode; a `confirmed`/`seen`/`reasoned` flag per id lets the UI hedge), hole fill / sea skirt for the 3D mesh (belongs to the I26 data generator).

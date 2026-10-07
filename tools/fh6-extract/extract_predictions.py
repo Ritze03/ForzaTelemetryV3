@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FH6 predicted race TYPE + predicted map-PIN position for every route -> predictions.json.   READ-ONLY on the install.
 
-Usage: extract_predictions.py [--media <...>/ForzaHorizon6/media] [--out DIR] [--canon data/fh6-road-types.json] [--refit]
+Usage: extract_predictions.py [--media <...>/ForzaHorizon6/media] [--out DIR] [--canon assets/map/fh6-road-types.json] [--refit]
 --out must hold races.json, pois.json and racelines.json (the extract_races / extract_poi / extract_racelines outputs); takes ~20 s (terrain collision sampling
 under every racing line).  The methods live in racetype_method.py (type) and pin_method.py (pin); validation + caveats: docs/game-data/fh6-game-files.md
 ("Predicting race type and map-pin position").
@@ -58,7 +58,7 @@ def refit(F, lab):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0]); add_media_args(ap)
-    ap.add_argument('--canon', default=os.path.join(HERE, 'data', 'fh6-road-types.json'), help="the project's hand marks (only used for the self-check)")
+    ap.add_argument('--canon', default=os.path.join(HERE, '..', '..', 'assets', 'map', 'fh6-road-types.json'), help="the project's hand marks (only used for the self-check)")
     ap.add_argument('--refit', action='store_true')
     a = ap.parse_args(); media = resolve_media(a)
     J = lambda n: json.load(open(os.path.join(a.out, n)))
