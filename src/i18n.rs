@@ -367,6 +367,49 @@ fn de(s: &str) -> Option<&'static str> {
         "Map could not be loaded" => "Karte konnte nicht geladen werden",
         "Needs your Forza Horizon 6 install — the map is read from it" => "Benötigt deine Forza-Horizon-6-Installation — die Karte wird daraus gelesen",
 
+        // ── Setup: Map data ────────────────────────────────────────────
+        "Map data" => "Kartendaten",
+        "Needs your Forza Horizon 6 install" => "Benötigt deine Forza-Horizon-6-Installation",
+        "Road types" => "Straßentypen",
+        "Your saved file" => "Deine gespeicherte Datei",
+        "Project data" => "Projektdaten",
+        "Project data updated since your save" => "Projektdaten seit deinem Speichern aktualisiert",
+        "Editor" => "Editor",
+        "Not running" => "Läuft nicht",
+        "Preparing" => "Wird vorbereitet",
+        "Running" => "Läuft",
+        "Failed" => "Fehlgeschlagen",
+        "Saved" => "Gespeichert",
+        "edges" => "Kanten",
+        "points" => "Punkte",
+        "Start from" => "Starten mit",
+        "Current: your saved road types, or the project data if you have none. Raw: the game's untouched road network with no road types."
+            => "Aktuell: deine gespeicherten Straßentypen, sonst die Projektdaten. Roh: das unveränderte Straßennetz des Spiels ohne Straßentypen.",
+        "Raw" => "Roh",
+        "Open map editor" => "Karteneditor öffnen",
+        "Opens the road-type editor in your browser: 2D map, Preview mode and live 3D."
+            => "Öffnet den Straßentyp-Editor im Browser: 2D-Karte, Vorschau-Modus und Live-3D.",
+        "Open data folder" => "Datenordner öffnen",
+        "Your saved road types and the cached map data live here."
+            => "Hier liegen deine gespeicherten Straßentypen und die zwischengespeicherten Kartendaten.",
+        "Contribute" => "Beitragen",
+        "How to send your road-type edits back to the project."
+            => "So schickst du deine Straßentyp-Änderungen an das Projekt zurück.",
+        "Delete your saved road types?" => "Deine gespeicherten Straßentypen löschen?",
+        "Reset" => "Zurücksetzen",
+        "Reset road types to project data" => "Straßentypen auf Projektdaten zurücksetzen",
+        "Deletes your saved road types; the project data is used again."
+            => "Löscht deine gespeicherten Straßentypen; die Projektdaten werden wieder verwendet.",
+        "You have no saved road types." => "Du hast keine gespeicherten Straßentypen.",
+        "Reset to project data" => "Auf Projektdaten zurückgesetzt",
+        "Reset to project data. Reopen the map editor." => "Auf Projektdaten zurückgesetzt. Öffne den Karteneditor erneut.",
+        "Could not delete the file" => "Datei konnte nicht gelöscht werden",
+        "Rebuild map data" => "Kartendaten neu erstellen",
+        "Deletes the cached terrain and road data; it is rebuilt the next time the editor opens. Your saved road types are kept."
+            => "Löscht das zwischengespeicherte Gelände und die Straßendaten; sie werden beim nächsten Öffnen des Editors neu erstellt. Deine gespeicherten Straßentypen bleiben erhalten.",
+        "Wait until the map data is prepared." => "Warte, bis die Kartendaten vorbereitet sind.",
+        "Map data cache cleared" => "Kartendaten-Cache gelöscht",
+
         // ── Gearbox tab: General ───────────────────────────────────────
         "Lets the box send shift inputs. Stays hands-off until you do one full \
                      first-gear pull to redline and shift to 2nd manually — that calibrates 1st \

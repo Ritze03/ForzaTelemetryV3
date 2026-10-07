@@ -584,8 +584,11 @@ pub struct ForzaApp {
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
     /// The map editor's local web server (I26b), once started; `None` = never started / stopped.
     /// See `start_map_editor`.
-    #[allow(dead_code)] // read by the I27 accessors below; nothing calls them yet
     map_editor: Option<crate::mapedit::MapServer>,
+    /// The start mode `map_editor` was started with (a running server cannot change it).
+    map_editor_mode: Option<crate::mapedit::StartFrom>,
+    /// Setup → Map data card state (status check, start-mode choice, confirm).
+    pub map_data: crate::ui::settings::MapData,
     /// Events of `map_editor` (polled once a frame in `poll_map_editor`).
     map_editor_rx: Option<Receiver<crate::mapedit::MapEvent>>,
     /// The last `Saved` / `Error` event of the map editor, for the Setup card (I27) to show.
@@ -917,6 +920,8 @@ impl ForzaApp {
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
             map_editor: None,
+            map_editor_mode: None,
+            map_data: Default::default(),
             map_editor_rx: None,
             map_editor_last: None,
             debug_cars: Default::default(),
@@ -950,20 +955,24 @@ impl ForzaApp {
 
     /// Open the map editor in the browser (I26b). Starts the local server and builds the map data
     /// on a background thread first (the browser opens when that is done: `MapEvent::Ready`, see
-    /// `poll_map_editor`); with a server already running it just re-opens its page, whatever
-    /// `start_from` says (call `stop_map_editor` first to switch mode: that makes the old browser
-    /// tab useless). Problems land in `map_editor_last` as `MapEvent::Error`.
-    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    /// `poll_map_editor`); with a server already running in the same `start_from` mode it just
+    /// re-opens its page. **Why a mode switch restarts the server:** `start_from` only applies to
+    /// a fresh server, so the other mode needs a new one (the old browser tab stops working,
+    /// which is fine). Problems land in `map_editor_last` as `MapEvent::Error`.
     pub fn start_map_editor(&mut self, ctx: &Context, start_from: crate::mapedit::StartFrom) {
         use crate::mapedit::{MapEvent, MapServerState};
         if let Some(server) = &self.map_editor {
-            match server.state() {
-                MapServerState::Ready => {
-                    ctx.open_url(egui::OpenUrl::new_tab(server.url()));
-                    return;
+            if self.map_editor_mode != Some(start_from) {
+                self.stop_map_editor();
+            } else {
+                match server.state() {
+                    MapServerState::Ready => {
+                        ctx.open_url(egui::OpenUrl::new_tab(server.url()));
+                        return;
+                    }
+                    MapServerState::Preparing { .. } => return, // Ready will open it
+                    MapServerState::Failed(_) => self.stop_map_editor(), // retry from scratch
                 }
-                MapServerState::Preparing { .. } => return, // Ready will open it
-                MapServerState::Failed(_) => self.stop_map_editor(), // retry from scratch
             }
         }
         let Some(media) = crate::gamedata::install::find_media(None) else {
@@ -974,6 +983,7 @@ impl ForzaApp {
         match crate::mapedit::MapServer::start(ctx.clone(), media, start_from, tx) {
             Ok(server) => {
                 self.map_editor = Some(server);
+                self.map_editor_mode = Some(start_from);
                 self.map_editor_rx = Some(rx);
                 self.map_editor_last = None;
             }
@@ -982,20 +992,19 @@ impl ForzaApp {
     }
 
     /// Stop the map editor's server (an open editor tab stops working).
-    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
     pub fn stop_map_editor(&mut self) {
         self.map_editor = None;
+        self.map_editor_mode = None;
         self.map_editor_rx = None;
     }
 
     /// State of the map editor server for the Setup card: `None` = not running.
-    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
     pub fn map_editor_state(&self) -> Option<crate::mapedit::MapServerState> {
         self.map_editor.as_ref().map(|s| s.state())
     }
 
     /// The editor's URL (contains the session token: open it, don't show or log it).
-    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
+    #[allow(dead_code)] // nothing displays the secret URL; the browser is opened from poll_map_editor
     pub fn map_editor_url(&self) -> Option<&str> {
         self.map_editor.as_ref().map(|s| s.url())
     }
@@ -1003,7 +1012,6 @@ impl ForzaApp {
     /// The road types the app uses now, as the running editor server knows them (updated on every
     /// Save, before the window repaints). `None` while no server runs or it is still preparing:
     /// use `gamedata::roadtypes::RoadTypes::current` then.
-    #[allow(dead_code)] // I27's Setup card is the caller; until it lands nothing is
     pub fn map_editor_current(&self) -> Option<Arc<crate::gamedata::roadtypes::Current>> {
         self.map_editor.as_ref().and_then(|s| s.current())
     }

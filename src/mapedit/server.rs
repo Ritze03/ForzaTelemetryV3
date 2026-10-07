@@ -48,8 +48,6 @@ const DATA_SCRIPTS: [&str; 6] = ["meta", "roads", "roaded", "canon", "elevation"
 const DATA_MARKER: &str = "<!--@DATA_SCRIPTS@-->";
 /// What the page's `window.FH6.app` says: the Save endpoint and the project file to reset to.
 const APP_JS: &str = "(window.FH6=window.FH6||{}).app={save:\"save\",project:\"project.json\"};";
-/// The embedded project road-type file (also embedded by `roadtypes.rs`; a test checks they agree).
-const PROJECT_JSON: &str = include_str!("../../assets/map/fh6-road-types.json");
 
 const INDEX_HTML: &str = include_str!("../../assets/editor/index.html");
 
@@ -80,7 +78,6 @@ fn index_html() -> String {
 
 /// What the editor opens with (D57). Save always writes the override file, whatever this is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)] // I27's "Open map editor" buttons construct these
 pub enum StartFrom {
     /// The game's nav graph with no road types at all.
     Raw,
@@ -534,7 +531,7 @@ fn get(sh: &Shared, path: &str) -> Resp {
     match path {
         "" | "index.html" => return Resp::file(HTML, sh.index.clone().into_bytes(), NO_STORE),
         "data/app.js" => return Resp::file(JS, APP_JS.as_bytes().to_vec(), NO_STORE),
-        "project.json" => return Resp::file("application/json; charset=utf-8", PROJECT_JSON.as_bytes().to_vec(), NO_STORE),
+        "project.json" => return Resp::file("application/json; charset=utf-8", RoadTypes::project_json().as_bytes().to_vec(), NO_STORE),
         _ => {}
     }
     if let Some((_, ct, bytes)) = STATIC.iter().find(|(p, _, _)| *p == path) {
@@ -721,8 +718,8 @@ mod tests {
     }
 
     #[test]
-    fn project_json_matches_roadtypes_embed() {
-        let sha = Sha1::digest(PROJECT_JSON.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    fn project_json_matches_its_sha1() {
+        let sha = Sha1::digest(RoadTypes::project_json().as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
         assert_eq!(sha, RoadTypes::project_sha1());
     }
 
@@ -818,7 +815,7 @@ mod tests {
         assert_eq!(r.get("preview-3d.html").status, 200);
         assert_eq!(r.get("lib/three.min.js").status, 200);
         assert_eq!(r.get("data/app.js").text(), APP_JS);
-        assert_eq!(r.get("project.json").text(), PROJECT_JSON);
+        assert_eq!(r.get("project.json").text(), RoadTypes::project_json());
         // Every static table entry serves.
         for (p, _, b) in STATIC {
             assert_eq!(r.get(p).body.len(), b.len(), "{p}");

@@ -307,7 +307,7 @@ might produce.
 | --- | --- |
 | `mod.rs` | Module docs + re-exports (`MapServer`, `MapEvent`, `MapServerState`, `StartFrom`). |
 | `data.rs` | I26a generators: every data file the editor / 3D pages load (`data/*.js`, `preview3d/*`, tile + texture JPEGs) from the install's nav, elevation and tiles, byte-compatible with the Python tools; `EditorData::{build, resolve, set_road_types}` (builds the text files once, imagery on demand with a disk cache under `<app_data_dir>/map_editor/cache/`), `write_atomic`. |
-| `server.rs` | I26b local web server: hand-rolled `TcpListener` HTTP, loopback + token path prefix + Host/Origin checks, embedded editor pages (`assets/editor/`) served from memory, `POST save` (validate -> stamp `based_on` -> atomic write of the override -> new current road types), sticky port (`map_editor/port`). `MapServer::start(ctx, media, StartFrom, events)`; the app side is `app.rs:{start_map_editor, stop_map_editor, map_editor_state, map_editor_url, map_editor_current, poll_map_editor}` and `map_editor_last` (the Setup card is I27). |
+| `server.rs` | I26b local web server: hand-rolled `TcpListener` HTTP, loopback + token path prefix + Host/Origin checks, embedded editor pages (`assets/editor/`) served from memory, `POST save` (validate -> stamp `based_on` -> atomic write of the override -> new current road types), sticky port (`map_editor/port`). `MapServer::start(ctx, media, StartFrom, events)`; the app side is `app.rs:{start_map_editor, stop_map_editor, map_editor_state, map_editor_url, map_editor_current, poll_map_editor}` and `map_editor_last`; the Setup → Map data card (`ui/settings.rs:map_data_card`) is the caller, see `docs/features/map-editor.md`. |
 
 ### `src/listeners/` (event-driven, fire inside `drain_packets`)
 
@@ -337,7 +337,7 @@ might produce.
 | `power_curve.rs` | Power Curve tab (live RPM vs power/torque, boost). |
 | `engine_swaps.rs` | Engine Swaps reference table from `engines.csv`. |
 | `coop.rs` | Co-Op tab: transport selector, Cloudflare host/join, Trystero room ID. |
-| `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Window Detection). See [[settings]]. |
+| `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Game Install, Map data, Window Detection). See [[settings]], [[map-editor]]. |
 | `changelog.rs` | "What's New" viewer — parses root `CHANGELOG.md`, category filters. |
 | `debug_tab.rs` | Debug tab (just left of Setup): every field of `telemetry.latest` as a raw name → value grid, parsed from `{:#?}` so it can't drift; Copy button. See [[debug]]. |
 | `acceleration.rs` | **ORPHANED** — not in `ui/mod.rs`, not compiled. |
@@ -372,6 +372,7 @@ might produce.
 - **Theme colours / control layout** → `theme.rs` and [[ui-architecture]] /
   the styling guide.
 - **Frame timing / FPS** → the FPS limiter at the end of `app.rs:update`.
+- **Map editor UI (Setup → Map data card, start modes, reset / rebuild, Contribute)** → `ui/settings.rs:map_data_card` / `map_data_view`; `CONTRIBUTING.md`. See `docs/features/map-editor.md`.
 - **Map editor (server, Save, generated data files)** → `mapedit/server.rs` / `mapedit/data.rs`; app wiring in `app.rs:start_map_editor`; the editor pages in `assets/editor/`. See `docs/game-data/fh6-map-tooling.md`.
 - **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
 - **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`

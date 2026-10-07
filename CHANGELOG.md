@@ -6,6 +6,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.5.0] – 2026-10-07
 
+### Added
+- **Map editor**: Setup → Map data opens the road-type map editor in your browser, built from your own install. Check and fix road types; Save goes straight into the app; Contribute explains how to send your edits back.
+
 ### Removed
 - **Bundled map images**: the Dashboard map and the HUD minimap now read the maps from your Forza Horizon 6 install instead of four images shipped inside the app, so the app download is about 100 MB smaller. The credits link for the old map images is gone with them.
 
