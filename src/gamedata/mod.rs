@@ -2,14 +2,12 @@
 //! decrypted). See `docs/game-data/` for the file formats and `docs/game-data/fh6-cars-names-icons.md`
 //! for the car-name pipeline.
 
-// burg / lz4 / nav / pgzp / roadtypes / terrain are the map-editor data layer (I25): a library
-// with tests, not wired into the app yet (I26 does that), hence the dead_code allowances.
-// Remove them as the consumers land.
-#[allow(dead_code)]
+// The map-editor data layer (I25), consumed by `mapedit::data` (I26a); burg and lz4 are fully
+// used through it. nav / pgzp / roadtypes / terrain keep their dead_code allowances for the parts
+// only the later consumers (I26b server, I27 Setup card) call. Remove them as those land.
 pub mod burg;
 pub mod cars;
 pub mod install;
-#[allow(dead_code)]
 pub mod lz4;
 #[allow(dead_code)]
 pub mod nav;
