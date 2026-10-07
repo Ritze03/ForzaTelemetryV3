@@ -48,8 +48,11 @@ python3 -B build_viewer.py --out /some/dir/outside/the/repo      # then open  /s
   them). First run ≈ 5 min (terrain reads the 40 GB GeoChunk0; measured 270 s with one season), later runs ≈ 10–20 s. `--no-terrain` skips elevation/surfaces,
   `--seasons Summer` builds one season only. A layer whose extractor fails is skipped with a `WARNING` line; the rest is still built.
 - **Output is Playground Games' imagery/data** (~100 MB): keep it outside the repo, do not publish or commit it. The script refuses `--out`/`--work` inside the repo.
-- **Opens from `file://`** (data is `<script src="data/*.js">`, no `fetch`). It needs internet for the Leaflet + markercluster CDN scripts (unpkg).
+- **Opens from `file://`** (data is `<script src="data/*.js">`, no `fetch`). No internet needed: Leaflet + markercluster are embedded in `assets/editor/lib/` and copied to `<out>/lib/` (D58; the page itself is `assets/editor/index.html`, the one copy the app serves too, see "One copy of the pages" below).
   Elevation/surface hover lookups use `DecompressionStream` (Chrome/Edge 80+, Firefox 113+, Safari 16.4+).
+- **The pages are no longer in this folder.** `assets/editor/index.html` (editor) and `assets/editor/preview-3d.html` (3D) are the single copy used by this script *and* by the app's local server
+  (the app adds Save / project reset / race-mark passthrough via `FH6.app`; the Python build is unaffected). `build_viewer.py` fills the `<!--@DATA_SCRIPTS@-->` marker and copies `assets/editor/lib/` to `<out>/lib/`;
+  `preview_3d.py` copies the 3D page + `lib/`. Details and the *why*: `docs/game-data/fh6-map-tooling.md` ("One copy of the pages").
 - **What it shows:** the game's own tile pyramid as base map (4 seasons, JPEG; zoom 0–3 = levels L0–L3, overzoom to 7), roads by surface kind (paved / off-road / unknown, click = nav class, this stretch, whole-road split, dominant ids with confirmed/reasoned status) or by nav class, regions (outline + names), landmarks (75),
   every POI category with the game's own icon where `mapping.json` has one (coloured circle otherwise; dense layers clustered and off by default), race starts (+ 12-slot grids),
   170 race lines with track edges (ribbons appear from zoom 4), speed-limit signs by variant with a heading arrow, stunt gates, surfaces raster (54 ids, our names with
@@ -110,7 +113,7 @@ The viewer has an **Editor** button (top left) for hand-classifying the nav road
   *Why ids and not coordinates:* the export must contain no game data (licensing rule), and positions are re-read from the user's own install when the file is used. Node ids are
   unique over all 38 473 nodes (checked by `decode_nav.py`), so they are a safe key; the nav sha1 pins the graph version.
 - Implementation: `decode_nav.py` exports `ids` (node id per polyline vertex), `nav` {file, sha1, nodes} and `orphans` into `roads.json`; `build_viewer.py:build_roaded` writes
-  `data/roaded.js` (ids + one prefill digit per edge); the editor is one self-contained block (`EDITOR`) in `viewer_template.html` drawing all edges on its own canvas layer with a
+  `data/roaded.js` (ids + one prefill digit per edge); the editor is one self-contained block (`EDITOR`) in `assets/editor/index.html` drawing all edges on its own canvas layer with a
   grid index for hit tests, so painting 39 k edges stays smooth (no per-edge Leaflet layers).
 
 ## 2D and 3D previews
@@ -129,7 +132,7 @@ python3 -B preview_3d.py --out OUT --work WORK [--media M] [--road-types PATH] [
 - **`preview_2d.py`** needs only `<work>/roads.json`; writes one self-contained `OUT/preview-2d.html` (~0.5 MB, no CDN), transparent and frameless (vanilla in-game look). Wheel zoom, drag pan,
   **F / 0 / double-click** fit, **B** cycles backdrop (none / checker / dark), **T** shows the turnaround links (hidden by default), URL hash `#x,z,scale[,backdrop]`, `window.__P2D`.
 - **`preview_3d.py`** needs `<work>/terr_e/elevation.npy` + `roads.json` and `OUT/tiles/` (from `build_viewer.py`); writes `OUT/preview-3d.html` + `OUT/preview3d/{meta,terrain,roads,tex_<Season>}.js`
-  (script-tag data, so `file://` works; `roads.js` is the road **edge list** - nodes + typed edges - that the page turns into ribbons itself, the same code that draws the editor's live state). three.js r147 comes from jsdelivr: **needs internet**. `--media` is only used for the coarse hole filler (`--no-coarse` interpolates holes instead;
+  (script-tag data, so `file://` works; `roads.js` is the road **edge list** - nodes + typed edges - that the page turns into ribbons itself, the same code that draws the editor's live state). three.js r147 is embedded (`assets/editor/lib/three.min.js`, copied to `OUT/lib/`; the page is `assets/editor/preview-3d.html`): no internet needed. `--media` is only used for the coarse hole filler (`--no-coarse` interpolates holes instead;
   the coarse raster is cached in `OUT/preview3d/cache/terr_c/`, first run ~55 s). Controls: left drag pan, right / middle / Ctrl drag orbit, wheel zoom, WASD / arrows, Q/E rotate, +/- zoom, R reset.
   Panel: season, road height **Nodes (default) / Terrain (drape)**, "Never below terrain", road thickness 0-20 m (default 3), edge lines, per-type visibility, **Road colours: Type colours (default) / Map look** (see fh6-map-tooling.md, 3D preview).
   URL hash (all optional): `v=x,z,dist,yawDeg,pitchDeg`, `season=`, `exag=`, `edges=0`, `types=a,b`, `rh=node|terrain`, `above=1`, `th=<metres>`, `style=type|map`; `live=1` (set by the editor's 3D overlay: roads then arrive by postMessage, see fh6-map-tooling.md); console `window.P3D_DEBUG.check(n, mode)` self-checks road heights.

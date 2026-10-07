@@ -29,7 +29,7 @@
   #panel.min > :not(h1) { display:none; }
   body.live #back { display:inline-block !important; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="lib/three.min.js"></script>
 <script src="preview3d/meta.js"></script>
 <script src="preview3d/terrain.js"></script>
 <script src="preview3d/roads.js"></script>
@@ -64,7 +64,7 @@ const P = window.P3D || {}, T = P.terrain, R = P.roads, M = P.meta || {};
 const $ = id => document.getElementById(id), msg = $('msg');
 const LIVE = /[#&]live=1/.test(location.hash) && window.parent !== window;   // embedded in the editor (see "live mode" below)
 const fail = e => { console.error(e); msg.className = ''; msg.textContent = 'Could not build the 3D view: ' + (e && e.message || e); };
-if (!window.THREE) { fail(new Error('three.js did not load (needs internet for the CDN script)')); return; }
+if (!window.THREE) { fail(new Error('three.js did not load (lib/three.min.js is missing - the lib/ folder must sit next to this page)')); return; }
 if (!T) { fail(new Error('preview3d/terrain.js missing - run preview_3d.py')); return; }
 
 async function inflate(b64) {
@@ -183,13 +183,16 @@ function buildTerrain() {
   world.add(seaMesh);
 }
 
-// ---- season textures (data: URIs in preview3d/tex_<Season>.js, loaded on demand; no fetch() so it works from file://)
+// ---- season textures (preview3d/tex_<Season>.jpg in the app; data: URIs in preview3d/tex_<Season>.js in the Python build, loaded on demand; no fetch() so it works from file://)
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('cannot load ' + src)); document.head.appendChild(s); }); }
 async function setSeason(name) {
   if (!name) return;
-  if (!P['tex_' + name]) await loadScript('preview3d/tex_' + name + '.js');
-  const img = new Image();
-  await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('texture decode failed')); img.src = P['tex_' + name]; });
+  // App / http: preview3d/tex_<Season>.jpg is a plain image URL (no base64, no 6 MB script parse).  Python build opened as file://: the data: URI in tex_<Season>.js
+  // (a file:// image is cross-origin for WebGL, and the .jpg does not exist there).  Either way the other one is the fallback.
+  const load = (src) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('texture decode failed')); im.src = src; });
+  let img = null;
+  if (!P['tex_' + name] && location.protocol !== 'file:') { try { img = await load('preview3d/tex_' + name + '.jpg'); } catch (e) { img = null; } }
+  if (!img) { if (!P['tex_' + name]) await loadScript('preview3d/tex_' + name + '.js'); img = await load(P['tex_' + name]); }
   let src = img;
   const max = renderer.capabilities.maxTextureSize;
   if (img.width > max) { const c = document.createElement('canvas'); c.width = c.height = max; c.getContext('2d').drawImage(img, 0, 0, max, max); src = c; console.warn('texture downscaled to', max); }

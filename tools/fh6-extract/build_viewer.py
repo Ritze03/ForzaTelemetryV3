@@ -11,7 +11,7 @@ Self-sufficient: it runs the extractors itself into --work (default <out>-work; 
 redoes them), so a first run takes ~5 min (terrain = 40 GB GeoChunk0 seek-reads; measured 270 s for one season), later runs ~10-20 s.  A layer whose extractor
 fails is skipped with a warning; the rest of the viewer is still built.
 
-Output (<out>/):  index.html (from viewer_template.html) · data/*.js (window.FH6.<name> = ..., loaded by <script>, no fetch()) ·
+Output (<out>/):  index.html (from assets/editor/index.html) · lib/ (copied from assets/editor/lib/) · data/*.js (window.FH6.<name> = ..., loaded by <script>, no fetch()) ·
 tiles/<Season>/<z>/<x>/<y>.jpg (the game's own tile pyramid, z 0..3 = L0..L3) · icons/*.png (game map icons, <=64 px) ·
 overlays/elevation.png (hillshade; surfaces are drawn client-side from a compressed id grid in data/surfaces.js).
 Coordinates everywhere: telemetry space (x, z metres).  Map px (8192 map) = ((x+12540)*0.3722, (10738-z)*0.3722); the viewer's Leaflet CRS
@@ -23,6 +23,7 @@ import numpy as np
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EDITOR = os.path.join(HERE, '..', '..', 'assets', 'editor')      # index.html + preview-3d.html + lib/ (shared with the app)
 sys.path.insert(0, HERE)
 from fh6common import ci, autodetect_media
 from fh6surfaces import SURFACES, PAVED, OFFROAD
@@ -690,7 +691,8 @@ def main():
         if sf: scripts.append(write_js(out, 'surfaces', sf))
     scripts.insert(0, write_js(out, 'meta', meta))
 
-    tpl = open(os.path.join(HERE, 'viewer_template.html'), encoding='utf-8').read()
+    tpl = open(os.path.join(EDITOR, 'index.html'), encoding='utf-8').read()       # the single copy of the page (also served by the app); the app substitutes the same marker
+    shutil.copytree(os.path.join(EDITOR, 'lib'), os.path.join(out, 'lib'), dirs_exist_ok=True)      # embedded Leaflet / markercluster: no CDN, works offline from file://
     tags = '\n'.join(f'<script charset="utf-8" src="data/{s}.js"></script>' for s in scripts)
     open(os.path.join(out, 'index.html'), 'w', encoding='utf-8').write(tpl.replace('<!--@DATA_SCRIPTS@-->', tags))
 

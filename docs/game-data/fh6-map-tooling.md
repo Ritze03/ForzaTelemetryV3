@@ -1,6 +1,6 @@
 # FH6 map tooling — road editor v2, 2D preview, 3D preview (standalone + live in the editor)
 
-Phase-H tooling in `tools/fh6-extract/` (usage and flags: [its README](../../tools/fh6-extract/README.md)). This page holds the
+Phase-H tooling in `tools/fh6-extract/` (usage and flags: [its README](../../tools/fh6-extract/README.md)); the editor and 3D pages themselves live in `assets/editor/` (shared with the app, see "One copy of the pages" below). This page holds the
 **formats and the why**. Everything that contains game data (viewer, both previews) is generated into a directory **outside the repo**
 (e.g. `/home/mo/fh6-viewer/`) and never committed or published.
 
@@ -43,7 +43,7 @@ v1 (ids + three types, no coordinates) still imports; `build_viewer.py:build_can
 - **Why coordinates are allowed now:** v1 had none so the committed file held no game data. In v2 the coordinates are *user-placed* points (the user's own work, not read from the game),
   game nodes are still ids only, so the licensing rule holds (D48). Moved game nodes store the user's new position, not the original.
 - The canonical **`assets/map/fh6-road-types.json`** (the *project file*; moved from `tools/fh6-extract/data/` in I25, D55: the app embeds it with `include_str!`, so it lives with the other app assets) is the committed copy and is **v2** since 2026-10-05 (the user's editor export, then run through `fix_highways.py`; latest refresh = user export (12), commit `198c13e`). Verified contents: 39 382 typed game edges (road 21 670, offroad 7 236, highway 4 979, trail 3 936, tunnel 904, turnaround 340, other 317; cross-country exists only as added links), **124 user points** (ids >= 1 000 000), **218 added links** (cross-country 144, road 31, jump 18, highway 17, trail 7, offroad 1), **1 moved** node, **1 removed** edge, **18 `jump_from`** entries and **94 race marks** (of 170 races: rally 21, road 21, cross-country 19, street 17, story 6, touge 5, drag 3, wristband 2). Network totals (`counts.km`): road 424.9 km, offroad 138.7, highway 103.4, trail 69.4, tunnel 18.1, cross-country 8, jump 7.3, turnaround 7.2, other 6. Committing the coordinates is fine (D48: the user's own work). In the browser the editor's localStorage autosave keeps the old state until "Reset to project data" (see [hand-classified road and race types](fh6-game-files.md#hand-classified-road-and-race-types)).
-- **File layout: one entry per line.** The canonical file is stored one entry per line, and the editor's Export (`exportText()` in `viewer_template.html`) writes exactly the same layout as `fix_highways.py` (`write_v2`), byte for byte, so replacing the file with a fresh export keeps pull-request diffs down to the entries that changed. *Why:* contributions come in as pull requests; the editor used to export one 900 kB line, which made every PR a whole-file diff. Import is plain JSON and still accepts old single-line files. Key order inside `types` / `jump_from` follows the editor's edge order (game edges, then added links), so a file written from a long session may be re-ordered once on the first re-export.
+- **File layout: one entry per line.** The canonical file is stored one entry per line, and the editor's Export (`exportText()` in `assets/editor/index.html`) writes exactly the same layout as `fix_highways.py` (`write_v2`), byte for byte, so replacing the file with a fresh export keeps pull-request diffs down to the entries that changed. *Why:* contributions come in as pull requests; the editor used to export one 900 kB line, which made every PR a whole-file diff. Import is plain JSON and still accepts old single-line files. Key order inside `types` / `jump_from` follows the editor's edge order (game edges, then added links), so a file written from a long session may be re-ordered once on the first re-export.
 
 ### Rust reader and the "current" road types (`src/gamedata/roadtypes.rs`, I25)
 
@@ -83,7 +83,7 @@ The override is `<app_data_dir>/map_editor/fh6-road-types.user.json` (`override_
 - **First run (2026-10-05):** 32 edges / 0.63 km highway -> road (all Tokyo City), 305 new turnarounds, 76 review rows. **Second run (on export (7), 2026-10-06):** 31 highway -> road, 305 turnarounds, 80 review rows = `REVIEW_TURNAROUND` 36, `REVIEW_HIGHWAY_GAP` 28, `REVIEW_HALF_MARKED` 9, `REVIEW_CUT_OFF_PIECE` 7.
 - **Fixing the review rows:** the editor's **Review spots** (below) runs these rules live, so the user can walk the list and fix it by hand.
 
-## Editor (viewer, `EDITOR` block of `viewer_template.html`)
+## Editor (viewer, `EDITOR` block of `assets/editor/index.html`)
 
 - **Modes:** Pan, Paint, Connect, Draw, Split, Move, Flip jump, Delete link, Race types. **Brush keys:** 1 Road, 2 Offroad, 3 Other, 4 Trail, 5 Cross-country, 6 Tunnel, 7 Jump line, 8 Highway, 9 Turnaround, **0 Clear**
   (key 4 used to be Clear; it moved to 0). One undo stack (Ctrl+Z) covers all modes.
@@ -100,6 +100,23 @@ The override is `<app_data_dir>/map_editor/fh6-road-types.user.json` (`override_
   (no longer dashed: dash now means Trail), user points lilac, moved game nodes an orange ring. **"Show turnaround links"** checkbox hides them from drawing *and* hit-testing; picking the Turnaround brush re-shows them.
   **Prefill from surface data** only touches Road / Offroad. In edit modes popups/labels no longer swallow clicks.
 - `elevation.js` (viewer data) is the full 8 m raster, delta-coded per row (`grid.delta=1`, ~4.7 MB; was 16 m) so the editor's height lookups match the previews. `roaded.js` carries the node height `y` (0.1 m) per vertex.
+
+### One copy of the pages, embedded libraries, app mode (I26c; plan D50, D57-D60)
+
+- **Location:** the editor page is **`assets/editor/index.html`** (was `tools/fh6-extract/viewer_template.html`), the 3D page **`assets/editor/preview-3d.html`** (was `tools/fh6-extract/preview_3d.html`), libraries in **`assets/editor/lib/`**
+  (Leaflet 1.9.4 + `images/`, Leaflet.markercluster 1.5.3, three.js r147 global build `three.min.js`, `LICENSES.md` with the BSD-2 / MIT texts). Both tools read these files: `build_viewer.py` substitutes `<!--@DATA_SCRIPTS@-->` with the `<script src="data/*.js">` tags and copies `lib/` to `<out>/lib/`;
+  `preview_3d.py` copies `preview-3d.html` and `lib/`. Usage of the Python build is unchanged (`--out` outside the repo, opens from `file://`); it now works **offline**.
+  The app's local server (I26b) serves the very same two files from memory with the same marker substitution, so there is exactly one HTML to maintain.
+  *Why embedded (D58):* the app must work without internet and from a fixed local port; the libraries are MIT / BSD-2 so committing them is fine (game data stays out of the repo). three.js stays on r147 because the global `three.min.js` build was dropped from npm in r160.
+- **App mode** = `FH6.app` exists: `const APP = (window.FH6 && FH6.app) || null`. The server adds `data/app.js` = `(window.FH6=window.FH6||{}).app={save:"save",project:"project.json"};` (relative URLs, so they resolve under the server's token path prefix; absent in the Python build, which behaves as before). In app mode:
+  - **Save** button (next to Export / Import, `#ed_save`) and **Ctrl+S** `POST save` with the v2 file (`exportText()`, `Content-Type: application/json`); the reply is `{"ok":true}` or `{"error":"..."}` (shown in the status line, `s_saved` / the error). A `dirty` flag (set by every edit, cleared on Save) drives a `beforeunload` warning.
+    The page never writes `based_on`; the server stamps it. *Why Save replaces the file (D60):* the saved file is the user's project data wholesale, not a merge; Export / Import (a file download) still exist.
+  - **No localStorage autosave** (`save()` only sets `dirty`; the restore reads no autosave). The editor starts from `FH6.canon` = the server's *current* file. *Why:* the server file is the truth, and a localhost origin changes with every port / session, so a browser autosave would be unreachable or stale.
+  - **Reset to project data** fetches `APP.project` (`project.json` = the file embedded in the app) instead of using `FH6.canon`, because `FH6.canon` is the *current* file there (it is the project file only in the Python build).
+  - **Race marks pass through:** the app build has no race lines (`HAS_RC` false), so marks cannot be matched to routes. `importObj` keeps `o.races` verbatim in `passRaces` and `exportObj` writes them back (sorted numerically like the live marks), so Save keeps all 94 marks of the project file. *Why:* without it the first Save would silently wipe them (data loss). Resetting the editor clears `passRaces` only when race lines exist.
+  - **Hidden by absent data, no code switch:** POI / name / race-line / sign / surface layers (`if (D.x)` guards), the race mode and queue (`HAS_RC`), and **Prefill from surface data** (needs `RE.pre`, which the app's `roaded.js` does not carry, D57). The **elevation hillshade** layer needs `D.elevation.img`; the app sends only the height grid (`D.elevation.grid`), so the layer is guarded (`D.elevation && D.elevation.img`) and the grid-based height lookups still work.
+- **3D texture:** `setSeason` loads `preview3d/tex_<Season>.jpg` as a plain image URL when the page is served over http (no base64, no 6 MB script parse) and falls back to the data URI in `preview3d/tex_<Season>.js` otherwise. A `file://` page uses the `.js` straight away (a `file://` image is cross-origin for WebGL, and the Python build writes no `.jpg`).
+- Both pages carry `<link rel="icon" href="data:,">` so the browser's `/favicon.ico` request (outside the server's token prefix) is never made.
 
 ### Review spots (editor, live port of the `REVIEW_*` rules)
 
