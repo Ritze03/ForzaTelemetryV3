@@ -377,6 +377,11 @@ impl RoadTypes {
         Self::parse(PROJECT_JSON).expect("embedded project road-type file is valid (tested)")
     }
 
+    /// The embedded project file's text (served by the map editor as `project.json`).
+    pub fn project_json() -> &'static str {
+        PROJECT_JSON
+    }
+
     /// SHA-1 (hex) of the embedded project file: what Save stamps into `based_on`.
     pub fn project_sha1() -> String {
         hex(&Sha1::digest(PROJECT_JSON.as_bytes()))

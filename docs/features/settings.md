@@ -8,7 +8,7 @@ bordered category cards laid out per the [styling guide](../ui/STYLING-GUIDE.md)
 see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]].
 
 Cards: **Profiles**, **Hotkey**, **Controller** (see [[gamepad]]), **Display** (left column); **Repository / Credits**,
-**Network**, **Game Install**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get
+**Network**, **Game Install**, **Map data**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get
 their own doc — see [[hotkeys]]; the Profiles card gets its own doc too — see [[profiles]].
 
 ## Profiles
@@ -112,6 +112,10 @@ game folder or its `media` folder), three buttons and a status line:
 Changing the path restarts the Debug tab's car-DB load. *Why per-machine:* an install path is
 specific to a computer, so it is excluded from profile export/import (like
 `input_perm_dont_remind`). Code: `game_install_card` in `src/ui/settings.rs`.
+
+## Map data
+
+The **Map data** card (right column, directly below Game Install, same platforms) opens the road-type map editor in the browser, built from the install above, and shows which road types the app uses (project data or the user's saved file), the editor's state and its last Save. Buttons: **Open map editor** with a *Start from* Current / Raw choice, **Open data folder**, **Reset road types to project data**, **Rebuild map data** and **Contribute**. It adds no config keys. Full detail and the rules (override replaces the project file, Rebuild never deletes the override): [[map-editor]].
 
 ## Save
 
