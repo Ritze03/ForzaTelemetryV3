@@ -387,6 +387,9 @@ fn de(s: &str) -> Option<&'static str> {
             => "Aktuell: deine gespeicherten Straßentypen, sonst die Projektdaten. Roh: das unveränderte Straßennetz des Spiels ohne Straßentypen.",
         "Raw" => "Roh",
         "Open map editor" => "Karteneditor öffnen",
+        "Stop map editor" => "Karteneditor beenden",
+        "Stops the editor's local server; the open browser tab stops working. Save first." => "Beendet den lokalen Server des Editors; der geöffnete Browser-Tab funktioniert dann nicht mehr. Vorher speichern.",
+        "The map editor is not running." => "Der Karteneditor läuft nicht.",
         "Opens the road-type editor in your browser: 2D map, Preview mode and live 3D."
             => "Öffnet den Straßentyp-Editor im Browser: 2D-Karte, Vorschau-Modus und Live-3D.",
         "Open data folder" => "Datenordner öffnen",
