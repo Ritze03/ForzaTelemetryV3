@@ -37,7 +37,7 @@ pub struct MapTex {
 
 type Loaded = Result<(egui::ColorImage, [u32; 2]), mm::MapLoadError>;
 
-/// Loads the overlay's season map off the render thread (2.3 s cold) and uploads it on the
+/// Loads the overlay's season map off the render thread (~0.06 s cold at HUD quality 50, which reads pyramid level 2 directly) and uploads it on the
 /// render thread; the CPU copy is dropped right after `load_texture`.
 #[derive(Default)]
 pub struct MapLoader {
