@@ -38,9 +38,6 @@
 //! can't fill are interpolated by iterative neighbour averaging, the sea skirt uses a chamfer
 //! distance transform; only the 3D mesh is affected (a few thousand pixels).
 
-// Everything here is consumed by the I26b server; until it lands only the tests use it.
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -62,6 +59,7 @@ pub const SEASONS: [&str; 4] = ["Spring", "Summer", "Autumn", "Winter"];
 
 /// Generated served paths (the patterns, with `<Season>` / `<z>` / `<x>` / `<y>` as placeholders
 /// for the last two). The server wires routes from this list plus its own static ones.
+#[allow(dead_code)] // documents the served paths; only tests/docs refer to it
 pub fn editor_data_names() -> &'static [&'static str] {
     &[
         "data/meta.js",
@@ -599,6 +597,7 @@ const ROAD_LIFT: f64 = 0.6;
 /// The typed edge list of `p3d_roads_js`: node ids (sorted), `[x, z, y]` per node (`y` NaN =
 /// none), and edges as `(index a, index b, type index)`.
 pub struct RoadGraph {
+    #[allow(dead_code)] // the 3D page gets ids via `nodes`' order; tests read them
     pub ids: Vec<u32>,
     pub nodes: Vec<[f32; 3]>,
     pub edges: Vec<[u32; 3]>,
@@ -796,6 +795,7 @@ impl EditorData {
         &self.nav
     }
 
+    #[allow(dead_code)] // I27's card shows which seasons were found
     pub fn seasons(&self) -> &[String] {
         &self.seasons
     }
@@ -870,7 +870,7 @@ impl EditorData {
 
 /// Write via a uniquely named sibling temp file + rename (concurrent requests for the same
 /// tile don't see a half-written file).
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static N: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

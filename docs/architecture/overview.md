@@ -57,6 +57,7 @@ described below.
   window. Helpers: `overlay-start` (runs the blocking `OverlayHandle::spawn`, up to 5 s),
   `overlay-drop` (drop = shutdown + join, kept off the UI thread), `hud-map` (loads the
   season map for the HUD minimap, from the FH6 install's tiles). See [[overlay]].
+- **Map editor server threads** (only after the map editor was opened, `mapedit/server.rs`, I26b; stopped by dropping `ForzaApp::map_editor`) — `mapedit-accept` (blocking `accept` on `127.0.0.1:<sticky port>`), one short-lived `mapedit-conn` thread per HTTP connection, and `mapedit-build` (builds `mapedit::data::EditorData` once, 0.5-3 s release, then exits). They never touch `ForzaApp`: events (`MapEvent::{Ready, Saved, Error}`) go over an `mpsc` channel polled once a frame by `app.rs:poll_map_editor` (which opens the browser on `Ready`), plus `ctx.request_repaint()`. **Why Save updates its state inside the server thread:** the egui frame loop stops while the window is hidden (see the listener thread above), so a Save made in the browser must not wait for a frame to take effect; the UI only learns of it later. Drop = stop flag + a self-connect to wake `accept` (like `NetworkHandle`, which polls with a read timeout instead). See `docs/game-data/fh6-map-tooling.md` ("Local server").
 - **Short-lived background threads** — the Dashboard's seasonal minimap image load
   (`app.rs:map_load_thread` → `minimap.rs:load_map_color_image` → `gamedata/tiles.rs`, which
   decodes the install's map tiles with one scoped thread per tile row; results returned over
@@ -300,6 +301,14 @@ might produce.
 | `roadtypes.rs` | `fh6-road-types` v1/v2 model: `parse` / `to_json_string` (byte-identical one-entry-per-line writer), embedded project file (`assets/map/fh6-road-types.json`), `raw()`, `current()` = project **replaced wholesale** by the user's override (`override_path()`), `project_updated_since_save`. Docs: `docs/game-data/fh6-map-tooling.md`. |
 | `cars.rs` | `CarDb::load(lang)` / `lookup(ordinal)`: CarOrdinal → make + model, JSON-cached in `app_data_dir()`. Blocks the caller, so load it on a background thread (the Debug tab does). Docs: `docs/game-data/fh6-cars-names-icons.md`. |
 
+### `src/mapedit/` (the FH6 map editor inside the app, I26; D50) — see `docs/game-data/fh6-map-tooling.md`
+
+| File | What it does |
+| --- | --- |
+| `mod.rs` | Module docs + re-exports (`MapServer`, `MapEvent`, `MapServerState`, `StartFrom`). |
+| `data.rs` | I26a generators: every data file the editor / 3D pages load (`data/*.js`, `preview3d/*`, tile + texture JPEGs) from the install's nav, elevation and tiles, byte-compatible with the Python tools; `EditorData::{build, resolve, set_road_types}` (builds the text files once, imagery on demand with a disk cache under `<app_data_dir>/map_editor/cache/`), `write_atomic`. |
+| `server.rs` | I26b local web server: hand-rolled `TcpListener` HTTP, loopback + token path prefix + Host/Origin checks, embedded editor pages (`assets/editor/`) served from memory, `POST save` (validate -> stamp `based_on` -> atomic write of the override -> new current road types), sticky port (`map_editor/port`). `MapServer::start(ctx, media, StartFrom, events)`; the app side is `app.rs:{start_map_editor, stop_map_editor, map_editor_state, map_editor_url, map_editor_current, poll_map_editor}` and `map_editor_last` (the Setup card is I27). |
+
 ### `src/listeners/` (event-driven, fire inside `drain_packets`)
 
 | File | What it does |
@@ -363,6 +372,7 @@ might produce.
 - **Theme colours / control layout** → `theme.rs` and [[ui-architecture]] /
   the styling guide.
 - **Frame timing / FPS** → the FPS limiter at the end of `app.rs:update`.
+- **Map editor (server, Save, generated data files)** → `mapedit/server.rs` / `mapedit/data.rs`; app wiring in `app.rs:start_map_editor`; the editor pages in `assets/editor/`. See `docs/game-data/fh6-map-tooling.md`.
 - **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
 - **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`
   timings); check it with the PNG harness `cargo test render_spec_states -- --ignored`.
