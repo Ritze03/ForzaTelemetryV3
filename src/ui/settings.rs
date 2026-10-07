@@ -728,18 +728,6 @@ fn map_data_view(ui: &mut Ui, md: &mut MapData, inp: &MapInputs) -> Option<MapAc
         Some(MapServerState::Failed(e)) => (Dot::Bad, format!("{}: {e}", tr("Failed"))),
     };
     status_wrap(ui, dot, &format!("{}: {text}", tr("Editor")));
-    match &inp.last {
-        Some(MapEvent::Saved { edges, points, .. }) => status_wrap(
-            ui,
-            Dot::Ok,
-            &format!("{}: {edges} {}, {points} {}", tr("Saved"), tr("edges"), tr("points")),
-        ),
-        Some(MapEvent::Error(e)) => status_wrap(ui, Dot::Bad, e),
-        _ => {}
-    }
-    if let Some((dot, msg)) = md.note.clone() {
-        status_wrap(ui, dot, &msg);
-    }
 
     // ── start mode + buttons ────────────────────────────────────────
     control_row_tip(
@@ -783,17 +771,8 @@ fn map_data_view(ui: &mut Ui, md: &mut MapData, inp: &MapInputs) -> Option<MapAc
         {
             action = Some(MapAction::Contribute);
         }
-        if md.reset_confirm {
-            ui.label(RichText::new(tr("Delete your saved road types?")).size(11.0));
-            if ui.add(crate::theme::danger_button(tr("Reset"))).clicked() {
-                md.reset_confirm = false;
-                action = Some(MapAction::ResetOverride);
-            }
-            if ui.add(crate::theme::secondary_button(tr("Cancel"))).clicked() {
-                md.reset_confirm = false;
-            }
-        } else if ui
-            .add_enabled(md.has_override, crate::theme::secondary_button(tr("Reset road types to project data")))
+        if ui
+            .add_enabled(md.has_override && !md.reset_confirm, crate::theme::secondary_button(tr("Reset road types to project data")))
             .on_hover_text(tr("Deletes your saved road types; the project data is used again."))
             .on_disabled_hover_text(tr("You have no saved road types."))
             .clicked()
@@ -813,6 +792,36 @@ fn map_data_view(ui: &mut Ui, md: &mut MapData, inp: &MapInputs) -> Option<MapAc
             action = Some(MapAction::Rebuild);
         }
     });
+    // Why: the confirm is its own block (question + buttons as one wrapping unit) so a narrow
+    // pane never splits the sentence from Reset / Cancel.
+    if md.reset_confirm {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(tr("Delete your saved road types?")).size(11.0));
+            if ui.add(crate::theme::danger_button(tr("Reset"))).clicked() {
+                md.reset_confirm = false;
+                action = Some(MapAction::ResetOverride);
+            }
+            if ui.add(crate::theme::secondary_button(tr("Cancel"))).clicked() {
+                md.reset_confirm = false;
+            }
+        });
+    }
+    // Why: transient result lines sit BELOW the buttons so their appearing never moves a button.
+    match &inp.last {
+        Some(MapEvent::Saved { edges, points, .. }) => status_wrap(
+            ui,
+            Dot::Ok,
+            &format!("{}: {edges} {}, {points} {}", tr("Saved"), tr("edges"), tr("points")),
+        ),
+        Some(MapEvent::Error(e)) => status_wrap(ui, Dot::Bad, e),
+        _ => {}
+    }
+    if let Some((dot, msg)) = md.note.clone() {
+        status_wrap(ui, dot, &msg);
+    }
+    if let Some((dot, msg)) = md.note.clone() {
+        status_wrap(ui, dot, &msg);
+    }
     action
 }
 
@@ -1736,6 +1745,53 @@ mod tests {
                     cols[0]
                 );
             }
+        }
+    }
+
+    /// Text shapes of a frame as (text, top-left).
+    fn texts(out: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
+        fn walk(s: &egui::Shape, v: &mut Vec<(String, egui::Pos2)>) {
+            match s {
+                egui::Shape::Text(t) => v.push((t.galley.text().to_string(), t.pos)),
+                egui::Shape::Vec(c) => c.iter().for_each(|s| walk(s, v)),
+                _ => {}
+            }
+        }
+        let mut v = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut v));
+        v
+    }
+
+    /// The reset question and its Reset button share a row, and a transient result line
+    /// appearing never moves the buttons above it.
+    #[test]
+    fn map_data_confirm_is_one_unit_and_buttons_do_not_jump() {
+        let inp = MapInputs { have_install: true, checking: false, state: None, status: None, last: None };
+        let render = |w: f32, confirm: bool, note: bool| {
+            let ctx = test_render::context();
+            let mut md = MapData {
+                reset_confirm: confirm,
+                has_override: true,
+                note: note.then(|| (Dot::Ok, "Reset to project data".to_string())),
+                ..Default::default()
+            };
+            let (out, _) = test_render::run(&ctx, w, 600.0, |ui| {
+                crate::theme::card(ui, "Map data", |ui| {
+                    map_data_view(ui, &mut md, &inp);
+                });
+            });
+            texts(&out)
+        };
+        let y_of = |t: &[(String, egui::Pos2)], s: &str| t.iter().find(|(x, _)| x.contains(s)).map(|(_, p)| p.y);
+        for w in [700.0, 1000.0, 1235.0] {
+            let t = render(w, true, false);
+            let q = y_of(&t, "Delete your saved").unwrap();
+            let open = y_of(&t, "Open map editor").unwrap();
+            assert!(q > open, "confirm block starts below the button row at {w} px");
+            let reset_btn = t.iter().filter(|(x, _)| x == "Reset").map(|(_, p)| p.y).last().unwrap();
+            assert!((q - reset_btn).abs() < 6.0, "question and Reset on one row at {w} px: {q} vs {reset_btn}");
+            let (a, b) = (render(w, false, false), render(w, false, true));
+            assert_eq!(y_of(&a, "Open map editor"), y_of(&b, "Open map editor"), "buttons jumped at {w} px");
         }
     }
 }
