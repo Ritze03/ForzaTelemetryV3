@@ -14,7 +14,7 @@ Needs (all produced by build_viewer.py / the extractors, nothing is re-extracted
   <work>/roads.json                              nav graph polylines + node ids (decode_nav.py)
   <out>/tiles/<Season>/3/<x>/<y>.jpg             the game's map tiles (build_viewer.py:build_tiles), level 3 = 8x8 tiles of 1024 px = the 8192 px map
   assets/map/fh6-road-types.json                 road types (default; --road-types PATH; version 1 and 2 of the editor export are read)
-Output (<out>/):  preview-3d.html (from preview_3d.html) and preview3d/{meta,terrain,roads,tex_<Season>}.js (roads = the edge list)  (window.P3D.* = ..., loaded by <script>,
+Output (<out>/):  preview-3d.html (from assets/editor/preview-3d.html) and lib/ and preview3d/{meta,terrain,roads,tex_<Season>}.js (roads = the edge list)  (window.P3D.* = ..., loaded by <script>,
 no fetch(): file:// blocks it).  Notes + the why of the design choices: docs/game-data/fh6-terrain.md / README "3D preview".
 """
 import argparse, base64, io, json, math, os, shutil, subprocess, sys, time, zlib
@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EDITOR = os.path.join(HERE, '..', '..', 'assets', 'editor')      # index.html + preview-3d.html + lib/ (shared with the app)
 sys.path.insert(0, HERE)
 from fh6common import autodetect_media
 
@@ -323,7 +324,8 @@ def main():
     numeric_check(nodes, E, used, Hm, meta, out)
     write_js(os.path.join(out, 'preview3d', 'meta.js'), 'meta', dict(seasons=seasons, default='Summer' if 'Summer' in seasons else (seasons[0] if seasons else None),
                                                                       tex_size=a.tex_size, built=time.strftime('%Y-%m-%d %H:%M')))
-    shutil.copyfile(os.path.join(HERE, 'preview_3d.html'), os.path.join(out, 'preview-3d.html'))
+    shutil.copyfile(os.path.join(EDITOR, 'preview-3d.html'), os.path.join(out, 'preview-3d.html'))      # the single copy of the page (also served by the app)
+    shutil.copytree(os.path.join(EDITOR, 'lib'), os.path.join(out, 'lib'), dirs_exist_ok=True)      # three.min.js (embedded, no CDN); the editor's build_viewer.py copies the same folder
     log('wrote', os.path.join(out, 'preview-3d.html'))
 
 
