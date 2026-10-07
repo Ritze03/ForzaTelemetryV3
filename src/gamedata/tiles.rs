@@ -152,6 +152,30 @@ fn decode_row(zip_path: &Path, level: u32, row: usize, size: usize, band: &mut [
     Ok(())
 }
 
+/// One tile of the pyramid as RGB8 (`TILE_PX² × 3` bytes, row-major): what the map editor's
+/// Leaflet layer serves (JPEG-encoded by `mapedit::data::tile_jpeg`). Level `L` has `2^L` rows
+/// and columns; Leaflet's `{z}/{x}/{y}` is `level = z, col = x, row = y`. ~30 ms (opens the zip
+/// each call, so concurrent requests don't share state).
+pub fn tile_rgb(media: &Path, season: &str, level: u32, row: usize, col: usize) -> Result<Vec<u8>, MapLoadError> {
+    if level > MAX_LEVEL || row >> level != 0 || col >> level != 0 {
+        return Err(MapLoadError::Decode(format!("no tile {level}-{row}-{col}")));
+    }
+    let zip_path = season_zip(media, season).ok_or_else(|| MapLoadError::MissingZip(season.to_owned()))?;
+    let name = format!("{level}-{row}-{col}.swatchbin");
+    let raw = read_entry(&mut open_zip(&zip_path)?, &name)?;
+    let (w, h, data) = parse_swatchbin(&raw)?;
+    if (w, h) != (TILE_PX, TILE_PX) {
+        return Err(MapLoadError::Decode(format!("tile {name} is {w}x{h}, expected {TILE_PX}²")));
+    }
+    let mut rgba = vec![0u8; TILE_PX * TILE_PX * 4];
+    decode_bc1_into(data, w, h, &mut rgba, TILE_PX, 0, 0);
+    let mut rgb = Vec::with_capacity(TILE_PX * TILE_PX * 3);
+    for p in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&p[..3]);
+    }
+    Ok(rgb)
+}
+
 /// A season's whole map at pyramid `level` (0..=[`MAX_LEVEL`]): RGBA8 pixels and the side length
 /// in px (`1024 << level`). One thread per tile row, each with its own `ZipArchive` (~60 ms for
 /// level 3 against ~250 ms serial, release build). Heavy: call off the UI thread.
