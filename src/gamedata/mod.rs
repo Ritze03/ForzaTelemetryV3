@@ -5,6 +5,7 @@
 pub mod cars;
 pub mod install;
 pub mod strtable;
+pub mod tiles;
 pub mod process;
 #[cfg(windows)]
 pub mod winsys;

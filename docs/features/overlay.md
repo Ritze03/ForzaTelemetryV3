@@ -335,7 +335,8 @@ arrows already).
 - The image is the overlay's own **4096² (q50) copy** with trilinear mipmaps, loaded by the
   `hud-map` helper thread (`MapLoader`) and uploaded on the overlay thread; the CPU copy is
   dropped right after upload. See [[minimap]] for the shared loader. Until it arrives the
-  map draws over a plain backing. The season is re-checked every 60 s.
+  map draws over a plain backing. The season is re-checked every 60 s; a failed load (no FH6
+  install to read the tiles from) resets the loader so that check retries it.
 - *Why its own copy with mipmaps:* the 8192² map minified onto a small rotating pill
   shimmers without mips (the Dashboard map has none and aliases). ~85 MiB of VRAM.
 - *Why no RAM cache:* the image lives on disk (`map_cache/<season>_q50.bin`) and in VRAM
@@ -725,7 +726,7 @@ Overlay**, appended last so existing group indices don't shift). The Hide HUD bi
   layer-shell costs one probe, not one per frame.
 - **overlay-drop** — dropping an `OverlayHandle` sends Shutdown and joins, which waits for the
   current frame; `drop_overlay_async` does it here so the UI never stalls.
-- **hud-map** — `hud::minimap::MapLoader` loads the season map (2.3 s cold, ~35 ms warm) off
+- **hud-map** — `hud::minimap::MapLoader` loads the season map (from the install's level-2 tiles, ~60 ms cold, ~35 ms warm) off
   the render thread; the upload happens on the overlay thread.
 - Monitor detection runs on the existing **focus** poll thread; the snapshot is built on the
   existing **listener** thread.

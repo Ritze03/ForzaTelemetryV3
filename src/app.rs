@@ -20,7 +20,7 @@ use crate::listeners::worker::{Command, ListenerHandle};
 use crate::network::{start_receiver, NetworkHandle};
 use crate::minimap::{
     current_season, decode_and_cache_season, load_map_color_image, map_cache_path,
-    season_display_name, Season,
+    season_display_name, MapLoadError, Season,
 };
 use crate::packet::ForzaPacket;
 use crate::telemetry::TelemetryState;
@@ -57,8 +57,9 @@ pub enum MapLoadMessage {
     CacheBuildStarted { names: Vec<String> },
     /// One season's cache was just written; carry its name so the UI can remove it.
     CacheBuilt { name: String },
-    /// All necessary caches are built and the current season's image is ready.
-    Done(Option<(egui::ColorImage, [u32; 2])>),
+    /// All necessary caches are built and the current season's image is ready, or why not
+    /// (typically: no FH6 install to read the map tiles from).
+    Done(Result<(egui::ColorImage, [u32; 2]), MapLoadError>),
 }
 
 /// Background thread entry point. Builds any missing caches in parallel across all 4 seasons,
@@ -68,10 +69,13 @@ fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoa
     let all_seasons = crate::minimap::ALL_SEASONS;
     let quality_pct = quality.round() as u32;
 
+    // Without an install nothing can be built (a missing cache then ends in `Done(Err)`, which
+    // the widget shows as "needs your install"), so don't flash the "creating cache" screen.
+    let have_install = crate::gamedata::install::find_media(None).is_some();
     let to_build: Vec<Season> = all_seasons
         .iter()
         .copied()
-        .filter(|&s| !map_cache_path(s, quality_pct).exists())
+        .filter(|&s| have_install && !map_cache_path(s, quality_pct).exists())
         .collect();
 
     if !to_build.is_empty() {
@@ -90,7 +94,9 @@ fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoa
             .map(|season| {
                 let tx = tx.clone();
                 std::thread::spawn(move || {
-                    decode_and_cache_season(season, quality);
+                    if let Err(e) = decode_and_cache_season(season, quality) {
+                        eprintln!("map: {} cache failed: {e}", season_display_name(season));
+                    }
                     let _ = tx.send(MapLoadMessage::CacheBuilt {
                         name: season_display_name(season).to_string(),
                     });
@@ -576,6 +582,10 @@ pub struct ForzaApp {
     pub minimap_look: crate::minimap::LookAround, // right-stick look-around; owns the drawn view yaw
     pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
+    /// Why the last map load failed (shown instead of the spinner while no load is running).
+    pub minimap_error: Option<MapLoadError>,
+    /// The `fh6_install_dir` last handed to `gamedata::install::set_user_dir`.
+    fh6_dir_applied: String,
     /// Debug tab's car-name DB (background-loaded on first open).
     pub debug_cars: crate::ui::debug_tab::CarDbState,
     /// Setup → Game Install: background check of the configured / auto-detected install.
@@ -727,6 +737,11 @@ impl ForzaApp {
         crate::theme::apply(&_cc.egui_ctx);
 
         let config = AppConfig::load();
+        // The map loaders (here and on the overlay thread) find the install through this.
+        crate::gamedata::install::set_user_dir(
+            Some(config.fh6_install_dir.trim()).filter(|d| !d.is_empty()).map(Into::into),
+        );
+        let fh6_dir_applied = config.fh6_install_dir.clone();
         let engines = load_engines();
 
         // Two hops: UDP thread → listener thread (Backfire + gearbox) → UI. The second hop
@@ -895,6 +910,8 @@ impl ForzaApp {
             debug_cars: Default::default(),
             fh6_setup: Default::default(),
             minimap_cache_progress: None,
+            minimap_error: None,
+            fh6_dir_applied,
             minimap_trails: HashMap::new(),
             coop_last_pos: HashMap::new(),
             trace_history: VecDeque::new(),
@@ -1462,7 +1479,9 @@ impl eframe::App for ForzaApp {
                     }
                     Ok(MapLoadMessage::Done(result)) => {
                         self.minimap_cache_progress = None;
-                        if let Some((img, orig_size)) = result {
+                        self.minimap_error = None;
+                        match result {
+                          Ok((img, orig_size)) => {
                             self.minimap_orig_size = orig_size;
                             self.minimap_texture = Some(ctx.load_texture(
                                 "minimap",
@@ -1474,17 +1493,43 @@ impl eframe::App for ForzaApp {
                                     mipmap_mode: None,
                                 },
                             ));
+                          }
+                          Err(e) => {
+                            eprintln!("map: load failed: {e}");
+                            self.minimap_error = Some(e);
+                          }
                         }
                         self.minimap_img_receiver = None;
                         break;
                     }
                     Err(mpsc::TryRecvError::Disconnected) => {
                         self.minimap_cache_progress = None;
+                        self.minimap_error = Some(MapLoadError::Decode("map loader thread stopped".into()));
                         self.minimap_img_receiver = None;
                         break;
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                 }
+            }
+        }
+
+        // The install folder (Setup → Game Install) changed: hand it to the loaders, and retry a
+        // map load that failed for want of an install.
+        if self.config.fh6_install_dir != self.fh6_dir_applied {
+            self.fh6_dir_applied = self.config.fh6_install_dir.clone();
+            crate::gamedata::install::set_user_dir(
+                Some(self.fh6_dir_applied.trim()).filter(|d| !d.is_empty()).map(Into::into),
+            );
+            if self.minimap_error.is_some()
+                && self.minimap_img_receiver.is_none()
+                && !self.config.disabled_modules.contains(&crate::config::WidgetKind::MiniMap)
+            {
+                let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
+                let (s, q) = (current_season(), self.config.minimap_quality);
+                std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
+                self.minimap_error = None;
+                self.minimap_img_receiver = Some(map_rx);
+                self.minimap_loaded_season = s;
             }
         }
 
@@ -1503,6 +1548,7 @@ impl eframe::App for ForzaApp {
                 map_load_thread(season_now, q, map_tx);
             });
             self.minimap_texture = None;
+            self.minimap_error = None;
             self.minimap_img_receiver = Some(map_rx);
             self.minimap_loaded_season = season_now;
         }
@@ -2179,6 +2225,7 @@ impl eframe::App for ForzaApp {
                                                     let s = current_season();
                                                     let q = self.config.minimap_quality;
                                                     std::thread::spawn(move || { map_load_thread(s, q, tx); });
+                                                    self.minimap_error = None;
                                                     self.minimap_img_receiver = Some(rx);
                                                     self.minimap_loaded_season = s;
                                                 }
@@ -2491,6 +2538,7 @@ impl eframe::App for ForzaApp {
                                             let q = self.config.minimap_quality;
                                             std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
                                             self.minimap_texture = None;
+                                            self.minimap_error = None;
                                             self.minimap_img_receiver = Some(map_rx);
                                             self.minimap_loaded_season = s;
                                         }
@@ -2502,6 +2550,7 @@ impl eframe::App for ForzaApp {
                                             let q = self.config.minimap_quality;
                                             std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
                                             self.minimap_texture = None;
+                                            self.minimap_error = None;
                                             self.minimap_cache_progress = None;
                                             self.minimap_img_receiver = Some(map_rx);
                                             self.minimap_loaded_season = s;

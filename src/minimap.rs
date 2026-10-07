@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::gamedata::tiles;
+pub use crate::gamedata::tiles::MapLoadError;
+
 // ── Season detection ──────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,15 +44,6 @@ pub fn current_season() -> Season {
     }
 }
 
-fn season_map_bytes(season: Season) -> &'static [u8] {
-    match season {
-        Season::Spring => include_bytes!("../assets/maps/spring.jpg"),
-        Season::Summer => include_bytes!("../assets/maps/summer.jpg"),
-        Season::Autumn => include_bytes!("../assets/maps/autumn.jpg"),
-        Season::Winter => include_bytes!("../assets/maps/winter.jpg"),
-    }
-}
-
 pub fn season_display_name(season: Season) -> &'static str {
     match season {
         Season::Spring => "Spring",
@@ -60,6 +54,10 @@ pub fn season_display_name(season: Season) -> &'static str {
 }
 
 // ── Season image loading (on-disk cache keyed by season + quality) ─
+
+/// Size of the full map image the calibration is expressed in (the install's level 3). Cached
+/// images may be smaller; this is always the stored "original" size.
+const MAP_ORIG_SIZE: [u32; 2] = [8192, 8192];
 
 /// On-disk cache file for `season` at `quality_pct` (20–100 % of the 8192² source).
 pub fn map_cache_path(season: Season, quality_pct: u32) -> std::path::PathBuf {
@@ -111,38 +109,48 @@ fn write_map_cache(path: &std::path::Path, orig: [u32; 2], scaled: [u32; 2], rgb
     }
 }
 
-/// Decodes the JPEG for `season` and writes the binary cache file.
-/// No-ops if the cache already exists. Does NOT return the image data.
-/// Heavy (8192² JPEG decode + resize, ~2 s in release): call off the UI/render thread.
-pub fn decode_and_cache_season(season: Season, quality: f32) {
-    let quality_pct = quality.round() as u32;
-    let cache_file = map_cache_path(season, quality_pct);
+/// Builds the binary cache file for `season` from the user's FH6 install (map tiles, see
+/// `gamedata::tiles`). No-ops if the cache already exists, so caches from older builds keep
+/// working without an install. Does NOT return the image data. ~60 ms (level 3, parallel) in a
+/// release build, plus the cache write: call off the UI/render thread.
+///
+/// Quality → source: ≥ 99.9 % → level 3 (8192²); exactly 50 % (the HUD's, and a Dashboard set to
+/// 50 %) → level 2 (4096²) directly, since resizing level 3 takes ~1.7 s; any other value →
+/// level 3 resized with a triangle filter. The stored original size is always 8192² whatever the
+/// cached size: `MapCalibration` works in 8192-px space.
+pub fn decode_and_cache_season(season: Season, quality: f32) -> Result<(), MapLoadError> {
+    let cache_file = map_cache_path(season, quality.round() as u32);
     if cache_file.exists() {
-        return;
+        return Ok(());
     }
-    let bytes = season_map_bytes(season);
-    let Ok(img) = image::load_from_memory(bytes) else {
-        return;
-    };
-    let orig_size = [img.width(), img.height()];
-    let rgba = if quality >= 99.9 {
-        img.into_rgba8()
+    let media = crate::gamedata::install::find_media(None).ok_or(MapLoadError::NoInstall)?;
+    let name = season_display_name(season);
+    let (rgba, w, h) = if quality >= 99.9 {
+        let (px, side) = tiles::load_mosaic(&media, name, 3)?;
+        (px, side as u32, side as u32)
+    } else if (quality - 50.0).abs() < 0.5 {
+        let (px, side) = tiles::load_mosaic(&media, name, 2)?;
+        (px, side as u32, side as u32)
     } else {
-        let nw = ((orig_size[0] as f32 * quality / 100.0) as u32).max(1);
-        let nh = ((orig_size[1] as f32 * quality / 100.0) as u32).max(1);
-        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
-            .into_rgba8()
+        let (px, side) = tiles::load_mosaic(&media, name, 3)?;
+        let n = ((side as f32 * quality / 100.0) as u32).max(1);
+        let full = image::RgbaImage::from_raw(side as u32, side as u32, px)
+            .ok_or_else(|| MapLoadError::Decode("mosaic size".into()))?;
+        let small = image::imageops::resize(&full, n, n, image::imageops::FilterType::Triangle);
+        (small.into_raw(), n, n)
     };
-    let (w, h) = rgba.dimensions();
-    write_map_cache(&cache_file, orig_size, [w, h], rgba.as_raw());
+    write_map_cache(&cache_file, MAP_ORIG_SIZE, [w, h], &rgba);
+    Ok(())
 }
 
 /// Loads a season's map. Always reads from cache (building it first if needed).
 /// Returns the (possibly downscaled) image and the ORIGINAL image size in px; the
 /// calibration (`MapCalibration`) is in original-image pixels, so UV maths needs the latter.
-pub fn load_map_color_image(season: Season, quality: f32) -> Option<(egui::ColorImage, [u32; 2])> {
-    decode_and_cache_season(season, quality);
-    try_load_map_cache(&map_cache_path(season, quality.round() as u32))
+/// `Err` when there is no cache and the FH6 install can't supply the tiles.
+pub fn load_map_color_image(season: Season, quality: f32) -> Result<(egui::ColorImage, [u32; 2]), MapLoadError> {
+    decode_and_cache_season(season, quality)?;
+    let path = map_cache_path(season, quality.round() as u32);
+    try_load_map_cache(&path).ok_or_else(|| MapLoadError::Decode(format!("map cache {} is unreadable", path.display())))
 }
 
 // ── HUD overlay image ─────────────────────────────────────────────
@@ -159,15 +167,16 @@ pub const OVERLAY_MAP_TEXTURE_OPTIONS: egui::TextureOptions = egui::TextureOptio
     mipmap_mode: Some(egui::TextureFilter::Linear),
 };
 
-/// The 4096² (downscaled 2× with a triangle filter) map image for `season`, plus the original
+/// The 4096² (the install's level-2 tiles) map image for `season`, plus the original
 /// image size for `MapCalibration::world_to_uv`. Thread-safe.
 ///
 /// Cached per season on disk (`map_cache/<season>_q50.bin`, shared with a Dashboard set to 50 %
 /// quality), not in RAM: the caller uploads it with `ctx.load_texture(.., OVERLAY_MAP_TEXTURE_OPTIONS)`
-/// and drops it, so no 64 MiB CPU copy lingers. First call per season decodes the JPEG and
-/// writes the cache (~2.3 s in a release build); later calls read the 64 MiB cache (~35 ms
-/// warm). Either way it's heavy: call it off the render path / before showing the surface.
-pub fn overlay_map_image(season: Season) -> Option<(egui::ColorImage, [u32; 2])> {
+/// and drops it, so no 64 MiB CPU copy lingers. First call per season writes the cache
+/// from the install's level-2 tiles (~60 ms in a release build); later calls read the 64 MiB
+/// cache (~35 ms warm). Either way it's heavy: call it off the render path / before showing the
+/// surface. `Err` without an install (and no cache).
+pub fn overlay_map_image(season: Season) -> Result<(egui::ColorImage, [u32; 2]), MapLoadError> {
     load_map_color_image(season, OVERLAY_MAP_QUALITY)
 }
 

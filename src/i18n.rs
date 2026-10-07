@@ -362,6 +362,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Creating Map Cache" => "Erstelle Kartencache",
         "Processing" => "Verarbeite",
         "Loading map…" => "Lade Karte…",
+        "Map needs your Forza Horizon 6 install" => "Karte benötigt deine Forza-Horizon-6-Installation",
+        "Set it in Setup → Game Install" => "Lege sie unter Setup → Spiel-Installation fest",
+        "Map could not be loaded" => "Karte konnte nicht geladen werden",
 
         // ── Gearbox tab: General ───────────────────────────────────────
         "Lets the box send shift inputs. Stays hands-off until you do one full \
@@ -690,7 +693,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Repository" => "Repository",
         "Repository / Credits" => "Repository / Danksagung",
         "Credits" => "Mitwirkende",
-        "Le0_X8 — seasonal map images" => "Le0_X8 — saisonale Kartenbilder",
         "Geist font — Vercel (OFL)" => "Geist-Schrift — Vercel (OFL)",
         "Nerd Fonts — Ryan L McIntyre (MIT)" => "Nerd Fonts — Ryan L McIntyre (MIT)",
         "Trystero — Dan Motzenbecker (MIT), P2P co-op design" => "Trystero — Dan Motzenbecker (MIT), P2P-Koop-Design",

@@ -1349,10 +1349,6 @@ fn repo_card(ui: &mut Ui) {
     ui.add_space(4.0);
     ui.label(tr("Credits"));
     ui.hyperlink_to(
-        tr("Le0_X8 — seasonal map images"),
-        "https://www.reddit.com/r/ForzaHorizon/comments/1td6qzb/8096x_hires_seasonal_maps_of_fh6_from_the_early/",
-    );
-    ui.hyperlink_to(
         tr("Geist font — Vercel (OFL)"),
         "https://github.com/vercel/geist-font",
     );

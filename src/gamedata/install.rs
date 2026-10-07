@@ -2,6 +2,7 @@
 //! `tools/fh6-extract/fh6common.py`. Read-only: nothing here writes into the install.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Steam app id of Forza Horizon 6.
 pub const APP_ID: u32 = 2483190;
@@ -131,10 +132,26 @@ fn steam_game_dir_in(roots: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
-/// Find `<FH6>/media`. Order: `over` argument, then `FH6_INSTALL_DIR`, then Steam detection
-/// ([`steam_game_dir`]). `None` when not installed / not found.
+/// The install folder the user configured (Setup → Game Install), process-wide. Why: the two map
+/// loaders run on helper threads with no access to the app config; the app mirrors
+/// `config.fh6_install_dir` here (see [`set_user_dir`]).
+static USER_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Set (or clear, with `None` / an empty path) the user-configured install folder that
+/// [`find_media`] consults. Called by the app at startup and whenever the setting changes.
+pub fn set_user_dir(dir: Option<PathBuf>) {
+    *USER_DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir.filter(|p| !p.as_os_str().is_empty());
+}
+
+/// Find `<FH6>/media`. Order: `over` argument, then the user-configured folder
+/// ([`set_user_dir`]), then `FH6_INSTALL_DIR`, then Steam detection ([`steam_game_dir`]).
+/// `None` when not installed / not found.
 pub fn find_media(over: Option<&Path>) -> Option<PathBuf> {
     if let Some(m) = over.and_then(media_from) {
+        return Some(m);
+    }
+    let user = USER_DIR.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(m) = user.as_deref().and_then(media_from) {
         return Some(m);
     }
     if let Some(m) = std::env::var_os(ENV_OVERRIDE).and_then(|p| media_from(Path::new(&p))) {

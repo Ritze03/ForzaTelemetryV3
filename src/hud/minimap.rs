@@ -35,7 +35,7 @@ pub struct MapTex {
     pub winter: bool,
 }
 
-type Loaded = Option<(egui::ColorImage, [u32; 2])>;
+type Loaded = Result<(egui::ColorImage, [u32; 2]), mm::MapLoadError>;
 
 /// Loads the overlay's season map off the render thread (2.3 s cold) and uploads it on the
 /// render thread; the CPU copy is dropped right after `load_texture`.
@@ -70,8 +70,9 @@ impl MapLoader {
             }
         }
         if let Some((rx, season)) = &self.pending {
-            match rx.try_recv() {
-                Ok(Some((img, orig))) => {
+            let r = rx.try_recv();
+            match r {
+                Ok(Ok((img, orig))) => {
                     // ponytail: the 64 MiB upload + mip generation lands in one visible frame
                     // (tens of ms, once per season). Upgrade: upload before the surface is
                     // mapped, or in tiles over several frames.
@@ -79,10 +80,14 @@ impl MapLoader {
                     self.tex = Some((handle, orig, *season));
                     self.pending = None;
                 }
-                Ok(None) | Err(TryRecvError::Disconnected) => {
-                    // ponytail: a failed load waits for the next season. Upgrade: retry on
-                    // the next minute check if the cache ever turns out to be flaky.
-                    eprintln!("overlay: season map failed to load");
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+                    // A failed load is normal without an FH6 install (and instant). Forget the
+                    // attempt so the once-a-minute season check retries, which also picks up an
+                    // install set later in Setup.
+                    if let Ok(Err(e)) = &r {
+                        eprintln!("overlay: season map failed to load: {e}");
+                    }
+                    self.wanted = None;
                     self.pending = None;
                 }
                 Err(TryRecvError::Empty) => {}
