@@ -34,6 +34,10 @@ rows, never cut at the card edge) and then the controls:
   working, which was accepted over adding a "reload with other data" request to the server.
 - **Open data folder** — `<app data dir>/map_editor` (created if missing) in the file manager
   (`explorer` / `xdg-open` / `open`, fire and forget).
+- **Stop map editor** — drops the local server (`stop_map_editor`); enabled only while the editor
+  is Preparing / Ready, disabled with a tooltip otherwise. The status row then reads *Not running*;
+  the last Save result stays. Why: frees the port and stops serving; unsaved browser edits are
+  lost, hence the "Save first" tooltip.
 - **Reset road types to project data** — deletes **only** the user's override file, after an
   inline confirm (*Delete your saved road types? Reset | Cancel*). Disabled with a tooltip when
   there is no saved file. A running editor keeps the old data in memory, so it is stopped; the

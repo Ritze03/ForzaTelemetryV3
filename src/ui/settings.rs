@@ -632,6 +632,7 @@ enum MapAction {
     Contribute,
     ResetOverride,
     Rebuild,
+    StopEditor,
 }
 
 /// The "Map data" category: open the road-type map editor (built from the user's own install),
@@ -678,6 +679,7 @@ fn map_data_card(ui: &mut Ui, app: &mut ForzaApp) {
                 _ => (Dot::Ok, tr("Reset to project data").to_string()),
             });
         }
+        Some(MapAction::StopEditor) => app.stop_map_editor(),
         Some(MapAction::Rebuild) => {
             // Only the cache: never the user's override file.
             let _ = std::fs::remove_dir_all(crate::gamedata::terrain::cache_dir());
@@ -757,6 +759,15 @@ fn map_data_view(ui: &mut Ui, md: &mut MapData, inp: &MapInputs) -> Option<MapAc
             md.note = None;
             md.reset_confirm = false;
             action = Some(MapAction::Open(if md.raw { StartFrom::Raw } else { StartFrom::Current }));
+        }
+        let running = matches!(inp.state, Some(MapServerState::Preparing { .. } | MapServerState::Ready));
+        if ui
+            .add_enabled(running, crate::theme::secondary_button(tr("Stop map editor")))
+            .on_hover_text(tr("Stops the editor's local server; the open browser tab stops working. Save first."))
+            .on_disabled_hover_text(tr("The map editor is not running."))
+            .clicked()
+        {
+            action = Some(MapAction::StopEditor);
         }
         if ui
             .add(crate::theme::secondary_button(tr("Open data folder")))
@@ -1684,7 +1695,9 @@ mod tests {
     /// `FORZA_UI_SNAPSHOT_DIR` to look at it (`map_data_<w>.png`).
     #[test]
     fn map_data_card_stays_inside_its_pane() {
-        for w in [700.0, 1000.0, 1235.0] {
+        let failed = MapServerState::Failed("could not build the terrain: something went quite wrong here".into());
+        // Failed = longest status text; Ready = the Stop map editor button is enabled.
+        for (w, state) in [700.0, 1000.0, 1235.0].into_iter().flat_map(|w| [(w, failed.clone()), (w, MapServerState::Ready)]) {
             let ctx = test_render::context();
             let mut md = MapData {
                 reset_confirm: true,
@@ -1695,7 +1708,7 @@ mod tests {
             let inp = MapInputs {
                 have_install: true,
                 checking: false,
-                state: Some(MapServerState::Failed("could not build the terrain: something went quite wrong here".into())),
+                state: Some(state.clone()),
                 status: Some(Ok(RoadStatus {
                     source: Source::Override,
                     note: Some("Your saved road types were ignored: they were made for a different version of the game's road network. The project data is used instead.".into()),
