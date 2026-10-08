@@ -771,12 +771,12 @@ fn map_data_view(ui: &mut Ui, md: &mut MapData, inp: &MapInputs) -> Option<MapAc
         {
             action = Some(MapAction::Contribute);
         }
-        if ui
+        let reset_resp = ui
             .add_enabled(md.has_override && !md.reset_confirm, crate::theme::secondary_button(tr("Reset road types to project data")))
-            .on_hover_text(tr("Deletes your saved road types; the project data is used again."))
-            .on_disabled_hover_text(tr("You have no saved road types."))
-            .clicked()
-        {
+            .on_hover_text(tr("Deletes your saved road types; the project data is used again."));
+        // While the confirm row is open the button is disabled too; the row asks the question, so no "no saved road types" text then.
+        let reset_resp = if md.has_override { reset_resp } else { reset_resp.on_disabled_hover_text(tr("You have no saved road types.")) };
+        if reset_resp.clicked() {
             md.reset_confirm = true;
         }
         if ui
