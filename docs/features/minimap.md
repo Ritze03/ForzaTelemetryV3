@@ -242,13 +242,13 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 
 | Module | What it holds |
 |---|---|
-| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines, tilt) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
+| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
 | `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid). |
 | `icontex.rs` | `IconTex`: uploads the store's icon pixels as a texture **per egui context** and builds that context's `IconAtlas`. |
 | `store.rs` | The process-wide loader / cache: `layers()`, `refresh_now()`, thread `map-layers`. |
 | `view.rs` | `Camera` (flat or tilted; `from_cfg`, `focal_for`, `depth_scale_at_row`), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `clip_segment_convex`, `fan`. |
 | `style.rs` | Road draw order, the zoom-dependent width rule, dash patterns, the POI category table. |
-| `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" guess. |
+| `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" guess, and the in-race focus (`RoadFocus`: which roads lie along the picked line). |
 | `ui.rs` | The settings UI (D63): `layers_ui` (the Image / Tilted view / Race lines / Roads / Points of interest cards, used by both Overlay-tab map tabs), `view_rows` + `ViewCfg` (zoom / orientation options of either config), `status_ui` (store status + `MapLayers::note`). |
 | `paint2d.rs` | `draw_base` (image mesh, far-edge fade) and `draw_layers` (roads, jumps, race lines, gate lines, POIs, the current chest) onto an egui `Painter`; `IconAtlas`, `CornerClip`. |
 
@@ -288,16 +288,28 @@ signs are read on two scoped threads next to them, ~0.25 s in all, logged as `ma
 N ms`).
 
 Two cache levels: the install-derived `GameData` is keyed on the install's `media` path (looked up at
-most every 2 s, since Steam detection hits the filesystem); the `RoadLayer` is keyed on
-`(media, mtime + len of the road-type override file)`, the same key `MapData::poll` uses for the Setup
-card, checked at most once a second. A change spawns the `map-layers` thread, which re-reads
-`RoadTypes::current(override_path(), &nav)` and rebuilds only the roads (~4 ms release); POIs and race
+most every 2 s, since Steam detection hits the filesystem) **and the game's season**; the `RoadLayer` is
+keyed on `(media, season, mtime + len of the road-type override file)`; the override file (the same key
+`MapData::poll` uses for the Setup card) and the season (`minimap::current_season()`, a clock read) are
+checked at most once a second. A change of the override file spawns the `map-layers` thread, which
+re-reads `RoadTypes::current(override_path(), &nav)` and rebuilds only the roads (~4 ms release); POIs and race
 lines are shared `Arc`s, and the old data is served until the new arrives. So an editor **Save** or
 **Reset** shows up on the Dashboard within about a second, independently of the editor server and of
 the egui frame loop; `app.rs:poll_map_editor` calls `maprender::refresh_now()` on `MapEvent::Saved` to
 remove that second. A failed load is remembered with its key and **not retried** until the key changes
 (no retry loop); a panic in the loader becomes `Error`. Without an install the status is `NoInstall`
 and the map is the image alone, as before.
+
+**Season change = full re-read.** When the season (it turns weekly, Thursday 14:30 UTC) differs from
+the one the data was loaded for, the loader thread re-reads *everything* from the install (nav, POIs,
+danger signs, race lines, icons) and rebuilds the roads; the old `Arc` stays drawn until the new one is
+ready and `rev` goes up. *Why (the user: "on season change, it should re-read those"):* game updates
+add things to the files (the 6 Oct update added treasure chests 016-019), and the app keeps running for
+days; re-reading weekly picks them up without a restart. *Why everything, not only POIs:* the nav is the
+bulk of the ~70 ms and a full reload is the simplest correct thing (one key, one code path); it runs on
+the loader thread, so nothing stalls. A failed re-read keeps the old data on screen and is not retried
+within that season (`failed` is keyed too, so no retry loop). Test: `store::tests::a_season_change_*`
+(fake source).
 
 *Why a global store (not a field of the app, not the HUD snapshot):* the UI frame loop stops while the
 game covers the window, which is exactly when the HUD is used, so anything the UI thread has to
@@ -346,11 +358,13 @@ start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compa
 - **Current treasure chest** (`treasure_chest_current`): of the ~20 chests only the one the week names
   is drawn, with the chest icon 1.5x bigger and on top; `PoiLayer::current_chest(week_index_now())` is
   asked every frame (a few dozen items), so the Thursday 14:30 UTC rollover needs no timer. **The
-  weekly rule is inferred and unverified**: chest number = week index - 53, from "the user saw chest
-  015 current on 2026-10-03" and the Festival Playlist series being 28 days with four chests each
-  (`Pois::current_treasure_chest`, `docs/game-data/fh6-game-files.md`). It should flip to chest 016 on
-  2026-10-08 14:30 UTC; the install has no date field to confirm it. *Why not "the highest number"
-  like the map viewer:* since the 6 Oct update the file holds 016-019 ahead of time.
+  weekly rule is inferred from one in-game sighting**: chest number = week index - 52 (the week of
+  Thursday 14:30 UTC; week 68 = 016, week 69 = 017). Evidence: the user found the current chest in game
+  on 2026-10-08 just after 14:30 UTC (week 69) and it was chest 017; the Festival Playlist series are 28
+  days with four chests each (`Pois::current_treasure_chest`, `docs/game-data/fh6-game-files.md`). The
+  install has no date field to confirm it. **Next check:** chest 018 should go live on 2026-10-15
+  14:30 UTC. *Why not "the highest number" like the map viewer:* since the 6 Oct update the file holds
+  016-019 ahead of time.
 - **Image look**: opacity and brightness are the mesh vertex colour. **Saturation is approximate:**
   egui cannot desaturate a texture, so below 1 a grey veil (alpha `0.6 * (1 - saturation)`) is drawn
   over the same shape.
@@ -368,6 +382,48 @@ heading (dot product > 0). Several can match (many races share roads), so the cl
 previous pick is **kept while it still matches** (no flicker between overlapping lines) and for a
 moment when the car is off every line. The lookup is the 100 m segment grid built once in the store.
 `RaceSel` (kept per map; the Dashboard's is `ForzaApp::minimap_race_sel`) holds the pick.
+`RaceSel::update` returns the selector itself (`picked()` = the lines), because the renderer reads the
+in-race focus from it too (below).
+
+### In-race focus (D66): other roads muted, POIs hidden
+
+*Why (the user, 2026-10-08):* "that it detects the right race is actually really nice, but ... there
+should be an option to basically disable all of the non-relevant roads, like the markings, once the
+user is in a race or like at least turn them white or something that's not as distracting."
+
+**When it applies:** mode `current` **and** `race_position != 0` **and** a race line is picked
+(`RaceSel::focus_line()`). With no pick (detection unsure) or outside a race **everything is drawn
+normally**: a wrong guess must never mute the whole map. `nearest` / `near` / `all` never focus.
+
+**Config** (`MapLayerConfig::race_lines.focus: RaceFocusCfg`, serde-default, same for Dashboard and HUD):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `other_roads` | `muted` | `normal` / `muted` / `hidden`: roads off the race's corridor |
+| `mute_color` | `#ffffff` | colour of muted roads |
+| `mute_alpha` | 0.25 | their alpha |
+| `mute_width` | 0.8 | factor on each type's own width (keeps highway > road) |
+| `hide_pois` | `true` | hide icons, gate lines and the current chest in a race (start / finish marks stay) |
+
+*Why the defaults (lead's call, user can change them):* the user complained about distraction, so the
+default is to act; muted rather than hidden so the surroundings stay readable. Muted roads are solid,
+without casing, drawn first (under the relevant roads); a type switched off stays off.
+
+**What is relevant:** a road segment is relevant when more than half of its samples (every 10 m, both
+ends included) lie within `|half-width| + 8 m` of the picked line's centre line (`RaceLine::half`, per
+segment; a closed circuit's closing segment included). Roads that merely cross the line are therefore
+muted except for their short pieces at the crossing (which the race line covers anyway); cross-country,
+trail, tunnel and every other type count alike. A jump line is relevant when both ends are on the
+corridor. `racesel::RoadFocus` cuts every road chain into `Run`s (`a..=b` points, relevant or not), so
+`draw_roads` runs two passes (`Pass::Muted`, then `Pass::Relevant`) over runs instead of chains.
+
+**Cost:** computed **once per picked line and road data** (cache in `RaceSel`, key = road `rev` +
+`Arc` identities + line), not per frame, on the drawing thread. A tiny grid of the one line (32 m
+cells, each segment registered with its widened box) answers the point tests, not the store's 100 m grid
+over all lines. Release on the real install (39 242 road segments): route 5555 (85 km, 14 224 points)
+7.7 ms, 4 532 segments relevant (11.6 %), 1 635 runs; median route 1311 (5 km) 0.3 ms, 83 relevant
+(0.2 %). The recompute happens when the pick changes, a handful of times per race at most.
+(`racesel::tests::real_install_focus_cost`, `--ignored`.)
 
 ### Tilted view (D65)
 

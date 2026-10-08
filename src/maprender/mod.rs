@@ -8,7 +8,7 @@
 //! icontex  the POI icon atlas uploaded per egui context (Dashboard and HUD each have their own)
 //! view     Camera (flat or tilted), world boxes, thinning, polygon clipping
 //! style    draw order, zoom-dependent widths, dash patterns, the POI category table
-//! racesel  which race lines to draw ("current race" is a best-effort guess)
+//! racesel  which race lines to draw ("current race" is a best-effort guess) + the in-race road focus
 //! paint2d  draw_base + draw_layers: the egui Painter output
 //! ui       the settings cards of all of the above (Overlay tab, both map tabs, D63)
 //! ```

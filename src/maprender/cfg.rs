@@ -317,6 +317,8 @@ pub struct RaceCfg {
     pub alpha: f32,
     /// Start / finish marks.
     pub marks: bool,
+    /// What the rest of the map does while racing (D66).
+    pub focus: RaceFocusCfg,
 }
 
 impl Default for RaceCfg {
@@ -329,7 +331,47 @@ impl Default for RaceCfg {
             sprint_color: Rgb::hex(0xfb7185),
             alpha: 0.85,
             marks: true,
+            focus: RaceFocusCfg::default(),
         }
+    }
+}
+
+// ── race focus ───────────────────────────────────────────────────────────────────────────────
+
+/// What happens to the roads that are not part of the detected race while racing.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OtherRoads {
+    /// Drawn as always.
+    Normal,
+    /// Drawn in one faint neutral colour without casing (see [`RaceFocusCfg`]).
+    #[default]
+    Muted,
+    /// Not drawn.
+    Hidden,
+}
+
+/// The in-race focus (D66): while the car is in a race **and** a race line is selected (the
+/// `Current` mode's guess found one), roads away from that line are muted or hidden and the
+/// points of interest can be hidden, so the race stands out. With no selected line nothing
+/// changes: a wrong guess must never blank the map. Relevance rules: `maprender::racesel`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct RaceFocusCfg {
+    /// Roads off the race line's corridor.
+    pub other_roads: OtherRoads,
+    /// `Muted` look: colour, alpha and a width factor on top of each type's own width.
+    pub mute_color: Rgb,
+    pub mute_alpha: f32,
+    pub mute_width: f32,
+    /// Hide POIs (icons, gates, the current chest) while the focus is on. The race's start /
+    /// finish marks stay.
+    pub hide_pois: bool,
+}
+
+impl Default for RaceFocusCfg {
+    fn default() -> Self {
+        Self { other_roads: OtherRoads::Muted, mute_color: Rgb::hex(0xffffff), mute_alpha: 0.25, mute_width: 0.8, hide_pois: true }
     }
 }
 
@@ -434,6 +476,10 @@ mod tests {
         assert_eq!(p.roads.styles.road.casing_color, Rgb::hex(0x06222f)); // untouched field of a touched style
         assert!(p.tilt.on && p.tilt.angle_deg == 55.0);
         assert_eq!(p.pois, d.pois);
+        // A config saved before the race focus existed gets its defaults; partial values merge.
+        assert_eq!(p.race_lines.focus, RaceFocusCfg::default());
+        let f: MapLayerConfig = serde_json::from_str(r#"{"race_lines":{"focus":{"other_roads":"hidden"}}}"#).unwrap();
+        assert_eq!((f.race_lines.focus.other_roads, f.race_lines.focus.mute_alpha, f.race_lines.focus.hide_pois), (OtherRoads::Hidden, 0.25, true));
     }
 
     #[test]
@@ -447,6 +493,11 @@ mod tests {
         assert_eq!(MapLayerConfig::hud().image.opacity, 0.5);
         assert_eq!(d.roads.styles.highway.width, 1.44);
         assert_eq!(d.roads.styles.tunnel.alpha, 0.85);
+        for c in [&d, &MapLayerConfig::hud()] {
+            assert_eq!(c.race_lines.focus.other_roads, OtherRoads::Muted);
+            assert_eq!((c.race_lines.focus.mute_alpha, c.race_lines.focus.mute_width, c.race_lines.focus.mute_color), (0.25, 0.8, Rgb::hex(0xffffff)));
+            assert!(c.race_lines.focus.hide_pois);
+        }
         assert!(d.roads.styles.get(RoadType::Turnaround).is_none());
         assert!(RoadType::ALL.iter().filter(|t| **t != RoadType::Turnaround).all(|t| d.roads.styles.get(*t).is_some()));
     }

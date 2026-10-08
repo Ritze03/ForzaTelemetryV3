@@ -9,7 +9,10 @@
 //! into a global for the helper threads. One load also serves both maps.
 //!
 //! Two cache levels: the install-derived data (`GameData`: nav, POIs, race lines) is keyed on
-//! the install's `media` path; the road layer is keyed on `(media, override file mtime + len)`,
+//! the install's `media` path **and the game season** (it is re-read from the game files on every
+//! season change, because a game update adds things such as treasure chests that the files
+//! already hold when the weekly season turns); the road layer is keyed on
+//! `(media, season, override file mtime + len)`,
 //! the same key as `MapData::poll` in Setup. A Save / Reset of the road-type editor therefore
 //! shows up within ~1 s on whichever map is drawing, independent of the editor server and of
 //! the egui frame loop; [`refresh_now`] only removes that second of latency.
@@ -19,10 +22,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::data::{GameData, MapLayers};
+use crate::minimap::Season;
 
 /// How often the install lookup runs (Steam detection reads the filesystem).
 const MEDIA_CHECK: Duration = Duration::from_secs(2);
-/// How often the override file is `stat`ed.
+/// How often the override file is `stat`ed and the season looked up (one clock read).
 const STAT_CHECK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +56,8 @@ pub trait Source: Send + Sync + 'static {
     fn media(&self) -> Option<PathBuf>;
     /// mtime + len of the user's saved road-type file.
     fn override_stat(&self) -> FileStat;
+    /// The game's current season (weekly rotation, wall clock): a change re-reads the game data.
+    fn season(&self) -> Season;
     /// Read the install-derived data.
     fn load_game(&self, media: &std::path::Path) -> Result<GameData, String>;
     /// Build the layers from it for the current road-type data.
@@ -66,6 +72,9 @@ impl Source for Real {
     }
     fn override_stat(&self) -> FileStat {
         std::fs::metadata(crate::gamedata::roadtypes::override_path()).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()))
+    }
+    fn season(&self) -> Season {
+        crate::minimap::current_season()
     }
     fn load_game(&self, media: &std::path::Path) -> Result<GameData, String> {
         let g = GameData::load(media)?;
@@ -83,6 +92,7 @@ impl Source for Real {
 #[derive(Clone, PartialEq, Debug)]
 struct Key {
     media: PathBuf,
+    season: Season,
     stat: FileStat,
 }
 
@@ -91,8 +101,10 @@ struct Inner {
     media: Option<PathBuf>,
     media_at: Option<Instant>,
     stat: FileStat,
+    season: Option<Season>,
     stat_at: Option<Instant>,
-    game: Option<(PathBuf, Arc<GameData>)>,
+    /// The install data with what it was read for (media, season).
+    game: Option<(PathBuf, Season, Arc<GameData>)>,
     /// The key the current `data` was built for.
     built: Option<Key>,
     /// The key a failed load was for: not retried until the key changes (no retry loop).
@@ -128,6 +140,7 @@ impl Store {
         }
         if g.stat_at.is_none_or(|t| now.duration_since(t) >= STAT_CHECK) {
             g.stat = self.src.override_stat();
+            g.season = Some(self.src.season());
             g.stat_at = Some(now);
         }
         let Some(media) = g.media.clone() else {
@@ -136,7 +149,7 @@ impl Store {
             g.built = None;
             return Layers { status: LayerStatus::NoInstall, data: None };
         };
-        let want = Key { media, stat: g.stat };
+        let want = Key { media, season: g.season.unwrap_or(Season::Spring), stat: g.stat };
         if g.built.as_ref() != Some(&want) && !g.loading && g.failed.as_ref().is_none_or(|f| f.0 != want) {
             g.loading = true;
             drop(g);
@@ -164,7 +177,7 @@ impl Store {
         let spawned = std::thread::Builder::new().name("map-layers".into()).spawn(move || {
             let t0 = Instant::now();
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(Arc<GameData>, MapLayers), String> {
-                let cached = lock(&inner).game.as_ref().filter(|(m, _)| *m == want.media).map(|(_, g)| g.clone());
+                let cached = lock(&inner).game.as_ref().filter(|(m, s, _)| *m == want.media && *s == want.season).map(|(_, _, g)| g.clone());
                 let game = match cached {
                     Some(g) => g,
                     None => Arc::new(src.load_game(&want.media)?),
@@ -178,7 +191,7 @@ impl Store {
             match r {
                 Ok(Ok((game, layers))) => {
                     g.rev = layers.rev;
-                    g.game = Some((want.media.clone(), game));
+                    g.game = Some((want.media.clone(), want.season, game));
                     g.data = Some(Arc::new(layers));
                     g.built = Some(want);
                     g.failed = None;
@@ -245,6 +258,7 @@ mod tests {
     struct FakeState {
         media: Mutex<Option<PathBuf>>,
         stat: Mutex<FileStat>,
+        season: Mutex<Option<Season>>,
         fail_game: Mutex<Option<String>>,
         games: AtomicUsize,
         builds: AtomicUsize,
@@ -258,6 +272,9 @@ mod tests {
         }
         fn override_stat(&self) -> FileStat {
             *self.0.stat.lock().unwrap()
+        }
+        fn season(&self) -> Season {
+            self.0.season.lock().unwrap().unwrap_or(Season::Spring)
         }
         fn load_game(&self, _: &std::path::Path) -> Result<GameData, String> {
             self.0.games.fetch_add(1, SeqCst);
@@ -337,6 +354,43 @@ mod tests {
         let l3 = wait(&s, |l| l.data.as_ref().is_some_and(|d| d.rev == 3));
         assert_eq!(l3.status, LayerStatus::Ready);
         assert_eq!(st.games.load(SeqCst), 1);
+    }
+
+    #[test]
+    fn a_season_change_re_reads_the_game_data_once() {
+        let (s, st) = fake();
+        *st.media.lock().unwrap() = Some(PathBuf::from("/fh6/media"));
+        let l = wait(&s, |l| l.status == LayerStatus::Ready);
+        assert_eq!((st.games.load(SeqCst), st.builds.load(SeqCst), l.data.as_ref().unwrap().rev), (1, 1, 1));
+        // Same season: nothing happens, however often it is polled.
+        s.refresh_now();
+        assert!(Arc::ptr_eq(s.layers().data.as_ref().unwrap(), l.data.as_ref().unwrap()));
+        // The weekly rotation turns: everything is read again (nav + POIs + race lines + icons
+        // + roads), the old data is served until the new one is ready, rev goes up.
+        *st.season.lock().unwrap() = Some(Season::Summer);
+        s.refresh_now();
+        assert_eq!(s.layers().status, LayerStatus::Ready);
+        let l2 = wait(&s, |l| l.data.as_ref().is_some_and(|d| d.rev == 2));
+        assert_eq!((st.games.load(SeqCst), st.builds.load(SeqCst)), (2, 2));
+        assert!(!Arc::ptr_eq(&l2.data.as_ref().unwrap().pois, &l.data.as_ref().unwrap().pois));
+        // No reload loop afterwards.
+        for _ in 0..10 {
+            s.refresh_now();
+            s.layers();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!((st.games.load(SeqCst), s.layers().data.unwrap().rev), (2, 2));
+        // A failed re-read keeps the old data on screen and is not retried within that season.
+        *st.fail_game.lock().unwrap() = Some("zip locked".into());
+        *st.season.lock().unwrap() = Some(Season::Autumn);
+        for _ in 0..20 {
+            s.refresh_now();
+            let l = s.layers();
+            assert_eq!(l.status, LayerStatus::Ready);
+            assert_eq!(l.data.unwrap().rev, 2);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(st.games.load(SeqCst), 3);
     }
 
     #[test]
