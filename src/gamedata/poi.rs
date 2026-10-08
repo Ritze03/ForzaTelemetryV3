@@ -14,8 +14,10 @@
 //!
 //! **Exact sources only.** The Python also derives cell-centre guesses (±100 m) from the
 //! `ChunkContentsMiniZip*.txt` file lists and PGZP/GeoChunk props (danger signs, drift posts,
-//! speed-limit signs); those are not read here: `GameObjs.xml` supersedes the guesses, and the
-//! GeoChunk reads need seconds of seek-reads in a 40 GB file.
+//! speed-limit signs); those are not read by [`Pois::load`]: `GameObjs.xml` supersedes the
+//! guesses, and the GeoChunk reads need the PGZP index of a 40 GB file. The one GeoChunk-only
+//! category the map shows, the 15 danger signs, has its own lazy loader
+//! ([`Pois::load_danger_signs`], ~0.13 s warm).
 //!
 //! **No XML crate.** The files are machine-written with a fixed attribute order, so a forward
 //! `str::find` scan is enough (all sources together ≈ 18 ms in release) and adds no dependency.
@@ -26,6 +28,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::install::ci;
+use super::pgzp::Pgzp;
 
 /// What a [`Poi`] is. Grouping for the UI is a presentation concern (the map renderer's job).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -79,6 +82,10 @@ pub enum PoiKind {
     /// Treasure-chest board of the stripped `gameobjs.xml` (deduplicated by id and rounded x/z).
     TreasureChestBoard,
     FlagRushFlag,
+    /// Danger sign (PR stunt): the centre of its construction boards. **Not** part of
+    /// [`Pois::load`]: it needs the GeoChunk0 archive, see [`Pois::load_danger_signs`]. `n` = the
+    /// sign's number (`tag_dangersign_bm_<n>`).
+    DangerSign,
 }
 
 /// One point of interest.
@@ -95,6 +102,11 @@ pub struct Poi {
     /// Route id (`RacePin`, `TougeEvent`), zone / trap / board number (gate kinds, `SpeedTrap`,
     /// `XpBoard`, `EstateEntrance`, `TreasureChest`), region (`Mascot`); 0 otherwise.
     pub n: u32,
+    /// For [`PoiKind::SpeedTrap`] and the gate kinds ([`PoiKind::SpeedZone`], [`PoiKind::Trailblazer`],
+    /// [`PoiKind::DriftZone`]): x/z of the `LEFT` and `RIGHT` markers whose midpoint is
+    /// `(x, z)`, i.e. the line across the road. `None` for every other kind (a trap or gate
+    /// whose partner marker is missing is not emitted at all).
+    pub gate: Option<[[f32; 2]; 2]>,
 }
 
 /// A map region's outline (`map_region_<slug>.nt`, the `Arena_NNN` locators in ascending order).
@@ -127,14 +139,14 @@ impl Pois {
         // --- race map pins (sphere trigger zones)
         for z in read_in(&tb, "triggerzones/tz_race_activations/race_triggers.tz", &mut out.skipped).map(|t| tzones(&t)).unwrap_or_default() {
             if let Some(n) = z.name.rsplit_once("rt").and_then(|(_, d)| all_digits(d)) {
-                items.push(Poi { kind: PoiKind::RacePin, x: z.x, z: z.z, y: z.y, name: z.name, n });
+                items.push(Poi { kind: PoiKind::RacePin, x: z.x, z: z.z, y: z.y, name: z.name, n, gate: None });
             }
         }
 
         // --- route0.nt: the big named-locator list
         for l in read_in(&tb, "trackroutes/route0.nt", &mut out.skipped).map(|t| locators(&t)).unwrap_or_default() {
             if let Some((kind, name, n)) = classify_route0(&l.name) {
-                items.push(Poi { kind, x: l.x, z: l.z, y: l.y, name, n });
+                items.push(Poi { kind, x: l.x, z: l.z, y: l.y, name, n, gate: None });
             }
         }
 
@@ -145,7 +157,7 @@ impl Pois {
             ("trackroutes/parkingareas.nt", PoiKind::Parking),
         ] {
             for l in read_in(&tb, rel, &mut out.skipped).map(|t| locators(&t)).unwrap_or_default() {
-                items.push(Poi { kind, x: l.x, z: l.z, y: l.y, name: l.name, n: 0 });
+                items.push(Poi { kind, x: l.x, z: l.z, y: l.y, name: l.name, n: 0, gate: None });
             }
         }
 
@@ -155,13 +167,13 @@ impl Pois {
             ("triggerzones/tz_creatures/creatures_all.tz", PoiKind::CreatureZone),
         ] {
             for z in read_in(&tb, rel, &mut out.skipped).map(|t| tzones(&t)).unwrap_or_default() {
-                items.push(Poi { kind, x: z.x, z: z.z, y: z.y, name: z.name, n: 0 });
+                items.push(Poi { kind, x: z.x, z: z.z, y: z.y, name: z.name, n: 0, gate: None });
             }
         }
         for z in read_in(&tb, "triggerzones/tz_bucket_challenges/tz_horizonstories.tz", &mut out.skipped).map(|t| tzones(&t)).unwrap_or_default() {
             if let Some(name) = z.name.strip_suffix("_activation_zone") {
                 let kind = if z.name.starts_with("HS_") { PoiKind::StoryActivation } else { PoiKind::JobActivation };
-                items.push(Poi { kind, x: z.x, z: z.z, y: z.y, name: name.to_string(), n: 0 });
+                items.push(Poi { kind, x: z.x, z: z.z, y: z.y, name: name.to_string(), n: 0, gate: None });
             }
         }
 
@@ -169,7 +181,7 @@ impl Pois {
         for rel in ["trackroutes/route40001.nt", "trackroutes/route40900.nt"] {
             for l in read_in(&tb, rel, &mut out.skipped).map(|t| locators(&t)).unwrap_or_default() {
                 if let Some((PoiKind::CarMeet, name, n)) = classify_route0(&l.name) {
-                    items.push(Poi { kind: PoiKind::CarMeet, x: l.x, z: l.z, y: l.y, name, n });
+                    items.push(Poi { kind: PoiKind::CarMeet, x: l.x, z: l.z, y: l.y, name, n, gate: None });
                 }
             }
         }
@@ -191,7 +203,7 @@ impl Pois {
                 let wanted = lower.strip_prefix("sidi_upsell_").is_some_and(|r| !r.is_empty() && r.bytes().all(is_word)) && !lower.ends_with("_exit");
                 let key = (l.x.round() as i32, l.z.round() as i32);
                 if wanted && !ups.iter().any(|(k, _)| *k == key) {
-                    ups.push((key, Poi { kind: PoiKind::Upsell, x: l.x, z: l.z, y: l.y, name: l.name[5..].to_string(), n: 0 }));
+                    ups.push((key, Poi { kind: PoiKind::Upsell, x: l.x, z: l.z, y: l.y, name: l.name[5..].to_string(), n: 0, gate: None }));
                 }
             }
         }
@@ -207,10 +219,10 @@ impl Pois {
                 let [x, y, z] = o.pos;
                 if o.id.starts_with("DISCOUNT_BOARD_TREASURE_CHEST") {
                     if seen.insert((o.id.clone(), x.round() as i32, z.round() as i32)) {
-                        items.push(Poi { kind: PoiKind::TreasureChestBoard, x, z, y, name: o.id, n: 0 });
+                        items.push(Poi { kind: PoiKind::TreasureChestBoard, x, z, y, name: o.id, n: 0, gate: None });
                     }
                 } else if o.id.contains("_FR_FLAG_") {
-                    items.push(Poi { kind: PoiKind::FlagRushFlag, x, z, y, name: o.id, n: 0 });
+                    items.push(Poi { kind: PoiKind::FlagRushFlag, x, z, y, name: o.id, n: 0, gate: None });
                 }
             }
         }
@@ -239,6 +251,162 @@ impl Pois {
     pub fn of(&self, kind: PoiKind) -> impl Iterator<Item = &Poi> {
         self.items.iter().filter(move |p| p.kind == kind)
     }
+
+    /// The treasure chest that is current in game week `week` ([`week_index_at`]): the chest
+    /// numbered [`treasure_chest_number`]`(week)` over the Ribbon chests ([`PoiKind::TreasureChest`])
+    /// and the stripped-gameobjs boards ([`PoiKind::TreasureChestBoard`]); if the install has no
+    /// chest with exactly that number (it is older than the week, or the number is outside the
+    /// file) the highest-numbered chest *below* it, else `None`. On a tie the board wins.
+    ///
+    /// **The weekly mapping is inferred, not read from a file.** The install has no date or
+    /// season field for the chests (see "Seasonal / weekly Festival Playlist verdict" in
+    /// `fh6-game-files.md`). The evidence: the user saw chest 015 current on 2026-10-03; the
+    /// Festival Playlist series are 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun, 16 Jul,
+    /// 13 Aug, 10 Sep, 8 Oct 2026) and the chests come four per series (004-007 from 16 Jul, ...,
+    /// 012-015 from 10 Sep, 016-019 added by the 6 Oct update for the 8 Oct series), so one chest
+    /// per week: 015 = the week of Thursday 1 Oct 2026 14:30 UTC, which is exactly week 68 of the
+    /// weekly epoch `minimap::current_season` uses. *Why not "the highest number" like the map
+    /// viewer:* since the 6 Oct update the file holds 016-019 ahead of time, so the highest is
+    /// three weeks too new. To re-check: 016 should go live at 2026-10-08 14:30 UTC.
+    pub fn current_treasure_chest(&self, week: i64) -> Option<&Poi> {
+        let wanted = treasure_chest_number(week);
+        self.items
+            .iter()
+            .filter(|p| matches!(p.kind, PoiKind::TreasureChest | PoiKind::TreasureChestBoard))
+            .filter_map(|p| Some((i64::from(trailing_number(&p.name)?), p.kind == PoiKind::TreasureChestBoard, p)))
+            .filter(|&(n, _, _)| n <= wanted)
+            .max_by_key(|&(n, is_board, _)| (n, is_board))
+            .map(|(_, _, p)| p)
+    }
+
+    /// The danger signs (PR stunt, [`PoiKind::DangerSign`]): 15 on this install. They exist only
+    /// as props inside the 40 GB `GeoChunk0.minizip` (`.pgeo` entries `…tag_dangersign_bm_<NN>…`),
+    /// so they are **not** part of [`Pois::load`]: reading them costs the PGZP index (~10 MB) and
+    /// the 411 013-line name list, ~0.2 s, plus a few seek-reads of ~40 KB. Call this lazily (or
+    /// on a worker thread) and `items.extend(..)` the result.
+    ///
+    /// A port of `extract_geochunk.py:geochunk` (danger-sign part): each sign is one prop group
+    /// of a rush ramp, construction boards and cones; the position is the mean of the
+    /// construction boards (else cones, else the ramp). `Poi::name` = `bm_<NN>`, `n` = NN.
+    pub fn load_danger_signs(media: &Path) -> Result<Vec<Poi>, String> {
+        let tb = ci(media, "Tracks/Brio").filter(|p| p.is_dir()).ok_or("no Tracks/Brio folder in the install")?;
+        let chunk = ci(&tb, "GeoChunk0.minizip").filter(|p| p.is_file()).ok_or("no GeoChunk0.minizip in the install")?;
+        let names = ci(&tb, "ChunkContentsMiniZip0.txt").filter(|p| p.is_file()).ok_or("no ChunkContentsMiniZip0.txt in the install")?;
+        let pg = Pgzp::open(&chunk, &names, &|n| n.ends_with(".pgeo") && n.contains("tag_dangersign_bm_"))?;
+        let mut file = pg.open_file()?;
+        // sign number (as written in the name, e.g. "01") -> its model groups in first-seen order
+        let mut signs: BTreeMap<String, Vec<(String, Vec<[f64; 3]>)>> = BTreeMap::new();
+        let order = pg.sorted(pg.names().iter().map(|(i, _)| *i).collect());
+        let name_of: std::collections::HashMap<usize, &str> = pg.names().iter().map(|(i, n)| (*i, n.as_str())).collect();
+        for r in order {
+            let leaf = name_of[&r].rsplit("cellsize\\").next().unwrap_or("");
+            let Some(nn) = leaf.split_once("tag_dangersign_bm_").map(|(_, t)| t.bytes().take_while(u8::is_ascii_digit).map(char::from).collect::<String>()).filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let groups = signs.entry(nn).or_default();
+            for (model, pts) in pgeo_models(&pg.entry(&mut file, r)?) {
+                let key = model.replace("_3D", "");
+                match groups.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, v)) => v.extend(pts),
+                    None => groups.push((key, pts)),
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (nn, groups) in signs {
+            let pick = |needle: &str| groups.iter().find(|(k, _)| k.contains(needle)).map(|(_, v)| v).filter(|v| !v.is_empty());
+            let Some(main) = pick("constructionbrd").or_else(|| pick("cone")).or_else(|| pick("rush_ramp")) else { continue };
+            let c = (0..3).map(|k| (main.iter().map(|p| p[k]).sum::<f64>() / main.len() as f64) as f32).collect::<Vec<_>>();
+            out.push(Poi { kind: PoiKind::DangerSign, x: c[0], z: c[2], y: c[1], name: format!("bm_{nn}"), n: nn.parse().unwrap_or(0), gate: None });
+        }
+        if out.is_empty() {
+            return Err("no danger sign found in GeoChunk0".to_string());
+        }
+        Ok(out)
+    }
+}
+
+/// The game's weekly rotation epoch, Unix seconds: Thursday 2025-06-12 14:30 UTC (the same
+/// value `minimap::current_season` rotates the map skin by).
+pub const WEEK_EPOCH: i64 = 1_749_738_600;
+const WEEK_SECS: i64 = 604_800;
+/// Chest number minus week index: chest 015 is week 68 (the week from Thursday 2026-10-01 14:30 UTC).
+const TREASURE_CHEST_WEEK_OFFSET: i64 = 53;
+
+/// Weekly rotation index at Unix time `unix` (0 = the week from [`WEEK_EPOCH`]; negative before it).
+pub fn week_index_at(unix: i64) -> i64 {
+    (unix - WEEK_EPOCH).div_euclid(WEEK_SECS)
+}
+
+/// [`week_index_at`] for now (wall clock).
+pub fn week_index_now() -> i64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    week_index_at(now)
+}
+
+/// Number of the treasure chest that is current in game week `week` (inferred, see
+/// [`Pois::current_treasure_chest`]).
+pub fn treasure_chest_number(week: i64) -> i64 {
+    week - TREASURE_CHEST_WEEK_OFFSET
+}
+
+/// The digits at the end of `name` (`DISCOUNT_BOARD_TREASURE_CHEST_015` → 15).
+fn trailing_number(name: &str) -> Option<u32> {
+    let start = name.bytes().rposition(|b| !b.is_ascii_digit()).map_or(0, |i| i + 1);
+    all_digits(&name[start..])
+}
+
+/// Props of a decoded `.pgeo` entry: `(model name, instance positions)` in file order. A port of
+/// `extract_geochunk.py:parse_pgeo`: a section name, a header with the bounding box, then models
+/// found by scanning for `u32 len, name, u32 count, count × 80-byte instances` whose first
+/// position lies inside the box (±3 m); anything else is skipped byte by byte. Positions are
+/// 3 × u32 in sign-magnitude 16.16 fixed point at the start of each 80-byte instance.
+fn pgeo_models(d: &[u8]) -> Vec<(String, Vec<[f64; 3]>)> {
+    const STRIDE: usize = 80;
+    let n = d.len();
+    let u32at = |o: usize| u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
+    let f32at = |o: usize| f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f64;
+    let sm = |u: u32| {
+        let v = (u & 0x7fff_ffff) as f64 / 65536.0;
+        if u & 0x8000_0000 != 0 {
+            -v
+        } else {
+            v
+        }
+    };
+    let pos = |o: usize| [sm(u32at(o)), sm(u32at(o + 4)), sm(u32at(o + 8))];
+    let mut models = Vec::new();
+    if n < 4 {
+        return models;
+    }
+    let p = 4 + u32at(0) as usize + 12;
+    if p.checked_add(32).is_none_or(|e| e > n) {
+        return models;
+    }
+    let (lo, hi) = ([f32at(p), f32at(p + 4), f32at(p + 8)], [f32at(p + 16), f32at(p + 20), f32at(p + 24)]);
+    let mut o = p + 32;
+    while o + 8 < n {
+        let len = u32at(o) as usize;
+        if (4..=120).contains(&len) && o + 8 + len <= n {
+            let s = &d[o + 4..o + 4 + len];
+            if s.iter().all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'[' | b']')) {
+                let cnt = u32at(o + 4 + len) as usize;
+                let q = o + 8 + len;
+                if (1..=100_000).contains(&cnt) && q + 12 <= n {
+                    let [x, y, z] = pos(q);
+                    if (0..3).all(|k| [x, y, z][k] >= lo[k] - 3.0 && [x, y, z][k] <= hi[k] + 3.0) {
+                        let pts = (0..cnt).take_while(|k| q + k * STRIDE + 12 <= n).map(|k| pos(q + k * STRIDE)).collect();
+                        models.push((String::from_utf8_lossy(s).into_owned(), pts));
+                        o = q + cnt * STRIDE;
+                        continue;
+                    }
+                }
+            }
+        }
+        o += 1;
+    }
+    models
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -350,30 +518,30 @@ fn region_outline(text: &str) -> Option<Vec<[f32; 2]>> {
 /// unique keys like in the Python (a repeated id keeps the last one); iteration is sorted by id.
 fn ribbon_items(objs: &[GameObj], items: &mut Vec<Poi>) {
     let map: BTreeMap<&str, [f32; 3]> = objs.iter().map(|o| (o.id.as_str(), o.pos)).collect();
-    let mut push = |kind, name: String, p: [f32; 3], n: u32| items.push(Poi { kind, x: p[0], z: p[2], y: p[1], name, n });
+    let mut push = |kind, name: String, p: [f32; 3], n: u32, gate: Option<[[f32; 2]; 2]>| items.push(Poi { kind, x: p[0], z: p[2], y: p[1], name, n, gate });
     let mid = |a: [f32; 3], b: [f32; 3]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0];
     for (&id, &p) in &map {
         if let Some((v, num)) = id.strip_prefix("DISCOUNT_BOARD_XP_").and_then(|r| r.split_once('_')) {
             if matches!(v, "A" | "B" | "C") {
                 if let Some(n) = all_digits(num) {
-                    push(PoiKind::XpBoard, id.to_string(), p, n);
+                    push(PoiKind::XpBoard, id.to_string(), p, n, None);
                 }
             }
         } else if let Some(n) = id.strip_prefix("DISCOUNT_BOARD_TREASURE_CHEST_").and_then(all_digits) {
-            push(PoiKind::TreasureChest, id.to_string(), p, n);
+            push(PoiKind::TreasureChest, id.to_string(), p, n, None);
         } else if let Some((region, num)) = id.strip_prefix("MASCOTS_REGION_").and_then(|r| r.split_once('_')) {
             if let (Some(r), Some(_)) = (all_digits(region), all_digits(num)) {
-                push(PoiKind::Mascot, id.to_string(), p, r);
+                push(PoiKind::Mascot, id.to_string(), p, r, None);
             }
         } else if let Some(n) = id.strip_prefix("ESTATE_ENTRANCE_").and_then(all_digits) {
-            push(PoiKind::EstateEntrance, id.to_string(), p, n);
+            push(PoiKind::EstateEntrance, id.to_string(), p, n, None);
         }
     }
     // speed traps: LEFT/RIGHT camera poles either side of the road; the position is the midpoint
     for (&id, &l) in &map {
         let Some(num) = id.strip_prefix("SPEEDCAMERA_").and_then(|r| r.strip_suffix("_LEFT")) else { continue };
         let (Some(n), Some(&r)) = (all_digits(num), map.get(format!("SPEEDCAMERA_{num}_RIGHT").as_str())) else { continue };
-        push(PoiKind::SpeedTrap, format!("SPEEDCAMERA_{num}"), mid(l, r), n);
+        push(PoiKind::SpeedTrap, format!("SPEEDCAMERA_{num}"), mid(l, r), n, Some([[l[0], l[2]], [r[0], r[2]]]));
     }
     // gate pairs: speed zones, trailblazers, drift zones. Gate 1 vs 2 (start / end) is unverified: emit both.
     for (prefix, kind) in [("SPEEDCAMERAZONE", PoiKind::SpeedZone), ("TRAILBLAZER", PoiKind::Trailblazer), ("DRIFTZONEMARKER", PoiKind::DriftZone)] {
@@ -382,7 +550,7 @@ fn ribbon_items(objs: &[GameObj], items: &mut Vec<Poi>) {
             let Some(n) = all_digits(num) else { continue };
             for gate in [1, 2] {
                 if let (Some(&l), Some(&r)) = (map.get(format!("{prefix}_{num}_LEFT_{gate}").as_str()), map.get(format!("{prefix}_{num}_RIGHT_{gate}").as_str())) {
-                    push(kind, format!("{prefix}_{num}_gate{gate}"), mid(l, r), n);
+                    push(kind, format!("{prefix}_{num}_gate{gate}"), mid(l, r), n, Some([[l[0], l[2]], [r[0], r[2]]]));
                 }
             }
         }
@@ -612,15 +780,114 @@ mod tests {
         assert_eq!(trap.len(), 1);
         assert_eq!((trap[0].x, trap[0].y, trap[0].z, trap[0].n), (5.0, 15.0, 2.0, 7));
         assert_eq!(trap[0].name, "SPEEDCAMERA_07");
+        assert_eq!(trap[0].gate, Some([[0.0, 0.0], [10.0, 4.0]]), "x/z of the LEFT and RIGHT pole");
         let d = of(PoiKind::DriftZone);
         assert_eq!(d.len(), 2);
         assert_eq!((d[0].name.as_str(), d[0].x, d[0].z, d[0].n), ("DRIFTZONEMARKER_03_gate1", 5.0, 100.0, 3));
         assert_eq!(d[1].name, "DRIFTZONEMARKER_03_gate2");
+        assert_eq!(d[0].gate, Some([[0.0, 100.0], [10.0, 100.0]]));
+        assert_eq!(d[1].gate, Some([[0.0, 200.0], [10.0, 200.0]]));
+        assert!(items.iter().filter(|p| !matches!(p.kind, PoiKind::SpeedTrap | PoiKind::DriftZone)).all(|p| p.gate.is_none()), "only traps and gates carry a gate line");
         assert_eq!(of(PoiKind::XpBoard).len(), 1);
         assert_eq!(of(PoiKind::Mascot)[0].n, 4);
         assert_eq!(of(PoiKind::EstateEntrance)[0].n, 9);
         assert_eq!(of(PoiKind::TreasureChest)[0].n, 2);
         assert_eq!(items.len(), 1 + 2 + 1 + 1 + 1 + 1, "nothing else may be picked up (ANIM_* at 0,0,0)");
+    }
+
+    /// A hand-built `.pgeo`: junk bytes between models are skipped, positions are sign-magnitude
+    /// 16.16, instances are 80 bytes, a model whose first position is outside the box is not one.
+    #[test]
+    fn pgeo_models_scan() {
+        fn fx(v: f64) -> u32 {
+            let m = (v.abs() * 65536.0).round() as u32;
+            if v < 0.0 {
+                m | 0x8000_0000
+            } else {
+                m
+            }
+        }
+        let mut d: Vec<u8> = Vec::new();
+        let name = b"c200_props_x_section0";
+        d.extend((name.len() as u32).to_le_bytes());
+        d.extend(name);
+        for v in [0u32, 13, 15] {
+            d.extend(v.to_le_bytes()); // u32 0, 13, 15
+        }
+        // bbox: lo (-10, 0, -10), 4 filler bytes, hi (10, 100, 10)
+        for v in [-10f32, 0.0, -10.0] {
+            d.extend(v.to_le_bytes());
+        }
+        d.extend(0u32.to_le_bytes());
+        for v in [10f32, 100.0, 10.0] {
+            d.extend(v.to_le_bytes());
+        }
+        d.extend(1.0f32.to_le_bytes());
+        let model = |d: &mut Vec<u8>, name: &str, pts: &[[f64; 3]]| {
+            d.extend((name.len() as u32).to_le_bytes());
+            d.extend(name.as_bytes());
+            d.extend((pts.len() as u32).to_le_bytes());
+            for p in pts {
+                let start = d.len();
+                for c in p {
+                    d.extend(fx(*c).to_le_bytes());
+                }
+                d.resize(start + 80, 0);
+            }
+        };
+        d.extend([0xff, 0xff, 0xff]); // junk before the first model
+        model(&mut d, "sgn_gbl_constructionbrd_02_a_3D", &[[1.5, 20.25, -3.0], [-2.0, 21.0, 4.0]]);
+        model(&mut d, "outside_the_box", &[[500.0, 0.0, 0.0]]); // first position far outside the bbox: not a model
+        model(&mut d, "prp_gbl_traffic_cone_01_a_3D", &[[0.5, 19.0, 0.25]]);
+        let m = pgeo_models(&d);
+        let names: Vec<_> = m.iter().map(|(n, p)| (n.as_str(), p.len())).collect();
+        assert_eq!(names, [("sgn_gbl_constructionbrd_02_a_3D", 2), ("prp_gbl_traffic_cone_01_a_3D", 1)]);
+        assert_eq!(m[0].1, vec![[1.5, 20.25, -3.0], [-2.0, 21.0, 4.0]]);
+        assert_eq!(m[1].1, vec![[0.5, 19.0, 0.25]]);
+        // truncated / tiny inputs give nothing, never a panic
+        assert!(pgeo_models(&d[..10]).is_empty());
+        assert!(pgeo_models(&[]).is_empty());
+        assert!(pgeo_models(&[0xff; 64]).is_empty());
+    }
+
+    #[test]
+    fn weeks_and_chest_numbers() {
+        // the weekly boundary: Thursday 14:30 UTC (1790865000 = 2026-10-01 14:30 UTC)
+        assert_eq!(week_index_at(WEEK_EPOCH), 0);
+        assert_eq!(week_index_at(WEEK_EPOCH - 1), -1);
+        assert_eq!(week_index_at(1_790_864_999), 67);
+        assert_eq!(week_index_at(1_790_865_000), 68);
+        assert_eq!(week_index_at(1_791_469_799), 68, "2026-10-08 14:29:59 UTC is still chest 015's week");
+        assert_eq!(week_index_at(1_791_469_800), 69);
+        // the user's observation: chest 015 was current on 2026-10-03 (week 68); 016 goes live a week later
+        assert_eq!(treasure_chest_number(68), 15);
+        assert_eq!(treasure_chest_number(69), 16);
+    }
+
+    #[test]
+    fn current_treasure_chest_follows_the_week() {
+        let chest = |kind, name: &str, x: f32| Poi { kind, x, z: 0.0, y: 0.0, name: name.to_string(), n: 0, gate: None };
+        let mut p = Pois::default();
+        assert!(p.current_treasure_chest(68).is_none());
+        p.items.push(chest(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_3", 1.0));
+        for (n, x) in [("004", 2.0), ("015", 3.0), ("006", 4.0), ("016", 5.0), ("019", 6.0)] {
+            p.items.push(chest(PoiKind::TreasureChestBoard, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{n}"), x));
+        }
+        p.items.push(chest(PoiKind::CarMeet, "DISCOUNT_BOARD_TREASURE_CHEST_099", 9.0)); // other kinds are ignored
+        let at = |week| p.current_treasure_chest(week).map(|c| c.x);
+        assert_eq!(at(68), Some(3.0), "week 68 = chest 015");
+        assert_eq!(at(69), Some(5.0), "the next week: 016");
+        assert_eq!(at(72), Some(6.0), "019");
+        assert_eq!(at(100), Some(6.0), "past the file: the newest it has");
+        assert_eq!(at(57), Some(2.0), "57 - 53 = 4: board 004");
+        assert_eq!(at(56), Some(1.0), "chest 3 only exists as a Ribbon chest");
+        assert_eq!(at(55), None, "nothing at or below 2");
+        // a tie goes to the board (the viewer lists boards first)
+        p.items.push(chest(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_15", 7.0));
+        assert_eq!(p.current_treasure_chest(68).map(|c| c.x), Some(3.0));
+        assert_eq!(trailing_number("DISCOUNT_BOARD_TREASURE_CHEST_015"), Some(15));
+        assert_eq!(trailing_number("no_number_"), None);
+        assert_eq!(trailing_number("007"), Some(7));
     }
 
     #[test]
@@ -733,6 +1000,17 @@ mod tests {
         let t = at("treasurecar_001");
         assert!(near(t, 1176.9, 7605.4), "{t:?}");
 
+        // gate lines: present exactly for traps and gate kinds, and (x, z) is their midpoint
+        for i in &p.items {
+            let has = matches!(i.kind, SpeedTrap | SpeedZone | Trailblazer | DriftZone);
+            assert_eq!(i.gate.is_some(), has, "{i:?}");
+            if let Some([l, r]) = i.gate {
+                assert!(((l[0] + r[0]) / 2.0 - i.x).abs() < 0.01 && ((l[1] + r[1]) / 2.0 - i.z).abs() < 0.01, "{i:?}");
+                let w = (l[0] - r[0]).hypot(l[1] - r[1]);
+                assert!(w > 1.0 && w < 60.0, "implausible gate width {w} m: {i:?}");
+            }
+        }
+
         // finite and not at the origin (the 27 (0,0,0) GameObjs are not picked up by any category)
         for i in &p.items {
             assert!(i.x.is_finite() && i.z.is_finite() && i.y.is_finite(), "{i:?}");
@@ -741,5 +1019,52 @@ mod tests {
         let far: Vec<_> = p.items.iter().filter(|i| i.x.abs() > 12000.0 || i.z.abs() > 12000.0).collect();
         // the only off-map items: 11 parking areas at z ~ 18.2-18.4 km (the same off-map band as race routes 102 / 103)
         assert!(far.len() == 11 && far.iter().all(|i| i.kind == Parking && i.z > 18000.0), "{far:?}");
+
+        // the install holds chests 001-019 (the 6 Oct update added 016-019); week 68 (from 2026-10-01) = 015, the next week 016
+        let c = p.current_treasure_chest(68).expect("a chest");
+        assert_eq!((c.kind, c.name.as_str()), (TreasureChestBoard, "DISCOUNT_BOARD_TREASURE_CHEST_015"));
+        assert!(near(c, -1179.3, -8341.3), "{c:?}");
+        assert_eq!(p.current_treasure_chest(69).map(|c| c.name.as_str()), Some("DISCOUNT_BOARD_TREASURE_CHEST_016"));
+        let nums: Vec<u32> = p.items.iter().filter(|i| matches!(i.kind, TreasureChest | TreasureChestBoard)).filter_map(|i| trailing_number(&i.name)).collect();
+        assert_eq!((nums.iter().min(), nums.iter().max(), nums.len()), (Some(&1), Some(&19), 19));
+    }
+
+    /// The 15 danger signs of `extract_geochunk.py` (`geochunk_pois.json`, positions rounded to
+    /// 0.01 m): the Rust PGZP / `.pgeo` port must land on the same centres. Timing is printed:
+    /// release ~0.2 s, which is why they are not part of [`Pois::load`].
+    #[test]
+    fn real_install_danger_signs_match_python() {
+        let Some(media) = find_media(None) else {
+            eprintln!("SKIP real_install_danger_signs_match_python: FH6 install not found");
+            return;
+        };
+        let t0 = std::time::Instant::now();
+        let signs = Pois::load_danger_signs(&media).expect("danger signs");
+        eprintln!("Pois::load_danger_signs: {:?}, {} signs", t0.elapsed(), signs.len());
+        // (name, x, y, z) from the Python reference; each sign's centre is the mean of its construction boards, else cones, else the ramp
+        let want: [(&str, f32, f32, f32); 15] = [
+            ("bm_02", 379.73, 510.96, 6376.02),
+            ("bm_03", 1577.13, 377.65, 4461.47),
+            ("bm_04", 3142.29, 411.06, 4447.69),
+            ("bm_05", 1977.79, 233.88, 3123.21),
+            ("bm_06", -248.89, 160.73, 2358.66),
+            ("bm_08", -3077.84, 278.88, 562.82),
+            ("bm_09", 2621.49, 224.29, -5420.31),
+            ("bm_11", 3049.47, 188.9, -382.65),
+            ("bm_13", -6198.24, 230.53, -1942.35),
+            ("bm_14", -4332.45, 416.94, -2558.01),
+            ("bm_15", -3772.54, 364.42, -3793.64),
+            ("bm_16", 1183.35, 158.36, -2473.31),
+            ("bm_17", 1677.79, 132.79, -4186.32),
+            ("bm_18", -3552.52, 245.02, -5880.04),
+            ("bm_20", -1608.64, 241.08, -8929.3),
+        ];
+        assert_eq!(signs.len(), 15, "{signs:?}");
+        assert!(signs.iter().all(|s| s.kind == PoiKind::DangerSign));
+        for (name, x, y, z) in want {
+            let s = signs.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("no {name}: {signs:?}"));
+            assert!((s.x - x).abs() <= 0.011 && (s.y - y).abs() <= 0.011 && (s.z - z).abs() <= 0.011, "{name}: {s:?} vs ({x}, {y}, {z})");
+            assert_eq!(s.n, name[3..].parse::<u32>().unwrap());
+        }
     }
 }

@@ -1,7 +1,8 @@
 //! FH6 overworld map tiles, read at runtime from the user's own install: the season zips
 //! `<media>/UI/Textures/Data_Bound/Map_Brio_<Season>.zip` hold a tile pyramid of `swatchbin`
 //! ('burG' container, BC1-compressed) files. See `docs/game-data/fh6-game-files.md` and
-//! `docs/features/minimap.md`.
+//! `docs/features/minimap.md`. The container parser ([`parse_swatch`]) also reads the BC7 / RGBA8
+//! swatchbins of the map icons (`icons.rs`); [`parse_swatchbin`] stays the BC1-only tile path.
 //!
 //! Level `L` has `2^L × 2^L` tiles named `<L>-<row>-<col>.swatchbin` (row = y), 1024 px each, so
 //! level 3 is the 8192² map and level 2 the 4096² one. BC1 is decoded by hand (~40 lines, no
@@ -50,28 +51,100 @@ pub fn season_zip(media: &Path, season: &str) -> Option<PathBuf> {
     ci(&dir, &format!("Map_Brio_{season}.zip")).filter(|p| p.is_file())
 }
 
-/// A swatchbin ('burG' container) → `(width, height, BC1 data of the top mip)`.
+/// Pixel format of a swatchbin (u32 at header offset `0x74`). `0x07` (probably BC6H, HDR images
+/// only) is not decoded and is rejected by [`parse_swatch`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PixelFormat {
+    /// `0x00`: BC1 / DXT1, 8 bytes per 4×4 block. The map tiles.
+    Bc1,
+    /// `0x09`: BC7, 16 bytes per block. The map icons.
+    Bc7,
+    /// `0x0d`: RGBA8, byte order R, G, B, A.
+    Rgba8,
+}
+
+impl PixelFormat {
+    fn from_code(c: usize) -> Option<Self> {
+        match c {
+            0x00 => Some(Self::Bc1),
+            0x09 => Some(Self::Bc7),
+            0x0d => Some(Self::Rgba8),
+            _ => None,
+        }
+    }
+
+    /// Bytes of a `w × h` top mip.
+    fn mip_bytes(self, w: usize, h: usize) -> usize {
+        match self {
+            Self::Bc1 => w.div_ceil(4) * h.div_ceil(4) * 8,
+            Self::Bc7 => w.div_ceil(4) * h.div_ceil(4) * 16,
+            Self::Rgba8 => w * h * 4,
+        }
+    }
+}
+
+/// A parsed swatchbin: size, pixel format and the top mip's raw pixel data.
+#[derive(Clone, Copy, Debug)]
+pub struct Swatch<'a> {
+    pub w: usize,
+    pub h: usize,
+    pub format: PixelFormat,
+    /// Raw format code at `0x74` (for messages).
+    pub code: usize,
+    pub data: &'a [u8],
+}
+
+impl Swatch<'_> {
+    /// Decode the top mip to RGBA8 (`w × h × 4` bytes). BC1 and BC7 sizes need not be multiples of 4.
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let mut out = vec![0u8; self.w * self.h * 4];
+        match self.format {
+            PixelFormat::Bc1 => decode_bc1_into(self.data, self.w, self.h, &mut out, self.w, 0, 0),
+            PixelFormat::Bc7 => super::bc7::decode_bc7_into(self.data, self.w, self.h, &mut out, self.w, 0, 0),
+            PixelFormat::Rgba8 => out.copy_from_slice(&self.data[..self.w * self.h * 4]),
+        }
+        out
+    }
+}
+
+/// Largest swatchbin edge accepted (real ones: tiles 1024, icon sheet 2048).
+const MAX_SWATCH_EDGE: usize = 16384;
+
+/// A swatchbin ('burG' container) of any supported pixel format.
 ///
 /// Header, all little-endian u32: `0x00` magic `burG`, `0x08` header size (140), `0x0c` total
-/// size (must equal the file length), `0x4c` width, `0x50` height, `0x74` pixel format (0 = BC1),
-/// `0x80` top-mip byte size; the pixel data is at `[header size .. + top-mip size]`.
-pub fn parse_swatchbin(b: &[u8]) -> Result<(usize, usize, &[u8]), MapLoadError> {
+/// size (must equal the file length), `0x4c` width, `0x50` height, `0x74` pixel format
+/// ([`PixelFormat`]), `0x80` top-mip byte size; the pixel data is at `[header size .. + top-mip size]`.
+pub fn parse_swatch(b: &[u8]) -> Result<Swatch<'_>, MapLoadError> {
     let bad = |m: String| Err(MapLoadError::Decode(m));
     if b.len() < 0x84 || &b[0..4] != b"burG" {
         return bad("not a swatchbin".into());
     }
     let u = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
-    let (hdr, total, w, h, fmt, dsz) = (u(0x08), u(0x0c), u(0x4c), u(0x50), u(0x74), u(0x80));
+    let (hdr, total, w, h, code, dsz) = (u(0x08), u(0x0c), u(0x4c), u(0x50), u(0x74), u(0x80));
     if total != b.len() {
         return bad(format!("size mismatch {total} != {}", b.len()));
     }
-    if fmt != 0 {
-        return bad(format!("pixel format {fmt:#x} is not BC1"));
+    let Some(format) = PixelFormat::from_code(code) else {
+        return bad(format!("pixel format {code:#x} is not BC1, BC7 or RGBA8"));
+    };
+    if w == 0 || h == 0 || w > MAX_SWATCH_EDGE || h > MAX_SWATCH_EDGE {
+        return bad(format!("implausible size {w}x{h}"));
     }
-    if hdr.checked_add(dsz).is_none_or(|end| end > b.len()) || dsz < (w / 4) * (h / 4) * 8 {
+    if hdr.checked_add(dsz).is_none_or(|end| end > b.len()) || dsz < format.mip_bytes(w, h) {
         return bad("truncated".into());
     }
-    Ok((w, h, &b[hdr..hdr + dsz]))
+    Ok(Swatch { w, h, format, code, data: &b[hdr..hdr + dsz] })
+}
+
+/// A swatchbin → `(width, height, BC1 data of the top mip)`: the map-tile path, BC1 only (see
+/// [`parse_swatch`] for the other formats).
+pub fn parse_swatchbin(b: &[u8]) -> Result<(usize, usize, &[u8]), MapLoadError> {
+    let s = parse_swatch(b)?;
+    if s.format != PixelFormat::Bc1 {
+        return Err(MapLoadError::Decode(format!("pixel format {:#x} is not BC1", s.code)));
+    }
+    Ok((s.w, s.h, s.data))
 }
 
 /// RGB565 → 8-bit RGB, rounding like the Python reference (`(v * 255 + half) / max`).
@@ -115,12 +188,12 @@ pub fn decode_bc1_into(data: &[u8], w: usize, h: usize, dst: &mut [u8], stride: 
     }
 }
 
-fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, MapLoadError> {
+pub(super) fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, MapLoadError> {
     let f = std::fs::File::open(path).map_err(|_| MapLoadError::NotReadable(path.to_path_buf()))?;
     zip::ZipArchive::new(f).map_err(|e| MapLoadError::Decode(format!("{}: {e}", path.display())))
 }
 
-fn read_entry<R: Read + std::io::Seek>(z: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec<u8>, MapLoadError> {
+pub(super) fn read_entry<R: Read + std::io::Seek>(z: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec<u8>, MapLoadError> {
     let mut f = z.by_name(name).map_err(|e| MapLoadError::Decode(format!("{name}: {e}")))?;
     // The zip's declared size is untrusted (a corrupt zip must not OOM-abort us): cap the
     // pre-allocation and the read. Real tiles are ~525-700 KB.
@@ -282,6 +355,32 @@ mod tests {
         assert!(matches!(parse_swatchbin(&fake(b"burG", 7, 0, 32)), Err(MapLoadError::Decode(_)))); // not BC1
         assert!(matches!(parse_swatchbin(&fake(b"burG", 0, 0, 16)), Err(MapLoadError::Decode(_)))); // too little data
         assert!(matches!(parse_swatchbin(&ok[..100]), Err(MapLoadError::Decode(_)))); // shorter than a header
+    }
+
+    #[test]
+    fn swatch_formats() {
+        // 8x8 BC7 = 4 blocks of 16 B; the same file is rejected by the BC1-only tile path
+        let bc7 = fake(b"burG", 9, 0, 64);
+        let s = parse_swatch(&bc7).expect("BC7");
+        assert_eq!((s.w, s.h, s.format, s.data.len()), (8, 8, PixelFormat::Bc7, 64));
+        assert!(matches!(parse_swatchbin(&bc7), Err(MapLoadError::Decode(m)) if m.contains("0x9")));
+        assert!(matches!(parse_swatch(&fake(b"burG", 9, 0, 32)), Err(MapLoadError::Decode(_))), "BC7 needs 16 B per block");
+        // RGBA8: 8*8*4 = 256 B, passed through unchanged
+        let mut rgba = fake(b"burG", 0x0d, 0, 256);
+        rgba[140..144].copy_from_slice(&[1, 2, 3, 4]);
+        let s = parse_swatch(&rgba).expect("RGBA8");
+        assert_eq!(s.format, PixelFormat::Rgba8);
+        assert_eq!(&s.to_rgba()[..4], &[1, 2, 3, 4]);
+        // BC6H (0x07) and unknown codes are not decoded
+        assert!(matches!(parse_swatch(&fake(b"burG", 7, 0, 64)), Err(MapLoadError::Decode(_))));
+        // non-multiple-of-4 sizes round the block count up (5x5 BC7 = 2x2 blocks = 64 B)
+        let mut odd = fake(b"burG", 9, 0, 64);
+        odd[0x4c..0x50].copy_from_slice(&5u32.to_le_bytes());
+        odd[0x50..0x54].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(parse_swatch(&odd).map(|s| (s.w, s.h)).unwrap(), (5, 5));
+        // implausible sizes are rejected before any multiplication
+        odd[0x4c..0x50].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(parse_swatch(&odd).is_err());
     }
 
     /// Decode a single tile of the real install as RGBA (1024²).

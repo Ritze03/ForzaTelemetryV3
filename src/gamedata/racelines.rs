@@ -480,7 +480,7 @@ mod tests {
             n_sections: 1,
             bbox: [0.0; 4],
         };
-        let poi = |kind, x, n| Poi { kind, x, z: x + 1.0, y: 5.0, name: String::new(), n };
+        let poi = |kind, x, n| Poi { kind, x, z: x + 1.0, y: 5.0, name: String::new(), n, gate: None };
         let pois = Pois {
             items: vec![poi(PoiKind::RacePin, 10.0, 1), poi(PoiKind::TougeEvent, 20.0, 1), poi(PoiKind::TougeEvent, 30.0, 2)],
             ..Default::default()
