@@ -51,7 +51,7 @@ placed freely in one big area.
 Verified by `ui::test_render` (test-only): it runs a page in a headless `egui::Context`
 with the app's fonts and theme, asserts nothing paints across a column, and with
 `FORZA_UI_SNAPSHOT_DIR=<dir>` rasterises the frame to `<dir>/<name>.png` so a layout can
-be looked at without opening a window — see `overlay_tab`'s `card_pages_stay_inside_their_panes` and `map_pages_stay_inside_their_panes`
+be looked at without opening a window — see `overlay_tab`'s `card_pages_stay_inside_their_panes` and `map_tab`'s `map_pages_stay_inside_their_panes`
 (800 / 1100 / 1235 px). Dashboard modules are the exception: they're free-placed on the
 Dashboard canvas by design (see *Dashboard modules* below).
 

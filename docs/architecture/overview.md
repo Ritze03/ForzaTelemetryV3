@@ -318,7 +318,7 @@ might produce.
 | `style.rs` | Road draw order, width rule, dash patterns, the POI category table (`POI_CATS`). |
 | `racesel.rs` | `RaceSel`: which race lines to draw (nearest / near / the best-effort current race). |
 | `paint2d.rs` | `draw_base` (image mesh incl. the subdivided tilted one and its far-edge fade) and `draw_layers` (roads with the tilt taper, jump lines, race lines, gate lines, POIs with the game's icons, the current treasure chest) onto an egui `Painter`; `IconAtlas`, `CornerClip` (the HUD pill). |
-| `ui.rs` | Settings cards for both maps (`layers_ui`, `view_rows` / `ViewCfg`, `status_ui`); used by the Overlay tab's Minimap and Dashboard map pages. |
+| `ui.rs` | Settings cards for both maps (`layers_ui`, `view_rows` / `ViewCfg`, `status_ui`); used by the Map tab's Minimap, Dashboard map and Viewer pages. |
 
 ### `src/mapedit/` (the FH6 map editor inside the app, I26; D50) — see `docs/game-data/fh6-map-tooling.md`
 
@@ -326,7 +326,7 @@ might produce.
 | --- | --- |
 | `mod.rs` | Module docs + re-exports (`MapServer`, `MapEvent`, `MapServerState`, `StartFrom`). |
 | `data.rs` | I26a generators: every data file the editor / 3D pages load (`data/*.js`, `preview3d/*`, tile + texture JPEGs) from the install's nav, elevation and tiles, byte-compatible with the Python tools; `EditorData::{build, resolve, set_road_types}` (builds the text files once, imagery on demand with a disk cache under `<app_data_dir>/map_editor/cache/`), `write_atomic`. |
-| `server.rs` | I26b local web server: hand-rolled `TcpListener` HTTP, loopback + token path prefix + Host/Origin checks, embedded editor pages (`assets/editor/`) served from memory, `POST save` (validate -> stamp `based_on` -> atomic write of the override -> new current road types), sticky port (`map_editor/port`). `MapServer::start(ctx, media, StartFrom, events)`; the app side is `app.rs:{start_map_editor, stop_map_editor, map_editor_state, map_editor_url, map_editor_current, poll_map_editor}` and `map_editor_last`; the Setup → Map data card (`ui/settings.rs:map_data_card`) is the caller, see `docs/features/map-editor.md`. |
+| `server.rs` | I26b local web server: hand-rolled `TcpListener` HTTP, loopback + token path prefix + Host/Origin checks, embedded editor pages (`assets/editor/`) served from memory, `POST save` (validate -> stamp `based_on` -> atomic write of the override -> new current road types), sticky port (`map_editor/port`). `MapServer::start(ctx, media, StartFrom, events)`; the app side is `app.rs:{start_map_editor, stop_map_editor, map_editor_state, map_editor_url, map_editor_current, poll_map_editor}` and `map_editor_last`; the Map tab → Map data page (`ui/map_data.rs:map_data_card`) is the caller, see `docs/features/map-editor.md`. |
 
 ### `src/listeners/` (event-driven, fire inside `drain_packets`)
 
@@ -350,13 +350,16 @@ might produce.
 | --- | --- |
 | `mod.rs` | Declares the compiled tab modules. |
 | `dashboard.rs` | The draggable/resizable widget grid (largest UI file). See [[dashboard]]. |
-| `overlay_tab.rs` | Overlay tab: the HUD overlay's settings page (General, Monitor Detection, drag-and-drop 3×3 Layout, per-module cards). See [[overlay]]. |
+| `overlay_tab.rs` | Overlay tab: the HUD overlay's settings page (General, Monitor Detection, drag-and-drop 3×3 Layout, per-module cards). Also hosts the module selector (`page_selector_with`) and `module_card` the Map tab reuses. See [[overlay]]. |
+| `map_tab.rs` | Map tab (D67): the full-size viewer (drag / wheel / follow) and the settings mode with the Minimap · Dashboard map · Viewer · Map data pages. See [[map-tab]]. |
+| `map_scene.rs` | The map scene the Dashboard Map widget and the viewer both draw (`draw`, `texture_or_status`), and their temporary pan / zoom state with the reset-when-driving rule (`ManualView`, `DriveGate`, D72). |
+| `map_data.rs` | The Map data page (road-type map editor card), moved from `settings.rs`. See [[map-editor]]. |
 | `backfire.rs` | Backfire tab controls (`show_backfire`). |
 | `gearbox.rs` | Automatic Gearbox tab (`show_gearbox`). |
 | `power_curve.rs` | Power Curve tab (live RPM vs power/torque, boost). |
 | `engine_swaps.rs` | Engine Swaps reference table from `engines.csv`. |
 | `coop.rs` | Co-Op tab: transport selector, Cloudflare host/join, Trystero room ID. |
-| `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Game Install, Map data, Window Detection). See [[settings]], [[map-editor]]. |
+| `settings.rs` | Settings tab, labelled **Setup** (profiles, hotkeys, network, display, co-op port, Game Install, Window Detection). See [[settings]], [[map-editor]]. |
 | `changelog.rs` | "What's New" viewer — parses root `CHANGELOG.md`, category filters. |
 | `debug_tab.rs` | Debug tab (just left of Setup): every field of `telemetry.latest` as a raw name → value grid, parsed from `{:#?}` so it can't drift; Copy button. See [[debug]]. |
 | `acceleration.rs` | **ORPHANED** — not in `ui/mod.rs`, not compiled. |
@@ -391,11 +394,12 @@ might produce.
 - **Theme colours / control layout** → `theme.rs` and [[ui-architecture]] /
   the styling guide.
 - **Frame timing / FPS** → the FPS limiter at the end of `app.rs:update`.
-- **Map editor UI (Setup → Map data card, start modes, reset / rebuild, Contribute)** → `ui/settings.rs:map_data_card` / `map_data_view`; `CONTRIBUTING.md`. See `docs/features/map-editor.md`.
+- **Map tab (viewer, pan / zoom, settings pages)** → `ui/map_tab.rs`; the map scene both full maps draw and the shared pan / zoom state (`ManualView`) → `ui/map_scene.rs`. See `docs/features/map-tab.md`.
+- **Map editor UI (Map tab → Map data page, start modes, reset / rebuild, Contribute)** → `ui/map_data.rs:map_data_card` / `map_data_view`; `CONTRIBUTING.md`. See `docs/features/map-editor.md`.
 - **Map editor (server, Save, generated data files)** → `mapedit/server.rs` / `mapedit/data.rs`; app wiring in `app.rs:start_map_editor`; the editor pages in `assets/editor/`. See `docs/game-data/fh6-map-tooling.md`.
 - **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
 - **Map layers (roads, POIs, race lines, tilt) on the Dashboard / HUD map** → `maprender/` (`paint2d.rs` draws, `style.rs` looks, `cfg.rs` settings and defaults, `store.rs` data lifecycle); the call sites are `ui/dashboard.rs:show_minimap_widget` and `hud/minimap.rs:draw` (data handed over by `overlay/render.rs`). See [[minimap]], [[overlay]].
-- **Map settings UI (layer / view cards for the Minimap and Dashboard map pages)** → `ui/overlay_tab.rs` + `maprender/ui.rs`. See [[overlay]].
+- **Map settings UI (layer / view cards for the Minimap, Dashboard map and Viewer pages)** → `ui/map_tab.rs` + `maprender/ui.rs`. See [[map-tab]].
 - **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`
   timings); check it with the PNG harness `cargo test render_spec_states -- --ignored`.
   See [[overlay]].

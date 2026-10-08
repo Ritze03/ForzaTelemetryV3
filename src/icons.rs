@@ -3,6 +3,7 @@
 
 pub const DASHBOARD:  &str = "\u{F0E4}"; // fa-dashboard (speedometer)
 pub const OVERLAY:    &str = "\u{F108}"; // fa-desktop   (Overlay tab: a HUD over the game screen)
+pub const MAP:        &str = "\u{F279}"; // fa-map       (Map tab: viewer + map settings)
 pub const BOLT:       &str = "\u{F06D}"; // fa-fire      (Backfire)
 pub const STOP:       &str = "\u{F04D}"; // fa-stop      (deceleration)
 pub const LINE_CHART: &str = "\u{F201}"; // fa-line-chart (power curve)
@@ -29,3 +30,5 @@ pub const LINK:       &str = "\u{F0C1}"; // fa-link      (join / share)
 pub const PAUSE:      &str = "\u{F04C}"; // fa-pause     (paused co-op player)
 pub const BULLHORN:   &str = "\u{F0A1}"; // fa-bullhorn  (what's new / announcements)
 pub const BUG:        &str = "\u{F188}"; // fa-bug       (Debug tab: raw telemetry)
+pub const CROSSHAIRS: &str = "\u{F05B}"; // fa-crosshairs (Map tab: follow the car)
+pub const ARROW_LEFT: &str = "\u{F060}"; // fa-arrow-left (Map tab: back to the map)

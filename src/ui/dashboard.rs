@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::time::Duration;
 
 use egui::{
     Align, Color32, Layout, Pos2, Rect, RichText, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
@@ -2526,338 +2525,73 @@ fn sub_rect(r: egui::Rect, start: f32, end: f32) -> egui::Rect {
 
 // ── Mini Map ───────────────────────────────────────────────────────
 
+/// The Dashboard's Map widget: the shared map scene (`map_scene`, also the Map tab viewer's),
+/// centred on the car, plus the co-op waypoint click.
 fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let rect = ui.available_rect_before_wrap();
     // Clickable in normal mode so co-op players can drop a shared waypoint; in Edit
     // Mode the grid handles drag/resize instead, so only sense clicks when not editing.
-    let map_resp = if app.config.dashboard_edit_mode {
+    // Pan / zoom (D72) only outside layout-edit mode: there the dashboard grid owns the drag.
+    let edit = app.config.dashboard_edit_mode;
+    let pan = app.config.minimap_allow_pan_zoom && !edit;
+    let map_resp = if edit {
         ui.allocate_rect(rect, egui::Sense::hover())
+    } else if pan {
+        ui.allocate_rect(rect, egui::Sense::click_and_drag())
     } else {
         ui.allocate_rect(rect, egui::Sense::click())
     };
 
-    let Some(texture) = &app.minimap_texture else {
-        let center = rect.center();
-        // The last load failed (no FH6 install to read the tiles from): say so instead of
-        // spinning. Retried by Reload Map and when the install folder changes (`app.rs`).
-        if let Some(err) = &app.minimap_error {
-            use crate::minimap::MapLoadError as E;
-            let (label, sub) = match err {
-                E::NoInstall => (
-                    tr("Map needs your Forza Horizon 6 install"),
-                    tr("Set it in Setup → Game Install").to_string(),
-                ),
-                E::NotReadable(_) | E::MissingZip(_) | E::Decode(_) => {
-                    (tr("Map could not be loaded"), err.to_string())
-                }
-            };
-            let p = ui.painter_at(rect);
-            p.text(
-                center + vec2(0.0, -4.0),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(13.0),
-                crate::theme::TEXT_DIM,
-            );
-            p.text(
-                center + vec2(0.0, 14.0),
-                egui::Align2::CENTER_CENTER,
-                sub,
-                egui::FontId::proportional(11.0),
-                crate::theme::TEXT_FAINT,
-            );
-            return;
-        }
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
-        // Spinner — identical position to the regular "Loading map…" screen
-        ui.put(
-            egui::Rect::from_center_size(center + vec2(0.0, -16.0), Vec2::splat(32.0)),
-            egui::Spinner::new().size(24.0),
-        );
-        let p = ui.painter_at(rect);
-        let (label, sub) = match &app.minimap_cache_progress {
-            Some(in_progress) if !in_progress.is_empty() => {
-                let names = in_progress.join(", ");
-                (tr("Creating Map Cache"), Some(format!("{}: {}…", tr("Processing"), names)))
-            }
-            _ => (tr("Loading map…"), None),
-        };
-        p.text(
-            center + vec2(0.0, 12.0),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::FontId::proportional(13.0),
-            crate::theme::TEXT_DIM,
-        );
-        if let Some(sub_text) = sub {
-            p.text(
-                center + vec2(0.0, 28.0),
-                egui::Align2::CENTER_CENTER,
-                sub_text,
-                egui::FontId::proportional(11.0),
-                crate::theme::TEXT_FAINT,
-            );
-        }
-        return;
-    };
-
+    let Some(texture) = crate::ui::map_scene::texture_or_status(ui, app, rect) else { return };
     let cfg = &app.config;
-    let lc = &cfg.minimap_layers;
-    let cal = crate::minimap::MapCalibration::from_config(cfg);
-
-    let car_x = app.minimap_cached_car_x;
-    let car_z = app.minimap_cached_car_z;
     // North-up locks the map (yaw 0); otherwise it's heading-up (rotates with the car). The
     // right-stick look-around sits on top of that base, see `minimap::LookAround`.
-    let yaw   = app.minimap_look.view_yaw(app.minimap_base_yaw());
-
-    // The shared renderer's camera (`maprender`): metres visible from the car to the nearest edge
-    // (zoom); rotates world displacement into car-relative screen space (see
-    // `minimap::MapView` for the conventions). Tilted (a config option, no UI yet), the car sits
-    // lower in the widget and the map is seen in perspective; the perspective distance scales
-    // with the widget's height (`Camera::focal_for`), so it looks like the HUD's at any size.
-    let tilted = lc.tilt.on;
-    let cam = crate::maprender::Camera::from_cfg(&lc.tilt, (car_x, car_z), yaw, app.minimap_current_zoom, rect);
-    let view = cam.view;
-
-    let painter = ui.painter_at(rect);
-    let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
-    if !lc.image.on || tilted {
-        // Vectors-only look, or the sky above a tilted map's far edge.
-        painter.rect_filled(rect, 0.0, crate::maprender::style::MAP_BACKING);
-    }
-    if lc.image.on {
-        let tex = crate::maprender::MapTex { id: texture.id(), orig_size: app.minimap_orig_size, winter: false };
-        crate::maprender::draw_base(&painter, &crate::maprender::BaseParams {
-            cam: &cam,
-            cal,
-            tex,
-            outline: &outline,
-            mirror: cfg.minimap_mirror_edges,
-            look: (&lc.image).into(),
-            a: 1.0,
-            far_fade: true,
-        });
-    }
-
-    // Roads, jump lines, race lines and POIs from the shared store (loaded on its own thread;
-    // nothing is requested while every layer is off, and without an install the map is the
-    // image alone, as before).
-    if lc.wants_layers() {
-        let l = crate::maprender::layers();
-        if l.status == crate::maprender::LayerStatus::Loading {
-            ui.ctx().request_repaint_after(Duration::from_millis(250));
-        }
-        if let Some(data) = &l.data {
-            let icons = app.minimap_icons.borrow_mut().ensure(ui.ctx(), data.icons.as_ref());
-            let in_race = app.telemetry.latest.as_ref().is_some_and(|p| p.race_position != 0);
-            let mut sel = app.minimap_race_sel.borrow_mut();
-            let picked = sel.update(&data.races, &lc.race_lines, (car_x, car_z), app.minimap_cached_raw_yaw, in_race);
-            crate::maprender::draw_layers(
-                &crate::maprender::LayerCtx {
-                    p: &painter,
-                    cam: &cam,
-                    s: 1.0,
-                    a: 1.0,
-                    car: (car_x, car_z),
-                    corner_clip: None,
-                    icons: icons.as_deref(),
-                    race_sel: picked,
-                    week: None,
-                },
-                data,
-                lc,
-            );
-        }
-    }
-
-    // Markers (trails, teammates, own arrow, waypoints) come from `hud::map_shared`, the same
-    // code the HUD Minimap draws with.
-    let cv = crate::hud::map_shared::MapCanvas {
-        p: &painter,
-        cam: &cam,
-        rect,
-        taper: lc.tilt.taper,
-        s: 1.0,
-        a: 1.0,
-        pause_glyph: crate::icons::PAUSE,
-    };
-
-    // Breadcrumb trails (drawn behind the car arrows). Each player's recent path fades from
-    // faint (old) to solid (recent) in their identity colour; the own trail is recorded solo
-    // too and is then white, like the own arrow.
-    let in_session = app.coop.role() != crate::coop::Role::Off;
-    let local_col = if in_session { crate::ui::coop::hue_color(app.config.coop_hue) } else { Color32::WHITE };
-    let remotes = app.coop.remote_players();
-    if !app.minimap_trails.is_empty() {
-        let now = std::time::Instant::now();
-        let fade = crate::hud::map_shared::TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
-        if let Some(tr) = app.minimap_trails.get("local") {
-            crate::hud::map_shared::draw_trail(&cv, tr, local_col, fade, now);
-        }
-        for (info, pkt) in &remotes {
-            if pkt.is_paused() {
-                continue; // paused teammate — don't draw their line
-            }
-            if let Some(tr) = app.minimap_trails.get(&info.id) {
-                crate::hud::map_shared::draw_trail(&cv, tr, crate::ui::coop::hue_color(info.hue), fade, now);
-            }
-        }
-    }
-
-    // Remote co-op players: identity colour + name. Paused players stop broadcasting a valid
-    // position; show them at their last-known spot in grey instead of at the world origin.
-    let mates: Vec<crate::hud::map_shared::Remote> = remotes
-        .iter()
-        .filter_map(|(info, pkt)| {
-            let paused = pkt.is_paused();
-            let (x, z, yaw) = if paused {
-                let s = app.coop_last_pos.get(&info.id)?; // never seen at a valid spot — nothing to show
-                (s.x, s.z, s.yaw)
-            } else {
-                (pkt.position_x, pkt.position_z, pkt.yaw)
-            };
-            Some(crate::hud::map_shared::Remote {
-                id: info.id.clone(),
-                name: info.name.clone(),
-                x,
-                z,
+    let yaw = app.minimap_look.view_yaw(app.minimap_base_yaw());
+    let car = (app.minimap_cached_car_x, app.minimap_cached_car_z);
+    let (centre, zoom_m) = {
+        let mut mv = app.minimap_pan.borrow_mut();
+        if pan {
+            let v = crate::ui::map_scene::ViewIn {
+                layers: &cfg.minimap_layers,
                 yaw,
-                colour: crate::ui::coop::hue_color(info.hue),
-                paused,
-            })
-        })
-        .collect();
-    crate::hud::map_shared::draw_remotes(&cv, &mates, (car_x, car_z), yaw);
-
-    // Local car indicator: triangle rotated to show heading relative to map orientation.
-    // Uses the player's co-op colour (colour only, no name) when in a session, else white.
-    crate::hud::map_shared::draw_own_arrow(&cv, view.arrow_angle(app.minimap_cached_raw_yaw), local_col);
+                rect,
+                car,
+                base_zoom_m: app.minimap_current_zoom,
+                speed: app.telemetry.latest.as_ref().map(|p| p.speed),
+                now: ui.input(|i| i.time),
+            };
+            mv.interact(ui, &map_resp, &v);
+        } else {
+            mv.reset();
+        }
+        mv.view(car, app.minimap_current_zoom)
+    };
+    let scene = crate::ui::map_scene::Scene {
+        layers: &cfg.minimap_layers,
+        centre,
+        yaw,
+        zoom_m,
+        mirror: cfg.minimap_mirror_edges,
+        compass: cfg.minimap_show_compass,
+        race_sel: &app.minimap_race_sel,
+    };
+    let cam = crate::ui::map_scene::draw(ui, app, rect, texture, &scene);
+    if pan && app.minimap_pan.borrow().is_manual() && crate::ui::map_scene::follow_button(ui, rect) {
+        app.minimap_pan.borrow_mut().reset();
+    }
 
     // ── Co-op shared waypoint ──────────────────────────────────────
     // Left-click drops/moves a waypoint everyone in the session sees; right-click clears.
-    if !app.config.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
+    if !cfg.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
         if map_resp.clicked() {
             if let Some(m) = map_resp.interact_pointer_pos() {
                 if let Some([wx, wz]) = cam.unproject(m) {
-                    app.coop.set_waypoint(Some((wx, wz)), app.config.coop_hue);
+                    app.coop.set_waypoint(Some((wx, wz)), cfg.coop_hue);
                 }
             }
         }
         if map_resp.secondary_clicked() {
             app.coop.set_waypoint(None, 0.0);
-        }
-    }
-    let time = ui.input(|i| i.time) as f32;
-    for (_pid, wx, wz, hue) in app.coop.waypoints() {
-        crate::hud::map_shared::draw_waypoint(&cv, (wx, wz), crate::ui::coop::hue_color(hue), (car_x, car_z), time);
-    }
-
-    // North compass: shared with the HUD Minimap (`hud::minimap::draw_compass`), scaled
-    // with the widget (HUD design size = 1.0) and clamped so it stays proportionate.
-    if cfg.minimap_show_compass {
-        let s = (rect.width().min(rect.height()) / 200.0).clamp(0.8, 1.6);
-        let xf = crate::hud::prims::Xf { o: rect.min, s, a: 1.0 };
-        crate::hud::minimap::draw_compass(&painter, &xf, view.north_dir());
-    }
-
-    // On-map co-op player list. Fixed-width, space-padded columns so the panel
-    // never reflows (which would flicker). Front marker is a dot, or the ⏸ glyph
-    // (in the player's colour) when paused.
-    if cfg.coop_map_playerlist && app.coop.role() != crate::coop::Role::Off {
-        let unit = if cfg.use_mph { "mph" } else { "km/h" };
-        // (hue colour, paused, row text, class, PI). The class column is drawn as a
-        // label image (assets/labels) after the text, so it's excluded from the text.
-        let mut rows: Vec<(Color32, bool, String, i32, i32)> = Vec::new();
-        let mut push_row = |hue: f32, name: &str, speed_ms: f32, gear: u8, class: i32, pi: i32, dist: f32, is_self: bool, paused: bool| {
-            // Name: 12 cells, left-aligned, ellipsised if longer.
-            let mut s = if name.chars().count() > 12 {
-                name.chars().take(11).collect::<String>() + "…"
-            } else {
-                format!("{name:<12}")
-            };
-            if cfg.coop_list_distance {
-                let d = if is_self {
-                    String::new()
-                } else if dist >= 1000.0 {
-                    format!("{:.1}km", dist / 1000.0)
-                } else {
-                    format!("{dist:.0}m")
-                };
-                s += &format!(" {d:>6}"); // reserves up to "99.9km"
-            }
-            if cfg.coop_list_speed {
-                let disp = if cfg.use_mph { speed_ms * 2.236_94 } else { speed_ms * 3.6 };
-                s += &format!(" {disp:>3.0}{unit}");
-            }
-            if cfg.coop_list_gear {
-                let g = match gear {
-                    0 => "R".to_string(),
-                    11 => "N".to_string(),
-                    g => g.to_string(),
-                };
-                s += &format!(" G{g:<2}"); // "G10" / "G9 " / "GN " / "GR "
-            }
-            rows.push((crate::ui::coop::hue_color(hue), paused, s, class, pi));
-        };
-        if let Some(p) = &app.telemetry.latest {
-            // Our own class/PI come from the cache so a local pause doesn't blank them.
-            push_row(cfg.coop_hue, &cfg.coop_name, p.speed, p.gear, app.cached_car_class, app.cached_car_pi, 0.0, true, p.is_paused());
-        }
-        for (info, pkt) in app.coop.remote_players() {
-            let paused = pkt.is_paused();
-            let last = app.coop_last_pos.get(&info.id);
-            let (px, pz) = if paused {
-                last.map(|s| (s.x, s.z))
-                    .unwrap_or((pkt.position_x, pkt.position_z))
-            } else {
-                (pkt.position_x, pkt.position_z)
-            };
-            let dist = ((px - car_x).powi(2) + (pz - car_z).powi(2)).sqrt();
-            // PI 0 = empty (paused game transmits zeros) — fall back to the last
-            // real class/PI we saw from this player.
-            let (cl, pi) = if pkt.car_performance_index == 0 {
-                last.map(|s| (s.car_class, s.pi))
-                    .unwrap_or((pkt.car_class, pkt.car_performance_index))
-            } else {
-                (pkt.car_class, pkt.car_performance_index)
-            };
-            push_row(info.hue, &info.name, pkt.speed, pkt.gear, cl, pi, dist, false, paused);
-        }
-        if !rows.is_empty() {
-            let font = egui::FontId::monospace(11.0);
-            let (icon_x, text_x, row_h, pad) = (9.0_f32, 19.0_f32, 17.0_f32, 5.0_f32);
-            // Class label sized to the row with headroom; native art is 111×40.
-            let native = app.labels.class_size(0, 1.0);
-            let class_scale = (row_h - 2.0) / native.y;
-            let class_gap = 6.0;
-            let class_w = if cfg.coop_list_class { native.x * class_scale + class_gap } else { 0.0 };
-            let galleys: Vec<(Color32, bool, std::sync::Arc<egui::Galley>, i32, i32)> = rows
-                .iter()
-                .map(|(c, paused, s, cl, pi)| (*c, *paused, painter.layout_no_wrap(s.clone(), font.clone(), Color32::WHITE), *cl, *pi))
-                .collect();
-            let text_w = galleys.iter().map(|(_, _, g, _, _)| g.size().x).fold(0.0, f32::max);
-            let w = text_x + text_w + class_w + pad;
-            let h = pad * 2.0 + row_h * galleys.len() as f32;
-            let origin = rect.right_top() + vec2(-w - 6.0, 6.0);
-            let panel = egui::Rect::from_min_size(origin, vec2(w, h));
-            painter.rect_filled(panel, 4.0, Color32::from_black_alpha(160));
-            for (i, (c, paused, g, cl, pi)) in galleys.into_iter().enumerate() {
-                let cy = panel.top() + pad + row_h * i as f32 + row_h * 0.5;
-                let icon_pos = pos2(panel.left() + icon_x, cy);
-                if paused {
-                    painter.text(icon_pos, egui::Align2::CENTER_CENTER, crate::icons::PAUSE,
-                        egui::FontId::monospace(10.0), c);
-                } else {
-                    painter.circle_filled(icon_pos, 4.0, c);
-                }
-                painter.galley(pos2(panel.left() + text_x, cy - g.size().y * 0.5), g, Color32::WHITE);
-                if cfg.coop_list_class {
-                    let cx0 = panel.left() + text_x + text_w + class_gap;
-                    let lbl = app.labels.class_size(cl, class_scale);
-                    app.labels.paint_class(&painter, cl, pi, pos2(cx0, cy - lbl.y * 0.5), class_scale);
-                }
-            }
         }
     }
 }

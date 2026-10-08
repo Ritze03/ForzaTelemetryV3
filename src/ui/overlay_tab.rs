@@ -1,33 +1,27 @@
-//! Overlay tab: the settings page for the in-game HUD overlay (D24–D28, the tab mockup) and,
-//! since D63, for the two maps' layer settings.
+//! Overlay tab: the settings page for the in-game HUD overlay (D24–D28, the tab mockup).
 //!
 //! A module selector (`theme::segmented`, the Co-Op tab's control) at the top picks which
-//! module's cards the page shows: General, Minimap, Dashboard map, Drive cluster, Race / Drift,
-//! Notifications. The selection is `config.overlay_page` (remembered, never exported).
+//! module's cards the page shows: General, Drive cluster, Race / Drift, Notifications. The
+//! selection is `config.overlay_page` (remembered, never exported). (The Minimap and Dashboard
+//! map pages lived here from D63 to D66; they moved to the Map tab in D67, `map_tab`.)
 //!
-//! It edits `app.config.overlay` (and the shared Hide HUD binding; the Dashboard map tab edits
-//! `minimap_*`). `ForzaApp::sync_overlay` and the listener's per-frame config push carry every
+//! It edits `app.config.overlay` (and the shared Hide HUD binding). `ForzaApp::sync_overlay` and the listener's per-frame config push carry every
 //! change to the running HUD, so the page needs no apply step.
 
-use std::sync::Arc;
 
 use egui::{pos2, vec2, Color32, CursorIcon, FontId, Id, Painter, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use crate::app::{ForzaApp, OverlayStatus};
-use crate::config::{AppConfig, ClusterStyle, DriftStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig, OverlayPage};
+use crate::config::{ClusterStyle, DriftStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig, OverlayPage};
 use crate::focus::MonitorStatus;
 use crate::hud::layout::Module;
 use crate::i18n::tr;
-use crate::maprender::cfg::MapLayerConfig;
-use crate::maprender::paint2d::IconAtlas;
-use crate::maprender::store::Layers;
-use crate::maprender::ui::{layers_ui, status_ui, view_rows, LayerAux, ViewCfg};
 use crate::theme;
 
 /// From this page width up the cards sit in three columns, below it in two (D28: three at the
 /// 1280 px default window, two near the 800 px minimum). Why 1100: each of three columns is
 /// then ≥ 355 px, the narrowest the two-half control rows still read well at.
-const THREE_COLS_MIN_W: f32 = 1100.0;
+pub(crate) const THREE_COLS_MIN_W: f32 = 1100.0;
 
 type CardFn = fn(&mut Ui, &mut ForzaApp);
 
@@ -41,14 +35,6 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // Layout first when narrow: it's the one card you can't find by scrolling past settings.
             cards_page(ui, app, &[&[general], &[monitor], &[layout]], &[&[layout], &[general, monitor]]);
         }
-        OverlayPage::Minimap => {
-            let (l, atlas) = layers_and_icons(ui, app);
-            minimap_page(ui, &mut app.config, &l, atlas.as_deref());
-        }
-        OverlayPage::DashboardMap => {
-            let (l, atlas) = layers_and_icons(ui, app);
-            dashboard_page(ui, &mut app.config, &l, atlas.as_deref());
-        }
         OverlayPage::Cluster => cards_page(ui, app, &[&[cluster], &[], &[]], &[&[cluster], &[]]),
         OverlayPage::Race => cards_page(ui, app, &[&[race], &[drift], &[]], &[&[race], &[drift]]),
         OverlayPage::Notifications => cards_page(ui, app, &[&[notifications], &[], &[]], &[&[notifications], &[]]),
@@ -56,13 +42,11 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 /// The module selector. Fits in one row where the labels do; otherwise (a narrow window, a long
-/// German label) it breaks into two rows of three, so a label never spills into its neighbour.
+/// German label) it breaks into two rows, so a label never spills into its neighbour.
 /// Returns true when the selection changed.
 fn page_selector(ui: &mut Ui, page: &mut OverlayPage) -> bool {
     let opts = [
         (OverlayPage::General, tr("General")),
-        (OverlayPage::Minimap, tr("Minimap")),
-        (OverlayPage::DashboardMap, tr("Dashboard map")),
         (OverlayPage::Cluster, tr("Drive cluster")),
         (OverlayPage::Race, tr("Race / Drift")),
         (OverlayPage::Notifications, tr("Notifications")),
@@ -70,7 +54,9 @@ fn page_selector(ui: &mut Ui, page: &mut OverlayPage) -> bool {
     page_selector_with(ui, page, &opts)
 }
 
-fn page_selector_with(ui: &mut Ui, page: &mut OverlayPage, opts: &[(OverlayPage, &str); 6]) -> bool {
+/// [`page_selector`] for any page enum (the Map tab's settings use it too): `opts` in one row
+/// where the labels fit, else in two halves.
+pub(crate) fn page_selector_with<T: PartialEq + Copy>(ui: &mut Ui, page: &mut T, opts: &[(T, &str)]) -> bool {
     let mut changed = false;
     egui::Frame::new()
         .fill(theme::WELL)
@@ -84,7 +70,8 @@ fn page_selector_with(ui: &mut Ui, page: &mut OverlayPage, opts: &[(OverlayPage,
                 .map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), FontId::proportional(14.0), theme::TEXT).size().x)
                 .fold(0.0_f32, f32::max);
             let one_row = (ui.available_width() - 6.0) / opts.len() as f32 >= widest + 24.0;
-            let rows: &[&[(OverlayPage, &str)]] = if one_row { &[opts] } else { &[&opts[..3], &opts[3..]] };
+            let half = opts.len().div_ceil(2);
+            let rows: &[&[(T, &str)]] = if one_row { &[opts] } else { &[&opts[..half], &opts[half..]] };
             for (i, row) in rows.iter().enumerate() {
                 if i > 0 {
                     ui.add_space(4.0);
@@ -108,71 +95,6 @@ fn cards_page(ui: &mut Ui, app: &mut ForzaApp, three: &[&[CardFn]], two: &[&[Car
             }
         }
     });
-}
-
-/// The layer store's state and this context's uploaded POI icons. Asking the store starts its
-/// load (once per process), which is wanted: the map tabs show what it found.
-fn layers_and_icons(ui: &Ui, app: &ForzaApp) -> (Layers, Option<Arc<IconAtlas>>) {
-    let l = crate::maprender::layers();
-    let atlas = l.data.as_ref().and_then(|d| app.minimap_icons.borrow_mut().ensure(ui.ctx(), d.icons.as_ref()));
-    (l, atlas)
-}
-
-// ── The map tabs ─────────────────────────────────────────────────────────────
-
-/// HUD minimap tab: the Minimap module card plus all layer settings of `overlay.map_layers`.
-/// With "Use Dashboard map settings" on, the Dashboard's values are shown greyed instead (what
-/// `OverlayConfig::effective` will really use). The plate opacity is the exception: it is not
-/// copied from the Dashboard, so it stays editable.
-fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
-    status_ui(ui, l);
-    let follow = cfg.overlay.map_use_dashboard;
-    if follow {
-        status_line(ui, theme::FAINT, tr("The map follows the Dashboard map's settings."));
-    }
-    ui.add_space(4.0);
-    let mut layers = if follow { cfg.minimap_layers.clone() } else { cfg.overlay.map_layers.clone() };
-    let mut plate = cfg.overlay.map_plate_opacity;
-    let on = cfg.overlay.enabled && cfg.overlay.minimap_on;
-    let dash_view = ViewCfg::of_app(cfg);
-    let mut reset = false;
-    {
-        let o = &mut cfg.overlay;
-        let mut lead = |ui: &mut Ui| minimap_card(ui, o, &dash_view, &mut reset);
-        let aux = LayerAux { icons: atlas, plate: Some((&mut plate, on)), enabled: on && !follow };
-        layers_ui(ui, &mut layers, aux, &mut lead);
-    }
-    if reset {
-        layers = MapLayerConfig::hud();
-    }
-    if !follow {
-        cfg.overlay.map_layers = layers;
-    }
-    cfg.overlay.map_plate_opacity = plate;
-}
-
-/// Dashboard map tab: the view options and all layer settings of `minimap_layers`. (Mini-Settings
-/// → Dashboard → Map keeps its quick options; both edit the same keys.)
-fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
-    status_ui(ui, l);
-    ui.add_space(4.0);
-    let mut layers = cfg.minimap_layers.clone();
-    let mut view = ViewCfg::of_app(cfg);
-    let mut reset = false;
-    let mut lead = |ui: &mut Ui| {
-        theme::card(ui, tr("Dashboard map"), |ui| {
-            view_rows(ui, &mut view);
-            if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
-                reset = true;
-            }
-        });
-    };
-    layers_ui(ui, &mut layers, LayerAux { icons: atlas, plate: None, enabled: true }, &mut lead);
-    if reset {
-        layers = MapLayerConfig::dashboard();
-    }
-    cfg.minimap_layers = layers;
-    view.apply_app(cfg);
 }
 
 // ── Small shared pieces ──────────────────────────────────────────────────────
@@ -226,7 +148,7 @@ pub(crate) fn pct_row(ui: &mut Ui, label: &str, v: &mut f32, lo: f32, hi: f32, s
 
 /// A module card: greyed out while the overlay is off (the mockup's `card.off`), its body
 /// greyed while the module's own "Enabled" is off. `tip` is the tooltip of its "Enabled" box.
-fn module_card(
+pub(crate) fn module_card(
     ui: &mut Ui,
     o: &mut OverlayConfig,
     title: &str,
@@ -783,31 +705,6 @@ fn cluster_card(ui: &mut Ui, o: &mut OverlayConfig, use_mph: bool) {
     });
 }
 
-/// The Minimap module card of the HUD map tab: module switch, "Use Dashboard map settings", the
-/// view options (the Dashboard's values, greyed, while it is on) and the co-op switch. The
-/// layer cards are `maprender::ui::layers_ui`'s. `reset` is set by the "Reset map layers" button.
-fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig, dash_view: &ViewCfg, reset: &mut bool) {
-    module_card(ui, o, tr("Minimap"), |o| &mut o.minimap_on, None, |ui, o| {
-        theme::checkbox_row(ui, &mut o.map_use_dashboard, tr("Use Dashboard map settings")).on_hover_text(tr(
-            "The view options and all layer settings follow the Dashboard map. Only the map plate opacity stays its own.",
-        ));
-        let follow = o.map_use_dashboard;
-        let mut v = if follow { dash_view.clone() } else { ViewCfg::of_overlay(o) };
-        ui.add_enabled_ui(!follow, |ui| view_rows(ui, &mut v));
-        if !follow {
-            v.apply_overlay(o);
-        }
-        ui.add_enabled_ui(!o.coop_use_dashboard, |ui| {
-            theme::checkbox_row(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
-        });
-        ui.add_enabled_ui(!follow, |ui| {
-            if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
-                *reset = true;
-            }
-        });
-    });
-}
-
 fn race(ui: &mut Ui, app: &mut ForzaApp) {
     race_card(ui, &mut app.config.overlay);
 }
@@ -883,7 +780,7 @@ fn anchor_picker(ui: &mut Ui, cell: &mut HudCell) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -958,13 +855,17 @@ mod tests {
     // ── Panes: every page of the tab, at the minimum, the column switch and the user's width ──
 
     use crate::ui::test_render;
+    use crate::maprender::paint2d::IconAtlas;
+    use crate::maprender::store::Layers;
+    use crate::config::AppConfig;
+    use std::sync::Arc;
 
-    const WIDTHS: [f32; 4] = [700.0, 1000.0, 1100.0, 1235.0];
+    pub(crate) const WIDTHS: [f32; 4] = [700.0, 1000.0, 1100.0, 1235.0];
 
     /// Nothing paints outside the window, no text is cut off at a pane edge (everything
     /// genuinely fits, not just clipped), and no two card frames overlap (a card never paints
     /// into another column). Returns the number of card frames.
-    fn check_panes(out: &egui::FullOutput, w: f32, what: &str) -> usize {
+    pub(crate) fn check_panes(out: &egui::FullOutput, w: f32, what: &str) -> usize {
         let mut frames: Vec<Rect> = Vec::new();
         for c in &out.shapes {
             match &c.shape {
@@ -996,7 +897,7 @@ mod tests {
     }
 
     /// Run `page` with this context's POI icon atlas (the synthetic icons uploaded for real).
-    fn render(name: &str, w: f32, h: f32, mut page: impl FnMut(&mut Ui, &IconAtlas)) -> egui::FullOutput {
+    pub(crate) fn render(name: &str, w: f32, h: f32, mut page: impl FnMut(&mut Ui, &IconAtlas)) -> egui::FullOutput {
         let ctx = test_render::context();
         let mut tex = crate::maprender::icontex::IconTex::default();
         let icons = Arc::new(crate::maprender::icontex::synthetic_icons());
@@ -1009,7 +910,7 @@ mod tests {
         out
     }
 
-    fn layers_ready() -> Layers {
+    pub(crate) fn layers_ready() -> Layers {
         use crate::maprender::data::MapLayers;
         let note = "Your saved road types were ignored: they were made for a different version of the game's road network. The project data is used instead.";
         let data = MapLayers { note: Some(note.into()), ..MapLayers::synthetic() };
@@ -1031,7 +932,7 @@ mod tests {
         });
     }
 
-    /// The module cards of the non-map pages.
+    /// The module cards of the pages.
     #[test]
     fn card_pages_stay_inside_their_panes() {
         let layout: Card = |u, o| layout_card(u, o);
@@ -1066,57 +967,18 @@ mod tests {
         }
     }
 
-    /// Both map tabs (the shared `layers_ui`), plus the HUD tab following the Dashboard and with
-    /// its module off: six cards each, nothing leaves its pane.
-    #[test]
-    fn map_pages_stay_inside_their_panes() {
-        let l = layers_ready();
-        for w in WIDTHS {
-            for (name, follow, module_on) in [("minimap", false, true), ("minimap_follow", true, true), ("minimap_off", false, false), ("dashboard", false, true)] {
-                let mut cfg = AppConfig::default();
-                cfg.overlay.map_use_dashboard = follow;
-                cfg.overlay.minimap_on = module_on;
-                let out = render(&format!("overlay_{name}"), w, 3600.0, |ui, atlas| {
-                    if name.starts_with("minimap") {
-                        minimap_page(ui, &mut cfg, &l, Some(atlas));
-                    } else {
-                        dashboard_page(ui, &mut cfg, &l, Some(atlas));
-                    }
-                });
-                assert_eq!(check_panes(&out, w, name), 6, "{name} at {w} px: expected 6 card frames");
-            }
-        }
-    }
-
-    /// The same pages without an install / while loading / after an error: the status line is
-    /// there and the layout holds.
-    #[test]
-    fn map_pages_render_for_every_layer_status() {
-        use crate::maprender::LayerStatus::{Error, Loading, NoInstall};
-        for status in [NoInstall, Loading, Error("the nav could not be read: unexpected end of file in a long message".into())] {
-            let l = Layers { status, data: None };
-            let mut cfg = AppConfig::default();
-            let out = render("overlay_status", 700.0, 3600.0, |ui, _| minimap_page(ui, &mut cfg, &l, None));
-            assert_eq!(check_panes(&out, 700.0, "status"), 6);
-        }
-    }
-
     /// The module selector: one row where the labels fit, two rows where they don't (the long
     /// German labels at the window minimum), and its labels never run into each other.
     #[test]
     fn page_selector_never_overlaps_its_labels() {
         let en = [
             (OverlayPage::General, "General"),
-            (OverlayPage::Minimap, "Minimap"),
-            (OverlayPage::DashboardMap, "Dashboard map"),
             (OverlayPage::Cluster, "Drive cluster"),
             (OverlayPage::Race, "Race / Drift"),
             (OverlayPage::Notifications, "Notifications"),
         ];
         let de = [
             (OverlayPage::General, "Allgemein"),
-            (OverlayPage::Minimap, "Minikarte"),
-            (OverlayPage::DashboardMap, "Dashboard-Karte"),
             (OverlayPage::Cluster, "Fahranzeige"),
             (OverlayPage::Race, "Rennen / Drift"),
             (OverlayPage::Notifications, "Benachrichtigungen"),
@@ -1133,7 +995,7 @@ mod tests {
                         labels.push(t.visual_bounding_rect());
                     }
                 }
-                assert_eq!(labels.len(), 6, "{lang} at {w} px: {:?}", out.shapes.iter().filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.galley.text().to_string()) } else { None }).collect::<Vec<_>>());
+                assert_eq!(labels.len(), 4, "{lang} at {w} px: {:?}", out.shapes.iter().filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.galley.text().to_string()) } else { None }).collect::<Vec<_>>());
                 for (i, a) in labels.iter().enumerate() {
                     assert!(a.left() >= 0.0 && a.right() <= w, "{lang} at {w} px: label leaves the window: {a:?}");
                     for b in &labels[i + 1..] {
@@ -1148,10 +1010,11 @@ mod tests {
     #[test]
     fn remembered_page_is_saved_but_not_exported() {
         let mut c = AppConfig::default();
-        c.overlay_page = OverlayPage::DashboardMap;
+        c.overlay_page = OverlayPage::Race;
         let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
-        assert_eq!(back.overlay_page, OverlayPage::DashboardMap);
+        assert_eq!(back.overlay_page, OverlayPage::Race);
         let all = vec![true; crate::config::KEY_GROUPS.len()];
         assert!(!crate::config::export_selected(&c, &all).contains("overlay_page"));
     }
 }
+

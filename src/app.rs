@@ -241,6 +241,7 @@ pub struct DashboardResizeState {
 pub enum Tab {
     Dashboard,
     Overlay,
+    Map,
     Backfire,
     Gearbox,
     PowerCurve,
@@ -324,6 +325,7 @@ fn tab_title(tab: Tab) -> &'static str {
     match tab {
         Tab::Dashboard => "Dashboard",
         Tab::Overlay => "Overlay",
+        Tab::Map => "Map",
         Tab::PowerCurve => "Power Curve",
         Tab::Coop => "Co-Op",
         Tab::Backfire => "Backfire",
@@ -343,8 +345,8 @@ const PILL_FONT: f32 = 12.5;
 /// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
 /// so the tabs only shift once, uniformly, when the bar itself gets narrow.
 fn max_pill_width(ui: &egui::Ui) -> f32 {
-    const TABS: [Tab; 10] = [
-        Tab::Dashboard, Tab::Overlay, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
+    const TABS: [Tab; 11] = [
+        Tab::Dashboard, Tab::Overlay, Tab::Map, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
         Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog, Tab::Debug,
     ];
     TABS.iter()
@@ -587,8 +589,12 @@ pub struct ForzaApp {
     map_editor: Option<crate::mapedit::MapServer>,
     /// The start mode `map_editor` was started with (a running server cannot change it).
     map_editor_mode: Option<crate::mapedit::StartFrom>,
-    /// Setup → Map data card state (status check, start-mode choice, confirm).
-    pub map_data: crate::ui::settings::MapData,
+    /// Map tab → Map data page state (status check, start-mode choice, confirm).
+    pub map_data: crate::ui::map_data::MapData,
+    /// Map tab viewer state (view centre, zoom, follow); not saved.
+    pub map_tab: crate::ui::map_tab::MapTabState,
+    /// The Dashboard map's temporary pan / zoom (D72). A `RefCell`: the widget draws from `&ForzaApp`.
+    pub minimap_pan: std::cell::RefCell<crate::ui::map_scene::ManualView>,
     /// Events of `map_editor` (polled once a frame in `poll_map_editor`).
     map_editor_rx: Option<Receiver<crate::mapedit::MapEvent>>,
     /// The last `Saved` / `Error` event of the map editor, for the Setup card (I27) to show.
@@ -928,6 +934,8 @@ impl ForzaApp {
             map_editor: None,
             map_editor_mode: None,
             map_data: Default::default(),
+            map_tab: Default::default(),
+            minimap_pan: Default::default(),
             map_editor_rx: None,
             map_editor_last: None,
             debug_cars: Default::default(),
@@ -959,6 +967,29 @@ impl ForzaApp {
     pub fn restart_receiver(&mut self, port: u16) {
         self._network = start_receiver(port, self.packet_tx.clone());
         self.config.listen_port = port;
+    }
+
+    /// The Map tab needs the map image: start loading it when nothing has (the Dashboard map module
+    /// is off, so the startup load was skipped) or when the season changed under a texture the
+    /// update loop's own season check leaves alone (module off). A failed load stays failed here;
+    /// Reload Map / a changed install folder retry it.
+    pub fn ensure_map_image(&mut self) {
+        if self.minimap_img_receiver.is_some() {
+            return;
+        }
+        let season = current_season();
+        let stale = self.minimap_texture.is_some() && season != self.minimap_loaded_season;
+        if (self.minimap_texture.is_some() && !stale) || self.minimap_error.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<MapLoadMessage>();
+        let q = self.config.minimap_quality;
+        std::thread::spawn(move || map_load_thread(season, q, tx));
+        if stale {
+            self.minimap_texture = None;
+        }
+        self.minimap_img_receiver = Some(rx);
+        self.minimap_loaded_season = season;
     }
 
     /// Open the map editor in the browser (I26b). Starts the local server and builds the map data
@@ -1827,6 +1858,7 @@ impl eframe::App for ForzaApp {
                 let left = [
                     (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
                     (Tab::Overlay,     icons::OVERLAY,    "Overlay"),
+                    (Tab::Map,         icons::MAP,        "Map"),
                     (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
                     (Tab::Coop,        icons::USERS,      "Co-Op"),
                     (Tab::Backfire,    icons::BOLT,       "Backfire"),
@@ -2621,6 +2653,8 @@ impl eframe::App for ForzaApp {
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_look_stick, tr("Rotate with right stick"));
                                     crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
+                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_allow_pan_zoom, tr("Allow pan and zoom"))
+                                        .on_hover_text(tr(crate::ui::map_tab::PAN_ZOOM_TIP));
                                     ui.add_space(4.0);
                                     ui.label(tr("Zoom when driving (radius, metres)"));
                                     ui.add(
@@ -2869,6 +2903,7 @@ impl eframe::App for ForzaApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.current_tab {
             Tab::Dashboard => crate::ui::dashboard::show(ui, self),
             Tab::Overlay => crate::ui::overlay_tab::show(ui, self),
+            Tab::Map => crate::ui::map_tab::show(ui, self),
             Tab::Backfire => crate::ui::backfire::show_backfire(ui, self),
             Tab::Gearbox => crate::ui::gearbox::show_gearbox(ui, self),
             Tab::PowerCurve => crate::ui::power_curve::show(ui, self),

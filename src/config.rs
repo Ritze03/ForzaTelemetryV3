@@ -793,17 +793,45 @@ fn default_profile_name() -> String { "Default".to_string() }
 /// shows. Remembered across restarts as the top-level `overlay_page` key, which is in
 /// [`EXPORT_EXCLUDE`]: it is where the user last looked, not a setting, so presets and
 /// profile exports must not carry it (and `overlay` itself stays purely the HUD's settings).
+///
+/// The Minimap and Dashboard map pages moved to the Map tab (D67); a config saved while one of
+/// them was selected still loads: the aliases map those values to `General`.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayPage {
     #[default]
+    #[serde(alias = "minimap", alias = "dashboard_map")]
     General,
-    Minimap,
-    DashboardMap,
     Cluster,
     Race,
     Notifications,
 }
+
+/// The module selector of the Map tab's settings mode (D67): which map's settings the page
+/// shows. Remembered as the top-level `map_tab_page` key ([`EXPORT_EXCLUDE`], like
+/// [`OverlayPage`]).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MapPage {
+    #[default]
+    Minimap,
+    DashboardMap,
+    Viewer,
+    MapData,
+}
+
+/// The Map tab viewer's layer defaults (D67): the Dashboard map's look, but POIs stay visible
+/// at the viewer's wide zoom levels (the Dashboard hides them above a 3000 m radius; a viewer
+/// is mostly used zoomed out, where POIs are the point).
+pub fn viewer_layers_default() -> crate::maprender::cfg::MapLayerConfig {
+    let mut l = crate::maprender::cfg::MapLayerConfig::dashboard();
+    l.pois.max_zoom_m = 8000.0;
+    l
+}
+
+fn default_viewer_zoom() -> f32 { 1500.0 }
+
+fn default_viewer_layers() -> crate::maprender::cfg::MapLayerConfig { viewer_layers_default() }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
@@ -881,6 +909,9 @@ pub struct AppConfig {
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
     pub minimap_north_up_when_stopped: bool, // in heading-up mode, ease to north when stopped
     pub minimap_show_compass: bool, // show the north compass on the map
+    /// Drag to pan and wheel to zoom the Dashboard map; resets once the player drives off (D72).
+    #[serde(default = "default_true")]
+    pub minimap_allow_pan_zoom: bool,
     // Mini map layers: satellite look, roads by type, POIs, race lines, tilt (shared renderer,
     // `maprender::cfg`). No settings UI yet: edit the JSON.
     pub minimap_layers: crate::maprender::cfg::MapLayerConfig,
@@ -984,6 +1015,29 @@ pub struct AppConfig {
     /// Selected module tab of the Overlay tab (UI memory, see [`OverlayPage`]).
     #[serde(default)]
     pub overlay_page: OverlayPage,
+    // Map tab (D67). `viewer_*` are the full-size viewer's own settings (its layers, view
+    // options); `map_tab_*` are UI memory (settings mode on/off, selected page).
+    #[serde(default = "default_viewer_layers")]
+    pub viewer_layers: crate::maprender::cfg::MapLayerConfig,
+    /// Viewer: lock north-up (off = the map turns with the car's heading).
+    #[serde(default = "default_true")]
+    pub viewer_north_up: bool,
+    #[serde(default = "default_true")]
+    pub viewer_mirror_edges: bool,
+    #[serde(default)]
+    pub viewer_show_compass: bool,
+    /// Viewer: drag to pan and wheel to zoom (D72).
+    #[serde(default = "default_true")]
+    pub viewer_allow_pan_zoom: bool,
+    /// Viewer: the radius (metres, centre to nearest edge) it shows by default and returns to.
+    #[serde(default = "default_viewer_zoom")]
+    pub viewer_zoom_m: f32,
+    /// The Map tab shows its settings instead of the viewer (UI memory, [`EXPORT_EXCLUDE`]).
+    #[serde(default)]
+    pub map_tab_settings: bool,
+    /// Selected page of the Map tab's settings (UI memory, [`EXPORT_EXCLUDE`]).
+    #[serde(default)]
+    pub map_tab_page: MapPage,
 }
 
 impl Default for AppConfig {
@@ -1040,6 +1094,7 @@ impl Default for AppConfig {
             minimap_north_up: true,
             minimap_north_up_when_stopped: false,
             minimap_show_compass: false,
+            minimap_allow_pan_zoom: true,
             minimap_layers: crate::maprender::cfg::MapLayerConfig::dashboard(),
             gforce_show_text: true,
             gforce_show_labels: true,
@@ -1118,6 +1173,14 @@ impl Default for AppConfig {
             coop_list_class: false,
             overlay: OverlayConfig::default(),
             overlay_page: OverlayPage::default(),
+            viewer_layers: viewer_layers_default(),
+            viewer_north_up: true,
+            viewer_mirror_edges: true,
+            viewer_show_compass: false,
+            viewer_allow_pan_zoom: true,
+            viewer_zoom_m: default_viewer_zoom(),
+            map_tab_settings: false,
+            map_tab_page: MapPage::default(),
         }
     }
 }
@@ -1222,7 +1285,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "inputs_filter_backfire_accel",
     "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_look_stick", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
     "minimap_layers", "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
-    "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
+    "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_allow_pan_zoom", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
     "power_graph_compact", "power_graph_show_boost", "power_graph_show_grid", "shift_high_pct", "shift_low_pct", "show_speed_delta",
@@ -1270,9 +1333,16 @@ const ACCEL_KEYS: &[&str] = &[
 /// HUD overlay: every Overlay-tab setting lives under the one `overlay` key.
 const OVERLAY_KEYS: &[&str] = &["overlay"];
 
+/// Map tab viewer (D67): its layer settings and view options.
+const VIEWER_KEYS: &[&str] = &[
+    "viewer_layers", "viewer_north_up", "viewer_mirror_edges", "viewer_show_compass", "viewer_allow_pan_zoom", "viewer_zoom_m",
+];
+
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
-const EXPORT_EXCLUDE: &[&str] = &["active_profile", "input_perm_dont_remind", "fh6_install_dir", "overlay_page"];
+const EXPORT_EXCLUDE: &[&str] = &[
+    "active_profile", "input_perm_dont_remind", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page",
+];
 
 /// One selectable group in the export/import tree.
 pub struct KeyGroup {
@@ -1294,6 +1364,7 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
     KeyGroup { section: "Tuning",    name: "Acceleration Tests", keys: ACCEL_KEYS },
     // Appended last so existing group indices (UI selection vectors) don't shift.
     KeyGroup { section: "Overlay",   name: "HUD Overlay",      keys: OVERLAY_KEYS },
+    KeyGroup { section: "Map",       name: "Map viewer",       keys: VIEWER_KEYS },
 ];
 
 /// Keys belonging to the groups selected by index into KEY_GROUPS.
@@ -1515,9 +1586,10 @@ impl AppConfig {
     /// first (see `switch_profile`); callers deleting the active one must not.
     fn load_profile(&mut self, name: &str) {
         if let Ok(data) = std::fs::read_to_string(profile_path(name)) {
-            let page = self.overlay_page; // UI memory, not part of a profile
+            // UI memory, not part of a profile
+            let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
             apply_preset(self, &data); // full snapshot = overlay every key
-            self.overlay_page = page;
+            (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
         }
         self.active_profile = name.to_string(); // re-assert (file may store a stale name)
         self.save();
@@ -1716,6 +1788,23 @@ mod tests {
     }
 
     use super::*;
+
+    /// A config saved while the Overlay tab's Minimap / Dashboard map page was selected (those
+    /// pages moved to the Map tab, D67) still loads, on General.
+    #[test]
+    fn old_overlay_page_values_load_as_general() {
+        for old in ["minimap", "dashboard_map"] {
+            let p: OverlayPage = serde_json::from_str(&format!("\"{old}\"")).unwrap();
+            assert_eq!(p, OverlayPage::General, "{old}");
+        }
+        let p: OverlayPage = serde_json::from_str("\"race\"").unwrap();
+        assert_eq!(p, OverlayPage::Race);
+        // Whole-config round trip with an old value in it.
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["overlay_page"] = serde_json::json!("dashboard_map");
+        let c: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(c.overlay_page, OverlayPage::General);
+    }
 
     #[test]
     fn key_groups_partition_all_keys() {
