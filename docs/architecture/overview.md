@@ -318,6 +318,7 @@ might produce.
 | `style.rs` | Road draw order, width rule, dash patterns, the POI category table (`POI_CATS`). |
 | `racesel.rs` | `RaceSel`: which race lines to draw (nearest / near / the best-effort current race). |
 | `paint2d.rs` | `draw_base` (image mesh incl. the subdivided tilted one and its far-edge fade) and `draw_layers` (roads with the tilt taper, jump lines, race lines, gate lines, POIs with the game's icons, the current treasure chest) onto an egui `Painter`; `IconAtlas`, `CornerClip` (the HUD pill). |
+| `ui.rs` | Settings cards for both maps (`layers_ui`, `view_rows` / `ViewCfg`, `status_ui`); used by the Overlay tab's Minimap and Dashboard map pages. |
 
 ### `src/mapedit/` (the FH6 map editor inside the app, I26; D50) — see `docs/game-data/fh6-map-tooling.md`
 
@@ -394,6 +395,7 @@ might produce.
 - **Map editor (server, Save, generated data files)** → `mapedit/server.rs` / `mapedit/data.rs`; app wiring in `app.rs:start_map_editor`; the editor pages in `assets/editor/`. See `docs/game-data/fh6-map-tooling.md`.
 - **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
 - **Map layers (roads, POIs, race lines, tilt) on the Dashboard / HUD map** → `maprender/` (`paint2d.rs` draws, `style.rs` looks, `cfg.rs` settings and defaults, `store.rs` data lifecycle); the call sites are `ui/dashboard.rs:show_minimap_widget` and `hud/minimap.rs:draw` (data handed over by `overlay/render.rs`). See [[minimap]], [[overlay]].
+- **Map settings UI (layer / view cards for the Minimap and Dashboard map pages)** → `ui/overlay_tab.rs` + `maprender/ui.rs`. See [[overlay]].
 - **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`
   timings); check it with the PNG harness `cargo test render_spec_states -- --ignored`.
   See [[overlay]].

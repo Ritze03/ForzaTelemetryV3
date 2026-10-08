@@ -14,6 +14,7 @@ Project-specific vocabulary. When the user uses a term defined here, use the sam
 - **Drive cluster** — the HUD module showing RPM, gear and speed together; styles shown in the UI as **Pill** and **Halo** (D1a / D3a′ are their mockup spec names).
 - **Race block / Drift counter** — the HUD's race position + lap module (R1′) and the drift-score module (X1′) that takes its slot while drifting is detected. Drift counter styles: **Position + Gain** (default) and **Total**.
 - **D1a / D3a′ / M2′ / R1′ / X1′** — the HUD widget names from the design mockup's spec sheet (Pill cluster, Halo cluster, minimap, race block, drift counter).
+- **Module selector** — the segmented control at the top of the Overlay tab (General, Minimap, Dashboard map, Drive cluster, Race / Drift, Notifications) that shows one module's settings at a time. See `docs/features/overlay.md`.
 - **Category** — a bordered card with a blue uppercase title that groups related controls in a tab (e.g. "SESSION", "RPM Range"). Rendered via `theme::card`. See @docs/ui/STYLING-GUIDE.md.
 - **Minimap** (also "minimap renderer") — the **HUD minimap (M2′)** in the in-game overlay (`src/hud/minimap.rs`). Not the Dashboard's map widget.
 - **Dashboard map** — the Dashboard's Map widget (`show_minimap_widget`, `src/ui/dashboard.rs`; config keys are `minimap_*` for historical reasons). Distinct from the HUD **Minimap**.
