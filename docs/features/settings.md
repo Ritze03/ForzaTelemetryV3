@@ -5,7 +5,7 @@ options that aren't tied to a single dashboard widget. Rendered from `src/ui/set
 bordered category cards laid out per the [styling guide](../ui/STYLING-GUIDE.md)
 (label-left / control-right rows); values persist in `config.json` (see
 [[state-and-config]]). Per-widget tuning lives in the cog **Mini-Settings** popup instead —
-see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]].
+see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]] (module tabs; both maps' layer settings are there too, Mini-Settings keeps the quick options).
 
 Cards: **Profiles**, **Hotkey**, **Controller** (see [[gamepad]]), **Display** (left column); **Repository / Credits**,
 **Network**, **Game Install**, **Map data**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get

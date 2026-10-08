@@ -1,16 +1,27 @@
-//! Overlay tab: the settings page for the in-game HUD overlay (D24–D28, the tab mockup).
+//! Overlay tab: the settings page for the in-game HUD overlay (D24–D28, the tab mockup) and,
+//! since D63, for the two maps' layer settings.
 //!
-//! It only edits `app.config.overlay` (and the shared Hide HUD binding). `ForzaApp::sync_overlay`
-//! and the listener's per-frame config push carry every change to the running HUD, so the page
-//! needs no apply step.
+//! A module selector (`theme::segmented`, the Co-Op tab's control) at the top picks which
+//! module's cards the page shows: General, Minimap, Dashboard map, Drive cluster, Race / Drift,
+//! Notifications. The selection is `config.overlay_page` (remembered, never exported).
+//!
+//! It edits `app.config.overlay` (and the shared Hide HUD binding; the Dashboard map tab edits
+//! `minimap_*`). `ForzaApp::sync_overlay` and the listener's per-frame config push carry every
+//! change to the running HUD, so the page needs no apply step.
+
+use std::sync::Arc;
 
 use egui::{pos2, vec2, Color32, CursorIcon, FontId, Id, Painter, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use crate::app::{ForzaApp, OverlayStatus};
-use crate::config::{ClusterStyle, DriftStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig};
+use crate::config::{AppConfig, ClusterStyle, DriftStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig, OverlayPage};
 use crate::focus::MonitorStatus;
 use crate::hud::layout::Module;
 use crate::i18n::tr;
+use crate::maprender::cfg::MapLayerConfig;
+use crate::maprender::paint2d::IconAtlas;
+use crate::maprender::store::Layers;
+use crate::maprender::ui::{layers_ui, status_ui, view_rows, LayerAux, ViewCfg};
 use crate::theme;
 
 /// From this page width up the cards sit in three columns, below it in two (D28: three at the
@@ -21,23 +32,147 @@ const THREE_COLS_MIN_W: f32 = 1100.0;
 type CardFn = fn(&mut Ui, &mut ForzaApp);
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    let cols: &[&[CardFn]] = if ui.available_width() >= THREE_COLS_MIN_W {
-        &[&[general, monitor], &[layout, race, drift], &[cluster, minimap, notifications]]
-    } else {
-        // Layout first: it's the one card you can't find by scrolling past settings.
-        &[&[layout, general, monitor], &[cluster, minimap, race, drift, notifications]]
-    };
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
-        crate::theme::columns(ui, cols.len(), |uis| {
-            for (ui, cards) in uis.iter_mut().zip(cols) {
-                ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
-                for card in *cards {
-                    card(ui, app);
+    if page_selector(ui, &mut app.config.overlay_page) {
+        clear_layout_selection(ui.ctx()); // a half-made chip selection must not outlive its tab
+    }
+    ui.add_space(8.0);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match app.config.overlay_page {
+        OverlayPage::General => {
+            // Layout first when narrow: it's the one card you can't find by scrolling past settings.
+            cards_page(ui, app, &[&[general], &[monitor], &[layout]], &[&[layout], &[general, monitor]]);
+        }
+        OverlayPage::Minimap => {
+            let (l, atlas) = layers_and_icons(ui, app);
+            minimap_page(ui, &mut app.config, &l, atlas.as_deref());
+        }
+        OverlayPage::DashboardMap => {
+            let (l, atlas) = layers_and_icons(ui, app);
+            dashboard_page(ui, &mut app.config, &l, atlas.as_deref());
+        }
+        OverlayPage::Cluster => cards_page(ui, app, &[&[cluster], &[], &[]], &[&[cluster], &[]]),
+        OverlayPage::Race => cards_page(ui, app, &[&[race], &[drift], &[]], &[&[race], &[drift]]),
+        OverlayPage::Notifications => cards_page(ui, app, &[&[notifications], &[], &[]], &[&[notifications], &[]]),
+    });
+}
+
+/// The module selector. Fits in one row where the labels do; otherwise (a narrow window, a long
+/// German label) it breaks into two rows of three, so a label never spills into its neighbour.
+/// Returns true when the selection changed.
+fn page_selector(ui: &mut Ui, page: &mut OverlayPage) -> bool {
+    let opts = [
+        (OverlayPage::General, tr("General")),
+        (OverlayPage::Minimap, tr("Minimap")),
+        (OverlayPage::DashboardMap, tr("Dashboard map")),
+        (OverlayPage::Cluster, tr("Drive cluster")),
+        (OverlayPage::Race, tr("Race / Drift")),
+        (OverlayPage::Notifications, tr("Notifications")),
+    ];
+    page_selector_with(ui, page, &opts)
+}
+
+fn page_selector_with(ui: &mut Ui, page: &mut OverlayPage, opts: &[(OverlayPage, &str); 6]) -> bool {
+    let mut changed = false;
+    egui::Frame::new()
+        .fill(theme::WELL)
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::same(6))
+        .show(ui, |ui| {
+            // 6 px = the control's own padding; 24 px of air around the longest label.
+            let widest = opts
+                .iter()
+                .map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), FontId::proportional(14.0), theme::TEXT).size().x)
+                .fold(0.0_f32, f32::max);
+            let one_row = (ui.available_width() - 6.0) / opts.len() as f32 >= widest + 24.0;
+            let rows: &[&[(OverlayPage, &str)]] = if one_row { &[opts] } else { &[&opts[..3], &opts[3..]] };
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(4.0);
                 }
+                // An id scope per row: `segmented` derives its click ids from the Ui's id.
+                changed |= ui.push_id(("overlay_page_row", i), |ui| theme::segmented(ui, page, row)).inner;
             }
         });
+    changed
+}
+
+/// A page of plain cards: three columns from [`THREE_COLS_MIN_W`] up, otherwise two.
+fn cards_page(ui: &mut Ui, app: &mut ForzaApp, three: &[&[CardFn]], two: &[&[CardFn]]) {
+    let cols = if ui.available_width() >= THREE_COLS_MIN_W { three } else { two };
+    ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
+    theme::columns(ui, cols.len(), |uis| {
+        for (ui, cards) in uis.iter_mut().zip(cols) {
+            ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
+            for card in *cards {
+                card(ui, app);
+            }
+        }
     });
+}
+
+/// The layer store's state and this context's uploaded POI icons. Asking the store starts its
+/// load (once per process), which is wanted: the map tabs show what it found.
+fn layers_and_icons(ui: &Ui, app: &ForzaApp) -> (Layers, Option<Arc<IconAtlas>>) {
+    let l = crate::maprender::layers();
+    let atlas = l.data.as_ref().and_then(|d| app.minimap_icons.borrow_mut().ensure(ui.ctx(), d.icons.as_ref()));
+    (l, atlas)
+}
+
+// ── The map tabs ─────────────────────────────────────────────────────────────
+
+/// HUD minimap tab: the Minimap module card plus all layer settings of `overlay.map_layers`.
+/// With "Use Dashboard map settings" on, the Dashboard's values are shown greyed instead (what
+/// `OverlayConfig::effective` will really use). The plate opacity is the exception: it is not
+/// copied from the Dashboard, so it stays editable.
+fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
+    status_ui(ui, l);
+    let follow = cfg.overlay.map_use_dashboard;
+    if follow {
+        status_line(ui, theme::FAINT, tr("The map follows the Dashboard map's settings."));
+    }
+    ui.add_space(4.0);
+    let mut layers = if follow { cfg.minimap_layers.clone() } else { cfg.overlay.map_layers.clone() };
+    let mut plate = cfg.overlay.map_plate_opacity;
+    let on = cfg.overlay.enabled && cfg.overlay.minimap_on;
+    let dash_view = ViewCfg::of_app(cfg);
+    let mut reset = false;
+    {
+        let o = &mut cfg.overlay;
+        let mut lead = |ui: &mut Ui| minimap_card(ui, o, &dash_view, &mut reset);
+        let aux = LayerAux { icons: atlas, plate: Some((&mut plate, on)), enabled: on && !follow };
+        layers_ui(ui, &mut layers, aux, &mut lead);
+    }
+    if reset {
+        layers = MapLayerConfig::hud();
+    }
+    if !follow {
+        cfg.overlay.map_layers = layers;
+    }
+    cfg.overlay.map_plate_opacity = plate;
+}
+
+/// Dashboard map tab: the view options and all layer settings of `minimap_layers`. (Mini-Settings
+/// → Dashboard → Map keeps its quick options; both edit the same keys.)
+fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
+    status_ui(ui, l);
+    ui.add_space(4.0);
+    let mut layers = cfg.minimap_layers.clone();
+    let mut view = ViewCfg::of_app(cfg);
+    let mut reset = false;
+    let mut lead = |ui: &mut Ui| {
+        theme::card(ui, tr("Dashboard map"), |ui| {
+            view_rows(ui, &mut view);
+            if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
+                reset = true;
+            }
+        });
+    };
+    layers_ui(ui, &mut layers, LayerAux { icons: atlas, plate: None, enabled: true }, &mut lead);
+    if reset {
+        layers = MapLayerConfig::dashboard();
+    }
+    cfg.minimap_layers = layers;
+    view.apply_app(cfg);
 }
 
 // ── Small shared pieces ──────────────────────────────────────────────────────
@@ -52,7 +187,7 @@ fn hint_col(ui: &mut Ui, text: &str, col: Color32) {
 }
 
 /// A coloured status dot + message; the message wraps (Disabled reasons are long).
-fn status_line(ui: &mut Ui, col: Color32, msg: &str) {
+pub(crate) fn status_line(ui: &mut Ui, col: Color32, msg: &str) {
     // Explicit left-to-right: inside the Detect button's right-to-left row a plain
     // `horizontal` would inherit that direction and put the dot after the text.
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
@@ -62,7 +197,7 @@ fn status_line(ui: &mut Ui, col: Color32, msg: &str) {
 }
 
 /// Label in the left half, `right` in the right half (Setup's `control_row`).
-fn control_row<R>(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
+pub(crate) fn control_row<R>(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
     crate::theme::columns(ui, 2, |c| {
         theme::row_label(&mut c[0], label);
         c[1].horizontal(right).inner
@@ -70,7 +205,7 @@ fn control_row<R>(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui) -> R) ->
 }
 
 /// [`control_row`] with a tooltip on the label (the explanation, instead of a helper line).
-fn control_row_tip<R>(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
+pub(crate) fn control_row_tip<R>(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui) -> R) -> R {
     crate::theme::columns(ui, 2, |c| {
         theme::row_label(&mut c[0], label).on_hover_text(tip);
         c[1].horizontal(right).inner
@@ -78,7 +213,7 @@ fn control_row_tip<R>(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&m
 }
 
 /// A 0–1 fraction edited as a percentage slider row; `tip` is shown on hover.
-fn pct_row(ui: &mut Ui, label: &str, v: &mut f32, lo: f32, hi: f32, step: f64, tip: Option<&str>) {
+pub(crate) fn pct_row(ui: &mut Ui, label: &str, v: &mut f32, lo: f32, hi: f32, step: f64, tip: Option<&str>) {
     let mut p = *v * 100.0;
     let resp = theme::slider_row(ui, label, &mut p, lo..=hi, step, 1, "%");
     if resp.changed() {
@@ -430,13 +565,12 @@ fn paint_chip(p: &Painter, r: Rect, m: Module, on: bool, selected: bool, hovered
         clip.circle_filled(grip + vec2(dx, dy), 1.0, theme::FAINT);
     }
     let text_col = if on { theme::TEXT } else { theme::FAINT };
-    clip.text(
-        pos2(r.left() + 15.0, r.center().y),
-        egui::Align2::LEFT_CENTER,
-        module_name(m),
-        chip_font(),
-        text_col,
-    );
+    // A name wider than the chip (a narrow window makes the grid cells small) is cut with "…"
+    // instead of being clipped mid-letter.
+    let mut job = egui::text::LayoutJob::simple_singleline(module_name(m).to_owned(), chip_font(), text_col);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 15.0 - 3.0).max(0.0));
+    let galley = p.layout_job(job);
+    clip.galley(pos2(r.left() + 15.0, r.center().y - galley.size().y / 2.0), galley, text_col);
 }
 
 /// egui temp-data key of the layout grid's selected chip.
@@ -649,22 +783,27 @@ fn cluster_card(ui: &mut Ui, o: &mut OverlayConfig, use_mph: bool) {
     });
 }
 
-fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
-    minimap_card(ui, &mut app.config.overlay);
-}
-
-fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig) {
+/// The Minimap module card of the HUD map tab: module switch, "Use Dashboard map settings", the
+/// view options (the Dashboard's values, greyed, while it is on) and the co-op switch. The
+/// layer cards are `maprender::ui::layers_ui`'s. `reset` is set by the "Reset map layers" button.
+fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig, dash_view: &ViewCfg, reset: &mut bool) {
     module_card(ui, o, tr("Minimap"), |o| &mut o.minimap_on, None, |ui, o| {
-        // Greyed while the Dashboard's values are in use (Mini-Settings → Overlay ticks).
-        let (map_own, coop_own) = (!o.map_use_dashboard, !o.coop_use_dashboard);
-        ui.add_enabled_ui(map_own, |ui| {
-            theme::checkbox_row(ui, &mut o.compass, tr("Compass"));
-            // 5000 m, not the mockup's 2000: the defaults (3000 / 1500 m) must fit the range.
-            theme::slider_row(ui, tr("Zoom when stopped"), &mut o.zoom_stopped_m, 100.0..=5000.0, 50.0, 0, " m");
-            theme::slider_row(ui, tr("Zoom when driving"), &mut o.zoom_driving_m, 100.0..=5000.0, 50.0, 0, " m");
-        });
-        ui.add_enabled_ui(coop_own, |ui| {
+        theme::checkbox_row(ui, &mut o.map_use_dashboard, tr("Use Dashboard map settings")).on_hover_text(tr(
+            "The view options and all layer settings follow the Dashboard map. Only the map plate opacity stays its own.",
+        ));
+        let follow = o.map_use_dashboard;
+        let mut v = if follow { dash_view.clone() } else { ViewCfg::of_overlay(o) };
+        ui.add_enabled_ui(!follow, |ui| view_rows(ui, &mut v));
+        if !follow {
+            v.apply_overlay(o);
+        }
+        ui.add_enabled_ui(!o.coop_use_dashboard, |ui| {
             theme::checkbox_row(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
+        });
+        ui.add_enabled_ui(!follow, |ui| {
+            if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
+                *reset = true;
+            }
         });
     });
 }
@@ -816,90 +955,203 @@ mod tests {
         assert!(!module_on(&o, Module::Race));
     }
 
-    /// The Overlay page's real cards (General stands in with the same row helpers — it needs
-    /// the whole app) at the 800 px minimum, the 1100 px column switch and the user's 1235 px:
-    /// nothing paints into another column, every card frame is exactly its column wide, and
-    /// no text is cut off at a pane edge (everything genuinely fits, not just clipped).
+    // ── Panes: every page of the tab, at the minimum, the column switch and the user's width ──
+
+    use crate::ui::test_render;
+
+    const WIDTHS: [f32; 4] = [700.0, 1000.0, 1100.0, 1235.0];
+
+    /// Nothing paints outside the window, no text is cut off at a pane edge (everything
+    /// genuinely fits, not just clipped), and no two card frames overlap (a card never paints
+    /// into another column). Returns the number of card frames.
+    fn check_panes(out: &egui::FullOutput, w: f32, what: &str) -> usize {
+        let mut frames: Vec<Rect> = Vec::new();
+        for c in &out.shapes {
+            match &c.shape {
+                egui::Shape::Rect(r) if r.corner_radius == egui::CornerRadius::same(7) && r.stroke.width > 0.0 && r.rect.height() > 40.0 && r.rect.width() > 100.0 => {
+                    frames.push(r.rect);
+                }
+                egui::Shape::Text(t) => {
+                    let b = t.visual_bounding_rect();
+                    assert!(
+                        b.left() >= c.clip_rect.left() - 0.5 && b.right() <= c.clip_rect.right() + 0.5,
+                        "{what} at {w} px: text {:?} is cut off at a pane edge ({b:?} vs clip {:?})",
+                        t.galley.text(),
+                        c.clip_rect
+                    );
+                }
+                _ => {}
+            }
+        }
+        for r in test_render::visible_rects(out) {
+            assert!(r.left() >= -0.5 && r.right() <= w + 0.5, "{what} at {w} px: a shape leaves the window: {r:?}");
+        }
+        for (i, a) in frames.iter().enumerate() {
+            for b in &frames[i + 1..] {
+                let i = a.intersect(*b);
+                assert!(!(i.width() > 1.0 && i.height() > 1.0), "{what} at {w} px: cards overlap: {a:?} / {b:?}");
+            }
+        }
+        frames.len()
+    }
+
+    /// Run `page` with this context's POI icon atlas (the synthetic icons uploaded for real).
+    fn render(name: &str, w: f32, h: f32, mut page: impl FnMut(&mut Ui, &IconAtlas)) -> egui::FullOutput {
+        let ctx = test_render::context();
+        let mut tex = crate::maprender::icontex::IconTex::default();
+        let icons = Arc::new(crate::maprender::icontex::synthetic_icons());
+        let atlas = tex.ensure(&ctx, Some(&icons)).expect("atlas");
+        let (out, textures) = test_render::run(&ctx, w, h, |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            page(ui, &atlas)
+        });
+        test_render::snapshot(&ctx, &out, &textures, w as u32, h as u32, &format!("{name}_{w}"));
+        out
+    }
+
+    fn layers_ready() -> Layers {
+        use crate::maprender::data::MapLayers;
+        let note = "Your saved road types were ignored: they were made for a different version of the game's road network. The project data is used instead.";
+        let data = MapLayers { note: Some(note.into()), ..MapLayers::synthetic() };
+        Layers { status: crate::maprender::LayerStatus::Ready, data: Some(Arc::new(data)) }
+    }
+
+    type Card = fn(&mut Ui, &mut OverlayConfig);
+
+    /// The stand-in for the General card (the real one needs the whole app) with the same rows.
+    fn general_stand_in(ui: &mut Ui, o: &mut OverlayConfig) {
+        theme::card(ui, tr("General"), |ui| {
+            theme::checkbox_row(ui, &mut o.enabled, tr("Enable overlay"));
+            status_line(ui, theme::GOOD, tr("Overlay running"));
+            control_row(ui, "Hide HUD", |ui| ui.add_sized([ui.available_width(), 22.0], egui::Button::new("J")));
+            pct_row(ui, tr("Scale"), &mut o.scale, 50.0, 200.0, 5.0, None);
+            pct_row(ui, tr("Plate opacity"), &mut o.plate_opacity, 0.0, 100.0, 1.0, None);
+            theme::checkbox_row(ui, &mut o.fade, tr("Fade on show / hide"));
+            theme::checkbox_row(ui, &mut o.focus_only, tr("Only when game window is focused"));
+        });
+    }
+
+    /// The module cards of the non-map pages.
     #[test]
-    fn overlay_page_stays_inside_its_panes() {
-        use crate::ui::test_render;
-        for (w, h) in [(800.0, 1500.0), (1100.0, 1100.0), (1235.0, 1056.0)] {
-            let ctx = test_render::context();
-            let mut o = OverlayConfig::default();
-            let mut cols_seen = Vec::new();
-            let (out, tex) = test_render::run(&ctx, w, h, |ui| {
-                cols_seen.clear();
-                let three = ui.available_width() >= THREE_COLS_MIN_W;
-                ui.spacing_mut().item_spacing.x = 8.0;
-                theme::columns(ui, if three { 3 } else { 2 }, |uis| {
-                    for ui in uis.iter_mut() {
-                        cols_seen.push(ui.max_rect());
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                    }
-                    let general = |ui: &mut Ui, o: &mut OverlayConfig| {
-                        theme::card(ui, tr("General"), |ui| {
-                            theme::checkbox_row(ui, &mut o.enabled, tr("Enable overlay"));
-                            status_line(ui, theme::GOOD, tr("Overlay running"));
-                            control_row(ui, "Hide HUD", |ui| ui.add_sized([ui.available_width(), 22.0], egui::Button::new("J")));
-                            pct_row(ui, tr("Scale"), &mut o.scale, 50.0, 200.0, 5.0, None);
-                            pct_row(ui, tr("Plate opacity"), &mut o.plate_opacity, 0.0, 100.0, 1.0, None);
-                            theme::checkbox_row(ui, &mut o.fade, tr("Fade on show / hide"));
-                            theme::checkbox_row(ui, &mut o.focus_only, tr("Only when game window is focused"));
-                        });
-                    };
-                    if three {
-                        general(&mut uis[0], &mut o);
-                        layout_card(&mut uis[1], &mut o);
-                        race_card(&mut uis[1], &mut o);
-                        drift_card(&mut uis[1], &mut o);
-                        cluster_card(&mut uis[2], &mut o, false);
-                        minimap_card(&mut uis[2], &mut o);
-                        notifications_card(&mut uis[2], &mut o);
+    fn card_pages_stay_inside_their_panes() {
+        let layout: Card = |u, o| layout_card(u, o);
+        let cluster: Card = |u, o| cluster_card(u, o, false);
+        let race: Card = |u, o| race_card(u, o);
+        let drift: Card = |u, o| drift_card(u, o);
+        let notif: Card = |u, o| notifications_card(u, o);
+        for w in WIDTHS {
+            let three = w >= THREE_COLS_MIN_W;
+            let general: Card = general_stand_in;
+            let pages: Vec<(&str, usize, Vec<Vec<Card>>)> = vec![
+                ("general", 2, if three { vec![vec![general], vec![layout]] } else { vec![vec![layout, general]] }),
+                ("cluster", 1, vec![vec![cluster]]),
+                ("race", 2, vec![vec![race], vec![drift]]),
+                ("notifications", 1, vec![vec![notif]]),
+            ];
+            for (name, expect, cols) in pages {
+                let mut o = OverlayConfig::default();
+                let out = render(&format!("overlay_{name}"), w, 1500.0, |ui, _| {
+                    let n = if three { 3 } else { 2 };
+                    theme::columns(ui, n, |uis| {
+                        for (ui, cards) in uis.iter_mut().zip(&cols) {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for card in cards {
+                                card(ui, &mut o);
+                            }
+                        }
+                    });
+                });
+                assert_eq!(check_panes(&out, w, name), expect, "{name} at {w} px");
+            }
+        }
+    }
+
+    /// Both map tabs (the shared `layers_ui`), plus the HUD tab following the Dashboard and with
+    /// its module off: six cards each, nothing leaves its pane.
+    #[test]
+    fn map_pages_stay_inside_their_panes() {
+        let l = layers_ready();
+        for w in WIDTHS {
+            for (name, follow, module_on) in [("minimap", false, true), ("minimap_follow", true, true), ("minimap_off", false, false), ("dashboard", false, true)] {
+                let mut cfg = AppConfig::default();
+                cfg.overlay.map_use_dashboard = follow;
+                cfg.overlay.minimap_on = module_on;
+                let out = render(&format!("overlay_{name}"), w, 3600.0, |ui, atlas| {
+                    if name.starts_with("minimap") {
+                        minimap_page(ui, &mut cfg, &l, Some(atlas));
                     } else {
-                        layout_card(&mut uis[0], &mut o);
-                        general(&mut uis[0], &mut o);
-                        cluster_card(&mut uis[1], &mut o, false);
-                        minimap_card(&mut uis[1], &mut o);
-                        race_card(&mut uis[1], &mut o);
-                        drift_card(&mut uis[1], &mut o);
-                        notifications_card(&mut uis[1], &mut o);
+                        dashboard_page(ui, &mut cfg, &l, Some(atlas));
                     }
                 });
-            });
-            test_render::snapshot(&ctx, &out, &tex, w as u32, h as u32, &format!("overlay_{w}"));
-
-            for r in test_render::visible_rects(&out) {
-                assert!(
-                    cols_seen.iter().any(|c| r.left() >= c.left() - 4.5 && r.right() <= c.right() + 4.5),
-                    "at {w} px a shape paints across columns: {r:?}"
-                );
+                assert_eq!(check_panes(&out, w, name), 6, "{name} at {w} px: expected 6 card frames");
             }
-            let mut frames = 0;
-            for c in &out.shapes {
-                match &c.shape {
-                    egui::Shape::Rect(r) if r.stroke.color == theme::BORDER && r.corner_radius == egui::CornerRadius::same(7) => {
-                        frames += 1;
-                        let col = cols_seen.iter().find(|col| col.x_range().contains(r.rect.center().x)).unwrap();
-                        assert!(
-                            (r.rect.width() - col.width()).abs() <= 1.0,
-                            "at {w} px a card is {} wide in a {} column",
-                            r.rect.width(),
-                            col.width()
-                        );
+        }
+    }
+
+    /// The same pages without an install / while loading / after an error: the status line is
+    /// there and the layout holds.
+    #[test]
+    fn map_pages_render_for_every_layer_status() {
+        use crate::maprender::LayerStatus::{Error, Loading, NoInstall};
+        for status in [NoInstall, Loading, Error("the nav could not be read: unexpected end of file in a long message".into())] {
+            let l = Layers { status, data: None };
+            let mut cfg = AppConfig::default();
+            let out = render("overlay_status", 700.0, 3600.0, |ui, _| minimap_page(ui, &mut cfg, &l, None));
+            assert_eq!(check_panes(&out, 700.0, "status"), 6);
+        }
+    }
+
+    /// The module selector: one row where the labels fit, two rows where they don't (the long
+    /// German labels at the window minimum), and its labels never run into each other.
+    #[test]
+    fn page_selector_never_overlaps_its_labels() {
+        let en = [
+            (OverlayPage::General, "General"),
+            (OverlayPage::Minimap, "Minimap"),
+            (OverlayPage::DashboardMap, "Dashboard map"),
+            (OverlayPage::Cluster, "Drive cluster"),
+            (OverlayPage::Race, "Race / Drift"),
+            (OverlayPage::Notifications, "Notifications"),
+        ];
+        let de = [
+            (OverlayPage::General, "Allgemein"),
+            (OverlayPage::Minimap, "Minikarte"),
+            (OverlayPage::DashboardMap, "Dashboard-Karte"),
+            (OverlayPage::Cluster, "Fahranzeige"),
+            (OverlayPage::Race, "Rennen / Drift"),
+            (OverlayPage::Notifications, "Benachrichtigungen"),
+        ];
+        for (lang, opts) in [("en", &en), ("de", &de)] {
+            for w in [600.0, 700.0, 800.0, 1000.0, 1280.0] {
+                let mut page = OverlayPage::General;
+                let out = render(&format!("overlay_selector_{lang}"), w, 120.0, |ui, _| {
+                    page_selector_with(ui, &mut page, opts);
+                });
+                let mut labels: Vec<Rect> = Vec::new();
+                for c in &out.shapes {
+                    if let egui::Shape::Text(t) = &c.shape {
+                        labels.push(t.visual_bounding_rect());
                     }
-                    egui::Shape::Text(t) => {
-                        let b = t.visual_bounding_rect();
-                        assert!(
-                            b.left() >= c.clip_rect.left() - 0.5 && b.right() <= c.clip_rect.right() + 0.5,
-                            "at {w} px text {:?} is cut off at a pane edge ({b:?} vs clip {:?})",
-                            t.galley.text(),
-                            c.clip_rect
-                        );
+                }
+                assert_eq!(labels.len(), 6, "{lang} at {w} px: {:?}", out.shapes.iter().filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.galley.text().to_string()) } else { None }).collect::<Vec<_>>());
+                for (i, a) in labels.iter().enumerate() {
+                    assert!(a.left() >= 0.0 && a.right() <= w, "{lang} at {w} px: label leaves the window: {a:?}");
+                    for b in &labels[i + 1..] {
+                        assert!(!a.expand(2.0).intersects(*b), "{lang} at {w} px: labels touch: {a:?} / {b:?}");
                     }
-                    _ => {}
                 }
             }
-            assert_eq!(frames, 7, "at {w} px: expected 7 card frames");
         }
+    }
+
+    /// The remembered page round-trips through the config JSON and is never exported.
+    #[test]
+    fn remembered_page_is_saved_but_not_exported() {
+        let mut c = AppConfig::default();
+        c.overlay_page = OverlayPage::DashboardMap;
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.overlay_page, OverlayPage::DashboardMap);
+        let all = vec![true; crate::config::KEY_GROUPS.len()];
+        assert!(!crate::config::export_selected(&c, &all).contains("overlay_page"));
     }
 }

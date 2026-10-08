@@ -789,6 +789,22 @@ pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
 fn default_true() -> bool { true }
 fn default_profile_name() -> String { "Default".to_string() }
 
+/// The module selector at the top of the Overlay tab (D63): which module's settings the page
+/// shows. Remembered across restarts as the top-level `overlay_page` key, which is in
+/// [`EXPORT_EXCLUDE`]: it is where the user last looked, not a setting, so presets and
+/// profile exports must not carry it (and `overlay` itself stays purely the HUD's settings).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPage {
+    #[default]
+    General,
+    Minimap,
+    DashboardMap,
+    Cluster,
+    Race,
+    Notifications,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     /// Name of the active profile; the live config is mirrored into
@@ -965,6 +981,9 @@ pub struct AppConfig {
     // HUD overlay (Overlay tab); absent in older configs → defaults.
     #[serde(default)]
     pub overlay: OverlayConfig,
+    /// Selected module tab of the Overlay tab (UI memory, see [`OverlayPage`]).
+    #[serde(default)]
+    pub overlay_page: OverlayPage,
 }
 
 impl Default for AppConfig {
@@ -1098,6 +1117,7 @@ impl Default for AppConfig {
             coop_list_gear: true,
             coop_list_class: false,
             overlay: OverlayConfig::default(),
+            overlay_page: OverlayPage::default(),
         }
     }
 }
@@ -1252,7 +1272,7 @@ const OVERLAY_KEYS: &[&str] = &["overlay"];
 
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
-const EXPORT_EXCLUDE: &[&str] = &["active_profile", "input_perm_dont_remind", "fh6_install_dir"];
+const EXPORT_EXCLUDE: &[&str] = &["active_profile", "input_perm_dont_remind", "fh6_install_dir", "overlay_page"];
 
 /// One selectable group in the export/import tree.
 pub struct KeyGroup {
@@ -1495,7 +1515,9 @@ impl AppConfig {
     /// first (see `switch_profile`); callers deleting the active one must not.
     fn load_profile(&mut self, name: &str) {
         if let Ok(data) = std::fs::read_to_string(profile_path(name)) {
+            let page = self.overlay_page; // UI memory, not part of a profile
             apply_preset(self, &data); // full snapshot = overlay every key
+            self.overlay_page = page;
         }
         self.active_profile = name.to_string(); // re-assert (file may store a stale name)
         self.save();
