@@ -469,13 +469,13 @@ was wrong: only 27 `ANIM_*` / `STADIUM_FLOOR` objects sit at the origin.)
 
 **Which treasure chest is the current one.** One chest is current per game week and the viewer / app highlights it
 (`treasure_chest_current`, on by default; drawn bigger). The files have **no date or season field** for it, so the mapping is inferred (and should be re-verified
-the next time a chest changes): the user saw **015** current on 2026-10-03; the Festival Playlist series run 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun,
+the next time a chest changes): the user found the current chest in game on 2026-10-08 just after 14:30 UTC (week 69) at (3137.8, −4126.4) = `DISCOUNT_BOARD_TREASURE_CHEST_017` at (3149, −4153) in `gameobjs.xml` (one data point; an earlier "015 seen on 3 Oct" came from stale viewer data and is wrong); the Festival Playlist series run 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun,
 16 Jul, 13 Aug, 10 Sep, 8 Oct 2026) and the file holds exactly four new chests after the update of 6 Oct (016-019, shipped early). Reading that as four chests per
 series (inferred: 004-007 from 16 Jul, 008-011 from 13 Aug, 012-015 from 10 Sep, **016-019 from 8 Oct**) gives one per week, rolling over **Thursday 14:30 UTC**
-like the map-skin season (`minimap::current_season`, epoch `1_749_738_600`). 015 is then the week from 2026-10-01 14:30 UTC = week 68 of that epoch, so **chest number = week index − 53** (`poi::treasure_chest_number`,
+like the map-skin season (`minimap::current_season`, epoch `1_749_738_600`). 017 is then week 69 of that epoch (from 2026-10-08 14:30 UTC; 016 = week 68), so **chest number = week index − 52** (`poi::treasure_chest_number`,
 `Pois::current_treasure_chest(week)`; falls back to the highest chest below the wanted number if the install is older).
 *Why not "the highest number":* that was the rule of the map viewer (`build_viewer.py`, written when 015 was the highest and the current one) and is wrong since the
-6 Oct update, which put 016-019 in the file ahead of their weeks. *Check:* 016 should become current at 2026-10-08 14:30 UTC; if the in-game chest is not 016 then, the offset (53) or the 4-per-series assumption is wrong.
+6 Oct update, which put 016-019 in the file ahead of their weeks. *Check:* 018 should become current at 2026-10-15 14:30 UTC (week 70); if the in-game chest is not 018 then, the offset (52) or the 4-per-series assumption is wrong.
 
 Notes:
 - Speed traps, speed zones, trailblazers and photo spots exist **only** here (and photo spots not even here) — they are in no `.pgeo`.
