@@ -165,9 +165,12 @@ pub const GATE_MIN_LEN_PX: f32 = 7.0;
 
 // ── tilt ─────────────────────────────────────────────────────────────────────────────────────
 
-/// The tilted map fades into the backing over this share of the view's height at its far edge
-/// (the demo's `H * 0.3`).
-pub const FAR_FADE_FRAC: f32 = 0.3;
+/// The tilted map fades into the backing at its far edge over this much depth scale above
+/// `view::FAR_MIN_SCALE` (alpha 0 there, 1 at `FAR_MIN_SCALE + FAR_FADE_DEPTH`). A band just
+/// under the horizon, so it only shows when a steep tilt brings the horizon into view (about
+/// 14 px of the pill at 55 deg, all of it above the pill). It used to be 30 % of the view height
+/// below a fixed far line (the demo's `H * 0.3`), which faded the top half of the pill.
+pub const FAR_FADE_DEPTH: f32 = 0.1;
 
 /// Depth taper: line widths scale with the perspective factor at their screen row, quantised to
 /// this many bands (one `Shape` per band piece).
@@ -176,6 +179,12 @@ pub const TAPER_BANDS: usize = 8;
 /// POIs shrink with the perspective but never below this share of their size (else far icons
 /// become specks).
 pub const POI_MIN_K: f32 = 0.4;
+
+/// Tilted: POIs further away than where things are this small are not drawn (the current
+/// treasure chest still is). The plane reaches nearly to the horizon, and the far strip would
+/// otherwise be a pile of minimum-size icons; this is about where the plane used to end at the
+/// HUD's 55 deg (the top ~18 px of the pill stay icon-free).
+pub const POI_FAR_K: f32 = 0.3;
 
 /// The category index of a config id.
 pub fn cat_index(id: &str) -> Option<usize> {
