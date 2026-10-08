@@ -1,19 +1,19 @@
-# Map editor — the Setup → Map data card
+# Map editor — the Map tab → Map data page
 
 The road-type map editor (2D editor, Preview mode, live 3D) is part of the app: the user opens
-it from **Setup → Map data**, checks and fixes road types, and finished edits go back to the
+it from **Map tab → Settings → Map data** (moved there from Setup in D67), checks and fixes road types, and finished edits go back to the
 project as a contribution (plan D50). Everything is built from the user's **own Forza Horizon 6
 install** at runtime and nothing of the game is bundled or uploaded (licensing).
 
 The editor itself, the server and the data formats are described in
 [`game-data/fh6-map-tooling.md`](../game-data/fh6-map-tooling.md); this page covers the app side:
 the card, the start modes and the rules around Save / reset / rebuild. Code: `map_data_card` /
-`map_data_view` in `src/ui/settings.rs`, `ForzaApp::{start_map_editor, stop_map_editor, map_editor_*}`
+`map_data_view` in `src/ui/map_data.rs`, `ForzaApp::{start_map_editor, stop_map_editor, map_editor_*}`
 in `src/app.rs`. Terms (*project*, *override*, *current*, *raw*): [terminology](../meta/TERMINOLOGY.md).
 
 ## The card
 
-Second card under **Game Install** in the right column of the Setup tab. Status lines (wrapping
+The one card of the Map tab's **Map data** settings page ([map-tab.md](map-tab.md)); it was the second card of the Setup tab until D67 (*why moved:* the user wanted the map editor out of the bloated Setup screen and next to the maps). It runs the Game Install check itself (`Fh6Setup::poll`, shared state with Setup) so it works when Setup was never opened. Status lines (wrapping
 rows, never cut at the card edge) and then the controls:
 
 - **Road types** — which road types the app uses: *Project data* or *Your saved file*. An
@@ -53,7 +53,7 @@ editor** / **Rebuild map data** are disabled with a tooltip (like Rebuild Map Ca
 Mini-Settings); *Open data folder*, *Contribute* and *Reset* stay available because they do not
 read the game. No explanatory text sits under the controls: tooltips carry it
 ([styling guide](../ui/STYLING-GUIDE.md)). `map_data_card_stays_inside_its_pane`
-(`FORZA_UI_SNAPSHOT_DIR` for PNGs) checks the card stays inside its column.
+(`FORZA_UI_SNAPSHOT_DIR` for PNGs, in `ui/map_data.rs`) checks the card stays inside its column.
 
 ## Save, override, replace (D60)
 

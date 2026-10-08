@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Language {
     #[default]
     English,
@@ -60,21 +60,36 @@ pub fn tr(s: &'static str) -> &'static str {
     }
 }
 
+/// Test helper: run `f` with the UI language set to `l`, then back to English. The language is a
+/// process-wide static and tests run in parallel, so every test that switches it, or asserts on
+/// English text, goes through this lock (one at a time).
+#[cfg(test)]
+pub fn with_language<R>(l: Language, f: impl FnOnce() -> R) -> R {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_language(Language::English); // don't leak state to other tests
+        }
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _reset = Reset;
+    set_language(l);
+    f()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn translate_and_fallback() {
-        set_language(Language::English);
-        assert_eq!(tr("Settings"), "Settings");
-
-        set_language(Language::German);
-        assert_eq!(tr("Settings"), "Einstellungen");
-        // Unknown strings fall back to the English source, never blank.
-        assert_eq!(tr("not a real key"), "not a real key");
-
-        set_language(Language::English); // don't leak state to other tests
+        with_language(Language::English, || assert_eq!(tr("Settings"), "Settings"));
+        with_language(Language::German, || {
+            assert_eq!(tr("Settings"), "Einstellungen");
+            // Unknown strings fall back to the English source, never blank.
+            assert_eq!(tr("not a real key"), "not a real key");
+        });
     }
 }
 
@@ -1090,6 +1105,17 @@ fn de(s: &str) -> Option<&'static str> {
         "Calibration started" => "Kalibrierung gestartet",
         "Calibration done" => "Kalibrierung fertig",
         "Shift at redline" => "Am Begrenzer schalten",
+
+        // ── Map tab (D67): viewer, settings mode ───────────────────────
+        "Viewer" => "Kartenansicht",
+        "Map viewer" => "Kartenansicht",
+        "Follow car" => "Fahrzeug folgen",
+        "Allow pan and zoom" => "Verschieben und Zoomen erlauben",
+        "Drag the map to pan and scroll to zoom. The view goes back to the car once you start driving again."
+            => "Karte ziehen zum Verschieben, scrollen zum Zoomen. Sobald du wieder losfährst, springt die Ansicht zurück zum Fahrzeug.",
+        "Zoom" => "Zoom",
+        "Back to map" => "Zurück zur Karte",
+        "Off: the map turns with the car's heading." => "Aus: Die Karte dreht sich mit der Fahrtrichtung des Fahrzeugs.",
 
         // ── Overlay tab: module tabs, map layer settings (D63) ─────────
         "Dashboard map" => "Dashboard-Karte",

@@ -30,7 +30,8 @@ The navigation reference — read these to move around the source efficiently.
 - [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism, `KEY_GROUPS`, and bundled presets.
 - [Profile Manager](features/profiles.md) — named full-config snapshots, continuous save, selective export/import.
 - [Settings](features/settings.md) — network, units, display, profiles (the Settings tab).
-- [Map editor](features/map-editor.md) — the Setup → Map data card: opening the road-type editor from the app, start modes (Current / Raw), Save / override / reset / rebuild rules, contributing.
+- [Map tab](features/map-tab.md) — the Map tab: the full-size viewer (pan / zoom / follow, reset when driving again), and its settings mode with the Minimap, Dashboard map, Viewer and Map data pages.
+- [Map editor](features/map-editor.md) — the Map tab → Map data page (was Setup → Map data): opening the road-type editor from the app, start modes (Current / Raw), Save / override / reset / rebuild rules, contributing.
 - [Hotkeys](features/hotkeys.md) — rebindable global + in-app shortcuts, evdev/GetAsyncKeyState capture, window-focus detection.
 - [Gamepad](features/gamepad.md) — controller bindings for the global actions + the right-stick vector; evdev (xpad/xone/xpadneo) and XInput backends, why the physical pad.
 - [Hotkeys — Design Spec](features/hotkeys-design.md) — the design record + rationale behind the hotkeys feature (why evdev, why not a compositor API, the focus-gate rules).

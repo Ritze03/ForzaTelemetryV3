@@ -5,10 +5,10 @@ options that aren't tied to a single dashboard widget. Rendered from `src/ui/set
 bordered category cards laid out per the [styling guide](../ui/STYLING-GUIDE.md)
 (label-left / control-right rows); values persist in `config.json` (see
 [[state-and-config]]). Per-widget tuning lives in the cog **Mini-Settings** popup instead —
-see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]] (module tabs; both maps' layer settings are there too, Mini-Settings keeps the quick options).
+see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]] (module tabs). Both maps' layer settings and the map editor live on the **Map** tab — see [[map-tab]]; Mini-Settings keeps the quick options.
 
 Cards: **Profiles**, **Hotkey**, **Controller** (see [[gamepad]]), **Display** (left column); **Repository / Credits**,
-**Network**, **Game Install**, **Map data**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get
+**Network**, **Game Install**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get
 their own doc — see [[hotkeys]]; the Profiles card gets its own doc too — see [[profiles]].
 
 ## Profiles
@@ -115,7 +115,7 @@ specific to a computer, so it is excluded from profile export/import (like
 
 ## Map data
 
-The **Map data** card (right column, directly below Game Install, same platforms) opens the road-type map editor in the browser, built from the install above, and shows which road types the app uses (project data or the user's saved file), the editor's state and its last Save. Buttons: **Open map editor** with a *Start from* Current / Raw choice, **Open data folder**, **Reset road types to project data**, **Rebuild map data** and **Contribute**. It adds no config keys. Full detail and the rules (override replaces the project file, Rebuild never deletes the override): [[map-editor]].
+The **Map data** card moved to the **Map tab** in D67 (Settings → Map data; Setup was bloated, the user wanted the map editor with the maps), see [[map-tab]]. It opens the road-type map editor in the browser, built from the install above, and shows which road types the app uses (project data or the user's saved file), the editor's state and its last Save. Buttons: **Open map editor** with a *Start from* Current / Raw choice, **Open data folder**, **Reset road types to project data**, **Rebuild map data** and **Contribute**. It adds no config keys. Full detail and the rules (override replaces the project file, Rebuild never deletes the override): [[map-editor]].
 
 ## Save
 

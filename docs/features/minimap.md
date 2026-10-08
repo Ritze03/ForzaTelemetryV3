@@ -530,3 +530,11 @@ When in a [[coop]] session, the map additionally draws:
 
 Click/drag on the map is only sensed outside Dashboard Edit Mode, so grid
 drag/resize gestures take priority while editing.
+
+## Pan, zoom and the Map tab viewer (D67, D72)
+
+The Dashboard map widget and the Map tab's viewer draw one scene (`ui/map_scene.rs`). Both can be
+panned (drag) and zoomed (wheel, around the cursor once panned); the Dashboard map only outside
+layout-edit mode. The manual view is temporary: it resets to following the car and the configured
+zoom once the player drives off again (>= 3 m/s for 0.6 s after having been stopped; no telemetry
+keeps it). Option `minimap_allow_pan_zoom` (default on). Details: [map-tab.md](map-tab.md).
