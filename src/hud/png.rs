@@ -202,6 +202,17 @@ fn harness_layers(icons: bool) -> Arc<MapLayers> {
         p(PoiKind::AftermarketSpot, "am", 0, 40.0, 220.0, None),
         p(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{chest_no:03}"), chest_no, -60.0, 60.0, None),
     ]));
+    // A road along the race ring (5 m outside it): the "relevant" road of the in-race focus, in
+    // colour among the muted cross roads (D66).
+    let ring: Vec<[f32; 2]> = (0..=64)
+        .map(|i| {
+            let a = i as f32 / 64.0 * std::f32::consts::TAU;
+            [404.8 * a.cos(), 303.6 * a.sin()]
+        })
+        .collect();
+    let mut roads = (*m.roads).clone();
+    roads.by_type[crate::gamedata::roadtypes::RoadType::Road.index() as usize].push(crate::maprender::data::Chain::new(ring.clone(), vec![0.0; ring.len()]));
+    m.roads = Arc::new(roads);
     if icons {
         m.icons = Some(Arc::new(synthetic_icons()));
     }
@@ -419,6 +430,12 @@ fn render_spec_states() -> Result<(), String> {
     in_race.pkt.race_position = 2;
     let mut in_race_flat = lcar(flat(), 398.0, 20.0, 0.0);
     in_race_flat.pkt.race_position = 2;
+    // The same race with the focus switched off (everything drawn as before D66).
+    let mut unfocused = flat_hud();
+    unfocused.map_layers.race_lines.focus.other_roads = crate::maprender::cfg::OtherRoads::Normal;
+    unfocused.map_layers.race_lines.focus.hide_pois = false;
+    let mut in_race_unfocused = lcar(base(unfocused), 398.0, 20.0, 0.0);
+    in_race_unfocused.pkt.race_position = 2;
     let free = lcar(tilted(), 0.0, -60.0, 0.6);
     let mut hud_cfg = |f: &dyn Fn(&mut OverlayConfig)| {
         let mut c = OverlayConfig::default();
@@ -435,6 +452,7 @@ fn render_spec_states() -> Result<(), String> {
         ("layers_tilted_markers", free.clone(), false, &none),
         ("layers_tilted_race", in_race, true, &none),
         ("layers_flat_race", in_race_flat, true, &none),
+        ("layers_flat_race_unfocused", in_race_unfocused, true, &none),
         ("layers_tilted_northup", HudSnapshot { cfg: Arc::new(north), ..free.clone() }, true, &none),
         ("layers_tilted_wide", wide, true, &none),
         ("layers_tilted_coop", free, true, &layered_mates),
