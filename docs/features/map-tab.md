@@ -127,7 +127,12 @@ saved road types were ignored").
   install, the coloured fallback marker. A test guarantees every `style::POI_CATS` id has a
   checkbox.
 - **Race lines:** mode (off / current race / nearest line / near the car / all lines), search
-  radius (nearest / near), width, circuit and sprint colours, opacity, start / finish marks.
+  radius (nearest / near), width, circuit and sprint colours, opacity, start / finish marks, then
+  the section **In a race** (the in-race focus, D66, [minimap.md](minimap.md#in-race-focus-d66-other-roads-muted-pois-hidden)):
+  *Other roads* (Normal / Muted / Hidden), and for Muted the colour, opacity and width factor,
+  and *Hide points of interest in a race*. Tooltip: applies only in the Current race mode while
+  the car is in a race and a line was detected. The rows are greyed in the other modes (the
+  focus never applies there), the three muted-look rows unless *Muted* is chosen.
 - **Tilted view:** on/off, angle, perspective, car position, thinner lines in the distance.
 - **View options** (the lead card): lock north-up and its heading-up-only options, mirror,
   right-stick look, compass, zoom driving / stopped (50-6000 m). `maprender::ui::ViewCfg`
@@ -137,8 +142,46 @@ saved road types were ignored").
   *Dashboard's* values, greyed (what `OverlayConfig::effective` really uses), so the page never
   shows numbers that differ from what is drawn. The plate opacity stays editable: it is not
   copied. With the module or the overlay off the cards are greyed like the other module cards.
+
 - *Why colours use egui's `color_edit_button_srgb`:* the config stores `"#rrggbb"` (`Rgb`),
   the picker edits the 3 bytes directly.
+
+### Copy to … (D68)
+
+*Why (the user, 2026-10-08):* "to make it easier to configure both the minimap and the dashboard
+map for every category, there should be a button to basically apply, like for example, if I'm in
+the minimap settings and then I change the color of the roads, then I would have to do it by hand
+for the dashboard map too. And so it would be cool to just at the end of every category have like
+a button that basically overrides the other map with the same settings, so I can easily port
+them in between."
+
+- **Where:** a small right-aligned **Copy to…** menu button at the end of every card: Image,
+  Tilted view, Race lines (incl. the in-race focus), Roads, Points of interest, and the page's
+  lead card (**View**). It lists the other two maps and **Both**. A pick overwrites **that
+  category only** on the target; every other category is untouched. The button then reads
+  "Copied" for 1.5 s (`copy_menu`, time kept in egui's temp memory).
+- **Code:** `MapLayerConfig::copy_category(&from, LayerCategory)` (`maprender/cfg.rs`, the one place
+  that knows which field is in which category) and `maprender::ui::apply_copy(&mut AppConfig,
+  &CopyRequest)`. `layers_ui` stays pure: it only edits the config it was given and **returns** the
+  `CopyRequest` (`from: MapId`, `what: CopyWhat::Layer(cat) | View`, `to`); the page
+  (`map_tab::apply_requests`) applies it **after** writing its own edits back, so the source
+  includes this frame's changes and a stale clone never overwrites the target. *Why a request, not
+  `&mut` access to the other configs:* testable without an app, no aliasing of three configs
+  in one UI function. Tests: `maprender::cfg::tests::copy_category_*`, `maprender::ui::tests`
+  (every category, every map pair, Both, following Minimap, View), `map_tab::tests` (real
+  pointer events through the menu).
+- **Minimap following the Dashboard map** (`map_use_dashboard`): copying **into** it is pointless
+  (it draws the Dashboard's values), so its entry and *Both* are greyed with a tooltip, and
+  `apply_copy` refuses it anyway. Copying **from** its page copies the effective values (the
+  Dashboard map's), the Copy buttons stay usable on the greyed cards.
+- **View:** the view options live under different keys per map (`overlay.map_*` / `minimap_*` /
+  `viewer_*`). HUD <-> Dashboard map copies all of `ViewCfg` (north-up and its sub-options, mirror,
+  right stick, compass, both zooms). To or from the **viewer** only what it has: lock north-up,
+  mirror at edges, compass, and *Allow pan and zoom* between the viewer and the Dashboard map (the HUD
+  cannot pan). *Why not the zoom:* the viewer has one zoom, not a driving / stopped pair, so there is no
+  honest mapping. The Image card's **Map plate opacity** (HUD-only, its own key) is not part of the
+  copy. With the Minimap module off the Minimap card (and its View copy) is greyed like the rest of
+  that card.
 
 ## Tests (`ui/map_tab.rs`, `ui/map_data.rs`, `ui/map_scene.rs`)
 

@@ -395,7 +395,10 @@ user is in a race or like at least turn them white or something that's not as di
 (`RaceSel::focus_line()`). With no pick (detection unsure) or outside a race **everything is drawn
 normally**: a wrong guess must never mute the whole map. `nearest` / `near` / `all` never focus.
 
-**Config** (`MapLayerConfig::race_lines.focus: RaceFocusCfg`, serde-default, same for Dashboard and HUD):
+**Config** (`MapLayerConfig::race_lines.focus: RaceFocusCfg`, serde-default, same for Dashboard and HUD;
+editable in the **Race lines** card of the Map tab's three map pages, section *In a race*, see
+[map-tab.md](map-tab.md); the rows are greyed unless the mode is *Current race*, the width / colour /
+opacity rows unless *Other roads* is *Muted*):
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -443,11 +446,18 @@ Polish (I29b):
   136 px HUD pill, `Camera::focal_for` makes it `200 * h / 136`, so the same settings give the same
   picture on a 600 px Dashboard widget (else the horizon would sit inside a large widget).
   `Camera::from_cfg(&TiltCfg, ...)` is the one constructor both maps use (angle clamped to 5 to 80 deg).
-- **Far-edge fade**: the image's alpha ramps from 0 at the plane's far limit (3.2 view heights ahead)
-  to 1 over the next 30 % of the view's height, into whatever is behind: the Dashboard's background,
-  the HUD's plate (or the game). *Why alpha, not the demo's overlay gradient:* the demo paints the
-  plate colour over the top 30 %; with no plate (the HUD default) that does nothing and the plane ends
-  in a hard line. Fading the image itself works with any backing.
+- **The tilted plane ends where the depth scale is `view::FAR_MIN_SCALE`** (0.05, just short of the
+  horizon), so the view is fully covered whenever the horizon is outside it. *Why:* a fixed
+  3.2-view-height limit (from the demo canvas) left the top fifth of the 55 deg pill empty (user report,
+  2026-10-08). The base image is a screen-space grid (rows even in log depth).
+- **Far-edge fade**: the image's alpha ramps over depth scale 0.05-0.15 (`style::FAR_FADE_DEPTH`), so it
+  only shows when a steep tilt (about 58 deg and more on the HUD) brings the horizon into view, fading
+  into whatever is behind: the Dashboard's background, the HUD's plate (or the game). *Why alpha, not
+  the demo's overlay gradient:* the demo paints the plate colour over the top 30 %; with no plate (the
+  HUD default) that does nothing and the plane ends in a hard line. Fading the image itself works with
+  any backing.
+- **Far POIs are skipped:** POIs smaller than depth scale `style::POI_FAR_K` (0.3) are not drawn (the
+  current chest still is), so the far strip doesn't become a pile of icons.
 - **Line-width taper** (`TiltCfg::taper`, default on): road, race-line and trail widths scale with the
   perspective at their screen row (`Camera::depth_scale_at_row`, `1 + dy tan(pitch) / focal`), as the
   demo's CSS transform does by construction. egui lines have one width, so each polyline is cut into
@@ -457,14 +467,15 @@ Polish (I29b):
   so trails, teammates, waypoints and the own arrow sit where the layers' projection puts the same
   world point on both maps (pitch 0 is the old mapping, tested). Arrows themselves stay upright; trail
   widths taper. A point behind the eye goes far off-screen along its flat direction.
-- Both maps' tilt settings are on the Overlay tab (Minimap / Dashboard map tab → Tilted view).
+- Both maps' tilt settings are on the Map tab (Minimap / Dashboard map / Viewer page → Tilted view).
 
 ### Configuration
 
 `AppConfig::minimap_layers` (Dashboard; in `MINISETTINGS_KEYS`) and `OverlayConfig::map_layers` (HUD;
 `OverlayConfig::effective()` copies the Dashboard's when "Use Dashboard map settings" is on). **All
-of it has a settings UI on the Overlay tab** (D63, `maprender/ui.rs::layers_ui`, one function for
-both maps: tab *Dashboard map* and tab *Minimap*; see [[overlay]] "Map tabs"); the JSON stays editable.
+of it has a settings UI on the Map tab** (D63, `maprender/ui.rs::layers_ui`, one function for all
+three maps: pages *Minimap*, *Dashboard map* and *Viewer*; see [map-tab.md](map-tab.md), where "Copy
+to …" ports a card between them, D68); the JSON stays editable.
 Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a list of ids.
 
 | | Dashboard | HUD |
