@@ -371,7 +371,7 @@ impl MapLayers {
             roads.edge_counts[t.index() as usize] += 3;
         }
         roads.jumps.push([-100.0, 450.0, 0.0, 100.0, 450.0, 0.0]);
-        let poi = |kind, x, z| Poi { kind, x, z, y: 0.0, name: String::new(), n: 0 };
+        let poi = |kind, x, z| Poi { kind, x, z, y: 0.0, name: String::new(), n: 0, gate: None };
         let pois = PoiLayer::from_items([
             poi(PoiKind::House, -300.0, -100.0),
             poi(PoiKind::FastTravel, 300.0, 100.0),
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn poi_layer_drops_off_map_and_unmapped_kinds() {
-        let p = |kind, x, z| Poi { kind, x, z, y: 0.0, name: String::new(), n: 0 };
+        let p = |kind, x, z| Poi { kind, x, z, y: 0.0, name: String::new(), n: 0, gate: None };
         let l = PoiLayer::from_items([
             p(PoiKind::House, 100.0, 200.0),
             p(PoiKind::Parking, 3000.0, 18_300.0), // off the map
