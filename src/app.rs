@@ -609,6 +609,9 @@ pub struct ForzaApp {
     /// Which race lines the Dashboard map draws (`maprender::RaceSel`); a `RefCell` because the
     /// map widget only gets `&ForzaApp`.
     pub minimap_race_sel: std::cell::RefCell<crate::maprender::RaceSel>,
+    /// The Dashboard context's own upload of the POI icons (the HUD has another; GL objects are
+    /// never shared between the two contexts).
+    pub minimap_icons: std::cell::RefCell<crate::maprender::icontex::IconTex>,
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
     pub coop_last_pos: HashMap<String, CoopSeen>,
@@ -934,6 +937,7 @@ impl ForzaApp {
             fh6_dir_applied,
             minimap_trails: HashMap::new(),
             minimap_race_sel: Default::default(),
+            minimap_icons: Default::default(),
             coop_last_pos: HashMap::new(),
             trace_history: VecDeque::new(),
             trace_active_secs: 0.0,

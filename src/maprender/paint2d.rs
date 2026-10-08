@@ -8,14 +8,18 @@
 //! map texture and no pre-tessellated world meshes: road types change on every editor Save,
 //! types are toggled per map, and widths are in screen px and change with the eased zoom.
 
+use std::collections::HashMap;
+
 use egui::epaint::Vertex;
 use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextureId};
 
 use super::cfg::{ImageCfg, MapLayerConfig, RaceCfg, RaceLineMode, Rgb};
 use super::data::{MapLayers, NO_CAT};
 use super::style::{self, Shape as Marker};
-use super::view::{bbox_hits, clip_convex, clip_polyline_convex, fan, inside_convex, thin, Camera};
+use super::view::{bbox_hits, clip_convex, clip_polyline_convex, clip_segment_convex, fan, inside_convex, thin, Camera};
 use super::MapTex;
+use crate::gamedata::icons::{PoiIcons, RaceClass};
+use crate::gamedata::poi::{week_index_now, Poi, PoiKind};
 use crate::gamedata::roadtypes::RoadType;
 use crate::minimap::MapCalibration;
 
@@ -54,6 +58,11 @@ pub struct BaseParams<'a> {
     pub look: ImageLook,
     /// Fade alpha (the HUD's show/hide fade; 1.0 on the Dashboard).
     pub a: f32,
+    /// Tilted only: the image fades out towards the far edge of the plane (over
+    /// [`style::FAR_FADE_FRAC`] of the view's height), into whatever is behind it: the Dashboard's
+    /// background, the HUD's plate (or the game, with no plate). Without it the plane ends in a
+    /// hard line. The demo fades the same way, with a gradient of the plate colour over the image.
+    pub far_fade: bool,
 }
 
 /// Cells per side of the tilted map's mesh: egui interpolates UVs affinely inside a triangle,
@@ -77,6 +86,15 @@ pub fn draw_base(p: &Painter, m: &BaseParams) {
     let mut veil = Mesh::default();
     let veil_col = Color32::from_rgba_unmultiplied(110, 110, 110, veil_a);
 
+    // The far-edge fade: alpha 0 at the plane's far limit, 1 `FAR_FADE_FRAC` of the view height lower.
+    let (fade_from, fade_len) = if m.far_fade && !cam.is_flat() {
+        let edge = cam.project_offset(0.0, -cam.far_px()).map_or(cam.rect.top(), |q| q.y.max(cam.rect.top()));
+        (edge, (cam.rect.height() * style::FAR_FADE_FRAC).max(1.0))
+    } else {
+        (f32::MIN, 1.0)
+    };
+    let ramp = |y: f32| if fade_from == f32::MIN { 1.0 } else { ((y - fade_from) / fade_len).clamp(0.0, 1.0) };
+
     let uv_of = |pt: Pos2| -> Pos2 {
         match cam.unproject(pt) {
             Some([wx, wz]) => {
@@ -91,9 +109,9 @@ pub fn draw_base(p: &Painter, m: &BaseParams) {
             return;
         }
         let hub = (shape.iter().fold(vec2(0.0, 0.0), |a, q| a + q.to_vec2()) / shape.len() as f32).to_pos2();
-        fan(&mut img, hub, shape, |pt| Vertex { pos: pt, uv: uv_of(pt), color: col });
+        fan(&mut img, hub, shape, |pt| Vertex { pos: pt, uv: uv_of(pt), color: col.gamma_multiply(ramp(pt.y)) });
         if veil_a > 0 {
-            fan(&mut veil, hub, shape, |pt| Vertex { pos: pt, uv: egui::epaint::WHITE_UV, color: veil_col });
+            fan(&mut veil, hub, shape, |pt| Vertex { pos: pt, uv: egui::epaint::WHITE_UV, color: veil_col.gamma_multiply(ramp(pt.y)) });
         }
     };
 
@@ -157,27 +175,58 @@ fn outline_bounds(outline: &[Pos2]) -> Rect {
 
 // ── layers ───────────────────────────────────────────────────────────────────────────────────
 
-/// POI icons: one texture plus a UV rect per category (the order of `style::POI_CATS`). The
-/// game's own icons come from the icon decoder; until one is wired, coloured markers are drawn.
+/// POI icons of one egui context: the texture plus a UV rect per category (the order of
+/// `style::POI_CATS`), per race class (a `RacePin` takes its route's class) and per mascot
+/// region. A category without a rect is drawn as a shape marker (D64).
 #[derive(Clone, Debug)]
 pub struct IconAtlas {
     pub texture: TextureId,
     pub rects: Vec<Option<Rect>>,
+    pub race: HashMap<RaceClass, Rect>,
+    pub mascot: HashMap<u32, Rect>,
 }
 
-#[allow(dead_code)] // the icon decoder fills it (I29b)
+fn uv_rect(uv: &[f32; 4]) -> Rect {
+    Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]))
+}
+
 impl IconAtlas {
     pub fn new(texture: TextureId) -> IconAtlas {
-        IconAtlas { texture, rects: vec![None; style::POI_CATS.len()] }
+        IconAtlas { texture, rects: vec![None; style::POI_CATS.len()], race: HashMap::new(), mascot: HashMap::new() }
     }
+
+    /// The atlas of `icons` once uploaded as `texture`: every category shows its kind's icon
+    /// (`PoiCat::icon_kind`: the current treasure chest the chest's, danger signs their own).
+    pub fn from_poi_icons(texture: TextureId, icons: &PoiIcons) -> IconAtlas {
+        let mut a = IconAtlas::new(texture);
+        for (i, c) in style::POI_CATS.iter().enumerate() {
+            a.rects[i] = c.icon_kind().and_then(|k| icons.uv.get(&k)).map(uv_rect);
+        }
+        a.race = icons.race.iter().map(|(c, uv)| (*c, uv_rect(uv))).collect();
+        a.mascot = icons.mascot.iter().map(|(r, uv)| (*r, uv_rect(uv))).collect();
+        a
+    }
+
     /// Set the UV rect of category `id` (a `style::POI_CATS` id); unknown ids are ignored.
+    #[cfg(test)]
     pub fn set(&mut self, id: &str, uv: Rect) {
         if let Some(i) = style::cat_index(id) {
             self.rects[i] = Some(uv);
         }
     }
+
     fn uv(&self, cat: usize) -> Option<Rect> {
         self.rects.get(cat).copied().flatten()
+    }
+
+    /// The icon of one POI: race pins by their route's class, mascots by region, the rest by
+    /// category.
+    fn uv_of(&self, cat: usize, item: &Poi, layers: &MapLayers) -> Option<Rect> {
+        match item.kind {
+            PoiKind::RacePin => layers.race_class.get(&item.n).and_then(|c| self.race.get(c)).copied().or_else(|| self.uv(cat)),
+            PoiKind::Mascot => self.mascot.get(&item.n).copied().or_else(|| self.uv(cat)),
+            _ => self.uv(cat),
+        }
     }
 }
 
@@ -206,6 +255,8 @@ pub struct LayerCtx<'a> {
     /// Race lines to draw for the Nearest / Near / Current modes (`RaceSel::picked`); `All`
     /// ignores it.
     pub race_sel: &'a [usize],
+    /// The game week for the current treasure chest (`poi::week_index_at`); `None` = now.
+    pub week: Option<i64>,
 }
 
 /// What a [`draw_layers`] call drew (tests, perf numbers).
@@ -215,6 +266,8 @@ pub struct LayerStats {
     pub vertices: usize,
     pub pois: usize,
     pub race_lines: usize,
+    /// Gate lines drawn (speed zones, trailblazers, drift zones, speed traps).
+    pub gates: usize,
 }
 
 /// Vector layers over the base image: roads (bottom to top: `style::ROAD_DRAW_ORDER`), jump
@@ -225,7 +278,7 @@ pub fn draw_layers(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig) -> L
         draw_roads(cx, layers, cfg, &mut st);
     }
     if cfg.race_lines.mode != RaceLineMode::Off {
-        draw_race_lines(cx, layers, &cfg.race_lines, &mut st);
+        draw_race_lines(cx, layers, &cfg.race_lines, cfg.tilt.taper, &mut st);
     }
     if cfg.pois.on {
         draw_pois(cx, layers, cfg, &mut st);
@@ -264,6 +317,50 @@ impl LayerCtx<'_> {
         flush(scratch, out, &self.corner_clip);
     }
 
+    /// The tilt's width taper: `lines` cut into pieces of similar depth, each with the factor
+    /// its width gets (the perspective at its screen row, in [`style::TAPER_BANDS`] steps).
+    /// Flat view or `taper` off: every line whole with factor 1.
+    fn tapered(&self, lines: Vec<Vec<Pos2>>, taper: bool) -> Vec<(f32, Vec<Pos2>)> {
+        let cam = self.cam;
+        if !taper || cam.is_flat() {
+            return lines.into_iter().map(|l| (1.0, l)).collect();
+        }
+        let (k0, k1) = (cam.depth_scale_at_row(cam.rect.top()), cam.depth_scale_at_row(cam.rect.bottom()));
+        let n = style::TAPER_BANDS as f32;
+        let band = |y: f32| (((cam.depth_scale_at_row(y) - k0) / (k1 - k0).max(1e-3)) * n).clamp(0.0, n - 1.0) as usize;
+        let k_of = |b: usize| k0 + (b as f32 + 0.5) / n * (k1 - k0);
+        let mut out = Vec::with_capacity(lines.len());
+        for l in lines {
+            let Some(&first) = l.first() else { continue };
+            let (mut cur, mut cb) = (vec![first], usize::MAX);
+            for w in l.windows(2) {
+                let b = band((w[0].y + w[1].y) * 0.5);
+                if cb != usize::MAX && b != cb {
+                    out.push((k_of(cb), std::mem::replace(&mut cur, vec![w[0]])));
+                }
+                cb = b;
+                cur.push(w[1]);
+            }
+            if cur.len() >= 2 {
+                out.push((k_of(cb), cur));
+            }
+        }
+        out
+    }
+
+    /// Does a marker of half-size `r` centred on `at` lie wholly inside the map shape? Always
+    /// without a corner clip (the painter's clip rect cuts the rest); with one, a marker near a
+    /// rounded corner must keep its four extremes inside the outline, else it is skipped (a half
+    /// marker poking into the transparent surround is worse than none).
+    fn fits(&self, at: Pos2, r: f32) -> bool {
+        match &self.corner_clip {
+            Some(cc) if !cc.safe.contains_rect(Rect::from_center_size(at, vec2(2.0 * r, 2.0 * r))) => {
+                [vec2(-r, -r), vec2(r, -r), vec2(r, r), vec2(-r, r)].iter().all(|d| inside_convex(at + *d, cc.poly))
+            }
+            _ => true,
+        }
+    }
+
     /// Is the screen point inside the map shape (corner clip) and the painter's clip rect margin?
     fn visible(&self, at: Pos2, margin: f32) -> bool {
         if !self.cam.rect.expand(margin).contains(at) {
@@ -279,9 +376,11 @@ impl LayerCtx<'_> {
 fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut LayerStats) {
     let cam = cx.cam;
     let c = &cfg.roads;
+    let taper = cfg.tilt.taper;
     let aabb = cam.world_aabb(30.0);
-    let base = style::road_base_px(c, cam.scale()) * cx.s;
-    let dashes = cam.scale() >= style::DASH_MIN_PX_PER_M;
+    // Widths are in design px (`min_px` / `max_px` / the zoom rule), scaled by the HUD's `s` after.
+    let base = style::road_base_px(c, cam.scale() / cx.s) * cx.s;
+    let dashes = cam.scale() / cx.s >= style::DASH_MIN_PX_PER_M;
     let mut scratch: Vec<Pos2> = Vec::new();
     let mut lines: Vec<Vec<Pos2>> = Vec::new();
 
@@ -308,21 +407,22 @@ fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut 
         }
         st.vertices += lines.iter().map(Vec::len).sum::<usize>();
         let w = style::line_px(base, factor);
+        let pieces = cx.tapered(std::mem::take(&mut lines), taper);
+        // Width of a piece: the full width at the car's row (k = 1), thinner towards the horizon.
+        let wk = |k: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
         if let Some(cc) = casing {
-            let stroke = Stroke::new(w + c.casing_px * cx.s, cx.c(cc, c.casing_alpha));
-            for l in &lines {
-                cx.p.add(Shape::line(l.clone(), stroke));
+            let col = cx.c(cc, c.casing_alpha);
+            for (k, l) in &pieces {
+                cx.p.add(Shape::line(l.clone(), Stroke::new(wk(*k) + c.casing_px * cx.s * k, col)));
             }
         }
-        let stroke = Stroke::new(w, cx.c(color, alpha));
-        match style::dash_pattern(dash, w).filter(|_| dashes) {
-            Some((d, g)) => {
-                for l in &lines {
-                    cx.p.extend(Shape::dashed_line(l, stroke, d, g));
+        for (k, l) in pieces {
+            let stroke = Stroke::new(wk(k), cx.c(color, alpha));
+            match style::dash_pattern(dash, stroke.width).filter(|_| dashes) {
+                Some((d, g)) => {
+                    cx.p.extend(Shape::dashed_line(&l, stroke, d, g));
                 }
-            }
-            None => {
-                for l in lines.drain(..) {
+                None => {
                     cx.p.add(Shape::line(l, stroke));
                 }
             }
@@ -331,7 +431,6 @@ fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut 
 
     // Jump lines: take-off → landing, drawn after the chains.
     let Some(js) = c.styles.get(RoadType::Jump).filter(|s| s.on) else { return };
-    let w = (base * js.width).max(1.4);
     for j in &layers.roads.jumps {
         let bb = [j[0].min(j[3]), j[1].min(j[4]), j[0].max(j[3]), j[1].max(j[4])];
         if !bbox_hits(&bb, &aabb) {
@@ -339,9 +438,11 @@ fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut 
         }
         let (Some(a), Some(b)) = (cam.project(j[0], j[1]), cam.project(j[3], j[4])) else { continue };
         st.chains += 1;
+        let k = if taper { cam.depth_scale_at_row((a.y + b.y) * 0.5) } else { 1.0 };
+        let w = (base * js.width * k).max(1.4 * k.min(1.0));
         let seg = [a, b];
         if js.casing {
-            cx.p.add(Shape::line_segment(seg, Stroke::new(w + 1.8 * cx.s, cx.c(js.casing_color, c.casing_alpha))));
+            cx.p.add(Shape::line_segment(seg, Stroke::new(w + 1.8 * cx.s * k, cx.c(js.casing_color, c.casing_alpha))));
         }
         let stroke = Stroke::new(w, cx.c(js.color, js.alpha));
         match js.dash {
@@ -349,7 +450,7 @@ fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut 
                 cx.p.add(Shape::line_segment(seg, stroke));
             }
             _ => {
-                cx.p.extend(Shape::dashed_line(&seg, stroke, 4.0 * cx.s, 3.0 * cx.s));
+                cx.p.extend(Shape::dashed_line(&seg, stroke, 4.0 * cx.s * k, 3.0 * cx.s * k));
             }
         }
     }
@@ -358,7 +459,7 @@ fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut 
 /// Vertex budget for the "all lines" mode (one frame).
 const RACE_ALL_BUDGET: usize = 40_000;
 
-fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, st: &mut LayerStats) {
+fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, taper: bool, st: &mut LayerStats) {
     let aabb = cx.cam.world_aabb(20.0);
     let lines = &layers.races.lines;
     let idx: Vec<usize> = if rc.mode == RaceLineMode::All { (0..lines.len()).collect() } else { cx.race_sel.iter().copied().filter(|&i| i < lines.len()).collect() };
@@ -381,8 +482,8 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, st: &mut Lay
         }
         st.race_lines += 1;
         st.vertices += n;
-        for pc in pieces.drain(..) {
-            cx.p.add(Shape::line(pc, Stroke::new(rc.width_px * cx.s, color)));
+        for (k, pc) in cx.tapered(std::mem::take(&mut pieces), taper) {
+            cx.p.add(Shape::line(pc, Stroke::new((rc.width_px * cx.s * k).max(style::MIN_LINE_PX), color)));
         }
         if rc.marks {
             draw_race_marks(cx, l);
@@ -393,16 +494,18 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, st: &mut Lay
 fn draw_race_marks(cx: &LayerCtx, l: &crate::gamedata::racelines::RaceLine) {
     let (Some(&first), Some(&last)) = (l.pts.first(), l.pts.last()) else { return };
     let size = 9.0 * cx.s;
-    if let Some(at) = cx.cam.project(first[0], first[1]).filter(|a| cx.visible(*a, size)) {
+    // Marks stand upright, only shrunk by the perspective of the row they are on.
+    let k = |at: Pos2| cx.cam.depth_scale_at_row(at.y).clamp(0.4, 1.5);
+    if let Some(at) = cx.cam.project(first[0], first[1]).filter(|a| cx.visible(*a, size) && cx.fits(*a, size * 0.6)) {
         if l.circuit {
-            chequer(cx, at, size);
+            chequer(cx, at, size * k(at));
         } else {
-            cx.p.circle(at, 4.5 * cx.s, cx.c_col(style::START_DOT), Stroke::new(1.5 * cx.s, cx.c_col(style::START_DOT_OUTLINE)));
+            cx.p.circle(at, 4.5 * cx.s * k(at), cx.c_col(style::START_DOT), Stroke::new(1.5 * cx.s * k(at), cx.c_col(style::START_DOT_OUTLINE)));
         }
     }
     if !l.circuit {
-        if let Some(at) = cx.cam.project(last[0], last[1]).filter(|a| cx.visible(*a, size)) {
-            chequer(cx, at, size);
+        if let Some(at) = cx.cam.project(last[0], last[1]).filter(|a| cx.visible(*a, size) && cx.fits(*a, size * 0.6)) {
+            chequer(cx, at, size * k(at));
         }
     }
 }
@@ -445,7 +548,9 @@ fn draw_pois(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut L
     let aabb = cam.world_aabb(size / cam.scale().max(1e-6));
     let pois = &layers.pois;
     let r2 = pc.radius_m * pc.radius_m;
-    let mut vis: Vec<(u8, Pos2, f32)> = Vec::new();
+    let near = |it: &Poi| !pc.near_only || (it.x - cx.car.0).powi(2) + (it.z - cx.car.1).powi(2) <= r2;
+    // (item, category, screen position, size factor)
+    let mut vis: Vec<(usize, u8, Pos2, f32)> = Vec::new();
     pois.grid.query(&aabb, |i| {
         let i = i as usize;
         let cat = pois.cat[i];
@@ -453,34 +558,107 @@ fn draw_pois(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut L
             return;
         }
         let it = &pois.items[i];
-        if pc.near_only && (it.x - cx.car.0).powi(2) + (it.z - cx.car.1).powi(2) > r2 {
+        if !near(it) {
             return;
         }
         let [ox, oy] = cam.view.world_to_offset(it.x, it.z);
         let Some(at) = cam.project_offset(ox, oy) else { return };
         if vis.len() < POI_BUDGET && cx.visible(at, size) {
-            vis.push((cat, at, cam.perspective_at(oy)));
+            vis.push((i, cat, at, cam.perspective_at(oy).max(style::POI_MIN_K)));
         }
     });
     // Back to front: further (smaller y) first, so near icons overlap far ones.
-    vis.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
-    for &(cat, at, k) in &vis {
-        draw_poi(cx, cat as usize, at, size * k);
+    vis.sort_by(|a, b| a.2.y.total_cmp(&b.2.y));
+    // Gate lines under every icon.
+    if pc.gates {
+        for &(i, cat, _, k) in &vis {
+            if draw_gate(cx, &pois.items[i], cat as usize, k) {
+                st.gates += 1;
+            }
+        }
+    }
+    for &(i, cat, at, k) in &vis {
+        draw_poi(cx, layers, Some(&pois.items[i]), cat as usize, at, size * k);
     }
     st.pois = vis.len();
+
+    // The current treasure chest: one of the chests, picked by the week, drawn bigger and on top.
+    if let Some(cat) = style::cat_index("treasure_chest_current").filter(|c| mask & (1u64 << c) != 0) {
+        let week = cx.week.unwrap_or_else(week_index_now);
+        if let Some(it) = pois.current_chest(week).filter(|it| near(it)) {
+            let [ox, oy] = cam.view.world_to_offset(it.x, it.z);
+            let big = size * style::CURRENT_CHEST_SCALE;
+            if let Some(at) = cam.project_offset(ox, oy).filter(|a| cx.visible(*a, big)) {
+                draw_poi(cx, layers, None, cat, at, big * cam.perspective_at(oy).max(style::POI_MIN_K));
+                st.pois += 1;
+            }
+        }
+    }
 }
 
-fn draw_poi(cx: &LayerCtx, cat: usize, at: Pos2, size: f32) {
+/// A gate's line across the road, in its category's colour (a dark casing under it), at least
+/// [`style::GATE_MIN_LEN_PX`] long about its midpoint. Returns whether one was drawn.
+fn draw_gate(cx: &LayerCtx, it: &Poi, cat: usize, k: f32) -> bool {
+    let Some([l, r]) = it.gate else { return false };
+    let (Some(a), Some(b)) = (cx.cam.project(l[0], l[1]), cx.cam.project(r[0], r[1])) else { return false };
+    let (mid, d) = ((a.to_vec2() + b.to_vec2()) * 0.5, b - a);
+    let min = style::GATE_MIN_LEN_PX * cx.s * k;
+    let len = d.length();
+    let half = if len < min {
+        let dir = if len > 1e-3 { d / len } else { vec2(1.0, 0.0) };
+        dir * (min * 0.5)
+    } else {
+        d * 0.5
+    };
+    let mut seg = [(mid - half).to_pos2(), (mid + half).to_pos2()];
+    if let Some(cc) = &cx.corner_clip {
+        if !(cc.safe.contains(seg[0]) && cc.safe.contains(seg[1])) {
+            match clip_segment_convex(seg[0], seg[1], cc.poly) {
+                Some((a, b)) => seg = [a, b],
+                None => return false,
+            }
+        }
+    }
+    let w = style::GATE_PX * cx.s * k;
+    cx.p.add(Shape::line_segment(seg, Stroke::new(w + style::GATE_CASING_PX * cx.s * k, cx.c_col(Color32::from_black_alpha(190)))));
+    cx.p.add(Shape::line_segment(seg, Stroke::new(w, cx.c(style::POI_CATS[cat].color, 1.0))));
+    true
+}
+
+/// One POI: its game icon when the atlas has one (`item` picks the race class / mascot region),
+/// else the category's shape marker.
+fn draw_poi(cx: &LayerCtx, layers: &MapLayers, item: Option<&Poi>, cat: usize, at: Pos2, size: f32) {
     if let Some(atlas) = cx.icons {
-        if let Some(uv) = atlas.uv(cat) {
+        let uv = match item {
+            Some(it) => atlas.uv_of(cat, it, layers),
+            None => atlas.uv(cat),
+        };
+        if let Some(uv) = uv {
+            let quad = Rect::from_center_size(at, vec2(size, size));
+            let tint = Color32::WHITE.gamma_multiply(cx.a);
             let mut m = Mesh::with_texture(atlas.texture);
-            m.add_rect_with_uv(Rect::from_center_size(at, vec2(size, size)), uv, Color32::WHITE.gamma_multiply(cx.a));
+            match &cx.corner_clip {
+                // The quad pokes out of a rounded corner: cut it to the outline, UVs follow.
+                Some(cc) if !cc.safe.contains_rect(quad) => {
+                    let poly = clip_convex(&[quad.left_top(), quad.right_top(), quad.right_bottom(), quad.left_bottom()], cc.poly);
+                    if poly.len() < 3 {
+                        return;
+                    }
+                    let uv_at = |pt: Pos2| pos2(uv.min.x + (pt.x - quad.min.x) / size * uv.width(), uv.min.y + (pt.y - quad.min.y) / size * uv.height());
+                    let hub = (poly.iter().fold(vec2(0.0, 0.0), |a, q| a + q.to_vec2()) / poly.len() as f32).to_pos2();
+                    fan(&mut m, hub, &poly, |pt| Vertex { pos: pt, uv: uv_at(pt), color: tint });
+                }
+                _ => m.add_rect_with_uv(quad, uv, tint),
+            }
             cx.p.add(Shape::mesh(m));
             return;
         }
     }
     let c = &style::POI_CATS[cat];
     let r = (size * 0.27).max(2.5);
+    if !cx.fits(at, r * 1.4) {
+        return;
+    }
     let fill = cx.c(c.color, 1.0);
     let edge = Stroke::new(1.0, cx.c_col(Color32::BLACK));
     match c.shape {
@@ -553,7 +731,7 @@ mod tests {
     }
 
     fn ctx<'a>(p: &'a Painter, cam: &'a Camera) -> LayerCtx<'a> {
-        LayerCtx { p, cam, s: 1.0, a: 1.0, car: (0.0, 0.0), corner_clip: None, icons: None, race_sel: &[] }
+        LayerCtx { p, cam, s: 1.0, a: 1.0, car: (0.0, 0.0), corner_clip: None, icons: None, race_sel: &[], week: Some(68) }
     }
 
     #[test]
@@ -641,6 +819,7 @@ mod tests {
         let layers = layers_with(vec![[0.0, 0.0], [0.0, 100.0], [30.0, 150.0]], RoadType::Road);
         let mut cfg = only_roads();
         cfg.roads.styles.road.casing = false;
+        cfg.tilt.taper = false;
         let shapes = paint(rect, |p| {
             draw_layers(&ctx(p, &cam), &layers, &cfg);
         });
@@ -725,6 +904,297 @@ mod tests {
         assert_eq!(shapes.len(), 5);
     }
 
+    fn poi(kind: PoiKind, name: &str, n: u32, x: f32, z: f32, gate: Option<[[f32; 2]; 2]>) -> Poi {
+        Poi { kind, x, z, y: 0.0, name: name.into(), n, gate }
+    }
+
+    fn only_pois(cats: &[&str]) -> MapLayerConfig {
+        let mut c = MapLayerConfig::default();
+        c.roads.on = false;
+        c.race_lines.mode = RaceLineMode::Off;
+        c.pois.categories = cats.iter().map(|s| s.to_string()).collect();
+        c
+    }
+
+    fn meshes(shapes: &[ClippedShape]) -> Vec<egui::epaint::Mesh> {
+        shapes.iter().filter_map(|s| if let Shape::Mesh(m) = &s.shape { Some((**m).clone()) } else { None }).collect()
+    }
+
+    /// The HUD pill (208 x 136, radius 22): vectors that would poke out of the rounded corners
+    /// are cut to the outline, and a road wholly in the cut-off corner disappears.
+    #[test]
+    fn corner_clip_on_the_real_pill_outline() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(208.0, 136.0));
+        let outline = crate::hud::prims::rounded_points(rect, [22.0; 4]);
+        let cc = CornerClip { poly: &outline, safe: rect.shrink(22.0) };
+        // 1 px per metre, north up, the car in the middle: screen (x, y) = world (x - 104, 68 - y).
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 68.0);
+        let mut cfg = only_roads();
+        cfg.roads.styles.road.casing = false;
+        let run = |layers: &MapLayers| {
+            paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.corner_clip = Some(cc);
+                draw_layers(&c, layers, &cfg);
+            })
+        };
+        // Wholly inside the cut-off corner: screen (2, 2) -> (6, 6) is further than 22 px from (22, 22).
+        assert!(path_points(&run(&layers_with(vec![[-102.0, 66.0], [-98.0, 62.0]], RoadType::Road))).is_empty());
+        // A diagonal from the very corner into the pill: only the part inside the outline is left.
+        let lines = path_points(&run(&layers_with(vec![[-104.0, 68.0], [-44.0, 8.0]], RoadType::Road)));
+        assert_eq!(lines.len(), 1);
+        for q in &lines[0] {
+            if q.x < 22.0 && q.y < 22.0 {
+                assert!((*q - pos2(22.0, 22.0)).length() <= 22.0 + 0.05, "{q:?} pokes out of the corner");
+            }
+        }
+        assert!(lines[0].len() >= 2 && lines[0].last().unwrap().x > 40.0, "the inner part is kept: {:?}", lines[0]);
+        // A road in the middle (inside the safe rect) is passed through untouched.
+        let mid = path_points(&run(&layers_with(vec![[-50.0, 0.0], [50.0, 0.0]], RoadType::Road)));
+        assert_eq!(mid[0], vec![pos2(54.0, 68.0), pos2(154.0, 68.0)]);
+    }
+
+    /// Icons, gate lines and markers next to a rounded corner are cut to the outline (icons) or
+    /// dropped (small markers), never left poking into the transparent surround.
+    #[test]
+    fn pois_near_the_pill_corner_are_clipped_to_the_outline() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(208.0, 136.0));
+        let outline = crate::hud::prims::rounded_points(rect, [22.0; 4]);
+        let cc = CornerClip { poly: &outline, safe: rect.shrink(22.0) };
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 68.0); // 1 px/m: screen (x, y) = world (x - 104, 68 - y)
+        // A speed zone in the top-left: its centre (14, 14) is inside the outline (11 px from the
+        // arc centre, the radius is 22), its 32 px icon and its marker are not.
+        let at = |sx: f32, sy: f32| (sx - 104.0, 68.0 - sy);
+        let (x, z) = at(14.0, 14.0);
+        let layers = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([poi(PoiKind::SpeedZone, "z", 1, x, z, None)])), ..Default::default() };
+        let cfg = only_pois(&["speed_zone"]);
+        let mut atlas = IconAtlas::new(TextureId::Managed(2));
+        atlas.set("speed_zone", Rect::from_min_max(pos2(0.25, 0.5), pos2(0.5, 0.75)));
+        let run = |icons: Option<&IconAtlas>| {
+            paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.corner_clip = Some(cc);
+                c.icons = icons;
+                draw_layers(&c, &layers, &cfg);
+            })
+        };
+        let m = meshes(&run(Some(&atlas)));
+        assert_eq!(m.len(), 1);
+        for v in &m[0].vertices {
+            if v.pos.x < 22.0 && v.pos.y < 22.0 {
+                assert!((v.pos - pos2(22.0, 22.0)).length() <= 22.0 + 0.05, "{:?} outside the corner arc", v.pos);
+            }
+            // The UVs follow the cut: still inside the icon's cell.
+            assert!(v.uv.x >= 0.25 - 1e-4 && v.uv.x <= 0.5 + 1e-4 && v.uv.y >= 0.5 - 1e-4 && v.uv.y <= 0.75 + 1e-4, "{:?}", v.uv);
+        }
+        assert!(m[0].vertices.len() > 4, "cut into a polygon");
+        // Without icons the small marker would poke out at this spot: it is dropped. In the middle it stays.
+        assert!(run(None).is_empty());
+        let (x, z) = at(104.0, 68.0);
+        let mid = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([poi(PoiKind::SpeedZone, "z", 1, x, z, None)])), ..Default::default() };
+        assert_eq!(paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.corner_clip = Some(cc);
+            draw_layers(&c, &mid, &cfg);
+        }).len(), 1);
+    }
+
+    /// The HUD scales everything by `s` (design px -> screen px): road widths included, however
+    /// the zoom rule works, because the rule runs in design px.
+    #[test]
+    fn road_widths_scale_with_the_size_factor() {
+        let widths = |s: f32| {
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(208.0 * s, 136.0 * s));
+            // Same metres on screen: the camera's px per metre grows with s.
+            let cam = flat_cam(rect, (0.0, 0.0), 0.0, 300.0);
+            let mut cfg = only_roads();
+            cfg.roads.styles.road.casing = false;
+            let layers = layers_with(vec![[0.0, -100.0], [0.0, 100.0]], RoadType::Road);
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.s = s;
+                draw_layers(&c, &layers, &cfg);
+            });
+            shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { Some(p.stroke.width) } else { None }).collect::<Vec<_>>()
+        };
+        let (w1, w2) = (widths(1.0), widths(2.0));
+        assert_eq!((w1.len(), w2.len()), (1, 1));
+        assert!((w2[0] - 2.0 * w1[0]).abs() < 1e-3, "{w1:?} vs {w2:?}");
+        // 300 m radius on a 136 px pill: 0.227 px/m * 10 m = 2.27 px.
+        assert!((w1[0] - 2.2667).abs() < 0.01, "{w1:?}");
+    }
+
+    #[test]
+    fn icon_atlas_covers_every_enabled_category_and_picks_race_and_mascot_icons() {
+        let icons = crate::maprender::icontex::synthetic_icons();
+        let a = IconAtlas::from_poi_icons(TextureId::Managed(1), &icons);
+        let rect_of = |id: &str| a.rects[style::cat_index(id).expect(id)];
+        for n in crate::maprender::cfg::POI_DEFAULT_ON {
+            assert!(rect_of(n).is_some(), "default-on category {n} has no icon");
+        }
+        // Each rect is the table's UV of the category's icon kind; kinds without an icon stay None.
+        for (i, c) in style::POI_CATS.iter().enumerate() {
+            let want = c.icon_kind().and_then(|k| icons.uv.get(&k)).map(uv_rect);
+            assert_eq!(a.rects[i], want, "{}", c.id);
+        }
+        // The current chest shows the chest's icon, a danger sign its own, the pin / mascot by item.
+        assert_eq!(rect_of("treasure_chest_current"), rect_of("treasure_chest"));
+        assert_ne!(rect_of("danger_sign"), rect_of("treasure_chest"));
+        assert!(rect_of("landmark").is_none() && rect_of("pinata").is_none());
+        let mut layers = MapLayers::synthetic();
+        layers.race_class = Arc::new(HashMap::from([(7, RaceClass::Dragracing)]));
+        let cat = |id: &str| style::cat_index(id).unwrap();
+        let pin = |n| poi(PoiKind::RacePin, "", n, 0.0, 0.0, None);
+        assert_eq!(a.uv_of(cat("race_pin"), &pin(7), &layers), Some(a.race[&RaceClass::Dragracing]));
+        assert_eq!(a.uv_of(cat("race_pin"), &pin(8), &layers), rect_of("race_pin"), "unmarked route: the class-less pin icon");
+        let mascot = poi(PoiKind::Mascot, "", 3, 0.0, 0.0, None);
+        assert_eq!(a.uv_of(cat("mascot"), &mascot, &layers), Some(a.mascot[&3]));
+    }
+
+    /// The current treasure chest: of the chests only the one the week names is drawn, bigger,
+    /// and it moves on when the week rolls.
+    #[test]
+    fn the_current_chest_follows_the_week_and_is_drawn_bigger() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 300.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 1000.0);
+        let chest = |n: u32, x: f32| poi(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{n:03}"), n, x, 0.0, None);
+        let layers = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([chest(15, -100.0), chest(16, 100.0)])), ..Default::default() };
+        let cfg = only_pois(&["treasure_chest_current"]);
+        let mut atlas = IconAtlas::new(TextureId::Managed(5));
+        atlas.set("treasure_chest_current", Rect::from_min_max(pos2(0.0, 0.0), pos2(0.5, 0.5)));
+        let at_week = |week: i64, icons: Option<&IconAtlas>| {
+            let mut st = LayerStats::default();
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.week = Some(week);
+                c.icons = icons;
+                st = draw_layers(&c, &layers, &cfg);
+            });
+            (st.pois, shapes)
+        };
+        // Chest number = week - 53: week 68 -> chest 015 (west), week 69 -> chest 016 (east).
+        for (week, west) in [(68, true), (69, false)] {
+            let (n, shapes) = at_week(week, Some(&atlas));
+            assert_eq!(n, 1, "week {week}");
+            let m = meshes(&shapes);
+            assert_eq!(m.len(), 1);
+            let v = &m[0].vertices;
+            let (w, cx) = (v[1].pos.x - v[0].pos.x, (v[1].pos.x + v[0].pos.x) / 2.0);
+            assert!((w - 32.0 * style::CURRENT_CHEST_SCALE).abs() < 1e-3, "icon is {w} px wide");
+            assert_eq!(cx < 150.0, west, "week {week}: icon at x {cx}");
+        }
+        // Without an atlas the shape marker stands in; a week before every chest draws none.
+        assert_eq!(at_week(68, None).1.len(), 1);
+        assert_eq!(at_week(10, Some(&atlas)).0, 0);
+        // The plain chest category is not turned on by the current one.
+        let (n, _) = at_week(68, None);
+        assert_eq!(n, 1);
+        // Off: nothing.
+        let mut off = cfg.clone();
+        off.pois.categories.clear();
+        assert_eq!(paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.week = Some(68);
+            draw_layers(&c, &layers, &off);
+        }).len(), 0);
+    }
+
+    #[test]
+    fn gate_lines_are_drawn_only_when_enabled_and_never_shorter_than_the_minimum() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 300.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 150.0); // 1 px per metre
+        let layers = MapLayers {
+            pois: Arc::new(crate::maprender::data::PoiLayer::from_items([
+                poi(PoiKind::SpeedTrap, "SPEEDCAMERA_07", 7, 0.0, 50.0, Some([[-8.0, 50.0], [8.0, 50.0]])),
+                poi(PoiKind::SpeedZone, "z1", 1, 0.0, -50.0, Some([[0.0, -49.0], [0.0, -51.0]])), // a 2 m gate
+                poi(PoiKind::House, "h", 0, 40.0, 40.0, None),
+            ])),
+            ..Default::default()
+        };
+        let mut cfg = only_pois(&["speed_trap", "speed_zone", "house"]);
+        let run = |cfg: &MapLayerConfig| {
+            let mut st = LayerStats::default();
+            let shapes = paint(rect, |p| st = draw_layers(&ctx(p, &cam), &layers, cfg));
+            (st, shapes)
+        };
+        let (st, shapes) = run(&cfg);
+        assert_eq!((st.pois, st.gates), (3, 2));
+        let segs: Vec<[Pos2; 2]> = shapes.iter().filter_map(|s| if let Shape::LineSegment { points, .. } = &s.shape { Some(*points) } else { None }).collect();
+        assert_eq!(segs.len(), 4, "casing + line per gate");
+        let len = |s: &[Pos2; 2]| (s[1] - s[0]).length();
+        assert!((len(&segs[0]) - 16.0).abs() < 1e-3 && (len(&segs[1]) - 16.0).abs() < 1e-3, "{segs:?}"); // the 16 m trap gate
+        assert!((len(&segs[2]) - style::GATE_MIN_LEN_PX).abs() < 1e-3, "the 2 m gate is stretched: {segs:?}");
+        // The line's midpoint is the POI's own position, whatever the stretch.
+        assert!((((segs[2][0] + segs[2][1].to_vec2()) * 0.5) - pos2(150.0, 200.0)).length() < 1e-3);
+        // Gates off: no lines; a gate whose category is off draws none either.
+        cfg.pois.gates = false;
+        let (st, shapes) = run(&cfg);
+        assert_eq!((st.pois, st.gates), (3, 0));
+        assert!(!shapes.iter().any(|s| matches!(s.shape, Shape::LineSegment { .. })));
+        cfg.pois.gates = true;
+        cfg.pois.categories = vec!["speed_trap".into()];
+        assert_eq!(run(&cfg).0.gates, 1);
+    }
+
+    #[test]
+    fn tilt_taper_thins_roads_towards_the_horizon() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(208.0, 136.0));
+        let cam = Camera::from_cfg(&MapLayerConfig::hud().tilt, (0.0, 0.0), 0.0, 300.0, rect);
+        let layers = layers_with((0..70).map(|i| [0.0, -60.0 + 50.0 * i as f32]).collect(), RoadType::Road);
+        let widths = |taper: bool, cam: &Camera| {
+            let mut cfg = only_roads();
+            cfg.roads.styles.road.casing = false;
+            cfg.tilt.taper = taper;
+            let shapes = paint(rect, |p| {
+                draw_layers(&ctx(p, cam), &layers, &cfg);
+            });
+            let mut w: Vec<f32> = shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { Some(p.stroke.width) } else { None }).collect();
+            w.sort_by(f32::total_cmp);
+            w
+        };
+        let tapered = widths(true, &cam);
+        assert!(tapered.len() >= 3, "{tapered:?}");
+        assert!(tapered.last().unwrap() / tapered[0] > 1.8, "near end should be much wider than far end: {tapered:?}");
+        let plain = widths(false, &cam);
+        assert_eq!(plain.len(), 1);
+        // The widest tapered piece is at the car's row and below: about the full width.
+        assert!((tapered.last().unwrap() - plain[0]).abs() < plain[0] * 0.35, "{tapered:?} vs {plain:?}");
+        // Flat view: taper has nothing to do.
+        let flat = flat_cam(rect, (0.0, 0.0), 0.0, 300.0);
+        assert_eq!(widths(true, &flat).len(), 1);
+    }
+
+    #[test]
+    fn the_far_edge_of_a_tilted_map_fades_out() {
+        let rect = Rect::from_min_size(pos2(20.0, 10.0), vec2(300.0, 200.0));
+        let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+        let tex = MapTex { id: TextureId::Managed(3), orig_size: [8192, 8192], winter: false };
+        let run = |pitch: f32, fade: bool| {
+            let centre = if pitch == 0.0 { rect.center() } else { Camera::tilt_centre(rect, 0.85) };
+            let cam = Camera::new(-409.0, -6541.0, 0.4, 800.0, rect, centre, pitch, 400.0);
+            let shapes = paint(rect, |p| {
+                draw_base(p, &BaseParams { cam: &cam, cal: MapCalibration::DEFAULT, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: fade });
+            });
+            (cam, meshes(&shapes))
+        };
+        let (cam, m) = run(55f32.to_radians(), true);
+        assert_eq!(m.len(), 1);
+        let edge = cam.project_offset(0.0, -cam.far_px()).unwrap().y.max(rect.top());
+        let len = rect.height() * style::FAR_FADE_FRAC;
+        let mut seen = (false, false);
+        for v in &m[0].vertices {
+            // Linear in the screen row: transparent at the plane's far edge, opaque `len` px below.
+            let want = ((v.pos.y - edge) / len).clamp(0.0, 1.0);
+            assert!((v.color.a() as f32 / 255.0 - want).abs() < 0.01, "alpha {} at y {} (edge {edge})", v.color.a(), v.pos.y);
+            seen = (seen.0 | (v.color.a() < 5), seen.1 | (v.color.a() == 255));
+        }
+        assert_eq!(seen, (true, true), "both the faded far end and the solid near part are there");
+        // No fade asked for, or a flat view: every vertex stays opaque.
+        for (pitch, fade) in [(55f32.to_radians(), false), (0.0, true)] {
+            assert!(run(pitch, fade).1[0].vertices.iter().all(|v| v.color.a() == 255), "pitch {pitch} fade {fade}");
+        }
+    }
+
     #[test]
     fn race_lines_follow_the_selection_and_all_mode() {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0));
@@ -778,22 +1248,24 @@ mod tests {
         };
         // (label, rect size, zoom m, tilt, car) — the car on a busy part of the island.
         let car = (1500.0, 800.0);
-        let cases: [(&str, Vec2, f32, bool); 6] = [
+        let cases: [(&str, Vec2, f32, bool); 7] = [
             ("Dashboard 900x600 @ 5000 m", vec2(900.0, 600.0), 5000.0, false),
             ("Dashboard 900x600 @ 6000 m (whole island)", vec2(900.0, 600.0), 6000.0, false),
             ("Dashboard 600x400 @ 1500 m", vec2(600.0, 400.0), 1500.0, false),
             ("Dashboard 420x420 @ 5000 m", vec2(420.0, 420.0), 5000.0, false),
             ("HUD 208x136 @ 300 m tilted", vec2(208.0, 136.0), 300.0, true),
+            ("HUD 208x136 @ 700 m tilted", vec2(208.0, 136.0), 700.0, true),
             ("Dashboard 900x600 @ 5000 m tilted", vec2(900.0, 600.0), 5000.0, true),
         ];
         for (label, size, zoom, tilted) in cases {
             let rect = Rect::from_min_size(Pos2::ZERO, size);
-            let cam = if tilted {
-                Camera::new(car.0, car.1, 0.6, zoom, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0 * size.y / 136.0)
-            } else {
-                flat_cam(rect, car, 0.6, zoom)
-            };
-            let cfg = MapLayerConfig::default();
+            // The HUD cases run the HUD's defaults (taper on, 32 px game icons), the Dashboard the
+            // Dashboard's (a tilted one with the taper too).
+            let hud = size.y < 200.0;
+            let mut cfg = if hud { MapLayerConfig::hud() } else { MapLayerConfig::default() };
+            cfg.tilt.on = tilted;
+            let cam = Camera::from_cfg(&cfg.tilt, car, 0.6, zoom, rect);
+            let atlas = layers.icons.as_ref().map(|i| IconAtlas::from_poi_icons(TextureId::Managed(1), i));
             let (mut t_build, mut t_tess) = (Vec::new(), Vec::new());
             let mut st = LayerStats::default();
             for _ in 0..40 {
@@ -801,7 +1273,9 @@ mod tests {
                 let out = ectx.run(egui::RawInput::default(), |c| {
                     let p = Painter::new(c.clone(), egui::LayerId::background(), rect);
                     let t0 = std::time::Instant::now();
-                    st = draw_layers(&ctx(&p, &cam), &layers, &cfg);
+                    let mut c = ctx(&p, &cam);
+                    c.icons = atlas.as_ref();
+                    st = draw_layers(&c, &layers, &cfg);
                     t_build.push(t0.elapsed().as_secs_f64() * 1e3);
                 });
                 let t1 = std::time::Instant::now();
@@ -825,7 +1299,7 @@ mod tests {
             let centre = if pitch == 0.0 { rect.center() } else { Camera::tilt_centre(rect, 0.85) };
             let cam = Camera::new(-409.0, -6541.0, 0.4, 800.0, rect, centre, pitch, 400.0);
             let shapes = paint(rect, |p| {
-                draw_base(p, &BaseParams { cam: &cam, cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0 });
+                draw_base(p, &BaseParams { cam: &cam, cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: false });
             });
             let meshes: Vec<_> = shapes.iter().filter_map(|s| if let Shape::Mesh(m) = &s.shape { Some(m.clone()) } else { None }).collect();
             assert_eq!(meshes.len(), 1, "pitch {pitch}");
@@ -860,7 +1334,7 @@ mod tests {
         let cam = Camera::new(cal.origin_x, cal.origin_z, 0.0, 200.0, rect, rect.center(), 0.0, 1.0);
         let look = ImageLook { opacity: 0.5, brightness: 0.5, saturation: 0.5 };
         let shapes = paint(rect, |p| {
-            draw_base(p, &BaseParams { cam: &cam, cal, tex, outline: &outline, mirror: false, look, a: 1.0 });
+            draw_base(p, &BaseParams { cam: &cam, cal, tex, outline: &outline, mirror: false, look, a: 1.0, far_fade: false });
         });
         let metas: Vec<_> = shapes.iter().filter_map(|s| if let Shape::Mesh(m) = &s.shape { Some(m.clone()) } else { None }).collect();
         assert_eq!(metas.len(), 2, "image + saturation veil");
@@ -872,7 +1346,7 @@ mod tests {
         assert_eq!(img.vertices[0].color, Color32::from_rgba_premultiplied(64, 64, 64, 128));
         // Full look: no veil.
         let full = paint(rect, |p| {
-            draw_base(p, &BaseParams { cam: &cam, cal, tex, outline: &outline, mirror: false, look: ImageLook::FULL, a: 1.0 });
+            draw_base(p, &BaseParams { cam: &cam, cal, tex, outline: &outline, mirror: false, look: ImageLook::FULL, a: 1.0, far_fade: false });
         });
         assert_eq!(full.iter().filter(|s| matches!(s.shape, Shape::Mesh(_))).count(), 1);
     }

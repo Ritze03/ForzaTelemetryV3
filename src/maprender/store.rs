@@ -268,6 +268,7 @@ mod tests {
                 nav: crate::gamedata::nav::Nav { sha1: String::new(), nodes: 0, polys: vec![], cls: vec![], hi: vec![], orphans: vec![] },
                 pois: Default::default(),
                 races: Default::default(),
+                icons: None,
                 skipped: vec![],
             })
         }

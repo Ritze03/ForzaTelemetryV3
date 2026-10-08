@@ -102,6 +102,19 @@ pub struct Hud {
 pub const SPEED_HOLD_SECS: f64 = 0.5;
 
 impl Hud {
+    /// The Minimap's shared layer data for the coming frames (`maprender::layers().data`, fetched
+    /// by the overlay renderer only while a layer toggle is on; `None` = image only). A setter,
+    /// not a `draw` argument, so `draw` and `minimap::draw` keep their signatures.
+    pub fn set_layers(&mut self, layers: Option<std::sync::Arc<crate::maprender::data::MapLayers>>) {
+        self.map_anim.set_layers(layers);
+    }
+
+    /// The Minimap's POI icons, uploaded into the overlay's own egui context
+    /// (`maprender::icontex::IconTex`).
+    pub fn set_icons(&mut self, icons: Option<std::sync::Arc<crate::maprender::paint2d::IconAtlas>>) {
+        self.map_anim.set_icons(icons);
+    }
+
     /// The cluster speed to show. With `speed_hold` the last shown value holds for
     /// [`SPEED_HOLD_SECS`], then the next frame takes the live one. why no `animating`: the
     /// packet stream redraws at 60 Hz anyway, so a due refresh just waits for the next packet.

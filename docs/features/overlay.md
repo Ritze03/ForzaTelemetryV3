@@ -246,8 +246,8 @@ default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21
 
 ### Minimap M2′ (`hud/minimap.rs`)
 
-208×136 pill-framed, heading-up season map with a compass (optional, D12) and the **same
-markers as the Dashboard map**: the own arrow, co-op teammates, trails and shared waypoints,
+208×136 pill-framed, heading-up season map with a compass (optional, D12), the **same layers as
+the Dashboard map** (roads, race lines, POIs; below) and the **same markers**: the own arrow, co-op teammates, trails and shared waypoints,
 all drawn by `hud/map_shared.rs`, the code the Dashboard map widget calls too
 ([[minimap]] "Shared drawing"). *Why:* the user wanted the HUD map to look like the Dashboard
 map ("the same arrow styling with the same co-op colour and the trail behind the player"), and
@@ -274,8 +274,34 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   `coop_hue`. *Why not reuse `ForzaApp::minimap_trails`:* the UI thread fills that and its
   loop stops while the game covers the window, i.e. exactly when the HUD is in use. The
   recording rules are the shared `minimap::trail_push`, so both buffers behave alike.
-  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 500 / 3000,
+  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 300 / 3000,
   independent of the Dashboard map's unless reused); stopped = under 5 km/h for 1.5 s.
+- **Layers (I29b, D61/D62):** `minimap::draw` runs the shared renderer (`maprender`, see
+  [[minimap]] "Shared renderer & layers") over a **camera** (`Camera::from_cfg(map_layers.tilt, ...)`:
+  flat, or **tilted by default**, 55 deg, perspective 200 px at the pill's height, the car 85 % down):
+  `draw_base` (the dimmed satellite, 50 % opacity / brightness / saturation, with the far edge fading
+  out) → `draw_layers` (roads by type, jump lines, race lines, gate lines, POIs with the game's icons,
+  the current treasure chest) → markers → compass → frame. The markers use the same camera
+  (`MapCanvas`), so trails, teammates and waypoints sit on the tilted roads. **Corner clip:** roads,
+  race lines and gate lines are cut to the pill outline (`CornerClip { poly: the 0.5 px inset rounded
+  outline, safe: the pill shrunk by its radius }`, Cyrus-Beck only for segments outside `safe`), icons
+  straddling a corner are clipped to it with their UVs, small markers near a corner are dropped; the
+  3 px frame hides the rest. *Why a clip and not a scissor:* a rect scissor lets a road poke out of
+  the rounded corner into the transparent surround. **No plate** (`map_plate_opacity` 0): the game
+  shows through the dimmed image; a plate, if set, is drawn first and the far edge fades into it.
+  Widths are in design px and scaled by the HUD's `s` (the zoom rule runs on `px/m / s`).
+- **How the layer data reaches the HUD:** `overlay/render.rs` `Renderer::frame_at` calls
+  `maprender::layers()` itself, **only while the minimap is on and a layer toggle is on**
+  (`MapLayerConfig::wants_layers`), and hands the result to `Hud::set_layers` /
+  `Hud::set_icons`, which store it in `MapAnim` (`minimap::draw`'s signature is fixed: the PNG harness
+  and tests call it). *Why the overlay thread polls the store and nothing is forwarded:* the UI frame
+  loop stops while the game covers the window, which is when the HUD is used; verified live with the
+  Dashboard window hidden (the HUD map kept moving) and with no Dashboard map at all (the HUD alone
+  starts the `map-layers` load). One `RaceSel` per map lives in `MapAnim`; "in a race" is the HUD's own
+  rule, `race_position != 0`. **Icons:** `IconTex` (`maprender::icontex`) uploads the store's icon
+  pixels into the overlay's own `egui::Context` (the Dashboard uploads its own copy; a GL object is
+  never shared between the two contexts, only the decoded pixels), 512 x 384 RGBA with mipmaps,
+  0.75 MB; dropped again when no layer is on.
 
 **Options (Mini-Settings → Overlay tab).** The HUD minimap has the Dashboard map's options.
 *Why:* the user wants everything the Dashboard map has on the HUD too. They live in
@@ -292,7 +318,9 @@ tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 | `map_use_movement_dir` | on | Heading-up only: rotate to the velocity direction. |
 | `map_look_stick` | on | Rotate the map by the right stick: look relative to the car in north-up and heading-up alike (look-around, see [[minimap]]; the reference heading honours `map_use_movement_dir`). |
 | `map_mirror_edges` | on | **Mirror map at edges**: past the image edge the map continues mirrored; off = the plate shows outside the image. |
-| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 500 / 3000 | Compass and the two zoom radii. |
+| `map_plate_opacity` | 0 | The minimap's own plate behind the dimmed image (D62: none, the game shows through); the far edge of a tilted map fades into it. Independent of the global `plate_opacity` (the other modules). **No UI yet.** |
+| `map_layers` | `MapLayerConfig::hud()` | What the map draws besides the markers: `image` (on, 50 / 50 / 50 %), `roads` (on, by type, per-type colour / width / dash / casing), `pois` (on, 32 px, categories, `max_zoom_m` 3000, `near_only` + `radius_m`, `gates`), `race_lines` (current race only, 4 px, marks), `tilt` (on, `angle_deg` 55, `perspective_px` 200 at the pill's 136 px, `car_y` 0.85, `taper` on). Every field `serde(default)`; **no UI yet** (next task: the Overlay tab's module selector, D63), edit the JSON. Follows the Dashboard's `minimap_layers` under `map_use_dashboard`. |
+| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 300 / 3000 | Compass and the two zoom radii. |
 | `coop_use_dashboard` | on | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
 | `coop_teammates` | on | Draw teammates (and their trails). |
 | `coop_trails` | on | Trails behind each player, own included (the own one solo too, white). |
@@ -329,9 +357,9 @@ Dashboard's calibration; one source of truth), the F10 north-up hotkey, and the 
 player list** and its columns (a 208×136 pill has no room for a table; the names are on the
 arrows already).
 
-- The map is drawn as a triangle-fan mesh with per-vertex UVs from
-  `MapView::uv_at_offset` (affine, so UV interpolation is exact), 0.5 px under the frame
-  because meshes aren't feathered.
+- The map image is `maprender::draw_base`: a triangle fan over the pill outline with per-vertex UVs
+  from `Camera::unproject` + the calibration (affine when flat, so UV interpolation is exact; a
+  24 x 24 subdivided plane when tilted), 0.5 px under the frame because meshes aren't feathered.
 - The image is the overlay's own **4096² (q50) copy** with trilinear mipmaps, loaded by the
   `hud-map` helper thread (`MapLoader`) and uploaded on the overlay thread; the CPU copy is
   dropped right after upload. See [[minimap]] for the shared loader. Until it arrives the
@@ -633,7 +661,8 @@ configured yet, for the whole Overlay tab. Where it differs from the former defa
 | `race_cell` (race / drift slot) | bottom-right (was top-left) |
 | `margin_px` | 4 (was 44) |
 | `rpm_label` | on (was off) |
-| `zoom_driving_m` | 500 (was 1500) |
+| `zoom_driving_m` | 300 (was 500, 1500 before; D62: the HUD map's radius with the layers) |
+| `map_plate_opacity` | 0 (new: no plate behind the dimmed map) |
 | `map_use_movement_dir`, `map_look_stick` | on (were off) |
 | `coop_use_dashboard` | on (was off) |
 | `notif_gearbox_mode` | off (was on) |
@@ -795,6 +824,11 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
   before the `wl_surface`; the painter (`Renderer`) before `Gl` (it frees GL objects and
   needs the context current, surfaceless is fine); `Gl` terminates EGL before the Wayland
   connection goes. See the comments on `Live`, `Overlay` and `Gl`.
+- **The POI icon texture** (`Renderer::icons`, an `IconTex`) is an `egui` texture in the overlay's
+  own context (no GL object of its own: egui_glow frees it with the painter), uploaded the first
+  frame a layer is on and the store has icons, replaced when the store hands out new pixels (an
+  install change) and dropped when the layers go off. It lives in `Renderer`, so the drop order above
+  covers it.
 - **EGL failures:** a failed swap/surface creation rebuilds the surface; 3 in a row (lost
   context, GPU reset) stop the thread, which the tab reports as stopped.
 - **Disabled reasons** (`overlay::DisabledReason`, translated): no `WAYLAND_DISPLAY`,
@@ -819,7 +853,11 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
   gone after Hide. Ignored because it opens a window.
 - **Offscreen PNG harness:** `cargo test render_spec_states -- --ignored --nocapture` renders
   every widget in its spec states (cruise / redline / shift / pulse, place gained / lost, lap
-  hold, drift chip, both drift styles) plus 1080p composites through the real `Renderer` on a
+  hold, drift chip, both drift styles), the minimap with layers (`m2_layers_*`: flat, tilted, with and
+  without icons, in a race, north-up, wide, co-op; synthetic roads, race ring, POIs and icons over a
+  dark backdrop; checks that the rounded corners stay clear and the layers drew) and, when an FH6
+  install is found, the same with its real data and icons (`m2_real_*`, a visual check only), plus
+  1080p composites through the real `Renderer` on a
   headless EGL device into `target/hud_png/`, at pinned time. It lives in `src/hud/png.rs` but
   is compiled as `overlay::render::png` via `#[path]`. *Why:* a binary crate can't expose its
   modules to `examples/`, and the harness needs the private `Renderer` and `gl::Headless`.

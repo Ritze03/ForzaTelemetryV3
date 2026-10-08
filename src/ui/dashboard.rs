@@ -2614,21 +2614,15 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // The shared renderer's camera (`maprender`): metres visible from the car to the nearest edge
     // (zoom); rotates world displacement into car-relative screen space (see
     // `minimap::MapView` for the conventions). Tilted (a config option, no UI yet), the car sits
-    // lower in the widget and the map is seen in perspective.
-    let tilt = lc.tilt.on.then(|| lc.tilt.angle_deg.clamp(5.0, 80.0).to_radians());
-    let centre = match tilt {
-        Some(_) => crate::maprender::Camera::tilt_centre(rect, lc.tilt.car_y),
-        None => rect.center(),
-    };
-    let cam = crate::maprender::Camera::new(
-        car_x, car_z, yaw, app.minimap_current_zoom, rect, centre,
-        tilt.unwrap_or(0.0), lc.tilt.perspective_px,
-    );
+    // lower in the widget and the map is seen in perspective; the perspective distance scales
+    // with the widget's height (`Camera::focal_for`), so it looks like the HUD's at any size.
+    let tilted = lc.tilt.on;
+    let cam = crate::maprender::Camera::from_cfg(&lc.tilt, (car_x, car_z), yaw, app.minimap_current_zoom, rect);
     let view = cam.view;
 
     let painter = ui.painter_at(rect);
     let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
-    if !lc.image.on || tilt.is_some() {
+    if !lc.image.on || tilted {
         // Vectors-only look, or the sky above a tilted map's far edge.
         painter.rect_filled(rect, 0.0, crate::maprender::style::MAP_BACKING);
     }
@@ -2642,6 +2636,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             mirror: cfg.minimap_mirror_edges,
             look: (&lc.image).into(),
             a: 1.0,
+            far_fade: true,
         });
     }
 
@@ -2654,6 +2649,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
         if let Some(data) = &l.data {
+            let icons = app.minimap_icons.borrow_mut().ensure(ui.ctx(), data.icons.as_ref());
             let in_race = app.telemetry.latest.as_ref().is_some_and(|p| p.race_position != 0);
             let mut sel = app.minimap_race_sel.borrow_mut();
             let picked = sel.update(&data.races, &lc.race_lines, (car_x, car_z), app.minimap_cached_raw_yaw, in_race);
@@ -2665,8 +2661,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                     a: 1.0,
                     car: (car_x, car_z),
                     corner_clip: None,
-                    icons: None,
+                    icons: icons.as_deref(),
                     race_sel: picked,
+                    week: None,
                 },
                 data,
                 lc,
@@ -2678,9 +2675,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // code the HUD Minimap draws with.
     let cv = crate::hud::map_shared::MapCanvas {
         p: &painter,
-        view: &view,
-        centre,
+        cam: &cam,
         rect,
+        taper: lc.tilt.taper,
         s: 1.0,
         a: 1.0,
         pause_glyph: crate::icons::PAUSE,

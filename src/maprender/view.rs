@@ -11,9 +11,13 @@
 use egui::epaint::Vertex;
 use egui::{pos2, vec2, Mesh, Pos2, Rect};
 
+use super::cfg::TiltCfg;
 use crate::minimap::MapView;
 
 // ── camera ───────────────────────────────────────────────────────────────────────────────────
+
+/// Height of the view the tilt settings are written for: the HUD pill, 136 design px.
+pub const REF_VIEW_H: f32 = 136.0;
 
 /// A point must be at least this far (px) in front of the eye to be projected.
 const EYE_EPS: f32 = 1.0;
@@ -43,6 +47,36 @@ impl Camera {
     pub fn new(car_x: f32, car_z: f32, yaw: f32, zoom_m: f32, rect: Rect, centre: Pos2, pitch: f32, focal: f32) -> Camera {
         let view = MapView::new(car_x, car_z, yaw, zoom_m, rect.width().min(rect.height()));
         Camera { view, centre, rect, pitch, focal: focal.max(1.0) }
+    }
+
+    /// The camera of a map for its tilt config: flat when tilt is off, else the car `car_y` of the
+    /// way down `rect`, `angle_deg` of pitch (clamped 5..80) and the perspective distance scaled
+    /// to the view's height ([`Camera::focal_for`]). The one constructor both maps use.
+    pub fn from_cfg(tilt: &TiltCfg, car: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect) -> Camera {
+        if tilt.on {
+            let pitch = tilt.angle_deg.clamp(5.0, 80.0).to_radians();
+            Camera::new(car.0, car.1, yaw, zoom_m, rect, Camera::tilt_centre(rect, tilt.car_y), pitch, Camera::focal_for(tilt.perspective_px, rect))
+        } else {
+            Camera::new(car.0, car.1, yaw, zoom_m, rect, rect.center(), 0.0, 1.0)
+        }
+    }
+
+    /// The eye distance (CSS `perspective`) for a view of `rect`'s height: the config value is
+    /// the one of the HUD pill (136 px tall, [`REF_VIEW_H`]); a taller view scales it up so its
+    /// tilted look is the same picture, only bigger.
+    pub fn focal_for(perspective_px: f32, rect: Rect) -> f32 {
+        perspective_px * rect.height() / REF_VIEW_H
+    }
+
+    /// Size factor of things on screen row `sy`: 1 at the car's row, smaller towards the horizon
+    /// (and larger below the car), 1 when flat. The same number as [`Camera::perspective_at`] of
+    /// the plane point under that row, in closed form (`k = 1 + dy tan(pitch) / focal`), so a
+    /// projected polyline can be tapered without unprojecting.
+    pub fn depth_scale_at_row(&self, sy: f32) -> f32 {
+        if self.is_flat() {
+            return 1.0;
+        }
+        (1.0 + (sy - self.centre.y) * self.pitch.tan() / self.focal).clamp(0.05, 4.0)
     }
 
     /// Where the car sits for a tilt config: horizontally centred, `car_y` of the way down.
@@ -430,6 +464,43 @@ mod tests {
         let w = c.unproject(p).unwrap();
         let uv2 = cal.world_to_uv(w[0], w[1], [8192, 8192]);
         assert!((u - uv2[0]).abs() < 1e-6 && (v - uv2[1]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn from_cfg_is_flat_without_tilt_and_scales_the_perspective_with_the_view_height() {
+        let r = rect(208.0, 136.0);
+        let flat = Camera::from_cfg(&TiltCfg::default(), (5.0, 6.0), 0.3, 300.0, r);
+        assert!(flat.is_flat() && flat.centre == r.center());
+        let same = Camera::new(5.0, 6.0, 0.3, 300.0, r, r.center(), 0.0, 1.0);
+        assert_eq!(flat.project(40.0, 50.0), same.project(40.0, 50.0));
+        // Tilted: 55 deg, the car 85 % down, perspective 200 px at the pill's 136 px height.
+        let t = TiltCfg { on: true, ..Default::default() };
+        let c = Camera::from_cfg(&t, (0.0, 0.0), 0.0, 300.0, r);
+        assert!((c.pitch - 55f32.to_radians()).abs() < 1e-6 && (c.focal - 200.0).abs() < 1e-3, "{c:?}");
+        assert!((c.centre.y - (r.top() + 0.85 * 136.0)).abs() < 1e-3);
+        // A view 3.97x taller gets a 3.97x longer eye distance: the same picture, bigger.
+        let big = rect(540.0, 540.0);
+        let cb = Camera::from_cfg(&t, (0.0, 0.0), 0.0, 300.0, big);
+        assert!((cb.focal - 200.0 * 540.0 / 136.0).abs() < 1e-2);
+        // The projection of a point at the same relative spot scales with the view.
+        let p = c.project(0.0, 300.0).unwrap();
+        let pb = cb.project(0.0, 300.0).unwrap();
+        assert!(((c.centre.y - p.y) / 136.0 - (cb.centre.y - pb.y) / 540.0).abs() < 1e-3);
+        // Out-of-range angles are clamped.
+        let steep = Camera::from_cfg(&TiltCfg { on: true, angle_deg: 200.0, ..Default::default() }, (0.0, 0.0), 0.0, 300.0, r);
+        assert!((steep.pitch - 80f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn depth_scale_by_row_equals_the_perspective_of_the_plane_point() {
+        let c = cam(0.3, 55f32.to_radians(), 200.0);
+        for oy in [-300.0f32, -120.0, -10.0, 0.0, 15.0, 60.0] {
+            let Some(p) = c.project_offset(0.0, oy) else { continue };
+            assert!((c.depth_scale_at_row(p.y) - c.perspective_at(oy)).abs() < 1e-4, "oy {oy}");
+        }
+        assert_eq!(c.depth_scale_at_row(c.centre.y), 1.0);
+        assert!(c.depth_scale_at_row(c.rect.top()) < 1.0 && c.depth_scale_at_row(c.rect.bottom()) > 1.0);
+        assert_eq!(cam(0.3, 0.0, 1.0).depth_scale_at_row(0.0), 1.0, "flat");
     }
 
     #[test]

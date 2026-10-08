@@ -463,6 +463,10 @@ pub struct OverlayConfig {
     /// Mirror the map past its edges (the Dashboard's "Mirror map at edges"); off = the plain
     /// backing shows outside the image.
     pub map_mirror_edges: bool,
+    /// Opacity of the minimap's own plate behind the (dimmed) satellite image, 0.0-1.0 (D62: no
+    /// plate, the game shows through the image). Independent of the global `plate_opacity`,
+    /// which belongs to the other modules; also what the far edge of a tilted map fades into.
+    pub map_plate_opacity: f32,
     /// What the HUD map draws besides the markers: satellite look, roads, POIs, race lines,
     /// tilt (`maprender::cfg`). Defaults are the HUD's (D62: dimmed image, tilted).
     pub map_layers: crate::maprender::cfg::MapLayerConfig,
@@ -585,7 +589,7 @@ impl Default for OverlayConfig {
             compass: true,
             // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
             zoom_stopped_m: 3000.0,
-            zoom_driving_m: 500.0,
+            zoom_driving_m: 300.0,
             // Tuned defaults (the HUD map rotates to the movement direction and follows the right stick).
             map_north_up: false,
             map_north_up_when_stopped: false,
@@ -594,6 +598,7 @@ impl Default for OverlayConfig {
             map_look_stick: true,
             // Dashboard default.
             map_mirror_edges: true,
+            map_plate_opacity: 0.0,
             map_layers: crate::maprender::cfg::MapLayerConfig::hud(),
             map_use_dashboard: false,
             coop_teammates: true,
@@ -2066,7 +2071,7 @@ mod tests {
         let o = OverlayConfig::default();
         assert!(o.enabled && o.focus_only && o.rpm_label && o.coop_use_dashboard && !o.notif_gearbox_mode);
         assert_eq!((o.race_cell, o.notif_cell), (HudCell::BottomRight, HudCell::Center));
-        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 500.0));
+        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 300.0)); // D62: the HUD map's 300 m radius
         // An older overlay / gamepad object with only some keys: the rest are the tuned defaults.
         let o: OverlayConfig = serde_json::from_str(r#"{ "scale": 1.5 }"#).unwrap();
         assert_eq!((o.scale, o.margin_px, o.race_cell), (1.5, 4.0, HudCell::BottomRight));
@@ -2201,9 +2206,31 @@ mod tests {
         assert_eq!(c.minimap_layers, MapLayerConfig::dashboard());
         assert!(c.minimap_layers.roads.on && c.minimap_layers.pois.on && !c.minimap_layers.tilt.on);
         assert_eq!(c.minimap_layers.race_lines.mode, RaceLineMode::Current);
-        let o = OverlayConfig::default();
-        assert_eq!(o.map_layers, MapLayerConfig::hud());
-        assert!(o.map_layers.tilt.on && o.map_layers.image.opacity == 0.5);
+        // The HUD minimap (D62): 300 m radius, heading-up, no plate, the dimmed satellite at
+        // 50 / 50 / 50 and tilted at 55 deg with the car 85 % down, perspective 200 px at the
+        // pill's height. From the embedded default and from the code default alike.
+        for o in [&c.overlay, &OverlayConfig::default()] {
+            assert_eq!((o.zoom_driving_m, o.map_north_up, o.map_plate_opacity), (300.0, false, 0.0));
+            assert_eq!(o.map_layers, MapLayerConfig::hud());
+            let (i, t) = (&o.map_layers.image, &o.map_layers.tilt);
+            assert_eq!((i.opacity, i.brightness, i.saturation), (0.5, 0.5, 0.5));
+            assert!(t.on && t.angle_deg == 55.0 && t.perspective_px == 200.0 && t.car_y == 0.85 && t.taper);
+            assert_eq!(o.map_layers.pois.size_px, 32.0);
+            assert_eq!((o.map_layers.race_lines.mode, o.map_layers.race_lines.width_px), (RaceLineMode::Current, 4.0));
+        }
+        assert!(c.overlay.compass);
+        // A saved overlay keeps its own values; keys it lacks (an older file) take the new defaults.
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["overlay"] = serde_json::json!({ "zoom_driving_m": 1500.0, "map_north_up": true, "map_plate_opacity": 0.4, "map_layers": { "tilt": { "on": false }, "pois": { "size_px": 20.0 } } });
+        let saved: AppConfig = serde_json::from_value(v).unwrap();
+        let so = &saved.overlay;
+        assert_eq!((so.zoom_driving_m, so.map_north_up, so.map_plate_opacity), (1500.0, true, 0.4));
+        assert!(!so.map_layers.tilt.on && so.map_layers.tilt.angle_deg == 55.0 && so.map_layers.pois.size_px == 20.0);
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["overlay"] = serde_json::json!({ "zoom_driving_m": 500.0 }); // saved before the plate / layers existed
+        let old: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!((old.overlay.zoom_driving_m, old.overlay.map_plate_opacity), (500.0, 0.0));
+        assert_eq!(old.overlay.map_layers, MapLayerConfig::hud());
         // The layers travel with the mini-settings group (preset export / import).
         assert!(MINISETTINGS_KEYS.contains(&"minimap_layers"));
         // A saved Dashboard setting is not touched by the new code defaults (the file wins).

@@ -58,7 +58,7 @@ described below.
   `overlay-drop` (drop = shutdown + join, kept off the UI thread), `hud-map` (loads the
   season map for the HUD minimap, from the FH6 install's tiles). See [[overlay]].
 - **Map editor server threads** (only after the map editor was opened, `mapedit/server.rs`, I26b; stopped by dropping `ForzaApp::map_editor`) — `mapedit-accept` (blocking `accept` on `127.0.0.1:<sticky port>`), one short-lived `mapedit-conn` thread per HTTP connection, and `mapedit-build` (builds `mapedit::data::EditorData` once, 0.5-3 s release, then exits). They never touch `ForzaApp`: events (`MapEvent::{Ready, Saved, Error}`) go over an `mpsc` channel polled once a frame by `app.rs:poll_map_editor` (which opens the browser on `Ready`), plus `ctx.request_repaint()`. **Why Save updates its state inside the server thread:** the egui frame loop stops while the window is hidden (see the listener thread above), so a Save made in the browser must not wait for a frame to take effect; the UI only learns of it later. Drop = stop flag + a self-connect to wake `accept` (like `NetworkHandle`, which polls with a read timeout instead). See `docs/game-data/fh6-map-tooling.md` ("Local server").
-- **`map-layers` thread** (`maprender/store.rs`, spawned on demand by the first `maprender::layers()` call, exits when done) — loads the Dashboard / HUD map layer data (nav, POIs, race lines, road chains) and rebuilds the roads when the road-type override file changes. Process-global store, polled by whichever map draws; *why* it is not a field of the app or the HUD snapshot: the UI frame loop stops while the game covers the window, which is when the HUD is used. See [[minimap]] ("Shared renderer & layers").
+- **`map-layers` thread** (`maprender/store.rs`, spawned on demand by the first `maprender::layers()` call, exits when done) — loads the Dashboard / HUD map layer data (nav, POIs incl. danger signs, race lines, road chains, the game's POI icons; the icons and danger signs on two scoped threads) and rebuilds the roads when the road-type override file changes. Process-global store, polled by whichever map draws (the HUD from the overlay thread, `overlay/render.rs`); *why* it is not a field of the app or the HUD snapshot: the UI frame loop stops while the game covers the window, which is when the HUD is used. See [[minimap]] ("Shared renderer & layers").
 - **Short-lived background threads** — the Dashboard's seasonal minimap image load
   (`app.rs:map_load_thread` → `minimap.rs:load_map_color_image` → `gamedata/tiles.rs`, which
   decodes the install's map tiles with one scoped thread per tile row; results returned over
@@ -279,8 +279,8 @@ might produce.
 | --- | --- |
 | `mod.rs` | `Hud` (global fade, count-ups, speed hold, map easing) and `Hud::draw`; `modules()` decides which slots show; HUD colours (`col`). |
 | `cluster.rs` | Drive cluster: D1a Pill and D3a′ Halo; gear label with the drive-mode letter. |
-| `minimap.rs` | M2′ minimap, `MapLoader` (`hud-map` thread), `CoopLayer` (teammates, trails, waypoints), mirror-at-edges clip (the polygon helpers `clip_convex` / `fan` and `MapTex` live in `maprender`, re-exported). |
-| `map_shared.rs` | Marker drawing shared with the Dashboard map: own arrow, teammates, trails, waypoints (`MapCanvas`). |
+| `minimap.rs` | M2′ minimap: runs `maprender` (`draw_base` + `draw_layers` with the rounded-pill `CornerClip`) under the markers; `MapAnim` (eased view + the layer data / icons / `RaceSel` set via `Hud::set_layers` / `set_icons`), `MapLoader` (`hud-map` thread), `CoopLayer` (teammates, trails, waypoints). |
+| `map_shared.rs` | Marker drawing shared with the Dashboard map: own arrow, teammates, trails, waypoints (`MapCanvas`, which holds the `maprender::Camera`, tilt included). |
 | `race.rs` | R1′ race block; the position cap shared with the drift counter. |
 | `drift.rs` | X1′ drift counter, Position + Gain and Total styles. |
 | `notify.rs` | D26 notification pills: pure `stack_layout`, fade curve, `draw`. |
@@ -301,21 +301,23 @@ might produce.
 | `nav.rs` | `Nav::load(media)`: `Brio_00.nav` road graph (polylines split at > 60 m, stable node ids, SHA-1 of the file, `edges()`). |
 | `roadtypes.rs` | `fh6-road-types` v1/v2 model: `parse` / `to_json_string` (byte-identical one-entry-per-line writer), embedded project file (`assets/map/fh6-road-types.json`), `raw()`, `current()` = project **replaced wholesale** by the user's override (`override_path()`), `project_updated_since_save`. Docs: `docs/game-data/fh6-map-tooling.md`. |
 | `cars.rs` | `CarDb::load(lang)` / `lookup(ordinal)`: CarOrdinal → make + model, JSON-cached in `app_data_dir()`. Blocks the caller, so load it on a background thread (the Debug tab does). Docs: `docs/game-data/fh6-cars-names-icons.md`. |
-| `poi.rs` | I28: `Pois::load(media)` reads the exact POI sources (race / landmark / creature / story trigger zones, `route0.nt` and the other locator files, the `GameObjs.xml` pair) with a forward `str::find` scan, no XML crate (~18 ms release); `PoiKind` (37 kinds), `Poi { kind, x, z, y, name, n }`, `Region` outlines. Consumed by `maprender::data`. Docs: `docs/game-data/fh6-game-files.md`. |
+| `poi.rs` | I28: `Pois::load(media)` reads the exact POI sources (race / landmark / creature / story trigger zones, `route0.nt` and the other locator files, the `GameObjs.xml` pair) with a forward `str::find` scan, no XML crate (~18 ms release); `PoiKind` (38 kinds), `Poi { kind, x, z, y, name, n, gate }` (`gate` = the line across the road of traps / zones, drawn by `maprender`), `Region` outlines. `Pois::load_danger_signs(media)` (I28b, ~0.2 s, GeoChunk0, called on the `map-layers` thread and merged into the POIs), `Pois::current_treasure_chest(week)` + `week_index_now()` (the inferred weekly chest, unverified). Consumed by `maprender::data`. Docs: `docs/game-data/fh6-game-files.md`. |
+| `bc7.rs` / `icons.rs` | I28b: BC7 block decoder (modes 0-7, partial-region decode) and `PoiIcons::load(media)`: the ~45 map icons of `Horizon_Map.zip` (swatchbins + cells of `ForteMapIconSheet`) decoded, scaled to 64 px and packed into one 512 x 384 RGBA atlas with UVs per `PoiKind` / `RaceClass` / mascot region (~22 ms release). Loaded on the `map-layers` thread (`maprender::data::GameData::load`); both maps upload the atlas themselves (`maprender::icontex`). Nothing is shipped: read from the user's install. Docs: `docs/game-data/fh6-cars-names-icons.md`. |
 | `racelines.rs` | I28: `load_all(media, step_m)` reads the 170 `Route<N>.owt` race lines (+ start / finish from the `.nav` RVAN block), trims and decimates them to `RaceLine { route, circuit, pts, y, half, length_m, closed, bbox, … }` (~18 ms release); `race_pins`. Consumed by `maprender::data`. |
 
-### `src/maprender/` (the shared map renderer, phase J, D61; Dashboard map now, HUD minimap next) — see [[minimap]]
+### `src/maprender/` (the shared map renderer, phase J, D61; the Dashboard map and the HUD minimap) — see [[minimap]]
 
 | File | What it does |
 | --- | --- |
 | `mod.rs` | Module docs with the *why*s, re-exports, `MapTex` (uploaded season map + its original size). |
 | `cfg.rs` | `MapLayerConfig` (image look, roads + per-type styles, POIs, race lines, tilt), serde with `"#rrggbb"` colours; `::dashboard()` / `::hud()` defaults (D62). Held by `AppConfig::minimap_layers` and `OverlayConfig::map_layers`. |
-| `data.rs` | `MapLayers { rev, roads, pois, races, note }` of `Arc`s; `build_roads` (chains per type), `PoiLayer` (cell grid, off-map cull), `RaceLayer` (segment grid), `GameData::load`. |
+| `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` of `Arc`s; `build_roads` (chains per type), `PoiLayer` (cell grid, off-map cull, the chests for `current_chest`), `RaceLayer` (segment grid), `GameData::load` (+ danger signs and `PoiIcons` on scoped threads), `race_class_of`. |
+| `icontex.rs` | `IconTex`: uploads the icon pixels as a texture in one egui context and builds its `IconAtlas`; one per context (Dashboard: `ForzaApp::minimap_icons`, HUD: `Renderer::icons`). |
 | `store.rs` | The global loader / cache: `layers()`, `refresh_now()`, status `NoInstall / Loading / Ready / Error`; thread `map-layers`; keyed on install + override file mtime/len. |
-| `view.rs` | `Camera` (flat = `MapView`, tilted = flat perspective, shared with phase K), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `fan`. |
+| `view.rs` | `Camera` (flat = `MapView`, tilted = flat perspective, shared with phase K; `from_cfg`, `focal_for` scales the perspective with the view height, `depth_scale_at_row`), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `clip_segment_convex`, `fan`. |
 | `style.rs` | Road draw order, width rule, dash patterns, the POI category table (`POI_CATS`). |
 | `racesel.rs` | `RaceSel`: which race lines to draw (nearest / near / the best-effort current race). |
-| `paint2d.rs` | `draw_base` (image mesh incl. the subdivided tilted one) and `draw_layers` (roads, jump lines, race lines, POIs) onto an egui `Painter`; `IconAtlas` hook for the game's POI icons. |
+| `paint2d.rs` | `draw_base` (image mesh incl. the subdivided tilted one and its far-edge fade) and `draw_layers` (roads with the tilt taper, jump lines, race lines, gate lines, POIs with the game's icons, the current treasure chest) onto an egui `Painter`; `IconAtlas`, `CornerClip` (the HUD pill). |
 
 ### `src/mapedit/` (the FH6 map editor inside the app, I26; D50) — see `docs/game-data/fh6-map-tooling.md`
 
@@ -391,7 +393,7 @@ might produce.
 - **Map editor UI (Setup → Map data card, start modes, reset / rebuild, Contribute)** → `ui/settings.rs:map_data_card` / `map_data_view`; `CONTRIBUTING.md`. See `docs/features/map-editor.md`.
 - **Map editor (server, Save, generated data files)** → `mapedit/server.rs` / `mapedit/data.rs`; app wiring in `app.rs:start_map_editor`; the editor pages in `assets/editor/`. See `docs/game-data/fh6-map-tooling.md`.
 - **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
-- **Map layers (roads, POIs, race lines, tilt) on the Dashboard / HUD map** → `maprender/` (`paint2d.rs` draws, `style.rs` looks, `cfg.rs` settings and defaults, `store.rs` data lifecycle); the Dashboard call site is `ui/dashboard.rs:show_minimap_widget`. See [[minimap]].
+- **Map layers (roads, POIs, race lines, tilt) on the Dashboard / HUD map** → `maprender/` (`paint2d.rs` draws, `style.rs` looks, `cfg.rs` settings and defaults, `store.rs` data lifecycle); the call sites are `ui/dashboard.rs:show_minimap_widget` and `hud/minimap.rs:draw` (data handed over by `overlay/render.rs`). See [[minimap]], [[overlay]].
 - **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`
   timings); check it with the PNG harness `cargo test render_spec_states -- --ignored`.
   See [[overlay]].
