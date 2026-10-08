@@ -1,26 +1,30 @@
 //! M2′ minimap (pill frame, no scale bar), 208 × 136. Heading-up season map clipped to a
-//! rounded rect: a triangle-fan mesh whose per-vertex UVs come from
-//! [`MapView::uv_at_offset`] (affine, so interpolating UVs across the fan is exact).
+//! rounded rect, drawn by the shared renderer (`maprender`, D61): `draw_base` for the image, then
+//! `draw_layers` for roads / race lines / POIs, both through one [`Camera`] (flat, or tilted by
+//! default) and cut to the pill's rounded corners.
 //!
 //! The season image is loaded on a helper thread ([`MapLoader`]); until it arrives the frame
-//! draws over a plain backing.
+//! draws over the plate (none by default). The layer data (`maprender::layers()`) and the POI
+//! icons reach [`draw`] through [`MapAnim`], set per frame by `overlay::render`.
 //!
 //! The own arrow, co-op teammates, trails and waypoints are drawn by `hud::map_shared`, the
 //! same code as the Dashboard map. The co-op state they need (teammates at their last known
 //! spot, per-player trail buffers) lives in [`CoopLayer`], fed on the overlay thread.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use egui::epaint::Vertex;
-use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, TextureHandle, Vec2};
+use egui::{vec2, Color32, Painter, TextureHandle, Vec2};
 
 use super::col;
 use super::map_shared::{self, MapCanvas, Remote, TrailFade};
 use super::prims::{self, Xf};
-use crate::maprender::view::{clip_convex, fan};
-use crate::minimap::{self as mm, MapCalibration, MapView, Season, Trail};
+use crate::maprender::data::MapLayers;
+use crate::maprender::paint2d::{CornerClip, IconAtlas};
+use crate::maprender::{draw_base, draw_layers, BaseParams, Camera, LayerCtx, RaceSel};
+use crate::minimap::{self as mm, MapCalibration, Season, Trail};
 use crate::overlay::snapshot::HudSnapshot;
 
 pub const SIZE: Vec2 = vec2(208.0, 136.0);
@@ -113,9 +117,26 @@ pub struct MapAnim {
     /// The yaw the map is drawn with: `yaw` under the look-around.
     view: f32,
     slow_since: Option<f64>,
+    /// The shared layer data (roads, POIs, race lines) from `maprender::layers()`, set per frame by
+    /// the overlay renderer ([`MapAnim::set_layers`], via `Hud::set_layers`); `None` draws the
+    /// image alone. Lives here because `draw`'s signature is fixed (the PNG harness and tests
+    /// call it) and this is the minimap's per-frame state.
+    layers: Option<Arc<MapLayers>>,
+    /// This context's uploaded POI icons ([`MapAnim::set_icons`]).
+    icons: Option<Arc<IconAtlas>>,
+    /// Which race lines to draw (one selector per map, `maprender::RaceSel`).
+    race_sel: RaceSel,
 }
 
 impl MapAnim {
+    pub fn set_layers(&mut self, layers: Option<Arc<MapLayers>>) {
+        self.layers = layers;
+    }
+
+    pub fn set_icons(&mut self, icons: Option<Arc<IconAtlas>>) {
+        self.icons = icons;
+    }
+
     #[cfg(test)]
     pub fn zoom(&self) -> Option<f32> {
         self.zoom
@@ -285,63 +306,80 @@ pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
 }
 
 /// Draw M2′. Returns true while the view is still easing.
+///
+/// Layers: satellite image ([`draw_base`]) → roads / race lines / POIs ([`draw_layers`], from
+/// `anim.layers`, cut to the pill's rounded corners) → markers (`map_shared`) → compass → frame.
+/// The camera (flat or tilted, `OverlayConfig::map_layers.tilt`) is shared by all of them.
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
     let (yaw, zoom) = (anim.view, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
     let (w, h) = (SIZE.x, SIZE.y);
-    let centre = xf.p(w / 2.0, h / 2.0);
-    let view = MapView::new(snap.pkt.position_x, snap.pkt.position_z, yaw, zoom, xf.l(w.min(h)));
+    let cfg = &*snap.cfg;
+    let lc = &cfg.map_layers;
+    let car = (snap.pkt.position_x, snap.pkt.position_z);
+    let rect = xf.rect(0.0, 0.0, w, h);
+    let cam = Camera::from_cfg(&lc.tilt, car, yaw, zoom, rect);
+    let view = cam.view;
 
-    // The map: fan over the frame's rounded rect, inset 0.5 px so the 3 px border (drawn
-    // after, feathered) covers the mesh's hard edge.
+    // The map shape: the frame's rounded rect, inset 0.5 px so the 3 px border (drawn after,
+    // feathered) covers the mesh's hard edge.
     let outline = prims::rounded_points(xf.rect(0.5, 0.5, w - 1.0, h - 1.0), [xf.l(RADIUS - 0.5); 4]);
-    let plate = |p: &Painter| {
-        p.add(egui::Shape::convex_polygon(outline.clone(), xf.c(col::plate(snap.cfg.plate_opacity)), egui::Stroke::NONE));
-    };
-    match map {
-        Some(tex) => {
-            let cal = calibration(snap);
-            // Mirror on: the texture wraps (MirroredRepeat), so the whole pill is textured and
-            // the reflected continuation shows past the edge. Off: the pill is cut to the image
-            // and the plate shows outside it, like the Dashboard.
-            let (shape, hub) = if snap.cfg.map_mirror_edges {
-                (outline.clone(), centre)
-            } else {
-                plate(p);
-                let quad: Vec<Pos2> = cal
-                    .image_corners(tex.orig_size)
-                    .iter()
-                    .map(|&(wx, wz, _)| {
-                        let [ox, oy] = view.world_to_offset(wx, wz);
-                        centre + vec2(ox, oy)
-                    })
-                    .collect();
-                let cut = clip_convex(&outline, &quad);
-                let hub = cut.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / cut.len().max(1) as f32;
-                (cut, hub.to_pos2())
-            };
-            if shape.len() >= 3 {
-                let mut mesh = Mesh::with_texture(tex.id);
-                let white = xf.c(Color32::WHITE);
-                let uv = |pt: Pos2| {
-                    let [u, v] = view.uv_at_offset(&cal, tex.orig_size, pt.x - centre.x, pt.y - centre.y);
-                    pos2(u, v)
-                };
-                fan(&mut mesh, hub, &shape, |pt| Vertex { pos: pt, uv: uv(pt), color: white });
-                p.add(mesh);
-            }
-            // Darken so the white marker reads over bright maps (winter more).
-            let tint = xf.c(if tex.winter { col::MAP_TINT_WINTER } else { col::MAP_TINT });
-            p.add(egui::Shape::convex_polygon(outline.clone(), tint, egui::Stroke::NONE));
+    let plate = xf.c(col::plate(cfg.map_plate_opacity));
+    if plate.a() > 0 {
+        p.add(egui::Shape::convex_polygon(outline.clone(), plate, egui::Stroke::NONE));
+    }
+    if let Some(tex) = map.filter(|_| lc.image.on) {
+        draw_base(
+            p,
+            &BaseParams {
+                cam: &cam,
+                cal: calibration(snap),
+                tex,
+                outline: &outline,
+                // Mirror on: the texture wraps (MirroredRepeat), so the whole pill is textured and
+                // the reflected continuation shows past the edge. Off: the shape is cut to the
+                // image and the plate shows outside it, like the Dashboard.
+                mirror: cfg.map_mirror_edges,
+                look: (&lc.image).into(),
+                a: xf.a,
+                // The far edge of a tilted map fades out into the plate, or the game when there is none.
+                far_fade: true,
+            },
+        );
+        // Darken so the white marker reads over bright maps (winter more), as strongly as the image shows.
+        let tint = xf.c(if tex.winter { col::MAP_TINT_WINTER } else { col::MAP_TINT }).gamma_multiply(lc.image.opacity.clamp(0.0, 1.0));
+        p.add(egui::Shape::convex_polygon(outline.clone(), tint, egui::Stroke::NONE));
+    }
+
+    // Roads, race lines, POIs: the shared renderer, vectors cut to the pill's rounded corners
+    // (safe = the rect shrunk by the corner radius, which is wholly inside the pill).
+    if lc.wants_layers() {
+        let MapAnim { layers, icons, race_sel, .. } = anim;
+        if let Some(data) = layers.as_deref() {
+            let picked = race_sel.update(&data.races, &lc.race_lines, car, snap.pkt.yaw, snap.pkt.race_position != 0);
+            let lp = p.with_clip_rect(rect);
+            draw_layers(
+                &LayerCtx {
+                    p: &lp,
+                    cam: &cam,
+                    s: xf.s,
+                    a: xf.a,
+                    car,
+                    corner_clip: Some(CornerClip { poly: &outline, safe: rect.shrink(xf.l(RADIUS)) }),
+                    icons: icons.as_deref(),
+                    race_sel: picked,
+                    week: None,
+                },
+                data,
+                lc,
+            );
         }
-        None => plate(p),
     }
 
     // Markers: the Dashboard map's drawing code (`map_shared`), clipped to the pill's inner rect.
     let inner = xf.rect(3.0, 3.0, w - 6.0, h - 6.0);
     let mp = p.with_clip_rect(inner);
-    let cv = MapCanvas { p: &mp, view: &view, centre, rect: inner, s: xf.s, a: xf.a, pause_glyph: "||" };
-    let (car, cfg) = ((snap.pkt.position_x, snap.pkt.position_z), &*snap.cfg);
+    let cv = MapCanvas { p: &mp, cam: &cam, rect: inner, taper: lc.tilt.taper, s: xf.s, a: xf.a, pause_glyph: "||" };
     let hue = |h: f32| crate::ui::coop::hue_color(h);
     let at = coop.now.unwrap_or_else(Instant::now);
     let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
@@ -384,6 +422,7 @@ fn calibration(snap: &HudSnapshot) -> MapCalibration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::minimap::MapView;
 
     #[test]
     fn compass_north_follows_map_rotation() {

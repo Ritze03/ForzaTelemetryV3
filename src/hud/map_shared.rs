@@ -4,24 +4,29 @@
 //! map, and a single drawing path means the two can't drift apart (as `draw_compass`, in
 //! `hud/minimap.rs`, already does for the compass).
 //!
-//! Everything is drawn through a [`MapCanvas`]: the painter, the [`MapView`] transform, the
-//! screen centre / bounds, a size factor (`s`: 1.0 on the Dashboard, the HUD's design→screen
-//! scale) and a fade alpha (`a`: 1.0 on the Dashboard, the HUD's show/hide fade).
+//! Everything is drawn through a [`MapCanvas`]: the painter, the [`Camera`] (the same one the
+//! shared layer renderer uses, so a tilted map's trails, teammates and waypoints sit on the
+//! tilted roads; pitch 0 is the plain [`crate::minimap::MapView`] mapping), the screen bounds, a
+//! size factor (`s`: 1.0 on the Dashboard, the HUD's design→screen scale) and a fade alpha
+//! (`a`: 1.0 on the Dashboard, the HUD's show/hide fade). Markers stay upright (arrows are not
+//! tilted); only their positions, and the trail widths, follow the perspective.
 
 use std::time::Instant;
 
 use egui::{pos2, vec2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
-use crate::minimap::{MapView, Trail};
+use crate::maprender::Camera;
+use crate::minimap::Trail;
 
 /// Where and how to draw. Cheap to build per frame.
 pub struct MapCanvas<'a> {
     pub p: &'a Painter,
-    pub view: &'a MapView,
-    /// Screen position of the car (the view centre).
-    pub centre: Pos2,
+    /// The map's camera; its `centre` is where the car is on screen.
+    pub cam: &'a Camera,
     /// Bounds markers stay in: the Dashboard widget rect, the HUD pill's rect.
     pub rect: Rect,
+    /// Trail widths shrink towards a tilted map's far edge (`TiltCfg::taper`).
+    pub taper: bool,
     /// Size factor for strokes, arrows and text.
     pub s: f32,
     /// Alpha applied to every colour.
@@ -31,9 +36,12 @@ pub struct MapCanvas<'a> {
 }
 
 impl MapCanvas<'_> {
+    /// World (x, z) → screen through the camera. A point that is not in front of a tilted camera
+    /// (far behind the car) goes far off-screen in its flat direction, so the edge markers still
+    /// point the right way.
     pub fn to_screen(&self, wx: f32, wz: f32) -> Pos2 {
-        let [ox, oy] = self.view.world_to_offset(wx, wz);
-        self.centre + vec2(ox, oy)
+        let [ox, oy] = self.cam.view.world_to_offset(wx, wz);
+        self.cam.project_offset(ox, oy).unwrap_or_else(|| self.cam.centre + vec2(ox, oy).normalized() * 1.0e5)
     }
     fn c(&self, c: Color32) -> Color32 {
         c.gamma_multiply(self.a)
@@ -66,7 +74,7 @@ fn arrow(cv: &MapCanvas, at: Pos2, angle: f32, col: Color32) {
 /// The own car: the heading arrow at the view centre, `angle` = `MapView::arrow_angle(raw yaw)`.
 /// `col` is the player's co-op colour in a session, white otherwise.
 pub fn draw_own_arrow(cv: &MapCanvas, angle: f32, col: Color32) {
-    arrow(cv, cv.centre, angle, col);
+    arrow(cv, cv.cam.centre, angle, col);
 }
 
 /// A co-op teammate to draw. A paused one is passed at its last known spot (the caller keeps
@@ -118,7 +126,9 @@ pub fn draw_trail(cv: &MapCanvas, pts: &Trail, col: Color32, fade: TrailFade, no
             continue;
         }
         let c = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
-        cv.p.line_segment([cv.to_screen(ax, az), cv.to_screen(bx, bz)], Stroke::new(2.0 * cv.s, cv.c(c)));
+        let (a, b) = (cv.to_screen(ax, az), cv.to_screen(bx, bz));
+        let k = if cv.taper { cv.cam.depth_scale_at_row((a.y + b.y) * 0.5).clamp(0.4, 1.5) } else { 1.0 };
+        cv.p.line_segment([a, b], Stroke::new(2.0 * cv.s * k, cv.c(c)));
     }
 }
 
@@ -214,6 +224,7 @@ pub fn draw_waypoint(cv: &MapCanvas, (wx, wz): (f32, f32), colour: Color32, car:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::minimap::Trail;
 
     #[test]
     fn trail_fades_by_whichever_comes_first() {
@@ -242,6 +253,73 @@ mod tests {
         // Size scales with `s`.
         let [tip, ..] = arrow_points(at, 0.0, 2.0);
         assert!((tip.y - (50.0 - 19.6)).abs() < 1e-4);
+    }
+
+    /// Run `f` with a `MapCanvas` over `rect` on a throwaway egui context; returns what it painted.
+    fn with_canvas(cam: &Camera, rect: Rect, taper: bool, f: impl FnOnce(&MapCanvas)) -> Vec<egui::epaint::ClippedShape> {
+        let ctx = egui::Context::default();
+        let mut f = Some(f);
+        ctx.run(egui::RawInput::default(), |ctx| {
+            let p = Painter::new(ctx.clone(), egui::LayerId::background(), rect);
+            let cv = MapCanvas { p: &p, cam, rect, taper, s: 1.0, a: 1.0, pause_glyph: "||" };
+            if let Some(f) = f.take() {
+                f(&cv);
+            }
+        })
+        .shapes
+    }
+
+    /// Camera parity: pitch 0 maps exactly like the pre-camera `MapView` (centre + world offset),
+    /// and a tilted camera puts markers where the layers' projection puts the same world point.
+    #[test]
+    fn canvas_maps_through_the_camera_flat_like_the_old_mapping_tilted_like_the_layers() {
+        let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(208.0, 136.0));
+        let (car, yaw) = ((1200.0f32, -800.0f32), 0.6);
+        let flat = Camera::new(car.0, car.1, yaw, 300.0, rect, rect.center(), 0.0, 1.0);
+        let old = crate::minimap::MapView::new(car.0, car.1, yaw, 300.0, 136.0);
+        let tilted = Camera::new(car.0, car.1, yaw, 300.0, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0);
+        for (wx, wz) in [(1200.0f32, -800.0f32), (1300.0, -700.0), (1100.0, -900.0), (1250.0, -650.0)] {
+            let [ox, oy] = old.world_to_offset(wx, wz);
+            with_canvas(&flat, rect, true, |cv| {
+                assert_eq!(cv.to_screen(wx, wz), rect.center() + vec2(ox, oy), "flat {wx},{wz}");
+            });
+            with_canvas(&tilted, rect, true, |cv| {
+                assert_eq!(Some(cv.to_screen(wx, wz)), tilted.project(wx, wz), "tilted {wx},{wz}");
+            });
+        }
+        // Far behind a tilted car (past the eye): off-screen in the flat direction, not NaN.
+        with_canvas(&tilted, rect, true, |cv| {
+            let behind = cv.to_screen(car.0 - 1.0e6 * yaw.sin(), car.1 - 1.0e6 * yaw.cos());
+            assert!(behind.is_finite() && behind.y > rect.bottom() + 1000.0, "{behind:?}");
+        });
+    }
+
+    #[test]
+    fn trails_and_arrows_follow_the_tilted_camera() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(208.0, 136.0));
+        let tilted = Camera::new(0.0, 0.0, 0.0, 300.0, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0);
+        let now = Instant::now();
+        // A trail straight ahead of the car, recorded just now: head at 0 m, tail 200 m behind.
+        let trail: Trail = (0..5).map(|i| (0.0, -200.0 + 50.0 * i as f32, now)).collect();
+        let fade = TrailFade::new(10.0, 500.0);
+        let widths = |taper| {
+            let shapes = with_canvas(&tilted, rect, taper, |cv| draw_trail(cv, &trail, Color32::WHITE, fade, now));
+            shapes.iter().filter_map(|s| if let egui::Shape::LineSegment { points, stroke } = &s.shape { Some((points[0], stroke.width)) } else { None }).collect::<Vec<_>>()
+        };
+        let w = widths(true);
+        assert_eq!(w.len(), 4);
+        // Segment starts are the projected world points.
+        for (i, (start, _)) in w.iter().enumerate() {
+            assert!((*start - tilted.project(0.0, -200.0 + 50.0 * i as f32).unwrap()).length() < 1e-3);
+        }
+        // Behind the car (nearer the viewer) the trail is wider than the plain 2 px; constant off.
+        assert!(w[0].1 > 2.0 && w.iter().all(|&(_, wd)| wd > 0.8));
+        assert!(widths(false).iter().all(|&(_, wd)| wd == 2.0));
+        // The own arrow sits on the camera's car position (the tilt's lowered centre).
+        let shapes = with_canvas(&tilted, rect, true, |cv| draw_own_arrow(cv, 0.0, Color32::WHITE));
+        let poly = shapes.iter().find_map(|s| if let egui::Shape::Path(p) = &s.shape { Some(p.points.clone()) } else { None }).expect("arrow polygon");
+        let c = poly.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / poly.len() as f32;
+        assert!((c.x - tilted.centre.x).abs() < 0.5 && (c.y - tilted.centre.y).abs() < 5.0, "{c:?} vs {:?}", tilted.centre);
     }
 
     #[test]

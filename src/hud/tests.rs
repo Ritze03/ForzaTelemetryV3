@@ -323,3 +323,44 @@ fn speed_hold_refreshes_at_most_every_half_second() {
     assert_eq!(hud.speed(&s, 2.01), 140);
     assert_eq!(hud.held_speed, None);
 }
+
+/// Shapes of one frame at `now` (the fade is off in the callers, so it is fully drawn at once).
+fn shapes_of(ctx: &egui::Context, hud: &mut Hud, snap: &HudSnapshot, now: f64) -> usize {
+    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0))), ..Default::default() };
+    ctx.run(raw, |ctx| {
+        let p = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
+        hud.draw(&p, ctx.content_rect(), snap, now, None, &Default::default());
+    })
+    .shapes
+    .len()
+}
+
+/// `Hud::set_layers` is how the layer data reaches the minimap (its `draw` signature is fixed):
+/// with data the minimap draws roads / POIs / race lines, without (or with every layer switched
+/// off) it does not, and the setting survives the frames in between.
+#[test]
+fn set_layers_feeds_the_minimap_and_the_toggles_switch_it_off() {
+    let layers = crate::maprender::data::MapLayers::synthetic();
+    let cfg = || OverlayConfig { fade: false, race_on: false, cluster_on: false, ..Default::default() };
+    let mut s = snap(cfg());
+    // The synthetic world is a road cross around the origin.
+    s.pkt.position_x = 0.0;
+    s.pkt.position_z = -60.0;
+    let (ctx, mut plain, mut fed) = (ctx(), Hud::default(), Hud::default());
+    let without = shapes_of(&ctx, &mut plain, &s, 1.0);
+    fed.set_layers(Some(Arc::new(layers)));
+    let with = shapes_of(&ctx, &mut fed, &s, 1.0);
+    assert!(with > without + 10, "layers drew nothing: {with} vs {without} shapes");
+    assert_eq!(shapes_of(&ctx, &mut fed, &s, 1.0 + 1.0 / 60.0), with, "stable over frames");
+    // Every layer toggle off: the data is ignored.
+    let mut off = cfg();
+    off.map_layers.roads.on = false;
+    off.map_layers.pois.on = false;
+    off.map_layers.race_lines.mode = crate::maprender::cfg::RaceLineMode::Off;
+    s.cfg = Arc::new(off);
+    assert_eq!(shapes_of(&ctx, &mut fed, &s, 1.1), shapes_of(&ctx, &mut plain, &s, 1.1));
+    // Dropping the data again (what the renderer does when no toggle is on) clears it.
+    s.cfg = Arc::new(cfg());
+    fed.set_layers(None);
+    assert_eq!(shapes_of(&ctx, &mut fed, &s, 1.2), without);
+}

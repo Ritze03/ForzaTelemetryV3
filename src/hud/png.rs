@@ -9,7 +9,7 @@
 //! pinned (`NOW`), so flash phases, fades and chips are deterministic.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use egui::{pos2, Color32, ColorImage, Painter, Vec2};
 use egui_glow::glow::{self, HasContext};
@@ -20,7 +20,13 @@ use crate::config::{ClusterStyle, DriftStyle, OverlayConfig};
 use crate::hud::map_shared::Remote;
 use crate::hud::minimap::{CoopLayer, MapAnim, MapTex};
 use crate::hud::prims::Xf;
+use crate::gamedata::poi::{week_index_now, treasure_chest_number, Poi, PoiKind};
 use crate::hud::{cluster, drift, minimap, race};
+use crate::maprender::cfg::MapLayerConfig;
+use crate::maprender::data::{MapLayers, PoiLayer};
+use crate::maprender::icontex::{synthetic_icons, IconTex};
+use crate::maprender::paint2d::IconAtlas;
+use crate::maprender::store::{LayerStatus, Layers};
 use crate::minimap::{MapCalibration, Season, OVERLAY_MAP_TEXTURE_OPTIONS};
 use crate::overlay::snapshot::{DriftChip, DriftInfo, DriveMode, HudMode, HudSnapshot, PlaceChange};
 
@@ -29,6 +35,9 @@ const NOW: f64 = 1000.05;
 /// The mockup's state tiles sit on `linear-gradient(#F6F8FA, #D5DEE7)`; this is its middle.
 const TILE_BG: Color32 = Color32::from_rgb(230, 235, 240);
 const SCREEN_BG: Color32 = Color32::from_rgb(128, 138, 150);
+/// A dark stand-in for the game behind the minimap (the user's demo setting "backdrop: dark"): the
+/// map is dimmed to 50 % over no plate, so what is behind it shows through.
+const GAME_BG: Color32 = Color32::from_rgb(11, 13, 16);
 const CAR: (f32, f32) = (1200.0, -800.0);
 
 fn out_dir() -> PathBuf {
@@ -156,12 +165,99 @@ fn synthetic_map(winter: bool) -> ColorImage {
 }
 
 /// Render one tile of a `size`-design-px widget at scale `s` and read it back.
-fn tile(r: &mut Renderer, size: Vec2, s: f32, mut draw: impl FnMut(&Painter, &Xf)) -> ColorImage {
+fn tile(r: &mut Renderer, size: Vec2, s: f32, draw: impl FnMut(&Painter, &Xf)) -> ColorImage {
+    tile_on(r, size, s, TILE_BG, draw)
+}
+
+/// [`tile`] over the background `bg`.
+fn tile_on(r: &mut Renderer, size: Vec2, s: f32, bg: Color32, mut draw: impl FnMut(&Painter, &Xf)) -> ColorImage {
     let px = [((size.x + 20.0) * s).round() as u32, ((size.y + 20.0) * s).round() as u32];
-    paint(&r.ctx, &mut r.painter, r.start, px, TILE_BG.to_normalized_gamma_f32(), |_, p| {
+    paint(&r.ctx, &mut r.painter, r.start, px, bg.to_normalized_gamma_f32(), |_, p| {
         draw(p, &Xf { o: pos2(10.0 * s, 10.0 * s), s, a: 1.0 });
     });
     r.painter.read_screen_rgba(px)
+}
+
+/// The harness's layer data: the stock synthetic road cross and race ring around the world origin,
+/// plus a POI set that exercises every drawing path (game icons, gate lines, a danger sign, the
+/// current treasure chest). With `icons` the synthetic atlas rides along like the store's.
+fn harness_layers(icons: bool) -> Arc<MapLayers> {
+    let mut m = MapLayers::synthetic();
+    let chest_no = treasure_chest_number(week_index_now()).max(1) as u32;
+    let p = |kind, name: &str, n: u32, x: f32, z: f32, gate| Poi { kind, x, z, y: 0.0, name: name.into(), n, gate };
+    let gate = |x: f32, z: f32, dx: f32, dz: f32| Some([[x - dx, z - dz], [x + dx, z + dz]]);
+    m.pois = Arc::new(PoiLayer::from_items([
+        p(PoiKind::House, "house", 0, -180.0, -60.0, None),
+        p(PoiKind::FastTravel, "ft", 0, 150.0, 60.0, None),
+        p(PoiKind::CarMeet, "meet", 0, 20.0, 150.0, None),
+        p(PoiKind::BarnFind, "barn", 0, -200.0, 120.0, None),
+        p(PoiKind::SpeedTrap, "SPEEDCAMERA_07", 7, 60.0, -120.0, gate(60.0, -120.0, 9.0, 0.0)),
+        p(PoiKind::SpeedZone, "sz_gate1", 1, -90.0, 30.0, gate(-90.0, 30.0, 0.0, 9.0)),
+        p(PoiKind::Trailblazer, "tb_gate1", 1, 120.0, 20.0, gate(120.0, 20.0, 0.0, 9.0)),
+        p(PoiKind::DriftZone, "dz_gate1", 1, -40.0, -200.0, gate(-40.0, -200.0, 9.0, 0.0)),
+        p(PoiKind::DangerSign, "bm_01", 1, 200.0, -40.0, None),
+        p(PoiKind::HorizonJob, "job", 0, -120.0, -150.0, None),
+        p(PoiKind::HorizonStory, "story", 0, 90.0, -60.0, None),
+        p(PoiKind::XpBoard, "xp", 1, 10.0, -60.0, None),
+        p(PoiKind::AftermarketSpot, "am", 0, 40.0, 220.0, None),
+        p(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{chest_no:03}"), chest_no, -60.0, 60.0, None),
+    ]));
+    if icons {
+        m.icons = Some(Arc::new(synthetic_icons()));
+    }
+    Arc::new(m)
+}
+
+/// The harness's stand-in for `maprender::layers()` (see `Renderer::layers_fn`).
+fn synthetic_store_layers() -> Layers {
+    static L: OnceLock<Layers> = OnceLock::new();
+    L.get_or_init(|| Layers { status: LayerStatus::Ready, data: Some(harness_layers(true)) }).clone()
+}
+
+/// The D62 HUD map config, flat (the tilt switched off): the old flat checks apply to it.
+fn flat_hud() -> OverlayConfig {
+    let mut layers = MapLayerConfig::hud();
+    layers.tilt.on = false;
+    OverlayConfig { map_layers: layers, ..Default::default() }
+}
+
+/// The map layers of the real install (project road types, no user override), or `None` without
+/// one. For the "real" PNG states: the look of actual roads, POIs and the game's own icons.
+fn real_layers() -> Option<Arc<MapLayers>> {
+    use crate::gamedata::roadtypes::RoadTypes;
+    let media = crate::gamedata::install::find_media(None)?;
+    let g = crate::maprender::data::GameData::load(&media).ok()?;
+    let cur = RoadTypes::current_with(RoadTypes::project(), &RoadTypes::project_sha1(), std::path::Path::new("/nonexistent"), &g.nav);
+    Some(Arc::new(g.layers(&cur, 1)))
+}
+
+/// Real-world spots worth a picture: (name, car x, z, yaw, in a race).
+fn real_spots(l: &MapLayers) -> Vec<(&'static str, f32, f32, f32, bool)> {
+    let first = |k: PoiKind| l.pois.items.iter().find(|p| p.kind == k);
+    let mut out = Vec::new();
+    // 110 m before the POI, heading at it (north-ish: yaw 0 = +z).
+    let near = |p: &Poi| (p.x, p.z - 110.0);
+    if let Some(c) = l.pois.current_chest(week_index_now()) {
+        let (x, z) = near(c);
+        out.push(("chest", x, z, 0.0, false));
+    }
+    if let Some(p) = first(PoiKind::DangerSign) {
+        let (x, z) = near(p);
+        out.push(("danger", x, z, 0.0, false));
+    }
+    if let Some(p) = first(PoiKind::SpeedZone) {
+        let (x, z) = near(p);
+        out.push(("gates", x, z, 0.0, false));
+    }
+    if let Some(p) = first(PoiKind::CarMeet) {
+        let (x, z) = near(p);
+        out.push(("carmeet", x, z, 0.6, false));
+    }
+    // On the start of the first race line, in a race.
+    if let Some(r) = l.races.lines.first() {
+        out.push(("race", r.pts[2][0], r.pts[2][1], (r.pts[3][0] - r.pts[2][0]).atan2(r.pts[3][1] - r.pts[2][1]), true));
+    }
+    out
 }
 
 fn save(img: &ColorImage, name: &str) -> Result<PathBuf, String> {
@@ -233,6 +329,7 @@ fn render_spec_states() -> Result<(), String> {
     };
     // Declared after `headless`, so it drops first (the painter needs the context).
     let mut r = Renderer::new(gl.clone(), None)?;
+    r.layers_fn = synthetic_store_layers;
     std::fs::create_dir_all(out_dir()).map_err(|e| format!("{}: {e}", out_dir().display()))?;
 
     let summer = r.ctx.load_texture("test-map-summer", synthetic_map(false), OVERLAY_MAP_TEXTURE_OPTIONS);
@@ -289,9 +386,11 @@ fn render_spec_states() -> Result<(), String> {
         ("wide", pg_state(12, Some(123_456.0), 123_456.0, true, None)),
     ];
 
-    let mut compass_off = base(OverlayConfig { compass: false, ..Default::default() });
+    // The old flat states keep the 1500 m radius their teammate positions were laid out for.
+    let zoomed_out = OverlayConfig { zoom_driving_m: 1500.0, ..flat_hud() };
+    let mut compass_off = base(OverlayConfig { compass: false, ..zoomed_out.clone() });
     compass_off.pkt.speed = 20.0;
-    let mut driving = base(OverlayConfig::default());
+    let mut driving = base(zoomed_out);
     driving.pkt.speed = 20.0;
     let mates = coop_mates(&driving);
     let none = CoopLayer::default();
@@ -301,6 +400,54 @@ fn render_spec_states() -> Result<(), String> {
         ("compass_off", compass_off, map_s, &none),
         ("coop", driving, map_s, &mates),
     ];
+
+    // Minimap states with roads, race lines, POIs and icons (D62 defaults: 300 m radius, heading-up,
+    // dimmed image, tilted), over a dark stand-in for the game. The synthetic world is a road cross
+    // around the origin; the race states put the car on its ring.
+    let lcar = |mut s: HudSnapshot, x: f32, z: f32, yaw: f32| {
+        s.pkt.position_x = x;
+        s.pkt.position_z = z;
+        s.pkt.yaw = yaw;
+        s.pkt.speed = 25.0;
+        s
+    };
+    let tilted = || base(OverlayConfig::default());
+    let flat = || base(flat_hud());
+    let mut north = OverlayConfig::default();
+    north.map_north_up = true;
+    let mut in_race = lcar(tilted(), 398.0, 20.0, 0.0);
+    in_race.pkt.race_position = 2;
+    let mut in_race_flat = lcar(flat(), 398.0, 20.0, 0.0);
+    in_race_flat.pkt.race_position = 2;
+    let free = lcar(tilted(), 0.0, -60.0, 0.6);
+    let mut hud_cfg = |f: &dyn Fn(&mut OverlayConfig)| {
+        let mut c = OverlayConfig::default();
+        f(&mut c);
+        c
+    };
+    let wide = base(hud_cfg(&|c| c.zoom_driving_m = 700.0));
+    let wide = lcar(wide, 0.0, -60.0, 0.6);
+    let layered_mates = coop_mates(&free);
+    // (name, snapshot, with icons, teammates)
+    let layered: Vec<(&str, HudSnapshot, bool, &CoopLayer)> = vec![
+        ("layers_flat", lcar(flat(), 0.0, -60.0, 0.6), true, &none),
+        ("layers_tilted", free.clone(), true, &none),
+        ("layers_tilted_markers", free.clone(), false, &none),
+        ("layers_tilted_race", in_race, true, &none),
+        ("layers_flat_race", in_race_flat, true, &none),
+        ("layers_tilted_northup", HudSnapshot { cfg: Arc::new(north), ..free.clone() }, true, &none),
+        ("layers_tilted_wide", wide, true, &none),
+        ("layers_tilted_coop", free, true, &layered_mates),
+    ];
+    let mut icon_tex = IconTex::default();
+    let atlas: Option<Arc<IconAtlas>> = icon_tex.ensure(&r.ctx, Some(&Arc::new(synthetic_icons())));
+    let layer_data = harness_layers(false);
+    // The real install's layers and icons, if there is one (a visual check only, no assertions).
+    let mut real_tex = IconTex::default();
+    let real = real_layers().map(|d| {
+        let atlas = real_tex.ensure(&r.ctx, d.icons.as_ref());
+        (d, atlas)
+    });
 
     let mut failures = Vec::new();
     let mut written = Vec::new();
@@ -438,12 +585,68 @@ fn render_spec_states() -> Result<(), String> {
             }
             written.push(save(&img, &id)?);
         }
+        for (name, snap, icons, mates) in &layered {
+            let render = |r: &mut Renderer, layers: bool| {
+                tile_on(r, minimap::SIZE, s, GAME_BG, |p, xf| {
+                    let mut anim = MapAnim::default();
+                    if layers {
+                        anim.set_layers(Some(layer_data.clone()));
+                        anim.set_icons(atlas.clone().filter(|_| *icons));
+                    }
+                    minimap::draw(p, xf, snap, NOW, &mut anim, Some(map_s), mates);
+                })
+            };
+            let img = render(&mut r, true);
+            let id = format!("m2_{name}_{sfx}");
+            if s == 1.0 {
+                // Nothing of the vectors pokes into the transparent surround of the rounded corners.
+                let bgc = [GAME_BG.r(), GAME_BG.g(), GAME_BG.b()];
+                for (cx, cy) in [(2, 2), (205, 2), (2, 133), (205, 133)] {
+                    check(&mut failures, &img, &id, (cx, cy), bgc, "rounded corner stays clear");
+                }
+                // The own arrow: at the pill's centre flat, 85 % down when tilted.
+                let tilt = snap.cfg.map_layers.tilt.on;
+                let own = if name.contains("coop") {
+                    let [r, g, b, _] = crate::ui::coop::hue_color(snap.coop_hue).to_array();
+                    [r, g, b]
+                } else {
+                    [255, 255, 255]
+                };
+                check(&mut failures, &img, &id, (104, if tilt { 114 } else { 70 }), own, "car marker");
+                // The layers changed the picture compared with the image alone.
+                let plain = render(&mut r, false);
+                let diff = img.pixels.iter().zip(&plain.pixels).filter(|(a, b)| a != b).count();
+                println!("  {id}: {diff} px differ from the image-only tile");
+                if diff < 1500 {
+                    failures.push(format!("{id}: layers barely drew ({diff} px differ)"));
+                }
+            }
+            written.push(save(&img, &id)?);
+        }
+        if let Some((data, atlas)) = &real {
+            for (name, x, z, yaw, in_race) in real_spots(data) {
+                println!("  real spot {name}: car ({x:.0}, {z:.0}) yaw {yaw:.2}");
+                let mut snap = lcar(tilted(), x, z, yaw);
+                snap.pkt.race_position = u8::from(in_race) * 3;
+                for (variant, cfg) in [("tilted", OverlayConfig::default()), ("flat", flat_hud())] {
+                    snap.cfg = Arc::new(cfg);
+                    let img = tile_on(&mut r, minimap::SIZE, s, GAME_BG, |p, xf| {
+                        let mut anim = MapAnim::default();
+                        anim.set_layers(Some(data.clone()));
+                        anim.set_icons(atlas.clone());
+                        minimap::draw(p, xf, &snap, NOW, &mut anim, Some(map_s), &none);
+                    });
+                    written.push(save(&img, &format!("m2_real_{name}_{variant}_{sfx}"))?);
+                }
+            }
+        }
     }
 
     // Full-screen composite of the default layout (map bottom-left, D1a bottom-centre, R1′
     // top-left), then with D3a′ and in drift mode.
     let mut composite = race_state(3, 2, 41.273);
     composite.cfg = Arc::new(OverlayConfig { fade: false, ..Default::default() });
+    // The default HUD map is tilted: the car sits 85 % down the pill (design y 116).
     composite.pkt.current_engine_rpm = 0.52 * 8000.0;
     composite.pkt.gear = 4;
     composite.pkt.speed = 142.0 / 3.6;
@@ -465,8 +668,9 @@ fn render_spec_states() -> Result<(), String> {
         if name == "composite_1080p" {
             let sbg = [128, 138, 150];
             let splate = over([9, 13, 21], 0.68, sbg);
-            // D1a at (868, 990), R1′ at (44, 44), M2′ at (44, 900) per D22 (margin 44).
-            for (what, (x, y)) in [("D1a plate", (868 + 178, 990 + 23)), ("R1 plate", (44 + 192, 44 + 23))] {
+            // The default layout at margin 4: D1a at (868, 1030) bottom centre, R1′ at (1720, 1030)
+            // bottom right, M2′ at (4, 940) bottom left.
+            for (what, (x, y)) in [("D1a plate", (868 + 178, 1030 + 23)), ("R1 plate", (1720 + 192, 1030 + 23))] {
                 let got = px(&img, x, y);
                 let ok = got.iter().zip(splate).all(|(a, b)| a.abs_diff(b) <= 4);
                 println!("  {name} {what} @({x},{y}): got {got:?}, want {splate:?}");
@@ -474,9 +678,9 @@ fn render_spec_states() -> Result<(), String> {
                     failures.push(format!("{name} {what}: got {got:?}, want {splate:?}"));
                 }
             }
-            let marker = px(&img, 44 + 104, 900 + 70);
+            let marker = px(&img, 4 + 104, 940 + 114);
             if marker != [255, 255, 255] {
-                failures.push(format!("{name}: map car marker at (148, 970) is {marker:?}"));
+                failures.push(format!("{name}: map car marker at (108, 1054) is {marker:?}"));
             }
             // Outside every widget: untouched backdrop.
             if px(&img, 960, 540) != sbg {
@@ -486,10 +690,10 @@ fn render_spec_states() -> Result<(), String> {
         if name == "composite_spacing_1080p" {
             let sbg = [128, 138, 150];
             let splate = over([9, 13, 21], 0.68, sbg);
-            // Map at (100, 844); D1a 30 px above it at (100, 768); R1′ at (100, 100).
+            // Map at (100, 844); D1a 30 px above it at (100, 768); R1′ bottom right at (1624, 934).
             for (what, (x, y), want) in [
                 ("D1a plate", (100 + 178, 768 + 23), splate),
-                ("R1 plate", (100 + 192, 100 + 23), splate),
+                ("R1 plate", (1624 + 192, 934 + 23), splate),
                 ("gap D1a/map", (100 + 92, 814 + 15), sbg),
                 ("left of margin", (90, 900), sbg),
             ] {

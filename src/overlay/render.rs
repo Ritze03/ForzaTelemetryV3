@@ -12,6 +12,7 @@ use egui_glow::glow;
 use super::snapshot::{hud_clock, HudSnapshot};
 use crate::coop::CoopReader;
 use crate::hud::minimap::{CoopInput, CoopLayer, MapLoader};
+use crate::maprender::icontex::IconTex;
 use crate::hud::{fonts, Hud};
 
 pub struct Renderer {
@@ -24,6 +25,12 @@ pub struct Renderer {
     coop: Option<CoopReader>,
     /// What M2′ draws from the session: teammates, trails, waypoints.
     layer: CoopLayer,
+    /// The POI icons uploaded into this context's own texture store (no GL object is shared
+    /// with the Dashboard's context, only the decoded pixels in `maprender`'s store).
+    icons: IconTex,
+    /// Where the layer data comes from: the process-wide store; the PNG harness swaps in a
+    /// fixed synthetic set (no install needed, deterministic).
+    layers_fn: fn() -> crate::maprender::store::Layers,
 }
 
 impl Renderer {
@@ -33,7 +40,7 @@ impl Renderer {
         let painter = egui_glow::Painter::new(gl, "", None, true).map_err(|e| format!("egui_glow: {e}"))?;
         let ctx = egui::Context::default();
         fonts::install(&ctx);
-        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default(), coop, layer: CoopLayer::default() })
+        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default(), coop, layer: CoopLayer::default(), icons: IconTex::default(), layers_fn: crate::maprender::layers })
     }
 
     /// Draw one frame of `size` physical px. Returns true while an animation still needs
@@ -46,7 +53,7 @@ impl Renderer {
     /// [`Self::frame`] at a pinned `now` ([`hud_clock`] seconds) over a premultiplied
     /// `clear` colour (the PNG harness renders over an opaque backdrop).
     fn frame_at(&mut self, size: [u32; 2], snapshot: Option<&HudSnapshot>, test_pattern: bool, now: f64, clear: [f32; 4]) -> bool {
-        let (hud, map, coop, layer) = (&mut self.hud, &mut self.map, &self.coop, &mut self.layer);
+        let (hud, map, coop, layer, icons, layers_fn) = (&mut self.hud, &mut self.map, &self.coop, &mut self.layer, &mut self.icons, self.layers_fn);
         paint(&self.ctx, &mut self.painter, self.start, size, clear, |ctx, p| {
             if test_pattern {
                 draw_test_pattern(p, ctx.content_rect(), ctx.cumulative_pass_nr());
@@ -56,6 +63,17 @@ impl Renderer {
             // Co-op layer: teammates, trails, waypoints (empty without a session or with the
             // minimap off). The overlay thread records the trails itself, see `CoopLayer`.
             layer.update(coop.as_ref().map(coop_input), snap, Instant::now());
+            // Roads / POIs / race lines from the process-wide store, polled here on the overlay
+            // thread (the UI frame loop stops while the game covers the window). Only asked for
+            // while the minimap draws a layer, so nothing loads for a user who never enables one.
+            if snap.cfg.minimap_on && snap.cfg.map_layers.wants_layers() {
+                let l = layers_fn();
+                hud.set_icons(icons.ensure(ctx, l.data.as_ref().and_then(|d| d.icons.as_ref())));
+                hud.set_layers(l.data);
+            } else {
+                hud.set_layers(None);
+                hud.set_icons(icons.ensure(ctx, None));
+            }
             hud.draw(p, ctx.content_rect(), snap, now, tex, layer)
         })
     }

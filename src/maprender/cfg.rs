@@ -353,8 +353,11 @@ impl Default for ImageCfg {
 }
 
 /// The tilted view: a flat perspective of the 2D map (D65). `perspective_px` is the eye
-/// distance in px of the map at scale 1, `car_y` where the car sits on the view's height
-/// (0 = top, 1 = bottom).
+/// distance in px for a view as tall as the HUD pill (136 px); a taller view scales it with its
+/// height (`Camera::focal_for`), so the same settings give the same picture on both maps.
+/// `car_y` is where the car sits on the view's height (0 = top, 1 = bottom). `taper`: line
+/// widths shrink towards the far edge with the perspective (the demo's CSS tilt does it by
+/// construction); off = constant widths.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(default)]
 pub struct TiltCfg {
@@ -362,11 +365,12 @@ pub struct TiltCfg {
     pub angle_deg: f32,
     pub perspective_px: f32,
     pub car_y: f32,
+    pub taper: bool,
 }
 
 impl Default for TiltCfg {
     fn default() -> Self {
-        Self { on: false, angle_deg: 55.0, perspective_px: 200.0, car_y: 0.85 }
+        Self { on: false, angle_deg: 55.0, perspective_px: 200.0, car_y: 0.85, taper: true }
     }
 }
 

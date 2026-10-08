@@ -8,9 +8,10 @@
 // I27's Setup card reads (`Current::note` & co, `Elevation::valid_fraction`) or nothing does yet
 // (`Nav::edges`, `RoadType::from_index`, `Terrain` stats). Remove them as those land.
 pub mod burg;
-// BC7 decoder + the POI icon atlas (I28b): `PoiIcons::load` is what the next renderer task (I29b)
-// calls; nothing consumes them yet.
-#[allow(dead_code)]
+// BC7 decoder + the POI icon atlas (I28b): `PoiIcons::load` runs on the map loader thread
+// (`maprender::data::GameData::load`, I29b) and both maps upload the atlas. `icons` keeps its allow
+// for what only tests and the table's documentation read (`RaceClass::ALL`, `IconRow::basis`,
+// `PoiIcons::size`).
 pub mod bc7;
 pub mod cars;
 #[allow(dead_code)]
@@ -21,11 +22,10 @@ pub mod lz4;
 pub mod nav;
 #[allow(dead_code)]
 pub mod pgzp;
-// POIs and race lines (I28): consumed by the map renderer (`maprender::data`, I29a). The allows stay
-// for what it doesn't read yet (checked with I29a merged: removing them warns): `Poi::{y, name, n,
-// gate}`, `Region`, `Pois::{of, current_treasure_chest, load_danger_signs}` + the week helpers
-// (I29b wires the danger signs, chest and gate lines), `racelines::race_pins` and the unread
-// `RaceLine` fields.
+// POIs and race lines (I28): consumed by the map renderer (`maprender`, I29a / I29b: danger signs,
+// the current chest, gate lines). The allows stay for what it doesn't read yet (checked with I29b:
+// removing them warns): `Poi::y`, `Region`, `Pois::of`, `racelines::race_pins` and the
+// unread `RaceLine` fields.
 #[allow(dead_code)]
 pub mod poi;
 pub mod process;

@@ -5,6 +5,7 @@
 //! cfg      MapLayerConfig and friends: what a map draws (serde; Dashboard + HUD defaults, D62)
 //! data     render-ready layer data: road chains per type, POIs + cell grid, race lines + segment grid
 //! store    process-wide loader / cache of that data (thread "map-layers"), keyed on install + override file
+//! icontex  the POI icon atlas uploaded per egui context (Dashboard and HUD each have their own)
 //! view     Camera (flat or tilted), world boxes, thinning, polygon clipping
 //! style    draw order, zoom-dependent widths, dash patterns, the POI category table
 //! racesel  which race lines to draw ("current race" is a best-effort guess)
@@ -29,11 +30,14 @@
 //!   the one phase K's GL 3D scene reuses; pitch 0 is exactly `minimap::MapView`.
 //! * **Turnarounds are never drawn (D52)**: they exist so the game's AI can route, not for
 //!   people; no setting exists for them.
-//! * **POI icons are a hook (D64).** `paint2d::IconAtlas` is a texture id plus a UV rect per
-//!   category; without one, coloured markers are drawn.
+//! * **POI icons (D64).** The loader thread reads the game's icons once (`MapLayers::icons`, CPU
+//!   pixels); each context uploads them itself (`icontex::IconTex`, no GL object is shared) into
+//!   a `paint2d::IconAtlas`: a texture id plus a UV rect per category. A category without an
+//!   icon, or no icons at all, is drawn as a coloured shape marker.
 
 pub mod cfg;
 pub mod data;
+pub mod icontex;
 pub mod paint2d;
 pub mod racesel;
 pub mod store;

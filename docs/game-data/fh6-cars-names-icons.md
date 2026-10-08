@@ -126,7 +126,7 @@ draws that icon for the map-element type tag whose name matches the category), 7
 
 ### Rust icon reader (`src/gamedata/icons.rs`, `src/gamedata/bc7.rs`, I28b)
 
-Nothing consumes it yet (the map renderer, I29b, will). Egui-free, std + the `zip` crate already in use, **no new crate, nothing bundled** (the art is Playground Games'; it is
+Consumed by the map renderer since I29b: the `map-layers` loader thread reads it once (`maprender::data::GameData::load`) and each egui context (Dashboard, HUD overlay) uploads the atlas itself (`maprender::icontex`); race pins use the route's class from the user's hand marks, mascots their region. Egui-free, std + the `zip` crate already in use, **no new crate, nothing bundled** (the art is Playground Games'; it is
 read from the user's install at runtime).
 
 ```rust

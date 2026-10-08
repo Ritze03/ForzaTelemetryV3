@@ -85,15 +85,25 @@ pub enum Shape {
 /// One POI category. `id` is the name used in the config (the demo's category names).
 pub struct PoiCat {
     pub id: &'static str,
-    /// The reader's kind; `None` while the reader does not produce it yet (danger signs and the
-    /// current-season treasure chest come with the icon task): the config bit is ready.
+    /// The reader's kind. `None` for a category that is not a kind of its own: the current
+    /// treasure chest (`treasure_chest_current`) is one of the `TreasureChest` /
+    /// `TreasureChestBoard` items, picked by the week (`PoiLayer::current_chest`).
     pub kind: Option<PoiKind>,
+    /// Whose game icon the category draws when it is not `kind`'s own.
+    pub icon: Option<PoiKind>,
     pub color: Rgb,
     pub shape: Shape,
 }
 
+impl PoiCat {
+    /// The kind whose game icon this category shows.
+    pub fn icon_kind(&self) -> Option<PoiKind> {
+        self.icon.or(self.kind)
+    }
+}
+
 const fn cat(id: &'static str, kind: Option<PoiKind>, color: u32, shape: Shape) -> PoiCat {
-    PoiCat { id, kind, color: Rgb::hex(color), shape }
+    PoiCat { id, kind, icon: None, color: Rgb::hex(color), shape }
 }
 
 use PoiKind as K;
@@ -133,15 +143,39 @@ pub static POI_CATS: &[PoiCat] = &[
     cat("flag_rush_flag", Some(K::FlagRushFlag), 0x4ade80, Diamond),
     cat("treasure_chest_board", Some(K::TreasureChestBoard), 0xfde047, Square),
     cat("treasure_chest", Some(K::TreasureChest), 0xfde047, Diamond),
-    cat("treasure_chest_current", None, 0xfde047, Diamond),
+    PoiCat { id: "treasure_chest_current", kind: None, icon: Some(K::TreasureChest), color: Rgb::hex(0xfde047), shape: Diamond },
     cat("xp_board", Some(K::XpBoard), 0xa3e635, Square),
     cat("mascot", Some(K::Mascot), 0xf0abfc, Circle),
     cat("speed_trap", Some(K::SpeedTrap), 0x38bdf8, Diamond),
     cat("speed_zone", Some(K::SpeedZone), 0x38bdf8, Square),
     cat("trailblazer", Some(K::Trailblazer), 0x34d399, Square),
     cat("drift_zone", Some(K::DriftZone), 0xfb923c, Square),
-    cat("danger_sign", None, 0xf87171, Diamond),
+    cat("danger_sign", Some(K::DangerSign), 0xf87171, Diamond),
 ];
+
+/// The current treasure chest is drawn this much bigger than the other POIs.
+pub const CURRENT_CHEST_SCALE: f32 = 1.5;
+
+/// Gate lines (speed zone / trailblazer / drift zone / speed trap): line width in px at scale 1,
+/// and the shortest drawn length (a gate is ~10-20 m wide: sub-pixel at 5 km, so it is
+/// stretched to at least this, about its midpoint).
+pub const GATE_PX: f32 = 2.5;
+pub const GATE_CASING_PX: f32 = 1.5;
+pub const GATE_MIN_LEN_PX: f32 = 7.0;
+
+// ── tilt ─────────────────────────────────────────────────────────────────────────────────────
+
+/// The tilted map fades into the backing over this share of the view's height at its far edge
+/// (the demo's `H * 0.3`).
+pub const FAR_FADE_FRAC: f32 = 0.3;
+
+/// Depth taper: line widths scale with the perspective factor at their screen row, quantised to
+/// this many bands (one `Shape` per band piece).
+pub const TAPER_BANDS: usize = 8;
+
+/// POIs shrink with the perspective but never below this share of their size (else far icons
+/// become specks).
+pub const POI_MIN_K: f32 = 0.4;
 
 /// The category index of a config id.
 pub fn cat_index(id: &str) -> Option<usize> {
@@ -234,6 +268,12 @@ mod tests {
         for n in crate::maprender::cfg::POI_DEFAULT_ON {
             assert!(cat_index(n).is_some(), "{n}");
         }
+        // Danger signs are a kind of their own now; the current chest is not (it is one of the
+        // chests, picked by the week) but shows the chest's icon.
+        let by = |id: &str| &POI_CATS[cat_index(id).unwrap()];
+        assert_eq!(by("danger_sign").kind, Some(PoiKind::DangerSign));
+        assert_eq!((by("treasure_chest_current").kind, by("treasure_chest_current").icon_kind()), (None, Some(PoiKind::TreasureChest)));
+        assert_eq!(by("treasure_chest").icon_kind(), Some(PoiKind::TreasureChest));
         let m = cat_mask(&["house".into(), "nope".into(), "danger_sign".into()]);
         assert_eq!(m.count_ones(), 2);
         assert_ne!(m & (1 << cat_index("house").unwrap()), 0);

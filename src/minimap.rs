@@ -288,6 +288,7 @@ impl MapView {
     }
 
     /// Texture UV under a screen offset: for building map meshes of any shape (quad, fan, pill).
+    #[cfg(test)] // the maps get their UVs from `maprender::Camera::unproject` + `world_to_uv` now
     pub fn uv_at_offset(&self, cal: &MapCalibration, orig_size: [u32; 2], sx: f32, sy: f32) -> [f32; 2] {
         let [wx, wz] = self.offset_to_world(sx, sy);
         cal.world_to_uv(wx, wz, orig_size)

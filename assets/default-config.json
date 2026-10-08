@@ -250,5 +250,10 @@
   "coop_list_distance": true,
   "coop_list_speed": true,
   "coop_list_gear": false,
-  "coop_list_class": true
+  "coop_list_class": true,
+  "overlay": {
+    "zoom_driving_m": 300.0,
+    "map_north_up": false,
+    "map_plate_opacity": 0.0
+  }
 }

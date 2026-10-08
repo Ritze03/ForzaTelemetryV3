@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::gamedata::icons::{PoiIcons, RaceClass};
 use crate::gamedata::nav::Nav;
 use crate::gamedata::poi::{Poi, PoiKind, Pois};
 use crate::gamedata::racelines::{self, RaceLine};
@@ -200,6 +201,9 @@ pub struct PoiLayer {
     /// `style::POI_CATS` index per item ([`NO_CAT`] = kind the renderer has no category for).
     pub cat: Vec<u8>,
     pub grid: CellGrid,
+    /// The treasure chests (`TreasureChest` + `TreasureChestBoard`), kept apart so the one that
+    /// is current this week can be picked ([`PoiLayer::current_chest`]).
+    pub chests: Pois,
 }
 
 pub const NO_CAT: u8 = u8::MAX;
@@ -213,17 +217,30 @@ impl PoiLayer {
 
     pub fn from_items(items: impl IntoIterator<Item = Poi>) -> PoiLayer {
         let by_kind: HashMap<PoiKind, u8> = super::style::POI_CATS.iter().enumerate().filter_map(|(i, c)| c.kind.map(|k| (k, i as u8))).collect();
-        let mut l = PoiLayer { items: Vec::new(), cat: Vec::new(), grid: CellGrid::new(250.0) };
+        let mut l = PoiLayer { items: Vec::new(), cat: Vec::new(), grid: CellGrid::new(250.0), chests: Pois::default() };
         for p in items {
-            let Some(&cat) = by_kind.get(&p.kind) else { continue };
             if !(p.x.abs() <= POI_LIMIT_M && p.z.abs() <= POI_LIMIT_M) {
                 continue;
             }
+            if matches!(p.kind, PoiKind::TreasureChest | PoiKind::TreasureChestBoard) {
+                l.chests.items.push(p.clone());
+            }
+            let Some(&cat) = by_kind.get(&p.kind) else { continue };
             l.grid.insert(l.items.len() as u32, p.x, p.z);
             l.cat.push(cat);
             l.items.push(p);
         }
         l
+    }
+}
+
+impl PoiLayer {
+    /// The treasure chest that is current in game week `week` (`week_index_now()`), by the
+    /// inferred weekly rule of `Pois::current_treasure_chest` (unverified, see
+    /// `docs/features/minimap.md`). Cheap (a few dozen chests), so the renderer asks every frame
+    /// and picks up the Thursday 14:30 UTC rollover without any timer.
+    pub fn current_chest(&self, week: i64) -> Option<&Poi> {
+        self.chests.current_treasure_chest(week)
     }
 }
 
@@ -292,10 +309,46 @@ pub struct MapLayers {
     pub roads: Arc<RoadLayer>,
     pub pois: Arc<PoiLayer>,
     pub races: Arc<RaceLayer>,
+    /// The game's POI icons (CPU pixels, read once on the loader thread so both maps get the same
+    /// data; each map uploads them into its own egui context, see `maprender::icontex`). `None`
+    /// when they could not be read: the maps draw shape markers.
+    pub icons: Option<Arc<PoiIcons>>,
+    /// Race class per route id for the race pin icons: the user's race marks (`RoadTypes::races`)
+    /// combined with circuit / sprint of the route's line. Routes without a mark are absent.
+    pub race_class: Arc<HashMap<u32, RaceClass>>,
     /// Why the project road data is used instead of the user's saved file, if so
     /// (`roadtypes::Current::note`).
-    #[allow(dead_code)] // shown by the layers UI (I29b)
+    #[allow(dead_code)] // shown by the layers UI (I29c)
     pub note: Option<String>,
+}
+
+/// The race class a route's pin icon is drawn with, from the user's mark (`road`, `street`,
+/// `rally`, `cross_country`, `touge`, `drag`; `story` / `wristband` have no class icon) and
+/// whether the route is a circuit. The mapping `rally` -> mixed surface is a guess: the marks are
+/// the user's own hand classification (`docs/game-data/fh6-map-tooling.md`), not the game's.
+pub fn race_class_of(mark: &str, circuit: bool) -> Option<RaceClass> {
+    let pick = |p2p, circ| Some(if circuit { circ } else { p2p });
+    match mark {
+        "road" => pick(RaceClass::AsphaltP2p, RaceClass::AsphaltCircuit),
+        "rally" => pick(RaceClass::MixedsurfaceP2p, RaceClass::MixedsurfaceCircuit),
+        "cross_country" => pick(RaceClass::CrosscountryP2p, RaceClass::CrosscountryCircuit),
+        "street" => Some(RaceClass::Streetracing),
+        "touge" => Some(RaceClass::Touge),
+        "drag" => Some(RaceClass::Dragracing),
+        _ => None,
+    }
+}
+
+/// [`race_class_of`] for every marked route that has a race line.
+fn race_classes(races: &RaceLayer, marks: &[(String, serde_json::Value)]) -> HashMap<u32, RaceClass> {
+    let circuit: HashMap<u32, bool> = races.lines.iter().map(|l| (l.route, l.circuit)).collect();
+    marks
+        .iter()
+        .filter_map(|(k, v)| {
+            let route: u32 = k.parse().ok()?;
+            Some((route, race_class_of(v.as_str()?, *circuit.get(&route)?)?))
+        })
+        .collect()
 }
 
 /// The parts that only change when the install does.
@@ -303,6 +356,7 @@ pub struct GameData {
     pub nav: Nav,
     pub pois: Arc<PoiLayer>,
     pub races: Arc<RaceLayer>,
+    pub icons: Option<Arc<PoiIcons>>,
     /// Sources the readers skipped (a game update that moved a file costs one category); logged.
     pub skipped: Vec<String>,
 }
@@ -311,16 +365,50 @@ impl GameData {
     /// Read nav, POIs and race lines from `<install>/media`. Only the nav is required; a POI /
     /// race-line failure leaves that layer empty and is listed in `skipped`.
     pub fn load(media: &Path) -> Result<GameData, String> {
+        // The icons (~25 ms) and the danger signs (0.13-0.5 s, they live in the 40 GB GeoChunk0)
+        // are read on their own threads next to the nav, so they add nothing to the first load.
+        let (icons, danger, core) = std::thread::scope(|s| {
+            let icons = s.spawn(|| PoiIcons::load(media));
+            let danger = s.spawn(|| Pois::load_danger_signs(media));
+            let core = Self::load_core(media);
+            (icons.join(), danger.join(), core)
+        });
+        let (nav, mut pois, races, mut skipped) = core?;
+        match danger {
+            Ok(Ok(signs)) => pois.items.extend(signs),
+            Ok(Err(e)) => skipped.push(format!("danger signs: {e}")),
+            Err(_) => skipped.push("danger signs: the reader panicked".into()),
+        }
+        let icons = match icons {
+            Ok(Ok(i)) => {
+                skipped.extend(i.skipped.iter().map(|s| format!("icon {s}")));
+                Some(Arc::new(i))
+            }
+            Ok(Err(e)) => {
+                skipped.push(format!("POI icons: {e}"));
+                None
+            }
+            Err(_) => {
+                skipped.push("POI icons: the reader panicked".into());
+                None
+            }
+        };
+        Ok(GameData { nav, pois: Arc::new(PoiLayer::from_pois(&pois)), races: Arc::new(races), icons, skipped })
+    }
+
+    /// Nav, the POIs of `Pois::load` and the race lines, with what the readers skipped.
+    #[allow(clippy::type_complexity)]
+    fn load_core(media: &Path) -> Result<(Nav, Pois, RaceLayer, Vec<String>), String> {
         let nav = Nav::load(media)?;
         let mut skipped = Vec::new();
         let pois = match Pois::load(media) {
             Ok(p) => {
                 skipped.extend(p.skipped.iter().cloned());
-                PoiLayer::from_pois(&p)
+                p
             }
             Err(e) => {
                 skipped.push(format!("POIs: {e}"));
-                PoiLayer::default()
+                Pois::default()
             }
         };
         let races = match racelines::load_all(media, RACE_STEP_M) {
@@ -333,7 +421,7 @@ impl GameData {
                 RaceLayer::default()
             }
         };
-        Ok(GameData { nav, pois: Arc::new(pois), races: Arc::new(races), skipped })
+        Ok((nav, pois, races, skipped))
     }
 
     /// Roads for the road-type data `cur` (the user's saved file or the project's).
@@ -343,6 +431,8 @@ impl GameData {
             roads: Arc::new(build_roads(&self.nav, &cur.types)),
             pois: self.pois.clone(),
             races: self.races.clone(),
+            icons: self.icons.clone(),
+            race_class: Arc::new(race_classes(&self.races, &cur.types.races)),
             note: cur.note.clone(),
         }
     }
@@ -397,7 +487,7 @@ impl MapLayers {
             bbox: [-400.0, -300.0, 400.0, 300.0],
             pts: ring,
         };
-        MapLayers { rev: 1, roads: Arc::new(roads), pois: Arc::new(pois), races: Arc::new(RaceLayer::new(vec![line])), note: None }
+        MapLayers { rev: 1, roads: Arc::new(roads), pois: Arc::new(pois), races: Arc::new(RaceLayer::new(vec![line])), ..Default::default() }
     }
 }
 
@@ -524,6 +614,50 @@ mod tests {
         assert_eq!(got, 2);
     }
 
+    #[test]
+    fn danger_signs_have_a_category_and_chests_are_kept_for_the_week_pick() {
+        let p = |kind, name: &str, x| Poi { kind, x, z: 0.0, y: 0.0, name: name.into(), n: 0, gate: None };
+        let l = PoiLayer::from_items([
+            p(PoiKind::DangerSign, "bm_01", 10.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_015", -50.0),
+            p(PoiKind::TreasureChestBoard, "treasure_chest_board_016", 50.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_017", 99_999.0), // off the map
+        ]);
+        let cats: Vec<&str> = l.cat.iter().map(|&c| super::super::style::POI_CATS[c as usize].id).collect();
+        assert_eq!(cats, ["danger_sign", "treasure_chest", "treasure_chest_board"]);
+        assert_eq!(l.chests.items.len(), 2);
+        // chest number = week - 53; the board wins a tie, a week past the newest chest keeps the newest.
+        assert_eq!(l.current_chest(68).map(|c| c.x), Some(-50.0));
+        assert_eq!(l.current_chest(69).map(|c| c.x), Some(50.0));
+        assert_eq!(l.current_chest(80).map(|c| c.x), Some(50.0));
+        assert!(l.current_chest(10).is_none());
+        // The weekly rollover: the Thursday 14:30 UTC the chest numbers move on (week 68 -> 69).
+        use crate::gamedata::poi::{week_index_at, WEEK_EPOCH};
+        let thu = WEEK_EPOCH + 69 * 604_800;
+        assert_eq!((week_index_at(thu - 1), week_index_at(thu)), (68, 69));
+        assert_eq!((l.current_chest(week_index_at(thu - 1)).map(|c| c.x), l.current_chest(week_index_at(thu)).map(|c| c.x)), (Some(-50.0), Some(50.0)));
+    }
+
+    #[test]
+    fn race_class_follows_the_users_mark_and_the_routes_shape() {
+        use RaceClass::*;
+        assert_eq!(race_class_of("road", false), Some(AsphaltP2p));
+        assert_eq!(race_class_of("road", true), Some(AsphaltCircuit));
+        assert_eq!(race_class_of("rally", true), Some(MixedsurfaceCircuit));
+        assert_eq!(race_class_of("cross_country", false), Some(CrosscountryP2p));
+        assert_eq!((race_class_of("street", true), race_class_of("touge", false), race_class_of("drag", false)), (Some(Streetracing), Some(Touge), Some(Dragracing)));
+        assert_eq!((race_class_of("story", false), race_class_of("wristband", true), race_class_of("", true)), (None, None, None));
+        // Per route: marks of routes without a line, unmarked routes and non-string marks are absent.
+        let layers = MapLayers::synthetic(); // one circuit, route 1
+        let marks = vec![
+            ("1".to_string(), serde_json::json!("road")),
+            ("2".to_string(), serde_json::json!("road")),
+            ("x".to_string(), serde_json::json!("road")),
+            ("1000".to_string(), serde_json::json!(5)),
+        ];
+        assert_eq!(race_classes(&layers.races, &marks), HashMap::from([(1, AsphaltCircuit)]));
+    }
+
     /// The numbers of the design scout on the real install, with the project road-type data
     /// (a user's saved file would change them, so it is not consulted).
     #[test]
@@ -553,6 +687,11 @@ mod tests {
         assert!(l.pois.items.iter().all(|p| p.x.abs() <= POI_LIMIT_M && p.z.abs() <= POI_LIMIT_M));
         let parking = l.pois.items.iter().filter(|p| p.kind == PoiKind::Parking).count();
         assert_eq!(parking, 2664 - 11);
+        // The danger signs of the GeoChunk and the game's icons came with the load.
+        assert_eq!(l.pois.items.iter().filter(|p| p.kind == PoiKind::DangerSign).count(), 15);
+        let icons = l.icons.as_ref().expect("POI icons");
+        assert!(icons.uv.contains_key(&PoiKind::DangerSign) && icons.uv.contains_key(&PoiKind::TreasureChest));
+        assert!(l.pois.current_chest(crate::gamedata::poi::week_index_now()).is_some(), "a current chest this week");
         // Race lines: 170 routes, 43 circuits, ~171 k points at 5 m.
         assert_eq!(l.races.lines.len(), 170);
         assert_eq!(l.races.lines.iter().filter(|r| r.circuit).count(), 43);
