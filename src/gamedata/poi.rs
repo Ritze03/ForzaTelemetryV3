@@ -260,14 +260,15 @@ impl Pois {
     ///
     /// **The weekly mapping is inferred, not read from a file.** The install has no date or
     /// season field for the chests (see "Seasonal / weekly Festival Playlist verdict" in
-    /// `fh6-game-files.md`). The evidence: the user saw chest 015 current on 2026-10-03; the
-    /// Festival Playlist series are 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun, 16 Jul,
+    /// `fh6-game-files.md`). The evidence (one data point): the user found the current
+    /// chest in game on 2026-10-08 just after 14:30 UTC (week 69) at (3137.8, -4126.4), which is
+    /// `DISCOUNT_BOARD_TREASURE_CHEST_017` at (3149, -4153), so chest = week - 52. The Festival Playlist series are 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun, 16 Jul,
     /// 13 Aug, 10 Sep, 8 Oct 2026) and the chests come four per series (004-007 from 16 Jul, ...,
     /// 012-015 from 10 Sep, 016-019 added by the 6 Oct update for the 8 Oct series), so one chest
-    /// per week: 015 = the week of Thursday 1 Oct 2026 14:30 UTC, which is exactly week 68 of the
-    /// weekly epoch `minimap::current_season` uses. *Why not "the highest number" like the map
+    /// per week: 016 = the week of Thursday 1 Oct 2026 14:30 UTC (week 68 of the weekly epoch
+    /// `minimap::current_season` uses), 017 = week 69 from 8 Oct. *Why not "the highest number" like the map
     /// viewer:* since the 6 Oct update the file holds 016-019 ahead of time, so the highest is
-    /// three weeks too new. To re-check: 016 should go live at 2026-10-08 14:30 UTC.
+    /// three weeks too new. Next check: 018 should go live at 2026-10-15 14:30 UTC (week 70).
     pub fn current_treasure_chest(&self, week: i64) -> Option<&Poi> {
         let wanted = treasure_chest_number(week);
         self.items
@@ -331,8 +332,8 @@ impl Pois {
 /// value `minimap::current_season` rotates the map skin by).
 pub const WEEK_EPOCH: i64 = 1_749_738_600;
 const WEEK_SECS: i64 = 604_800;
-/// Chest number minus week index: chest 015 is week 68 (the week from Thursday 2026-10-01 14:30 UTC).
-const TREASURE_CHEST_WEEK_OFFSET: i64 = 53;
+/// Chest number minus week index: chest 017 is week 69 (the week from Thursday 2026-10-08 14:30 UTC; seen in game).
+const TREASURE_CHEST_WEEK_OFFSET: i64 = 52;
 
 /// Weekly rotation index at Unix time `unix` (0 = the week from [`WEEK_EPOCH`]; negative before it).
 pub fn week_index_at(unix: i64) -> i64 {
@@ -857,11 +858,12 @@ mod tests {
         assert_eq!(week_index_at(WEEK_EPOCH - 1), -1);
         assert_eq!(week_index_at(1_790_864_999), 67);
         assert_eq!(week_index_at(1_790_865_000), 68);
-        assert_eq!(week_index_at(1_791_469_799), 68, "2026-10-08 14:29:59 UTC is still chest 015's week");
+        assert_eq!(week_index_at(1_791_469_799), 68, "2026-10-08 14:29:59 UTC is still chest 016's week");
         assert_eq!(week_index_at(1_791_469_800), 69);
-        // the user's observation: chest 015 was current on 2026-10-03 (week 68); 016 goes live a week later
-        assert_eq!(treasure_chest_number(68), 15);
-        assert_eq!(treasure_chest_number(69), 16);
+        // the user's observation: chest 017 was current just after 2026-10-08 14:30 UTC (week 69); 018 a week later
+        assert_eq!(treasure_chest_number(68), 16);
+        assert_eq!(treasure_chest_number(69), 17);
+        assert_eq!(treasure_chest_number(70), 18);
     }
 
     #[test]
@@ -870,20 +872,20 @@ mod tests {
         let mut p = Pois::default();
         assert!(p.current_treasure_chest(68).is_none());
         p.items.push(chest(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_3", 1.0));
-        for (n, x) in [("004", 2.0), ("015", 3.0), ("006", 4.0), ("016", 5.0), ("019", 6.0)] {
+        for (n, x) in [("004", 2.0), ("016", 3.0), ("006", 4.0), ("017", 5.0), ("019", 6.0)] {
             p.items.push(chest(PoiKind::TreasureChestBoard, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{n}"), x));
         }
         p.items.push(chest(PoiKind::CarMeet, "DISCOUNT_BOARD_TREASURE_CHEST_099", 9.0)); // other kinds are ignored
         let at = |week| p.current_treasure_chest(week).map(|c| c.x);
-        assert_eq!(at(68), Some(3.0), "week 68 = chest 015");
-        assert_eq!(at(69), Some(5.0), "the next week: 016");
-        assert_eq!(at(72), Some(6.0), "019");
+        assert_eq!(at(68), Some(3.0), "week 68 = chest 016");
+        assert_eq!(at(69), Some(5.0), "the next week: 017");
+        assert_eq!(at(71), Some(6.0), "019");
         assert_eq!(at(100), Some(6.0), "past the file: the newest it has");
-        assert_eq!(at(57), Some(2.0), "57 - 53 = 4: board 004");
-        assert_eq!(at(56), Some(1.0), "chest 3 only exists as a Ribbon chest");
-        assert_eq!(at(55), None, "nothing at or below 2");
+        assert_eq!(at(56), Some(2.0), "56 - 52 = 4: board 004");
+        assert_eq!(at(55), Some(1.0), "chest 3 only exists as a Ribbon chest");
+        assert_eq!(at(54), None, "nothing at or below 2");
         // a tie goes to the board (the viewer lists boards first)
-        p.items.push(chest(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_15", 7.0));
+        p.items.push(chest(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_16", 7.0));
         assert_eq!(p.current_treasure_chest(68).map(|c| c.x), Some(3.0));
         assert_eq!(trailing_number("DISCOUNT_BOARD_TREASURE_CHEST_015"), Some(15));
         assert_eq!(trailing_number("no_number_"), None);
@@ -1020,11 +1022,11 @@ mod tests {
         // the only off-map items: 11 parking areas at z ~ 18.2-18.4 km (the same off-map band as race routes 102 / 103)
         assert!(far.len() == 11 && far.iter().all(|i| i.kind == Parking && i.z > 18000.0), "{far:?}");
 
-        // the install holds chests 001-019 (the 6 Oct update added 016-019); week 68 (from 2026-10-01) = 015, the next week 016
-        let c = p.current_treasure_chest(68).expect("a chest");
-        assert_eq!((c.kind, c.name.as_str()), (TreasureChestBoard, "DISCOUNT_BOARD_TREASURE_CHEST_015"));
-        assert!(near(c, -1179.3, -8341.3), "{c:?}");
-        assert_eq!(p.current_treasure_chest(69).map(|c| c.name.as_str()), Some("DISCOUNT_BOARD_TREASURE_CHEST_016"));
+        // the install holds chests 001-019 (the 6 Oct update added 016-019); week 69 (from 2026-10-08) = 017 (seen in game at 3137.8, -4126.4), the next week 018
+        let c = p.current_treasure_chest(69).expect("a chest");
+        assert_eq!((c.kind, c.name.as_str()), (TreasureChestBoard, "DISCOUNT_BOARD_TREASURE_CHEST_017"));
+        assert!((c.x - 3149.0).abs() < 1.0 && (c.z + 4153.0).abs() < 1.0, "{c:?}");
+        assert_eq!(p.current_treasure_chest(70).map(|c| c.name.as_str()), Some("DISCOUNT_BOARD_TREASURE_CHEST_018"));
         let nums: Vec<u32> = p.items.iter().filter(|i| matches!(i.kind, TreasureChest | TreasureChestBoard)).filter_map(|i| trailing_number(&i.name)).collect();
         assert_eq!((nums.iter().min(), nums.iter().max(), nums.len()), (Some(&1), Some(&19), 19));
     }
