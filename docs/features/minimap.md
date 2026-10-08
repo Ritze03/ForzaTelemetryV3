@@ -249,6 +249,7 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 | `view.rs` | `Camera` (flat or tilted; `from_cfg`, `focal_for`, `depth_scale_at_row`), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `clip_segment_convex`, `fan`. |
 | `style.rs` | Road draw order, the zoom-dependent width rule, dash patterns, the POI category table. |
 | `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" guess. |
+| `ui.rs` | The settings UI (D63): `layers_ui` (the Image / Tilted view / Race lines / Roads / Points of interest cards, used by both Overlay-tab map tabs), `view_rows` + `ViewCfg` (zoom / orientation options of either config), `status_ui` (store status + `MapLayers::note`). |
 | `paint2d.rs` | `draw_base` (image mesh, far-edge fade) and `draw_layers` (roads, jumps, race lines, gate lines, POIs, the current chest) onto an egui `Painter`; `IconAtlas`, `CornerClip`. |
 
 ### Data model
@@ -400,13 +401,14 @@ Polish (I29b):
   so trails, teammates, waypoints and the own arrow sit where the layers' projection puts the same
   world point on both maps (pitch 0 is the old mapping, tested). Arrows themselves stay upright; trail
   widths taper. A point behind the eye goes far off-screen along its flat direction.
-- The Dashboard has the option in config JSON only (`minimap_layers.tilt.on`) until the settings UI.
+- Both maps' tilt settings are on the Overlay tab (Minimap / Dashboard map tab → Tilted view).
 
 ### Configuration
 
 `AppConfig::minimap_layers` (Dashboard; in `MINISETTINGS_KEYS`) and `OverlayConfig::map_layers` (HUD;
-`OverlayConfig::effective()` copies the Dashboard's when "Use Dashboard map settings" is on). **There
-is no settings UI yet** (D63: the next task puts all map settings on the Overlay tab); edit the JSON.
+`OverlayConfig::effective()` copies the Dashboard's when "Use Dashboard map settings" is on). **All
+of it has a settings UI on the Overlay tab** (D63, `maprender/ui.rs::layers_ui`, one function for
+both maps: tab *Dashboard map* and tab *Minimap*; see [[overlay]] "Map tabs"); the JSON stays editable.
 Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a list of ids.
 
 | | Dashboard | HUD |

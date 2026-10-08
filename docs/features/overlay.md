@@ -307,7 +307,7 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
 *Why:* the user wants everything the Dashboard map has on the HUD too. They live in
 `OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys), in the cog-wheel
 **Mini-Settings**, tab **Overlay** (`src/app.rs`, "Minimap" and "Co-Op" sections; the Overlay
-tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
+tab's Minimap tab edits the same options and all the layer settings, see [The Overlay tab](#the-overlay-tab-srcuioverlay_tabrs)).
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -318,8 +318,8 @@ tab's Minimap card edits compass, zooms and teammates too, greyed while reused).
 | `map_use_movement_dir` | on | Heading-up only: rotate to the velocity direction. |
 | `map_look_stick` | on | Rotate the map by the right stick: look relative to the car in north-up and heading-up alike (look-around, see [[minimap]]; the reference heading honours `map_use_movement_dir`). |
 | `map_mirror_edges` | on | **Mirror map at edges**: past the image edge the map continues mirrored; off = the plate shows outside the image. |
-| `map_plate_opacity` | 0 | The minimap's own plate behind the dimmed image (D62: none, the game shows through); the far edge of a tilted map fades into it. Independent of the global `plate_opacity` (the other modules). **No UI yet.** |
-| `map_layers` | `MapLayerConfig::hud()` | What the map draws besides the markers: `image` (on, 50 / 50 / 50 %), `roads` (on, by type, per-type colour / width / dash / casing), `pois` (on, 32 px, categories, `max_zoom_m` 3000, `near_only` + `radius_m`, `gates`), `race_lines` (current race only, 4 px, marks), `tilt` (on, `angle_deg` 55, `perspective_px` 200 at the pill's 136 px, `car_y` 0.85, `taper` on). Every field `serde(default)`; **no UI yet** (next task: the Overlay tab's module selector, D63), edit the JSON. Follows the Dashboard's `minimap_layers` under `map_use_dashboard`. |
+| `map_plate_opacity` | 0 | The minimap's own plate behind the dimmed image (D62: none, the game shows through); the far edge of a tilted map fades into it. Independent of the global `plate_opacity` (the other modules). Overlay tab → Minimap → Image. |
+| `map_layers` | `MapLayerConfig::hud()` | What the map draws besides the markers: `image` (on, 50 / 50 / 50 %), `roads` (on, by type, per-type colour / width / dash / casing), `pois` (on, 32 px, categories, `max_zoom_m` 3000, `near_only` + `radius_m`, `gates`), `race_lines` (current race only, 4 px, marks), `tilt` (on, `angle_deg` 55, `perspective_px` 200 at the pill's 136 px, `car_y` 0.85, `taper` on). Every field `serde(default)`; edited on the Overlay tab's Minimap tab (D63). Follows the Dashboard's `minimap_layers` under `map_use_dashboard`. |
 | `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 300 / 3000 | Compass and the two zoom radii. |
 | `coop_use_dashboard` | on | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
 | `coop_teammates` | on | Draw teammates (and their trails). |
@@ -703,38 +703,109 @@ user's tuned values (**Tuned defaults**), and the Layout card's Reset restores t
 
 ## The Overlay tab (`src/ui/overlay_tab.rs`)
 
-A plain settings page, registered after Dashboard (icon `OVERLAY`). **No live preview** and no
-"show on monitor": the layout is a one-time setup (D24). It only edits `config.overlay` (and
-the shared Hide HUD binding); `ForzaApp::sync_overlay` and the listener's per-frame config
-push apply every change to the running HUD, so there's no Apply button.
+A settings page, registered after Dashboard (icon `OVERLAY`). **No live preview** and no
+"show on monitor": the layout is a one-time setup (D24). It edits `config.overlay` (and the
+shared Hide HUD binding; the Dashboard map tab edits the `minimap_*` keys);
+`ForzaApp::sync_overlay` and the listener's per-frame config push apply every change to the
+running HUD, so there's no Apply button.
 
-- **Columns:** three at a page width ≥ 1100 px (General + Monitor Detection | Layout + Race
-  Block + Drift Counter | Drive Cluster + Minimap), otherwise two with **Layout first**.
-  *Why 1100:* each of three columns is then ≥ 355 px, the narrowest the two-half control rows
-  still read at. *Why Layout first:* it's the one card you can't find by scrolling past
-  settings.
+**Module selector (D63).** At the top, a segmented control (`theme::segmented`, the Co-Op
+tab's transport control, in a `WELL` frame) picks which module's settings the page shows.
+*Why:* the user asked for "a multi-selector ... used as tabs so the user can configure the
+individual modules on one page", with all map settings there ("the overlay page is for
+configuring itself and doesn't show any information, you can put all of the settings there").
+Tabs (`config::OverlayPage`):
+
+| Tab | Cards |
+|---|---|
+| **General** | General, Monitor Detection, Layout (three columns from 1100 px, otherwise two with Layout first) |
+| **Minimap** | the HUD minimap: Minimap (Enabled, *Use Dashboard map settings*, view options, co-op teammates, *Reset map layers*), Image, Tilted view, Race lines, Roads, Points of interest |
+| **Dashboard map** | the Dashboard map: Dashboard map (view options, *Reset map layers*), then the same six layer cards |
+| **Drive cluster** | Drive Cluster |
+| **Race / Drift** | Race Block, Drift Counter |
+| **Notifications** | Notifications |
+
+- *Why one tab per module:* the grouping follows the HUD modules of the Layout grid (Minimap,
+  Drive cluster, Race / Drift), plus Notifications and the Dashboard map the user wanted
+  configured in the same place. The two map tabs are the only big ones, which is why the cards
+  of the other modules did not need a page of their own before.
+- **Remembered across restarts** in the top-level config key `overlay_page` (an `OverlayPage`
+  enum). It is in `config::EXPORT_EXCLUDE`: where the user last looked is not a setting, so it
+  must not travel in presets or profile exports, and keeping it out of the `overlay` object
+  keeps `overlay` purely the HUD's settings. `AppConfig::load_profile` keeps the current value
+  across a profile switch for the same reason. Switching tab drops the layout grid's chip
+  selection.
+- **One row or two:** the selector breaks into two rows of three when the longest label
+  (German "Benachrichtigungen") doesn't fit its segment, so labels never run into each other
+  at the window minimum (`page_selector_with`).
+
+### Map tabs
+
+Both map tabs call **one function**, `maprender::ui::layers_ui` (D61 spirit: one renderer, so
+one settings UI, they can't drift apart). It lays the cards out in three columns from 1100 px
+(first column: the page's own card + Image, Tilted view, Race lines; then Roads; then Points
+of interest) or two, and edits a `MapLayerConfig`. Above the cards a status line shows the
+layer store's state (no install / loading / loaded / error) and `MapLayers::note` (e.g. "your
+saved road types were ignored").
+
+- **Image:** satellite on/off, opacity, brightness, saturation (approximate, a grey veil); HUD
+  only: **Map plate opacity** (`overlay.map_plate_opacity`, the minimap's own plate, not the
+  General tab's *Plate opacity*).
+- **Roads:** on/off, scale width with zoom (road width in metres, minimum / maximum px; off =
+  one fixed width), outline width and opacity, then **By type**: per type a block with
+  visible, line colour, outline colour, width factor, dash, opacity, outline on/off. Turnarounds
+  are never listed (D52). **Reset road styles** restores the "by type" preset.
+- **Points of interest:** on/off, icon size, **Max zoom radius** (tooltip: POIs are hidden
+  while the view radius is above it; the Dashboard's default 5 km is above the default 3 km),
+  only near the car + radius, gate lines, and the categories as checkboxes grouped Events /
+  Zones and gates / Places / Collectibles with All / None per group. Each shows the game's icon
+  (this context's `IconTex`, `ForzaApp::minimap_icons`, the Dashboard's) or, without an
+  install, the coloured fallback marker. A test guarantees every `style::POI_CATS` id has a
+  checkbox.
+- **Race lines:** mode (off / current race / nearest line / near the car / all lines), search
+  radius (nearest / near), width, circuit and sprint colours, opacity, start / finish marks.
+- **Tilted view:** on/off, angle, perspective, car position, thinner lines in the distance.
+- **View options** (the lead card): lock north-up and its heading-up-only options, mirror,
+  right-stick look, compass, zoom driving / stopped (50-6000 m). `maprender::ui::ViewCfg`
+  copies them out of `AppConfig::minimap_*` or `OverlayConfig::map_*` so one function edits
+  both. Mini-Settings keeps its quick options; both edit the same keys.
+- **HUD tab with "Use Dashboard map settings" on:** the layer cards and view options show the
+  *Dashboard's* values, greyed (what `OverlayConfig::effective` really uses), so the page never
+  shows numbers that differ from what is drawn. The plate opacity stays editable: it is not
+  copied. With the module or the overlay off the cards are greyed like the other module cards.
+- *Why colours use egui's `color_edit_button_srgb`:* the config stores `"#rrggbb"` (`Rgb`),
+  the picker edits the 3 bytes directly.
+
+### Other cards
+
 - **General:** Enable overlay, the status line (off / starting / running / disabled reason /
-  stopped), the Hide HUD binding row, scale (50–200 %), plate opacity (scales plate, halo
+  stopped), the Hide HUD binding row, scale (50-200 %), plate opacity (scales plate, halo
   disc and cap), fade, and **Only when game window is focused** (tooltip points to Setup → Window Detection). There's no "hide when
   paused" option: that's automatic.
 - **Layout:** one shared 3×3 grid; drag a module chip onto a cell, or select one and click a
   cell / use the arrow keys; **Reset layout**. The selection drops after a cell-click move,
-  on a press outside the grid, on Esc and on a tab switch (`clear_layout_selection`), so
+  on a press outside the grid, on Esc and on a tab or module-tab switch (`clear_layout_selection`), so
   stray arrow keys can't move a chip while you're elsewhere; arrow-key moves keep it so you
   can keep stepping. Under the grid: **Edge margin** and **Module spacing** sliders (px at
   1080p); Reset layout resets them too. Chip stacking in the grid reuses
   `hud::layout::layout`, always with the default margin/gap (the grid shows cell and stacking
-  order, not spacing; a 0 gap would break its scale trick). The drag-and-drop is hand-rolled because egui's `dnd_drop_zone`
+  order, not spacing; a 0 gap would break its scale trick). A module name wider than its chip
+  (narrow window) is cut with "…". The drag-and-drop is hand-rolled because egui's `dnd_drop_zone`
   sizes to its content.
 - **Notifications:** Enabled box + the anchor picker (see Notifications).
-- **Drive Cluster / Minimap / Race Block / Drift Counter:** a module on/off toggle plus the
+- **Drive Cluster / Race Block / Drift Counter:** a module on/off toggle plus the
   options listed under Widgets. No style thumbnails (D24).
 - **Rebinding:** the Hide HUD button arms the shared `ForzaApp::capture_rebind` (Esc cancels,
   Backspace clears to "Not set"); see [[hotkeys]].
 
 Overlay settings travel with profiles/presets as one `overlay` key (KeyGroup **Overlay → HUD
 Overlay**, appended last so existing group indices don't shift). The Hide HUD binding lives in
-`hotkeys`.
+`hotkeys`; the Dashboard map's settings are in the **Mini-settings** group (`minimap_layers`,
+`minimap_*`).
+
+Tests (`ui::test_render`, see the styling guide): every tab renders inside its panes at 700,
+1000, 1100 and 1235 px, the map tabs also following the Dashboard / with the module off / for
+every layer status, and the selector at the window minimum in English and German.
 
 ## Architecture
 

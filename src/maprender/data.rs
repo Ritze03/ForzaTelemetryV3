@@ -318,7 +318,6 @@ pub struct MapLayers {
     pub race_class: Arc<HashMap<u32, RaceClass>>,
     /// Why the project road data is used instead of the user's saved file, if so
     /// (`roadtypes::Current::note`).
-    #[allow(dead_code)] // shown by the layers UI (I29c)
     pub note: Option<String>,
 }
 

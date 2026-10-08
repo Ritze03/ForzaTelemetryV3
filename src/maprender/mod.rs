@@ -10,6 +10,7 @@
 //! style    draw order, zoom-dependent widths, dash patterns, the POI category table
 //! racesel  which race lines to draw ("current race" is a best-effort guess)
 //! paint2d  draw_base + draw_layers: the egui Painter output
+//! ui       the settings cards of all of the above (Overlay tab, both map tabs, D63)
 //! ```
 //!
 //! # Why this shape
@@ -42,6 +43,7 @@ pub mod paint2d;
 pub mod racesel;
 pub mod store;
 pub mod style;
+pub mod ui;
 pub mod view;
 
 // The everyday API; the rest (`cfg::MapLayerConfig`, `data::MapLayers`, `paint2d::{IconAtlas,
