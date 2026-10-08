@@ -4,6 +4,14 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.6.0] – 2026-10-08
+
+### Added
+- **Roads, points of interest and race lines on the Dashboard map**: the map now draws the game's roads over the satellite image, each type in its own colour (road blue, highway yellow, off-road orange, trails dashed, tunnels and jump lines too), plus your race: while you are in a race, that race's racing line is drawn (best effort, the game doesn't tell the app which race it is). Zoom in below a 3 km radius to see the points of interest (barn finds, car meets, fast travel, houses, speed traps and zones, XP boards and more) as coloured markers. Everything comes from your own Forza Horizon 6 install and updates within a second when you save or reset road types in the map editor. Without the game installed the map stays as it was. There are no settings for it in the app yet (they come with the Overlay tab's map settings); the next update brings the same map to the in-game HUD.
+
+### Info
+- **New Dashboard map defaults on a fresh install**: north-up, 5 km radius and no compass. Your saved settings are not changed.
+
 ## [0.5.0] – 2026-10-07
 
 ### Added

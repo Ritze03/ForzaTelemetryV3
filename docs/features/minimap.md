@@ -231,6 +231,168 @@ shared in `src/minimap.rs`. *Why:* the user wants the HUD map to match the Dashb
 implementation means a tweak to an arrow, label or trail lands on both. The buffers differ: the
 Dashboard's is `ForzaApp::minimap_trails` (UI thread), the HUD's is `CoopLayer` (overlay thread).
 
+## Shared renderer & layers (`src/maprender/`)
+
+Phase J. The Dashboard map draws the base image, roads by type, jump lines, race lines and points of
+interest through one renderer, `src/maprender/`; the HUD minimap will call the very same functions
+(I29b; until then `hud/minimap.rs` keeps its own image code and only imports `clip_convex` / `fan`
+from here). **Why (D61):** the user wants the two maps to look alike, and one drawing path means they
+can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares the *world*. A 3D mode
+(phase K) will be one more renderer shared the same way.
+
+| Module | What it holds |
+|---|---|
+| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines, tilt) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
+| `data.rs` | `MapLayers { rev, roads, pois, races, note }` (three `Arc`s), `build_roads`, `GameData::load` (nav + POIs + race lines), `PoiLayer` (250 m cell grid), `RaceLayer` (100 m segment grid). |
+| `store.rs` | The process-wide loader / cache: `layers()`, `refresh_now()`, thread `map-layers`. |
+| `view.rs` | `Camera` (flat or tilted), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `fan`. |
+| `style.rs` | Road draw order, the zoom-dependent width rule, dash patterns, the POI category table. |
+| `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" guess. |
+| `paint2d.rs` | `draw_base` (image mesh) and `draw_layers` (roads, jumps, race lines, POIs) onto an egui `Painter`. |
+
+### Data model
+
+All coordinates are world metres (x east, z north; heights ride along for phase K).
+
+- **Roads**: `RoadLayer.by_type[0..10]` (slot 0 = edge without a type, 1..=9 = `RoadType::index()`),
+  each a list of `Chain { pts, y, bbox }`; plus `jumps` (take-off x,z,y to landing x,z,y) and per-type
+  edge counts. `build_roads` is a port of `preview_2d.py:build`: positions from the nav polylines,
+  overridden by the road-type file's `moved` / `points`; per nav polyline the consecutive edges are
+  walked, removed edges break the chain, the type comes from the file (missing = slot 0), and
+  **consecutive same-type edges are chained** (so dashes run on across nodes); jump edges become
+  `jumps` (take-off from `jump_from`, else the first node); `added` links follow as single segments.
+  On the project data: 1 798 chains / 41 380 vertices (edges: road 21 701, offroad 7 237, other 317,
+  trail 3 943, cross-country 144, tunnel 904, highway 4 996, turnaround 340, jump 18; a real-install
+  test pins them). *Why not `mapedit::data::road_graph`:* it rounds to 0.1 m, loses the polyline
+  order (no chains) and has no `jump_from`.
+- **POIs**: the reader's `Poi`s, each mapped to a *category* (`style::POI_CATS`, the demo's category
+  ids: `barn_find`, `car_meet`, `speed_zone` ...). Items with `|x|` or `|z|` beyond 12 km are dropped:
+  11 parking areas sit at z ~ 18 km, off the map. A 250 m cell grid culls by the view box.
+- **Race lines**: the reader's `RaceLine`s (170, decimated to 5 m, ~171 k points) plus a 100 m
+  segment grid over all segments.
+
+### Store lifecycle
+
+`maprender::layers()` returns `Layers { status, data }` (`NoInstall | Loading | Ready | Error`, and
+`Option<Arc<MapLayers>>`). A map calls it only while one of its layers is on, so a user who never
+enables them never pays the load (~70 ms release, mostly nav + POIs + race lines).
+
+Two cache levels: the install-derived `GameData` is keyed on the install's `media` path (looked up at
+most every 2 s, since Steam detection hits the filesystem); the `RoadLayer` is keyed on
+`(media, mtime + len of the road-type override file)`, the same key `MapData::poll` uses for the Setup
+card, checked at most once a second. A change spawns the `map-layers` thread, which re-reads
+`RoadTypes::current(override_path(), &nav)` and rebuilds only the roads (~4 ms release); POIs and race
+lines are shared `Arc`s, and the old data is served until the new arrives. So an editor **Save** or
+**Reset** shows up on the Dashboard within about a second, independently of the editor server and of
+the egui frame loop; `app.rs:poll_map_editor` calls `maprender::refresh_now()` on `MapEvent::Saved` to
+remove that second. A failed load is remembered with its key and **not retried** until the key changes
+(no retry loop); a panic in the loader becomes `Error`. Without an install the status is `NoInstall`
+and the map is the image alone, as before.
+
+*Why a global store (not a field of the app, not the HUD snapshot):* the UI frame loop stops while the
+game covers the window, which is exactly when the HUD is used, so anything the UI thread has to
+forward to the overlay would stall then; the overlay thread polls the store itself (like the install
+folder, mirrored into `gamedata::install::USER_DIR` for the helper threads). One load serves both maps.
+
+### Drawing
+
+Order on the Dashboard: base image, then **`draw_layers`** (roads by type, jump lines, race lines with
+start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compass.
+
+- **CPU `Painter`, no baking.** One `Shape::line` per visible chain, a casing pass then a fill pass per
+  type, chains culled by their bbox against the view's world box (`Camera::world_aabb`), vertices
+  thinned to >= 2 px apart on screen (`view::thin` keeps the first and last point and is idempotent).
+  *Why:* road types change on every editor Save and are toggled per map, and widths are in screen px
+  and change with the eased zoom; baking into the map texture or pre-tessellating in world space would
+  have to be redone constantly, and the measured cost is small (below).
+- **Order** (bottom to top): untyped (grey, dashed: a nav that does not fit the road-type data shows),
+  cross-country, other, offroad, trail, tunnel, road, highway. Asphalt ends on top.
+- **Turnarounds are never drawn** (D52): they exist so the game's AI can get back onto the right road.
+  The config has no entry for them; `RoadStyles::get(Turnaround)` is `None`.
+- **Width** (the demo's `roadBase`): `base = clamp(px_per_metre * metres, min_px, max_px)` when
+  `scale_with_zoom`, else `base_px`; a type's line is `max(0.7, base * its factor)`, its casing that
+  plus `casing_px`. Defaults (D62): 10 m, 1 to 10 px, base 3 px, casing +1.4 px at alpha 1; factors road
+  1.0, highway 1.44, offroad 0.875, other 0.81, trail 0.75, cross-country 0.75, tunnel 0.94 (alpha .85),
+  jump 0.875. At the Dashboard's default 5 km radius (0.042 px/m on a 420 px map) the base is the 1 px
+  minimum; at 300 m it is 7 px.
+- **Dashes**: dashed types (trail, jump) use the demo's `[6,4]` pattern scaled by `max(1, 0.6 w)`, but
+  only above 0.02 px/m (below that they are sub-pixel and draw solid). The casing is always solid.
+- **POIs**: a marker per enabled category within the view, nothing above `max_zoom_m` (3 km; **the
+  Dashboard's default 5 km radius therefore shows no POIs until you zoom in**), optionally only within
+  `radius_m` of the car. Back to front by screen y. **Icons are a hook (D64)**: `IconAtlas { texture,
+  rects }` is a texture id plus a UV rect per category; without one, a coloured circle / diamond /
+  square / ring is drawn (the demo's colours). The game's icon decoder (a separate task) fills the
+  atlas; the Dashboard passes `None` today. **Gate lines of speed zones / trailblazers / drift zones
+  are not drawn yet:** `Poi` carries only the gate's midpoint (the reader drops the left / right
+  marker), so `gates` is a config bit waiting for that data. Danger signs and the current-season
+  treasure chest have their category ids and config bits (`danger_sign`, `treasure_chest_current`) but
+  no `PoiKind` until the reader adds them.
+- **Image look**: opacity and brightness are the mesh vertex colour. **Saturation is approximate:**
+  egui cannot desaturate a texture, so below 1 a grey veil (alpha `0.6 * (1 - saturation)`) is drawn
+  over the same shape.
+
+### Race lines and the "current race" guess
+
+Modes: `off`, `current` (default), `nearest`, `near` (within `radius_m`, default 1 500 m), `all`
+(40 000-vertex budget). 4 px, circuit `#38bdf8`, sprint `#fb7185`, alpha .85, with start / finish marks
+(green dot + chequered flag for sprints, chequered flag for circuits).
+
+The telemetry has **no race id**, so "current" is a **best-effort guess**, not verified against live
+races: while `race_position != 0` (the HUD's own "in a race" rule) the line is the one whose centre
+line passes within `|half-width| + 4 m` of the car with a driving direction that agrees with the car's
+heading (dot product > 0). Several can match (many races share roads), so the closest wins, and the
+previous pick is **kept while it still matches** (no flicker between overlapping lines) and for a
+moment when the car is off every line. The lookup is the 100 m segment grid built once in the store.
+`RaceSel` (kept per map; the Dashboard's is `ForzaApp::minimap_race_sel`) holds the pick.
+
+### Tilted view (D65)
+
+`view::Camera { view: MapView, centre, rect, pitch, focal }`. At pitch 0 it is exactly `MapView`'s
+mapping (tested). Tilted, it is a **flat perspective of the 2D map** done on the CPU, the equivalent of
+the demo's CSS `perspective(P) rotateX(a)` about the car: a plane offset `(x, y)` px from the car
+(y down) lands at `(x, y cos a) * P / (P - y sin a)`, and the horizon is `P / tan a` above the car
+(defaults: a = 55 deg, P = 200 px, car 85 % down the view). The image is the visible part of the plane
+in 24 x 24 cells, each projected and cut to the map outline, every vertex's UV taken from the inverse
+projection (egui interpolates UVs affinely inside a triangle; a perspective is not affine, hence the
+subdivision). Every layer vertex goes through the same `Camera::project`, so roads, race lines and POIs
+agree with the image; POI icons stay upright and scale with the perspective. *Why a camera type now:*
+phase K's GL 3D scene will reuse it, and this CPU version doubles as a cross-check for the GL matrices.
+Limits today: the Dashboard has the option in config JSON only (`minimap_layers.tilt.on`); trails,
+teammates and waypoints (`hud::map_shared`) still use the flat mapping, so with tilt on they are off
+(I29b gives `MapCanvas` the camera); line widths are constant in screen px, they do not taper with
+distance as the demo's CSS transform does; the far edge is not faded into the backing (the demo fades
+the top 30 %). The perspective distance is in px, so a value tuned for the 136 px HUD pill (200) puts
+the horizon inside a large Dashboard widget; scale it with the view (the benchmark uses `200 * h / 136`).
+
+### Configuration
+
+`AppConfig::minimap_layers` (Dashboard; in `MINISETTINGS_KEYS`) and `OverlayConfig::map_layers` (HUD;
+`OverlayConfig::effective()` copies the Dashboard's when "Use Dashboard map settings" is on). **There
+is no settings UI yet** (D63: the next task puts all map settings on the Overlay tab); edit the JSON.
+Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a list of ids.
+
+| | Dashboard | HUD (I29b wires it) |
+|---|---|---|
+| Satellite image | on, 100 % opacity / brightness / saturation | on, 50 % / 50 % / 50 % |
+| Roads, per type | on, "by type" colours | same |
+| POIs | on: barn finds, car meets, fast travel, festival sites, houses, aftermarket spots + boards, Horizon jobs + stories, XP boards, speed traps, speed zones, trailblazers, drift zones, danger signs, current-season treasure chest; every other kind off but selectable | same |
+| Race lines | current | current |
+| Tilt | off | on (55 deg, P 200, car 85 %) |
+| Existing keys (D62) | radius 5 000 m driving and stopped, north-up, no compass | HUD: 300 m, heading-up (I29b) |
+
+The existing Dashboard keys (`minimap_zoom_*_m`, `minimap_north_up`, `minimap_show_compass`) changed
+**defaults only**: fresh installs get them from the embedded `assets/default-config.json` and
+`AppConfig::default()`; a saved config keeps its own values.
+
+### Performance
+
+Release, one thread, real data, car on a busy part of the island (`cargo test --release bench_ --
+--ignored --nocapture`; shape building + egui tessellation, median of 40 frames): Dashboard 900 x 600
+at 5 km 0.5 + 1.3 ms (1 448 chains, 19 k vertices after thinning), at 1.5 km 0.1 + 0.3 ms; 420 x 420
+at 5 km 0.4 + 0.6 ms; tilted 900 x 600 at 5 km 0.8 + 0.6 ms; HUD-sized 208 x 136 tilted at 300 m
+0.1 + 0.1 ms. Debug builds are about 8x slower. Loading: `GameData::load` 0.44 s in a cold test run,
+a roads rebuild 4 ms.
+
 ## Solo trail
 
 Outside a co-op session the map draws **your own breadcrumb trail in white** (the own arrow's
