@@ -463,6 +463,9 @@ pub struct OverlayConfig {
     /// Mirror the map past its edges (the Dashboard's "Mirror map at edges"); off = the plain
     /// backing shows outside the image.
     pub map_mirror_edges: bool,
+    /// What the HUD map draws besides the markers: satellite look, roads, POIs, race lines,
+    /// tilt (`maprender::cfg`). Defaults are the HUD's (D62: dimmed image, tilted).
+    pub map_layers: crate::maprender::cfg::MapLayerConfig,
     /// "Use Dashboard map settings": the map options above (and the two zooms and the compass)
     /// follow the Dashboard map's; their controls are hidden. See [`OverlayConfig::effective`].
     pub map_use_dashboard: bool,
@@ -530,6 +533,7 @@ impl OverlayConfig {
             c.map_use_movement_dir = app.minimap_use_movement_dir;
             c.map_look_stick = app.minimap_look_stick;
             c.map_mirror_edges = app.minimap_mirror_edges;
+            c.map_layers = app.minimap_layers.clone();
         }
         if self.coop_use_dashboard {
             c.coop_teammates = true;
@@ -590,6 +594,7 @@ impl Default for OverlayConfig {
             map_look_stick: true,
             // Dashboard default.
             map_mirror_edges: true,
+            map_layers: crate::maprender::cfg::MapLayerConfig::hud(),
             map_use_dashboard: false,
             coop_teammates: true,
             coop_trails: true,
@@ -855,6 +860,9 @@ pub struct AppConfig {
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
     pub minimap_north_up_when_stopped: bool, // in heading-up mode, ease to north when stopped
     pub minimap_show_compass: bool, // show the north compass on the map
+    // Mini map layers: satellite look, roads by type, POIs, race lines, tilt (shared renderer,
+    // `maprender::cfg`). No settings UI yet: edit the JSON.
+    pub minimap_layers: crate::maprender::cfg::MapLayerConfig,
     // G-Force widget
     pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
     pub gforce_show_labels: bool, // show the "Current:"/"Peak:" header rows above the value rows
@@ -996,8 +1004,8 @@ impl Default for AppConfig {
             minimap_px_per_m: 0.3722,
             minimap_world_origin_x: -12540.0,
             minimap_world_origin_z: 10738.0,
-            minimap_zoom_driving_m: 1500.0,
-            minimap_zoom_stopped_m: 3000.0,
+            minimap_zoom_driving_m: 5000.0,
+            minimap_zoom_stopped_m: 5000.0,
             minimap_quality: 100.0,
             minimap_fps_limit: 60.0,
             minimap_fps_limit_enabled: true,
@@ -1005,9 +1013,10 @@ impl Default for AppConfig {
             minimap_use_movement_dir: true,
             minimap_look_stick: true,
             minimap_mirror_edges: true,
-            minimap_north_up: false,
+            minimap_north_up: true,
             minimap_north_up_when_stopped: false,
-            minimap_show_compass: true,
+            minimap_show_compass: false,
+            minimap_layers: crate::maprender::cfg::MapLayerConfig::dashboard(),
             gforce_show_text: true,
             gforce_show_labels: true,
             hide_widget_titles: false,
@@ -1187,7 +1196,7 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
     "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_look_stick", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
-    "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
+    "minimap_layers", "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
     "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
@@ -2136,6 +2145,10 @@ mod tests {
             minimap_use_movement_dir: true,
             minimap_look_stick: true,
             minimap_mirror_edges: false,
+            minimap_layers: crate::maprender::cfg::MapLayerConfig {
+                image: crate::maprender::cfg::ImageCfg { opacity: 0.25, ..Default::default() },
+                ..Default::default()
+            },
             coop_trail_fade_secs: 33.0,
             coop_trail_fade_m: 1234.0,
             ..Default::default()
@@ -2158,6 +2171,7 @@ mod tests {
         assert!(!e.compass && e.map_north_up && !e.map_smooth_rotation && e.map_use_movement_dir);
         assert!(e.map_look_stick && !e.map_mirror_edges);
         assert_eq!((e.zoom_driving_m, e.zoom_stopped_m), (777.0, 4000.0));
+        assert_eq!(e.map_layers, app.minimap_layers); // the layers follow the Dashboard's too
         assert!(!e.coop_teammates && !e.coop_trails && e.coop_trail_fade_secs == 5.0);
 
         // Co-op group only: fade comes from the Dashboard, teammates/trails/waypoints on, the
@@ -2166,5 +2180,38 @@ mod tests {
         assert!(e.coop_teammates && e.coop_trails && e.coop_waypoints);
         assert_eq!((e.coop_trail_fade_secs, e.coop_trail_fade_m), (33.0, 1234.0));
         assert!(e.compass && e.zoom_driving_m == 100.0 && !e.map_north_up);
+        assert_eq!(e.map_layers, own.map_layers);
+    }
+
+    /// D62: the Dashboard map starts north-up, without compass, 5 km radius, satellite at full
+    /// strength with layers on; the HUD starts dimmed and tilted. Fresh installs get the
+    /// first four from the embedded default config, a code default covers the rest.
+    #[test]
+    fn map_defaults_follow_the_demo_export() {
+        use crate::maprender::cfg::{MapLayerConfig, RaceLineMode};
+        let mut val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        if let (serde_json::Value::Object(m), serde_json::Value::Object(d)) = (&mut val, serde_json::to_value(AppConfig::default()).unwrap()) {
+            for (k, v) in d {
+                m.entry(k).or_insert(v);
+            }
+        }
+        let c: AppConfig = serde_json::from_value(val).unwrap();
+        assert_eq!((c.minimap_zoom_driving_m, c.minimap_zoom_stopped_m), (5000.0, 5000.0));
+        assert!(c.minimap_north_up && !c.minimap_show_compass);
+        assert_eq!(c.minimap_layers, MapLayerConfig::dashboard());
+        assert!(c.minimap_layers.roads.on && c.minimap_layers.pois.on && !c.minimap_layers.tilt.on);
+        assert_eq!(c.minimap_layers.race_lines.mode, RaceLineMode::Current);
+        let o = OverlayConfig::default();
+        assert_eq!(o.map_layers, MapLayerConfig::hud());
+        assert!(o.map_layers.tilt.on && o.map_layers.image.opacity == 0.5);
+        // The layers travel with the mini-settings group (preset export / import).
+        assert!(MINISETTINGS_KEYS.contains(&"minimap_layers"));
+        // A saved Dashboard setting is not touched by the new code defaults (the file wins).
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["minimap_zoom_driving_m"] = 1500.into();
+        v["minimap_north_up"] = false.into();
+        let old: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(old.minimap_zoom_driving_m, 1500.0);
+        assert!(!old.minimap_north_up);
     }
 }

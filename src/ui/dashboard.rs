@@ -2536,9 +2536,6 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         ui.allocate_rect(rect, egui::Sense::click())
     };
 
-    let cx = rect.center().x;
-    let cy = rect.center().y;
-
     let Some(texture) = &app.minimap_texture else {
         let center = rect.center();
         // The last load failed (no FH6 install to read the tiles from): say so instead of
@@ -2605,6 +2602,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     };
 
     let cfg = &app.config;
+    let lc = &cfg.minimap_layers;
     let cal = crate::minimap::MapCalibration::from_config(cfg);
 
     let car_x = app.minimap_cached_car_x;
@@ -2613,54 +2611,75 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // right-stick look-around sits on top of that base, see `minimap::LookAround`.
     let yaw   = app.minimap_look.view_yaw(app.minimap_base_yaw());
 
-    // Metres visible from widget centre to nearest edge (zoom); rotates world displacement
-    // into car-relative screen space (see `minimap::MapView` for the conventions).
-    let view = crate::minimap::MapView::new(
-        car_x, car_z, yaw, app.minimap_current_zoom, rect.width().min(rect.height()));
-    let to_screen = |wx: f32, wz: f32| -> Pos2 {
-        let [ox, oy] = view.world_to_offset(wx, wz);
-        pos2(cx + ox, cy + oy)
+    // The shared renderer's camera (`maprender`): metres visible from the car to the nearest edge
+    // (zoom); rotates world displacement into car-relative screen space (see
+    // `minimap::MapView` for the conventions). Tilted (a config option, no UI yet), the car sits
+    // lower in the widget and the map is seen in perspective.
+    let tilt = lc.tilt.on.then(|| lc.tilt.angle_deg.clamp(5.0, 80.0).to_radians());
+    let centre = match tilt {
+        Some(_) => crate::maprender::Camera::tilt_centre(rect, lc.tilt.car_y),
+        None => rect.center(),
     };
-
-    let orig_size = app.minimap_orig_size;
-
-    let mut mesh = egui::Mesh::with_texture(texture.id());
-    mesh.indices = vec![0, 1, 2, 0, 2, 3];
-
-    if cfg.minimap_mirror_edges {
-        // Mesh covers the full widget rect; UVs are derived via the inverse world→screen
-        // transform and may exceed [0,1] near map edges — MirroredRepeat fills those
-        // regions with a reflected copy of the map.
-        let half_w = rect.width()  * 0.5;
-        let half_h = rect.height() * 0.5;
-        for (sx, sy) in [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)] {
-            let [u, v] = view.uv_at_offset(&cal, orig_size, sx, sy);
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos:   pos2(cx + sx, cy + sy),
-                uv:    pos2(u, v),
-                color: Color32::WHITE,
-            });
-        }
-    } else {
-        // Mesh covers exactly the map image; UVs are always [0,1] so no mirroring occurs.
-        for (wx, wz, [u, v]) in cal.image_corners(orig_size) {
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos:   to_screen(wx, wz),
-                uv:    pos2(u, v),
-                color: Color32::WHITE,
-            });
-        }
-    }
+    let cam = crate::maprender::Camera::new(
+        car_x, car_z, yaw, app.minimap_current_zoom, rect, centre,
+        tilt.unwrap_or(0.0), lc.tilt.perspective_px,
+    );
+    let view = cam.view;
 
     let painter = ui.painter_at(rect);
-    painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
+    let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+    if !lc.image.on || tilt.is_some() {
+        // Vectors-only look, or the sky above a tilted map's far edge.
+        painter.rect_filled(rect, 0.0, crate::maprender::style::MAP_BACKING);
+    }
+    if lc.image.on {
+        let tex = crate::maprender::MapTex { id: texture.id(), orig_size: app.minimap_orig_size, winter: false };
+        crate::maprender::draw_base(&painter, &crate::maprender::BaseParams {
+            cam: &cam,
+            cal,
+            tex,
+            outline: &outline,
+            mirror: cfg.minimap_mirror_edges,
+            look: (&lc.image).into(),
+            a: 1.0,
+        });
+    }
+
+    // Roads, jump lines, race lines and POIs from the shared store (loaded on its own thread;
+    // nothing is requested while every layer is off, and without an install the map is the
+    // image alone, as before).
+    if lc.wants_layers() {
+        let l = crate::maprender::layers();
+        if l.status == crate::maprender::LayerStatus::Loading {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
+        if let Some(data) = &l.data {
+            let in_race = app.telemetry.latest.as_ref().is_some_and(|p| p.race_position != 0);
+            let mut sel = app.minimap_race_sel.borrow_mut();
+            let picked = sel.update(&data.races, &lc.race_lines, (car_x, car_z), app.minimap_cached_raw_yaw, in_race);
+            crate::maprender::draw_layers(
+                &crate::maprender::LayerCtx {
+                    p: &painter,
+                    cam: &cam,
+                    s: 1.0,
+                    a: 1.0,
+                    car: (car_x, car_z),
+                    corner_clip: None,
+                    icons: None,
+                    race_sel: picked,
+                },
+                data,
+                lc,
+            );
+        }
+    }
 
     // Markers (trails, teammates, own arrow, waypoints) come from `hud::map_shared`, the same
     // code the HUD Minimap draws with.
     let cv = crate::hud::map_shared::MapCanvas {
         p: &painter,
         view: &view,
-        centre: rect.center(),
+        centre,
         rect,
         s: 1.0,
         a: 1.0,
@@ -2723,8 +2742,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     if !app.config.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
         if map_resp.clicked() {
             if let Some(m) = map_resp.interact_pointer_pos() {
-                let [wx, wz] = view.offset_to_world(m.x - cx, m.y - cy);
-                app.coop.set_waypoint(Some((wx, wz)), app.config.coop_hue);
+                if let Some([wx, wz]) = cam.unproject(m) {
+                    app.coop.set_waypoint(Some((wx, wz)), app.config.coop_hue);
+                }
             }
         }
         if map_resp.secondary_clicked() {
