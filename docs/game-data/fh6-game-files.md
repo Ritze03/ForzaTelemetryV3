@@ -11,7 +11,8 @@ this doc and a script disagree, trust the script and fix the doc. Two sub-pages:
 [FH6 cars, names, regions and icons](fh6-cars-names-icons.md) (`CarOrdinal` → name, 24-language area names, region outlines, map icons).
 Open items (things nobody has verified yet) are collected in [Open items](#10-open-items).
 
-Status: research only. Nothing in `src/` reads game files yet. Written against the Steam install
+Status: research, plus the Rust readers in `src/gamedata/` (map tiles, road graph, terrain, car names,
+and — see [Rust readers](#rust-readers-poi-and-race-lines-srcgamedata) — POIs and race lines). Written against the Steam install
 at game build 440853 (from `PreCrashReport.xml`), Sept 2026; a game update can change file contents
 and which files are encrypted — re-run the scripts and compare counts before trusting a number here.
 
@@ -299,8 +300,8 @@ categories: [FH6 cars, names, regions and icons → Map icons](fh6-cars-names-ic
 ## 3. POIs — plain-text files under `Tracks/Brio/`
 
 All positions are in telemetry space (see above). `extract_poi.py` merges everything into one
-`pois.json` (`{type, name, x, z, y?, source, precision: "exact"|"cell", extra?}`; 5578 records, 5632
-with `--entity-model`). `roaddist.py` checks each type's distance to the decoded roads — exact types
+`pois.json` (`{type, name, x, z, y?, source, precision: "exact"|"cell", extra?}`; 5583 records since the
+Oct 2026 game update, 5578 before; 5632 with `--entity-model` before it). `roaddist.py` checks each type's distance to the decoded roads — exact types
 sit within a few metres, cell-based ones do not.
 
 The catalogue near the top lists every category; the subsections below give the format and the
@@ -316,7 +317,7 @@ for what only the binary has. The "approximate cell centre" records are supersed
 | `…/tz_world_constraints/landmark_triggers.tz` | same | 75 landmarks with slugs (`shibuya_crossing`, `tokyo_tower`…) |
 | `…/tz_bucket_challenges/tz_horizonstories.tz` | same | 11 Horizon Story + 6 Horizon Job activation zones (`*activation_zone`) |
 | `…/tz_creatures/creatures_all.tz` | same | 47 creature zones |
-| `Tracks/Brio/trackroutes/route0.nt` | XML `<Locator><Name value=…/><SceneTransform value._41 value._42 value._43/>` (`_41`=x, `_42`=height, `_43`=z) | 371 named locators: houses (`player_house_*_root_locator`), fast travel, festival sites, barn finds (`barn_finds_cinematic_<CAR>`) + hint areas (`barn_finds_anna_hint_*`), car/drag meets, touge, showcases, rush, aftermarket spots/boards, treasure cars, `sidi_hj_*` / `sidi_hs_*`, invitational/legend, upsell |
+| `Tracks/Brio/trackroutes/route0.nt` | XML `<Locator><Name value=…/><SceneTransform value._41 value._42 value._43/>` (`_41`=x, `_42`=height, `_43`=z) | 374 named locators (371 before the Oct 2026 update): houses (`player_house_*_root_locator`), fast travel, festival sites, barn finds (`barn_finds_cinematic_<CAR>`) + hint areas (`barn_finds_anna_hint_*`), car/drag meets, touge, showcases, rush, aftermarket spots/boards, treasure cars, `sidi_hj_*` / `sidi_hs_*`, invitational/legend, upsell |
 | `trackroutes/pinata_locators.nt` | same | 1536 pinatas |
 | `trackroutes/eliminator_locators.nt` | same | 373 eliminator spawns |
 | `trackroutes/parkingareas.nt` | same | 2664 parking areas |
@@ -365,6 +366,49 @@ Node 0 is **not** the race start (0–1200 m off — lead-in), and some files ha
 code dropped nodes on the multi-section files. `extract_races.py` / `extract_poi.py` now use `fh6owt.py` (start line within 0.1 m of its own line: 165 / 169, was 164 / 169).
 
 Start positions come from the `RVAN` block below, **not** from `race_triggers.tz`.
+
+### Rust readers: POIs and race lines (`src/gamedata/`)
+
+Implemented in `poi.rs` and `racelines.rs` (task I28; std only, no new crate, nothing is bundled — read from the
+user's install at runtime). Nothing consumes them yet: the map renderer (I29) will.
+
+- **`poi.rs`** — `Pois::load(media)`: 37 `PoiKind`s as `Poi { kind, x, z, y, name (slug), n }` plus the 10 region outlines.
+  Reads `race_triggers.tz`, `landmark_triggers.tz`, `creatures_all.tz`, `tz_horizonstories.tz`, `route0.nt`,
+  `pinata/eliminator/parkingareas.nt`, `route40001/40900.nt` (car meets), `route40900/4004x/4005x.nt` (upsell pins, merged by rounded x/z),
+  `map_region_*.nt`, `Ribbon_00/GameObjs.xml` and `Stripped/gs/brio/gameobjs.xml`. A missing or odd source is skipped and listed in
+  `Pois::skipped`; `Err` only if nothing at all was read. The `route0.nt` classification is the if/elif chain of `extract_poi.py` ported 1:1.
+  Speed trap = midpoint of its two poles; speed zone / trailblazer / drift zone = one POI per gate (midpoint of LEFT/RIGHT), `…_gate1` / `…_gate2`
+  (which is the start stays [unverified](#10-open-items)). Names are the file slugs — no label or translation yet.
+- **`racelines.rs`** — `load_all(media, step_m)`: all `Route<N>.owt` + the `RVAN` start/finish of `Route<N>.nav`, trimmed to one drive and decimated
+  like `extract_racelines.py` (`RaceLine { pts, y, half, length_m, closed, … }`; length summed in f64 — f32 is 7 m off on the 85 km route 5555).
+  A route with a bad `.owt` layout, a missing `.nav`/`RVAN` or no finite node is skipped and listed in `RaceLines::skipped`.
+  `race_pins(pois, lines)` gives the map-pin position per route: sphere, else touge locator, else the RVAN start line, minus routes 99 / 102 / 103
+  (test route at 0,0 and two off-map routes). The IE tutorial routes 3333-3337 and the Horizon Chase routes 30100+ are **kept** in the data; whether to draw them is the renderer's / the user's call.
+- **Exact sources only — why.** The Python also emits cell-centre records (±100 m guesses from `ChunkContentsMiniZip*.txt`: XP boards, drift
+  zones, danger signs, drift-circuit props, barn buildings) and reads PGZP/GeoChunk props. The Rust skips them: `GameObjs.xml` supersedes the guesses
+  (the Python list even double-counts them: 100 + 200 XP boards), and the PGZP props (danger signs 15, drift posts 1027, speed-limit signs 2141) need
+  seek-reads in a 40 GB file. Not read either: arena outlines, the rural train line, `VOL_*` volumes, the creator-dump-only categories (encrypted in the install).
+- **No XML parser.** All inputs are machine-written with a fixed attribute order, so a forward `str::find` scan is enough (all POI sources ≈ 18 ms in a release build). A game update that reorders attributes would lose items, not corrupt them; the real-install tests catch it by count.
+
+Counts on this install (Oct 2026 build; the real-install tests in the two modules assert them, so a game update fails them on purpose —
+re-run the Python extractors, check the diff, then update the tests and this table):
+
+| Kind | Count | Kind | Count |
+|---|---|---|---|
+| RacePin / TougeEvent | 36 / 5 | Pinata / Eliminator / Parking | 1536 / 373 / 2664 |
+| Landmark | 75 | XpBoard / Mascot | 200 / 200 |
+| StoryActivation / JobActivation | 11 / 6 | EstateEntrance / TreasureChest | 37 / 3 |
+| CreatureZone | 47 | SpeedTrap | 30 |
+| House / FastTravel / FestivalSite / Estate | 8 / 11 / 2 / 4 | SpeedZone / Trailblazer / DriftZone (gates) | 60 / 24 / 40 |
+| CarMeet (one is `carmeet_test`) | 6 | TreasureChestBoard / FlagRushFlag | 16 / 6 |
+| DragMeet / DragMeetFinish | 3 / 3 | BarnFind / BarnFindHint | 15 / 15 |
+| AftermarketSpot / AftermarketBoard | 44 / 44 | Showcase / RushEvent / SpecialEvent | 2 / 3 / 3 |
+| TreasureCar | 10 | HorizonJob / HorizonStory / Upsell | 5 / 9 / 5 |
+
+Total 5561 items + 10 region outlines. **11 parking areas lie off the map** (z ≈ 18.2-18.4 km, the same band as race routes 102 / 103). Race lines: 170 routes
+(127 point-to-point + 43 circuits, 43/43 closed < 3 m), 171 564 points at 5 m (130 126 + 41 438; 514 463 at step 0), total 1033.2 km, longest 5555 (85.4 km),
+multi-section files 132, 281, 351, 1181, 1281, 8008; point-to-point lines end < 3 m from their finish line. Race pins: 167 (36 sphere, 1 touge-only, 130 start line).
+Speed (debug build, warm cache): POIs 57 ms, race lines 440 ms (release ≈ 18 ms each, measured on the prototype).
 
 ### Approximate only (cell centre, ±100 m or worse) — superseded
 
@@ -817,7 +861,7 @@ all read-only on the install; every script takes `--media` (default: auto-detect
 ```
 extract_map.py --out DIR [--level 3] [--seasons Summer,...]   # map_<season>_L<level>.png (+ _preview)
 decode_nav.py  --out DIR [--map map_summer_L3.png]            # roads.json, roads.png, roads_on_map.png
-extract_poi.py --out DIR [--entity-model OLD_EntityModel.zip] # pois.json (5578 records; 5632 with the creator dump)
+extract_poi.py --out DIR [--entity-model OLD_EntityModel.zip] # pois.json (5583 records; 5578 before the Oct 2026 update, 5632 with the creator dump then)
 extract_geochunk.py --out DIR [--skip-pgeo]                   # geochunk_pois.json (1649 exact prop records)
 extract_races.py --out DIR [--entity-model ...]               # races.json (169 race starts + grids + finishes, names)
 extract_racelines.py --out DIR [--step 5]                     # racelines.json (170 trimmed racing lines + track edges)
@@ -836,7 +880,7 @@ Library modules: `fh6common.py` (install detection, case-insensitive paths, `.nt
 
 Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 GameObjs objects, 1649 records, pgeo error 0.000 m, identical to the original research output;
 `extract_races.py` → 169 race starts, start line within 0.1 m of its own racing line for 165 (was 164 before the `.owt` fix) (names: 22 exact incl. IE/chase, 3 locator, 44 landmark ≤ 400 m, 10 weaker with the creator dump);
-`extract_terrain.py` on a 1.5 km region → median |Δy| 0.17 m, full-island surfaces → 34 716 033 triangles; `extract_poi.py` → 5578 records;
+`extract_terrain.py` on a 1.5 km region → median |Δy| 0.17 m, full-island surfaces → 34 716 033 triangles; `extract_poi.py` → 5583 records (Oct 2026 build; 5578 before);
 `extract_racelines.py` → 170 routes (127 p2p + 43 circuits, all closed/ending within 3 m); `extract_speedsigns.py` → 1659 / 217 / 265; `extract_cars.py` → 671 ordinals (4144 → `Mazda RX-7 '92`);
 `extract_names.py` → 75 / 75 landmarks, 10 regions, 24 languages; `extract_icons.py` → 1074 icons (pixel-identical with the `texture2ddecoder` decode); `pgzp.py` opens GeoChunk0–3.
 
@@ -847,7 +891,7 @@ Verified against the install (Sept 2026 build): `extract_geochunk.py` → 793 Ga
    (prefer L2 for RAM); calibration is the existing one.
 3. Roads: parse `Brio_00.nav` per [Roads](#1-roads--openworldbriofreeroambrio_00nav) (it is a flat
    binary — only needs positions, road table and list A).
-4. POIs: parse the small XML/text files (regex is enough, see `extract_poi.py`) **and `Ribbon_00/GameObjs.xml`** (speed traps, zones, drift zones, XP boards… — no binary needed).
+4. POIs: parse the small XML/text files (a forward `find` scan is enough, see `extract_poi.py` and [Rust readers](#rust-readers-poi-and-race-lines-srcgamedata)) **and `Ribbon_00/GameObjs.xml`** (speed traps, zones, drift zones, XP boards… — no binary needed).
 5. Race starts/grids: the `RVAN` block of `AITracks/Route<N>.nav` (flat binary; no PGZP needed). Exact names (and types) for 111 routes from the plaintext `ObjectModelGame.zip` ([how](#exact-race-names-and-types-objectmodelgamezip)). Racing line / track edges: `Route<N>.owt` ([layout](#race-lines-the-owt-racing-line-files); flat binary, mind the section count).
 6. Anything from GeoChunk (danger signs, drift posts, speed-limit signs, terrain) additionally needs the PGZP reader (u32/u64 tables, LZ4 block, deflate). Do it lazily and cache a *derived, compact* grid in the app data dir.
 7. Do it lazily on a background thread and cache nothing derived in the repo.

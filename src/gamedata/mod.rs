@@ -15,7 +15,12 @@ pub mod lz4;
 pub mod nav;
 #[allow(dead_code)]
 pub mod pgzp;
+// POIs and race lines (I28): used by the I29 map renderer, nothing consumes them yet.
+#[allow(dead_code)]
+pub mod poi;
 pub mod process;
+#[allow(dead_code)]
+pub mod racelines;
 #[allow(dead_code)]
 pub mod roadtypes;
 pub mod strtable;
