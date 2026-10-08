@@ -1121,6 +1121,24 @@ fn de(s: &str) -> Option<&'static str> {
         "Dashboard map" => "Dashboard-Karte",
         "The map follows the Dashboard map's settings." => "Die Karte folgt den Einstellungen der Dashboard-Karte.",
         "Reset map layers" => "Kartenebenen zurücksetzen",
+        // ── Map tab: "Copy to …" (D68) and the in-race focus (D66) ─────
+        "Copy to…" => "Kopieren nach…",
+        "Overwrite this card's settings on the other map(s) with the ones shown here."
+            => "Überschreibt die Einstellungen dieser Karte auf der anderen Karte (den anderen Karten) mit den hier gezeigten.",
+        "The Minimap follows the Dashboard map's settings. Turn that off on the Minimap page to copy into it."
+            => "Die Minikarte folgt den Einstellungen der Dashboard-Karte. Schalte das auf der Seite der Minikarte aus, um hineinzukopieren.",
+        "In a race" => "Im Rennen",
+        "Other roads" => "Andere Straßen",
+        "Normal" => "Normal",
+        "Muted" => "Gedämpft",
+        "Hidden" => "Ausgeblendet",
+        "Muted colour" => "Farbe gedämpft",
+        "Muted opacity" => "Deckkraft gedämpft",
+        "Muted width" => "Breite gedämpft",
+        "Width of the muted roads relative to their normal width." => "Breite der gedämpften Straßen im Verhältnis zur normalen Breite.",
+        "Hide points of interest in a race" => "Orte von Interesse im Rennen ausblenden",
+        "Applies only in the Current race mode, while the car is in a race and a race line was detected. Otherwise the map stays as it is."
+            => "Gilt nur im Modus „Aktuelles Rennen“, solange das Fahrzeug in einem Rennen ist und eine Rennlinie erkannt wurde. Sonst bleibt die Karte unverändert.",
         "The view options and all layer settings follow the Dashboard map. Only the map plate opacity stays its own."
             => "Die Ansichtsoptionen und alle Ebeneneinstellungen folgen der Dashboard-Karte. Nur die Deckkraft der Kartenplatte bleibt eigenständig.",
         "No Forza Horizon 6 install found. Roads, points of interest and race lines need it."

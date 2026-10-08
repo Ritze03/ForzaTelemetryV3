@@ -24,7 +24,9 @@ use crate::icons;
 use crate::maprender::cfg::MapLayerConfig;
 use crate::maprender::paint2d::IconAtlas;
 use crate::maprender::store::Layers;
-use crate::maprender::ui::{layers_ui, status_ui, view_rows, LayerAux, ViewCfg};
+use crate::maprender::ui::{
+    apply_copy, copy_row, layers_ui, status_ui, view_rows, CopyRequest, CopyWhat, LayerAux, MapId, ViewCfg,
+};
 use crate::maprender::RaceSel;
 use crate::ui::map_scene::{self, ManualView, Scene, ViewIn};
 use crate::ui::overlay_tab::{module_card, page_selector_with, status_line};
@@ -208,12 +210,19 @@ fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Ico
     let on = cfg.overlay.enabled && cfg.overlay.minimap_on;
     let dash_view = ViewCfg::of_app(cfg);
     let mut reset = false;
-    {
+    let mut view_req = None;
+    let layer_req = {
         let o = &mut cfg.overlay;
-        let mut lead = |ui: &mut Ui| minimap_card(ui, o, &dash_view, &mut reset);
-        let aux = LayerAux { icons: atlas, plate: Some((&mut plate, on)), enabled: on && !follow };
-        layers_ui(ui, &mut layers, aux, &mut lead);
-    }
+        let mut lead = |ui: &mut Ui| minimap_card(ui, o, &dash_view, &mut reset, &mut view_req);
+        let aux = LayerAux {
+            icons: atlas,
+            plate: Some((&mut plate, on)),
+            enabled: on && !follow,
+            which: MapId::Minimap,
+            minimap_follows: follow,
+        };
+        layers_ui(ui, &mut layers, aux, &mut lead)
+    };
     if reset {
         layers = MapLayerConfig::hud();
     }
@@ -221,6 +230,16 @@ fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Ico
         cfg.overlay.map_layers = layers;
     }
     cfg.overlay.map_plate_opacity = plate;
+    apply_requests(cfg, [layer_req, view_req]);
+}
+
+/// Apply the "Copy to …" the page's buttons asked for, after the page has written its own edits
+/// back (so the source includes this frame's changes and the target is not overwritten by a
+/// stale clone).
+fn apply_requests(cfg: &mut AppConfig, reqs: [Option<CopyRequest>; 2]) {
+    for r in reqs.into_iter().flatten() {
+        apply_copy(cfg, &r);
+    }
 }
 
 /// Dashboard map page: the view options and all layer settings of `minimap_layers`. (Mini-Settings
@@ -232,6 +251,8 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     let mut view = ViewCfg::of_app(cfg);
     let mut allow = cfg.minimap_allow_pan_zoom;
     let mut reset = false;
+    let mut view_req = None;
+    let follows = cfg.overlay.map_use_dashboard;
     let mut lead = |ui: &mut Ui| {
         theme::card(ui, tr("Dashboard map"), |ui| {
             view_rows(ui, &mut view);
@@ -239,15 +260,18 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
             if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
                 reset = true;
             }
+            view_req = copy_row(ui, MapId::Dashboard, follows, CopyWhat::View);
         });
     };
-    layers_ui(ui, &mut layers, LayerAux { icons: atlas, plate: None, enabled: true }, &mut lead);
+    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Dashboard, minimap_follows: follows };
+    let layer_req = layers_ui(ui, &mut layers, aux, &mut lead);
     if reset {
         layers = MapLayerConfig::dashboard();
     }
     cfg.minimap_layers = layers;
     view.apply_app(cfg);
     cfg.minimap_allow_pan_zoom = allow;
+    apply_requests(cfg, [layer_req, view_req]);
 }
 
 /// Viewer page: the viewer's own view options and all layer settings of `viewer_layers`. Its
@@ -259,6 +283,8 @@ fn viewer_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Icon
     let (mut north_up, mut mirror, mut compass) = (cfg.viewer_north_up, cfg.viewer_mirror_edges, cfg.viewer_show_compass);
     let (mut allow, mut zoom) = (cfg.viewer_allow_pan_zoom, cfg.viewer_zoom_m);
     let mut reset = false;
+    let mut view_req = None;
+    let follows = cfg.overlay.map_use_dashboard;
     let mut lead = |ui: &mut Ui| {
         theme::card(ui, tr("Viewer"), |ui| {
             theme::checkbox_row(ui, &mut north_up, tr("Lock map north-up"))
@@ -271,21 +297,30 @@ fn viewer_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Icon
             if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
                 reset = true;
             }
+            view_req = copy_row(ui, MapId::Viewer, follows, CopyWhat::View);
         });
     };
-    layers_ui(ui, &mut layers, LayerAux { icons: atlas, plate: None, enabled: true }, &mut lead);
+    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Viewer, minimap_follows: follows };
+    let layer_req = layers_ui(ui, &mut layers, aux, &mut lead);
     if reset {
         layers = crate::config::viewer_layers_default();
     }
     cfg.viewer_layers = layers;
     (cfg.viewer_north_up, cfg.viewer_mirror_edges, cfg.viewer_show_compass) = (north_up, mirror, compass);
     (cfg.viewer_allow_pan_zoom, cfg.viewer_zoom_m) = (allow, zoom);
+    apply_requests(cfg, [layer_req, view_req]);
 }
 
 /// The Minimap module card of the HUD map page: module switch, "Use Dashboard map settings", the
 /// view options (the Dashboard's values, greyed, while it is on) and the co-op switch. The
 /// layer cards are `maprender::ui::layers_ui`'s. `reset` is set by the "Reset map layers" button.
-fn minimap_card(ui: &mut Ui, o: &mut crate::config::OverlayConfig, dash_view: &ViewCfg, reset: &mut bool) {
+fn minimap_card(
+    ui: &mut Ui,
+    o: &mut crate::config::OverlayConfig,
+    dash_view: &ViewCfg,
+    reset: &mut bool,
+    view_req: &mut Option<CopyRequest>,
+) {
     module_card(ui, o, tr("Minimap"), |o| &mut o.minimap_on, None, |ui, o| {
         theme::checkbox_row(ui, &mut o.map_use_dashboard, tr("Use Dashboard map settings")).on_hover_text(tr(
             "The view options and all layer settings follow the Dashboard map. Only the map plate opacity stays its own.",
@@ -304,6 +339,8 @@ fn minimap_card(ui: &mut Ui, o: &mut crate::config::OverlayConfig, dash_view: &V
                 *reset = true;
             }
         });
+        let follow = o.map_use_dashboard;
+        *view_req = copy_row(ui, MapId::Minimap, follow, CopyWhat::View);
     });
 }
 
@@ -459,5 +496,116 @@ mod tests {
         assert_eq!(c.viewer_layers.image, d.image);
         assert_eq!(c.viewer_layers.pois.max_zoom_m, 8000.0);
         assert!(c.viewer_layers.pois.max_zoom_m >= map_scene::ZOOM_MAX_M, "POIs show at every viewer zoom");
+    }
+
+    /// Run frames of `page` with `events` in the first one; returns the last frame's output.
+    fn frame(ctx: &egui::Context, w: f32, events: Vec<egui::Event>, page: &mut dyn FnMut(&mut Ui)) -> egui::FullOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(w, 3600.0))),
+            events,
+            ..Default::default()
+        };
+        ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| page(ui));
+        })
+    }
+
+    /// Centre of the topmost text shape reading `text`.
+    fn find_text(out: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
+        let mut best: Option<Rect> = None;
+        for c in &out.shapes {
+            if let egui::Shape::Text(t) = &c.shape {
+                let r = t.visual_bounding_rect();
+                if t.galley.text() == text && best.map_or(true, |b| r.top() < b.top()) {
+                    best = Some(r);
+                }
+            }
+        }
+        best.map(|r| r.center())
+    }
+
+    fn click(ctx: &egui::Context, w: f32, at: egui::Pos2, page: &mut dyn FnMut(&mut Ui)) {
+        use egui::{Event, Modifiers, PointerButton};
+        let btn = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        frame(ctx, w, vec![Event::PointerMoved(at)], page);
+        frame(ctx, w, vec![btn(true)], page);
+        frame(ctx, w, vec![btn(false)], page);
+    }
+
+    /// The whole flow with real pointer events: press the "Copy to…" of the Dashboard map page's
+    /// view card, pick "Viewer" in the menu, and the viewer's view options now match the
+    /// Dashboard map's; the button then reads "Copied". Also the Roads card's button: copies
+    /// the roads to the Minimap through "Both"... only the greyed state is checked there.
+    #[test]
+    fn clicking_copy_to_applies_the_request() {
+        let ctx = crate::ui::test_render::context();
+        let l = layers_ready();
+        let mut cfg = AppConfig::default();
+        cfg.minimap_north_up = false;
+        cfg.minimap_show_compass = true;
+        cfg.viewer_north_up = true;
+        cfg.viewer_show_compass = false;
+        cfg.overlay.map_use_dashboard = false;
+        let w = 1235.0;
+        for _ in 0..3 {
+            frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        }
+        let out = frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        let at = find_text(&out, "Copy to…").expect("a Copy to… button");
+        click(&ctx, w, at, &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        let mut out = frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        for _ in 0..2 {
+            out = frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        }
+        let item = find_text(&out, "Viewer").expect("the menu lists the Viewer");
+        assert!(find_text(&out, "Minimap").is_some() && find_text(&out, "Both").is_some());
+        click(&ctx, w, item, &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        assert!(!cfg.viewer_north_up && cfg.viewer_show_compass, "the viewer took the Dashboard map's view options");
+        assert!(!cfg.minimap_north_up, "the source is unchanged");
+        let out = frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
+        let copied = |c: &egui::epaint::ClippedShape| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().ends_with("Copied"));
+        assert!(out.shapes.iter().any(copied), "the button confirms");
+    }
+
+    /// The menu with the Minimap following the Dashboard map: the Minimap entry and "Both" are
+    /// disabled (clicking them does nothing: the menu stays open, no "Copied"), the Viewer entry
+    /// works.
+    #[test]
+    fn copy_menu_blocks_the_following_minimap() {
+        let ctx = crate::ui::test_render::context();
+        let mut cfg = AppConfig::default();
+        cfg.overlay.map_use_dashboard = true;
+        let own = cfg.overlay.map_layers.clone();
+        cfg.minimap_layers.roads.casing_px = 5.5;
+        let l = layers_ready();
+        let w = 1235.0;
+        let mut page = |ui: &mut Ui| dashboard_page(ui, &mut cfg, &l, None);
+        for _ in 0..3 {
+            frame(&ctx, w, vec![], &mut page);
+        }
+        let out = frame(&ctx, w, vec![], &mut page);
+        // The Roads card's button is the fifth "Copy to…" from the top in the middle column at
+        // this width; any card does, take the topmost.
+        let at = find_text(&out, "Copy to…").unwrap();
+        click(&ctx, w, at, &mut page);
+        let mut out = frame(&ctx, w, vec![], &mut page);
+        for _ in 0..2 {
+            out = frame(&ctx, w, vec![], &mut page);
+        }
+        let copied = |out: &egui::FullOutput| {
+            out.shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().ends_with("Copied")))
+        };
+        for entry in ["Minimap", "Both"] {
+            let p = find_text(&out, entry).expect("entry");
+            click(&ctx, w, p, &mut page);
+            out = frame(&ctx, w, vec![], &mut page);
+            assert!(find_text(&out, "Viewer").is_some(), "{entry} is disabled: the menu stays open");
+            assert!(!copied(&out), "{entry} must not copy");
+        }
+        let p = find_text(&out, "Viewer").unwrap();
+        click(&ctx, w, p, &mut page);
+        let out = frame(&ctx, w, vec![], &mut page);
+        assert!(copied(&out), "the Viewer entry copies");
+        assert_eq!(cfg.overlay.map_layers, own, "the following Minimap's own config is never written");
     }
 }

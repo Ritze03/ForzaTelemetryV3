@@ -418,6 +418,23 @@ impl Default for TiltCfg {
 
 // ── the whole thing ──────────────────────────────────────────────────────────────────────────
 
+/// The categories of a [`MapLayerConfig`] (= the settings cards of the Map tab). Race lines
+/// include their in-race focus.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum LayerCategory {
+    Image,
+    Tilt,
+    RaceLines,
+    Roads,
+    Pois,
+}
+
+impl LayerCategory {
+    #[cfg(test)]
+    pub const ALL: [LayerCategory; 5] =
+        [LayerCategory::Image, LayerCategory::Tilt, LayerCategory::RaceLines, LayerCategory::Roads, LayerCategory::Pois];
+}
+
 /// Everything the shared renderer draws besides the markers (own arrow, co-op, compass).
 /// `Default` = the Dashboard map's defaults.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -443,6 +460,19 @@ impl MapLayerConfig {
         c.image = ImageCfg { on: true, opacity: 0.5, brightness: 0.5, saturation: 0.5 };
         c.tilt.on = true;
         c
+    }
+
+    /// Overwrite **one category** of `self` with `from`'s; every other category stays as it is
+    /// ("Copy to …" in the Map tab, D68). The one place that knows which field belongs to which
+    /// category, so the UI never copies fields by hand.
+    pub fn copy_category(&mut self, from: &MapLayerConfig, cat: LayerCategory) {
+        match cat {
+            LayerCategory::Image => self.image = from.image,
+            LayerCategory::Tilt => self.tilt = from.tilt,
+            LayerCategory::RaceLines => self.race_lines = from.race_lines,
+            LayerCategory::Roads => self.roads = from.roads,
+            LayerCategory::Pois => self.pois = from.pois.clone(),
+        }
     }
 
     /// Does any layer besides the image need the shared layer data (`store`)?
@@ -500,5 +530,63 @@ mod tests {
         }
         assert!(d.roads.styles.get(RoadType::Turnaround).is_none());
         assert!(RoadType::ALL.iter().filter(|t| **t != RoadType::Turnaround).all(|t| d.roads.styles.get(*t).is_some()));
+    }
+
+    /// A config whose every category differs from `MapLayerConfig::default()`.
+    fn all_different() -> MapLayerConfig {
+        let mut b = MapLayerConfig::hud();
+        b.image.opacity = 0.2;
+        b.tilt.angle_deg = 33.0;
+        b.race_lines.width_px = 9.0;
+        b.race_lines.focus.other_roads = OtherRoads::Hidden; // the focus travels with the race lines
+        b.race_lines.focus.mute_alpha = 0.6;
+        b.roads.styles.road.color = Rgb::hex(0x123456);
+        b.roads.casing_px = 3.0;
+        b.pois.size_px = 20.0;
+        b.pois.categories = vec!["barn_find".into()];
+        b
+    }
+
+    fn section(c: &MapLayerConfig, cat: LayerCategory) -> String {
+        match cat {
+            LayerCategory::Image => format!("{:?}", c.image),
+            LayerCategory::Tilt => format!("{:?}", c.tilt),
+            LayerCategory::RaceLines => format!("{:?}", c.race_lines),
+            LayerCategory::Roads => format!("{:?}", c.roads),
+            LayerCategory::Pois => format!("{:?}", c.pois),
+        }
+    }
+
+    /// Copying a category changes that category on the target and nothing else; the source is
+    /// untouched; after the copy the category is equal.
+    #[test]
+    fn copy_category_touches_only_its_category() {
+        let a = MapLayerConfig::default();
+        let b = all_different();
+        for cat in LayerCategory::ALL {
+            assert_ne!(section(&a, cat), section(&b, cat), "{cat:?}: the fixture must differ");
+            let mut t = a.clone();
+            t.copy_category(&b, cat);
+            for other in LayerCategory::ALL {
+                let want = if other == cat { section(&b, other) } else { section(&a, other) };
+                assert_eq!(section(&t, other), want, "copying {cat:?} gave {other:?} the wrong values");
+            }
+            assert_eq!(b, all_different(), "the source must not change");
+            // Idempotent, and copying onto an equal category is a no-op.
+            let again = t.clone();
+            t.copy_category(&b, cat);
+            assert_eq!(t, again);
+        }
+    }
+
+    /// Copying all five categories makes the target equal to the source.
+    #[test]
+    fn copying_every_category_clones_the_config() {
+        let b = all_different();
+        let mut t = MapLayerConfig::dashboard();
+        for cat in LayerCategory::ALL {
+            t.copy_category(&b, cat);
+        }
+        assert_eq!(t, b);
     }
 }
