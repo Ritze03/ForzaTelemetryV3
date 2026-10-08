@@ -10,7 +10,7 @@
 //! style    draw order, zoom-dependent widths, dash patterns, the POI category table
 //! racesel  which race lines to draw ("current race" is a best-effort guess) + the in-race road focus
 //! paint2d  draw_base + draw_layers: the egui Painter output
-//! ui       the settings cards of all of the above (Overlay tab, both map tabs, D63)
+//! ui       the settings cards of all of the above (the Map tab's three map pages, D63)
 //! ```
 //!
 //! # Why this shape

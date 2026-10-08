@@ -1,6 +1,6 @@
 //! The settings UI of the shared map renderer (D63): everything `MapLayerConfig` holds, as
-//! cards, written once and used by both map tabs of the Overlay tab (Dashboard map and HUD
-//! minimap).
+//! cards, written once and used by the three map pages of the Map tab (Minimap, Dashboard map
+//! and Viewer).
 //!
 //! *Why one function for both maps:* the two maps are one renderer with two parameter sets
 //! (D61). A control that exists for one must exist for the other, so [`layers_ui`] takes the
@@ -13,7 +13,7 @@
 use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Stroke, TextureId, Ui};
 
 use super::cfg::{
-    DashStyle, ImageCfg, MapLayerConfig, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadsCfg, TiltCfg,
+    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadsCfg, TiltCfg,
 };
 use super::paint2d::IconAtlas;
 use super::store::{LayerStatus, Layers};
@@ -24,7 +24,7 @@ use crate::theme;
 use crate::ui::overlay_tab::{control_row, control_row_tip, pct_row, status_line};
 
 /// From this page width up the layer cards sit in three columns, below it in two (the same
-/// switch as the rest of the Overlay tab, see `overlay_tab::THREE_COLS_MIN_W`).
+/// switch as the Overlay tab, see `overlay_tab::THREE_COLS_MIN_W`).
 const THREE_COLS_MIN_W: f32 = 1100.0;
 
 // ── status ───────────────────────────────────────────────────────────────────────────────────
@@ -95,6 +95,18 @@ impl ViewCfg {
         c.minimap_zoom_stopped_m = self.zoom_stopped_m;
     }
 
+    /// Take over `src`'s values. `full`: every field; else only north-up, mirror and compass
+    /// (what the viewer shares with the other maps).
+    pub fn take(&mut self, src: &ViewCfg, full: bool) {
+        if full {
+            *self = src.clone();
+        } else {
+            self.north_up = src.north_up;
+            self.mirror_edges = src.mirror_edges;
+            self.compass = src.compass;
+        }
+    }
+
     pub fn of_overlay(o: &OverlayConfig) -> Self {
         Self {
             north_up: o.map_north_up,
@@ -142,6 +154,204 @@ pub fn view_rows(ui: &mut Ui, v: &mut ViewCfg) {
     theme::slider_row(ui, tr("Zoom when stopped"), &mut v.zoom_stopped_m, 50.0..=6000.0, 50.0, 0, " m").on_hover_text(zoom_tip);
 }
 
+// ── "Copy to …" (D68) ────────────────────────────────────────────────────────────────────────
+
+/// The three maps that have settings.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum MapId {
+    /// The HUD minimap (`overlay.map_layers`, `overlay.map_*`).
+    Minimap,
+    /// The Dashboard's Map widget (`minimap_layers`, `minimap_*`).
+    Dashboard,
+    /// The Map tab's viewer (`viewer_layers`, `viewer_*`).
+    Viewer,
+}
+
+impl MapId {
+    pub const ALL: [MapId; 3] = [MapId::Minimap, MapId::Dashboard, MapId::Viewer];
+
+    pub fn name(self) -> &'static str {
+        tr(match self {
+            MapId::Minimap => "Minimap",
+            MapId::Dashboard => "Dashboard map",
+            MapId::Viewer => "Viewer",
+        })
+    }
+}
+
+/// What a "Copy to …" button copies: one layer card, or the page's view options.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CopyWhat {
+    Layer(LayerCategory),
+    View,
+}
+
+/// A pressed "Copy to …": overwrite `what` of every map in `to` with `from`'s. Returned by
+/// [`layers_ui`] (and [`copy_menu`]) and applied by the page with [`apply_copy`], so the UI
+/// code never touches another map's config.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CopyRequest {
+    pub from: MapId,
+    pub what: CopyWhat,
+    pub to: Vec<MapId>,
+}
+
+/// The layers a map *draws with*: the HUD minimap draws the Dashboard map's while it follows it.
+fn layers_of(cfg: &AppConfig, id: MapId) -> &MapLayerConfig {
+    match id {
+        MapId::Minimap if cfg.overlay.map_use_dashboard => &cfg.minimap_layers,
+        MapId::Minimap => &cfg.overlay.map_layers,
+        MapId::Dashboard => &cfg.minimap_layers,
+        MapId::Viewer => &cfg.viewer_layers,
+    }
+}
+
+/// The view options a map draws with. The viewer has no stopped / moving zoom pair, rotation
+/// easing or stick look: those fields are filler (see [`ViewCfg::take`]).
+fn view_of(cfg: &AppConfig, id: MapId) -> ViewCfg {
+    match id {
+        MapId::Minimap if !cfg.overlay.map_use_dashboard => ViewCfg::of_overlay(&cfg.overlay),
+        MapId::Minimap | MapId::Dashboard => ViewCfg::of_app(cfg),
+        MapId::Viewer => ViewCfg {
+            north_up: cfg.viewer_north_up,
+            mirror_edges: cfg.viewer_mirror_edges,
+            compass: cfg.viewer_show_compass,
+            ..ViewCfg::of_app(cfg)
+        },
+    }
+}
+
+/// Apply a [`CopyRequest`]. Skipped targets: the source itself, and the Minimap while it follows
+/// the Dashboard map (it draws the Dashboard's values anyway, so writing its own would
+/// silently change what it shows after the user turns the follow off). Returns the maps that
+/// were written.
+pub fn apply_copy(cfg: &mut AppConfig, req: &CopyRequest) -> Vec<MapId> {
+    let mut done = Vec::new();
+    for &to in &req.to {
+        if to == req.from || (to == MapId::Minimap && cfg.overlay.map_use_dashboard) {
+            continue;
+        }
+        match req.what {
+            CopyWhat::Layer(cat) => {
+                let src = layers_of(cfg, req.from).clone();
+                match to {
+                    MapId::Minimap => cfg.overlay.map_layers.copy_category(&src, cat),
+                    MapId::Dashboard => cfg.minimap_layers.copy_category(&src, cat),
+                    MapId::Viewer => cfg.viewer_layers.copy_category(&src, cat),
+                }
+            }
+            CopyWhat::View => copy_view(cfg, req.from, to),
+        }
+        done.push(to);
+    }
+    done
+}
+
+/// Copy the view options from one map to another. All of [`ViewCfg`] when both are the HUD
+/// minimap / Dashboard map; to or from the viewer only what it has (north-up, mirror, compass),
+/// plus *Allow pan and zoom* between the viewer and the Dashboard map (the HUD cannot pan).
+fn copy_view(cfg: &mut AppConfig, from: MapId, to: MapId) {
+    let src = view_of(cfg, from);
+    let full = from != MapId::Viewer && to != MapId::Viewer;
+    match to {
+        MapId::Minimap => {
+            let mut v = ViewCfg::of_overlay(&cfg.overlay);
+            v.take(&src, full);
+            v.apply_overlay(&mut cfg.overlay);
+        }
+        MapId::Dashboard => {
+            let mut v = ViewCfg::of_app(cfg);
+            v.take(&src, full);
+            v.apply_app(cfg);
+            if from == MapId::Viewer {
+                cfg.minimap_allow_pan_zoom = cfg.viewer_allow_pan_zoom;
+            }
+        }
+        MapId::Viewer => {
+            cfg.viewer_north_up = src.north_up;
+            cfg.viewer_mirror_edges = src.mirror_edges;
+            cfg.viewer_show_compass = src.compass;
+            if from == MapId::Dashboard {
+                cfg.viewer_allow_pan_zoom = cfg.minimap_allow_pan_zoom;
+            }
+        }
+    }
+}
+
+/// How long the button says "Copied".
+const COPIED_SECS: f64 = 1.5;
+
+/// Why the Minimap cannot be a copy target while it follows the Dashboard map.
+const FOLLOWS_TIP: &str = "The Minimap follows the Dashboard map's settings. Turn that off on the Minimap page to copy into it.";
+
+/// The "Copy to …" menu button of one card: a small button that opens a list of the other maps
+/// plus "Both". Returns the request when one is picked. `minimap_follows`: the Minimap follows
+/// the Dashboard map, so it is greyed as a target (with a tooltip saying why). The button reads
+/// "Copied" for a moment afterwards.
+pub fn copy_menu(ui: &mut Ui, which: MapId, minimap_follows: bool, what: CopyWhat) -> Option<CopyRequest> {
+    let id = egui::Id::new(("map_copy_done", which, what));
+    let now = ui.input(|i| i.time);
+    let done_at: Option<f64> = ui.data(|d| d.get_temp(id));
+    let recent = done_at.filter(|t| now - t < COPIED_SECS);
+    if let Some(t) = recent {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((COPIED_SECS - (now - t)).max(0.0) + 0.05));
+    }
+    let label = if recent.is_some() { format!("{}  {}", crate::icons::CHECK, tr("Copied")) } else { tr("Copy to…").to_string() };
+    let others: Vec<MapId> = MapId::ALL.into_iter().filter(|m| *m != which).collect();
+    let blocked = |m: MapId| m == MapId::Minimap && minimap_follows;
+    let mut req = None;
+    // Closes on a pick (`ui.close()` below) or a click outside, not on a click on a disabled entry.
+    let cfg = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (btn, _) = egui::containers::menu::MenuButton::from_button(theme::secondary_button(label).small()).config(cfg).ui(ui, |ui| {
+        for &m in &others {
+            let b = ui.add_enabled(!blocked(m), egui::Button::new(m.name()));
+            let b = if blocked(m) { b.on_disabled_hover_text(tr(FOLLOWS_TIP)) } else { b };
+            if b.clicked() {
+                req = Some(CopyRequest { from: which, what, to: vec![m] });
+                ui.close();
+            }
+        }
+        ui.separator();
+        let any_blocked = others.iter().any(|m| blocked(*m));
+        let b = ui.add_enabled(!any_blocked, egui::Button::new(tr("Both")));
+        let b = if any_blocked { b.on_disabled_hover_text(tr(FOLLOWS_TIP)) } else { b };
+        if b.clicked() {
+            req = Some(CopyRequest { from: which, what, to: others.clone() });
+            ui.close();
+        }
+    });
+    btn.on_hover_text(tr("Overwrite this card's settings on the other map(s) with the ones shown here."));
+    if req.is_some() {
+        ui.data_mut(|d| d.insert_temp(id, now));
+        ui.ctx().request_repaint();
+    }
+    req
+}
+
+/// The row at the end of a card holding its "Copy to …" button, right-aligned.
+pub fn copy_row(ui: &mut Ui, which: MapId, minimap_follows: bool, what: CopyWhat) -> Option<CopyRequest> {
+    ui.add_space(4.0);
+    // In a `horizontal`: a bare right-to-left layout would claim all the height left in the page.
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| copy_menu(ui, which, minimap_follows, what)).inner
+    })
+    .inner
+}
+
+/// [`copy_row`] of a layer card of [`layers_ui`].
+fn card_copy_row(ui: &mut Ui, cp: &CopyCtx, cat: LayerCategory) {
+    if let Some(r) = copy_row(ui, cp.which, cp.minimap_follows, CopyWhat::Layer(cat)) {
+        *cp.out.borrow_mut() = Some(r);
+    }
+}
+
+/// What the cards of [`layers_ui`] need for their "Copy to …" row.
+struct CopyCtx {
+    which: MapId,
+    minimap_follows: bool,
+    out: std::cell::RefCell<Option<CopyRequest>>,
+}
+
 // ── the layer cards ──────────────────────────────────────────────────────────────────────────
 
 /// What [`layers_ui`] needs besides the config it edits.
@@ -152,23 +362,31 @@ pub struct LayerAux<'a> {
     /// HUD only: the minimap's own plate opacity (an `OverlayConfig` field, not part of the
     /// layer config) and whether its row is enabled.
     pub plate: Option<(&'a mut f32, bool)>,
-    /// False greys the layer cards (module off, or following the Dashboard map).
+    /// False greys the layer cards (module off, or following the Dashboard map). The "Copy to …"
+    /// rows stay usable: copying *from* a greyed page copies what the map really draws.
     pub enabled: bool,
+    /// Which map these cards edit (the source of their "Copy to …" menus).
+    pub which: MapId,
+    /// The Minimap follows the Dashboard map, so it cannot be copied into.
+    pub minimap_follows: bool,
 }
 
 /// All layer settings of one map as cards in two or three columns, with `lead` (the page's own
-/// first card: view options, module switch) on top of the first column. Both map tabs call
-/// this.
-pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut dyn FnMut(&mut Ui)) {
+/// first card: view options, module switch) on top of the first column. All three map pages
+/// call this. Returns the "Copy to …" a card's button asked for, for the page to apply with
+/// [`apply_copy`] (this function only edits `cfg`, it never sees the other maps).
+pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut dyn FnMut(&mut Ui)) -> Option<CopyRequest> {
     let three = ui.available_width() >= THREE_COLS_MIN_W;
-    let LayerAux { icons, plate, enabled } = ax;
+    let LayerAux { icons, plate, enabled, which, minimap_follows } = ax;
+    let cp = CopyCtx { which, minimap_follows, out: Default::default() };
+    let cp = &cp;
     let MapLayerConfig { image, roads, pois, race_lines, tilt } = cfg;
     let mut plate = plate;
-    let mut image_card_ = |ui: &mut Ui| image_card(ui, image, plate.as_mut().map(|(v, e)| (&mut **v, *e)), enabled);
-    let mut tilt_card_ = |ui: &mut Ui| gated(ui, enabled, |ui| tilt_card(ui, tilt));
-    let mut race_card_ = |ui: &mut Ui| gated(ui, enabled, |ui| race_lines_card(ui, race_lines));
-    let mut roads_card_ = |ui: &mut Ui| gated(ui, enabled, |ui| roads_card(ui, roads));
-    let mut pois_card_ = |ui: &mut Ui| gated(ui, enabled, |ui| pois_card(ui, pois, icons));
+    let mut image_card_ = |ui: &mut Ui| image_card(ui, image, plate.as_mut().map(|(v, e)| (&mut **v, *e)), enabled, cp);
+    let mut tilt_card_ = |ui: &mut Ui| tilt_card(ui, tilt, enabled, cp);
+    let mut race_card_ = |ui: &mut Ui| race_lines_card(ui, race_lines, enabled, cp);
+    let mut roads_card_ = |ui: &mut Ui| roads_card(ui, roads, enabled, cp);
+    let mut pois_card_ = |ui: &mut Ui| pois_card(ui, pois, icons, enabled, cp);
     ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
     let n = if three { 3 } else { 2 };
     theme::columns(ui, n, |uis| {
@@ -191,13 +409,10 @@ pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut
             pois_card_(&mut uis[1]);
         }
     });
+    cp.out.take()
 }
 
-fn gated(ui: &mut Ui, enabled: bool, body: impl FnOnce(&mut Ui)) {
-    ui.add_enabled_ui(enabled, body);
-}
-
-fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, enabled: bool) {
+fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, enabled: bool, cp: &CopyCtx) {
     theme::card(ui, tr("Image"), |ui| {
         ui.add_enabled_ui(enabled, |ui| {
             theme::checkbox_row(ui, &mut c.on, tr("Satellite image"));
@@ -228,11 +443,13 @@ fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, en
                 );
             });
         }
+        card_copy_row(ui, cp, LayerCategory::Image);
     });
 }
 
-fn tilt_card(ui: &mut Ui, c: &mut TiltCfg) {
+fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx) {
     theme::card(ui, tr("Tilted view"), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
         theme::checkbox_row(ui, &mut c.on, tr("Tilt the map"));
         ui.add_enabled_ui(c.on, |ui| {
             theme::slider_row(ui, tr("Angle"), &mut c.angle_deg, 5.0..=80.0, 1.0, 0, "°");
@@ -250,6 +467,8 @@ fn tilt_card(ui: &mut Ui, c: &mut TiltCfg) {
             );
             theme::checkbox_row(ui, &mut c.taper, tr("Thinner lines in the distance"));
         });
+        });
+        card_copy_row(ui, cp, LayerCategory::Tilt);
     });
 }
 
@@ -265,8 +484,17 @@ fn mode_label(m: RaceLineMode) -> &'static str {
     })
 }
 
-fn race_lines_card(ui: &mut Ui, c: &mut RaceCfg) {
+fn other_roads_label(o: OtherRoads) -> &'static str {
+    tr(match o {
+        OtherRoads::Normal => "Normal",
+        OtherRoads::Muted => "Muted",
+        OtherRoads::Hidden => "Hidden",
+    })
+}
+
+fn race_lines_card(ui: &mut Ui, c: &mut RaceCfg, enabled: bool, cp: &CopyCtx) {
     theme::card(ui, tr("Race lines"), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
         let mode_tip = tr("Current race is a best guess from where the car is and which way it drives: the game doesn't say which race it is. Nearest and Near use the search radius.");
         control_row_tip(ui, tr("Show"), mode_tip, |ui| {
             egui::ComboBox::from_id_salt("map_race_mode")
@@ -291,7 +519,40 @@ fn race_lines_card(ui: &mut Ui, c: &mut RaceCfg) {
             });
             pct_row(ui, tr("Opacity"), &mut c.alpha, 0.0, 100.0, 1.0, None);
             theme::checkbox_row(ui, &mut c.marks, tr("Start / finish marks"));
+            race_focus_rows(ui, c);
         });
+        });
+        card_copy_row(ui, cp, LayerCategory::RaceLines);
+    });
+}
+
+/// The in-race focus (D66): what the rest of the map does while a race line is detected. Only
+/// the "Current race" mode detects one, so the rows are greyed in the other modes.
+fn race_focus_rows(ui: &mut Ui, c: &mut RaceCfg) {
+    let tip = tr("Applies only in the Current race mode, while the car is in a race and a race line was detected. Otherwise the map stays as it is.");
+    ui.add_enabled_ui(c.mode == RaceLineMode::Current, |ui| {
+        ui.add_space(2.0);
+        ui.label(theme::section_label(tr("In a race"))).on_hover_text(tip);
+        let f = &mut c.focus;
+        control_row_tip(ui, tr("Other roads"), tip, |ui| {
+            egui::ComboBox::from_id_salt("map_race_other_roads")
+                .selected_text(other_roads_label(f.other_roads))
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for o in [OtherRoads::Normal, OtherRoads::Muted, OtherRoads::Hidden] {
+                        ui.selectable_value(&mut f.other_roads, o, other_roads_label(o));
+                    }
+                });
+        });
+        ui.add_enabled_ui(f.other_roads == OtherRoads::Muted, |ui| {
+            control_row(ui, tr("Muted colour"), |ui| {
+                egui::color_picker::color_edit_button_srgb(ui, &mut f.mute_color.0);
+            });
+            pct_row(ui, tr("Muted opacity"), &mut f.mute_alpha, 0.0, 100.0, 1.0, None);
+            theme::slider_row(ui, tr("Muted width"), &mut f.mute_width, 0.2..=1.5, 0.05, 2, "×")
+                .on_hover_text(tr("Width of the muted roads relative to their normal width."));
+        });
+        theme::checkbox_row(ui, &mut f.hide_pois, tr("Hide points of interest in a race")).on_hover_text(tip);
     });
 }
 
@@ -321,8 +582,9 @@ fn road_type_rows(s: &mut RoadStyles) -> [(&mut RoadTypeStyle, &'static str); 8]
     ]
 }
 
-fn roads_card(ui: &mut Ui, c: &mut RoadsCfg) {
+fn roads_card(ui: &mut Ui, c: &mut RoadsCfg, enabled: bool, cp: &CopyCtx) {
     theme::card(ui, tr("Roads"), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
         theme::checkbox_row(ui, &mut c.on, tr("Show roads"));
         ui.add_enabled_ui(c.on, |ui| {
             theme::checkbox_row(ui, &mut c.scale_with_zoom, tr("Scale width with zoom")).on_hover_text(tr(
@@ -348,6 +610,8 @@ fn roads_card(ui: &mut Ui, c: &mut RoadsCfg) {
                 c.styles = RoadStyles::default();
             }
         });
+        });
+        card_copy_row(ui, cp, LayerCategory::Roads);
     });
 }
 
@@ -563,8 +827,9 @@ fn cat_checkbox(ui: &mut Ui, c: &mut PoisCfg, id: &str, icons: Option<&IconAtlas
     });
 }
 
-fn pois_card(ui: &mut Ui, c: &mut PoisCfg, icons: Option<&IconAtlas>) {
+fn pois_card(ui: &mut Ui, c: &mut PoisCfg, icons: Option<&IconAtlas>, enabled: bool, cp: &CopyCtx) {
     theme::card(ui, tr("Points of interest"), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
         theme::checkbox_row(ui, &mut c.on, tr("Show points of interest"));
         ui.add_enabled_ui(c.on, |ui| {
             theme::slider_row(ui, tr("Icon size"), &mut c.size_px, 12.0..=64.0, 1.0, 0, " px");
@@ -602,6 +867,8 @@ fn pois_card(ui: &mut Ui, c: &mut PoisCfg, icons: Option<&IconAtlas>) {
                 });
             }
         });
+        });
+        card_copy_row(ui, cp, LayerCategory::Pois);
     });
 }
 
@@ -644,5 +911,161 @@ mod tests {
         v.apply_overlay(&mut o);
         assert_eq!(ViewCfg::of_overlay(&o), v);
         assert_eq!((o.map_north_up, o.zoom_stopped_m), (v.north_up, 1234.0));
+    }
+
+    // ── "Copy to …" ──────────────────────────────────────────────────────────────────────────
+
+    use super::super::cfg::Rgb;
+
+    /// A config where each map has its own look in every category.
+    fn three_maps() -> AppConfig {
+        let mut c = AppConfig::default();
+        c.overlay.map_use_dashboard = false;
+        c.overlay.map_layers = MapLayerConfig::hud();
+        c.overlay.map_layers.roads.styles.road.color = Rgb::hex(0x111111);
+        c.overlay.map_layers.pois.size_px = 11.0;
+        c.overlay.map_layers.image.opacity = 0.11;
+        c.overlay.map_layers.tilt.angle_deg = 11.0;
+        c.overlay.map_layers.race_lines.focus.mute_alpha = 0.11;
+        c.minimap_layers.roads.styles.road.color = Rgb::hex(0x222222);
+        c.minimap_layers.pois.size_px = 22.0;
+        c.minimap_layers.image.opacity = 0.22;
+        c.minimap_layers.tilt.angle_deg = 22.0;
+        c.minimap_layers.race_lines.focus.mute_alpha = 0.22;
+        c.viewer_layers.roads.styles.road.color = Rgb::hex(0x333333);
+        c.viewer_layers.pois.size_px = 33.0;
+        c.viewer_layers.image.opacity = 0.33;
+        c.viewer_layers.tilt.angle_deg = 33.0;
+        c.viewer_layers.race_lines.focus.mute_alpha = 0.33;
+        c
+    }
+
+    fn layers_mut_of(c: &mut AppConfig, m: MapId) -> &mut MapLayerConfig {
+        match m {
+            MapId::Minimap => &mut c.overlay.map_layers,
+            MapId::Dashboard => &mut c.minimap_layers,
+            MapId::Viewer => &mut c.viewer_layers,
+        }
+    }
+
+    fn req(from: MapId, what: CopyWhat, to: &[MapId]) -> CopyRequest {
+        CopyRequest { from, what, to: to.to_vec() }
+    }
+
+    /// Every category, from every map to every other map: the target gets that category only,
+    /// the third map and the source are untouched.
+    #[test]
+    fn copy_changes_one_category_of_the_target_only() {
+        for from in MapId::ALL {
+            for to in MapId::ALL.into_iter().filter(|m| *m != from) {
+                for cat in LayerCategory::ALL {
+                    let before = three_maps();
+                    let mut c = before.clone();
+                    assert_eq!(apply_copy(&mut c, &req(from, CopyWhat::Layer(cat), &[to])), vec![to]);
+                    for m in MapId::ALL {
+                        let (mut got, mut want) = (c.clone(), before.clone());
+                        let (got, want) = (layers_mut_of(&mut got, m).clone(), layers_mut_of(&mut want, m).clone());
+                        if m == to {
+                            let mut expect = want.clone();
+                            expect.copy_category(layers_mut_of(&mut before.clone(), from), cat);
+                            assert_eq!(got, expect, "{from:?} -> {to:?} {cat:?}");
+                            assert_ne!(got, want, "{from:?} -> {to:?} {cat:?} changed nothing");
+                        } else {
+                            assert_eq!(got, want, "{from:?} -> {to:?} {cat:?} touched {m:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// "Both" writes the two other maps and skips the source.
+    #[test]
+    fn copy_to_both_writes_both_others() {
+        let mut c = three_maps();
+        let others = [MapId::Dashboard, MapId::Viewer];
+        let done = apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Roads), &others));
+        assert_eq!(done, others);
+        assert_eq!(c.minimap_layers.roads, c.overlay.map_layers.roads);
+        assert_eq!(c.viewer_layers.roads, c.overlay.map_layers.roads);
+        assert_eq!(c.viewer_layers.pois.size_px, 33.0, "other categories stay");
+        // A request that names the source is ignored for it.
+        let mut c = three_maps();
+        assert!(apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Pois), &[MapId::Viewer])).is_empty());
+        assert_eq!(c.viewer_layers, three_maps().viewer_layers);
+    }
+
+    /// The race focus travels with the Race lines card.
+    #[test]
+    fn race_lines_copy_includes_the_focus() {
+        let mut c = three_maps();
+        apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::RaceLines), &[MapId::Dashboard]));
+        assert_eq!(c.minimap_layers.race_lines.focus.mute_alpha, 0.33);
+    }
+
+    /// While the Minimap follows the Dashboard map, copying into it is refused (its own config is
+    /// not written); copying from it copies what it draws, i.e. the Dashboard map's values.
+    #[test]
+    fn following_minimap_is_no_target_but_a_source_of_its_effective_values() {
+        let mut c = three_maps();
+        c.overlay.map_use_dashboard = true;
+        let own = c.overlay.map_layers.clone();
+        let done = apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Roads), &[MapId::Minimap, MapId::Dashboard]));
+        assert_eq!(done, vec![MapId::Dashboard]);
+        assert_eq!(c.overlay.map_layers, own);
+        assert!(apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::View, &[MapId::Minimap])).is_empty());
+
+        let mut c = three_maps();
+        c.overlay.map_use_dashboard = true;
+        c.minimap_north_up = true;
+        c.overlay.map_north_up = false; // what the HUD would have on its own; unused while following
+        apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Pois), &[MapId::Viewer]));
+        assert_eq!(c.viewer_layers.pois, c.minimap_layers.pois, "the Dashboard's values, not the HUD's own");
+        c.viewer_north_up = false;
+        apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::View, &[MapId::Viewer]));
+        assert!(c.viewer_north_up, "the view comes from the Dashboard map too");
+    }
+
+    /// View options: all of them between the HUD and the Dashboard map, the shared three
+    /// (+ allow pan and zoom with the Dashboard map) with the viewer.
+    #[test]
+    fn view_copy_maps_each_maps_own_keys() {
+        let mut c = three_maps();
+        c.overlay.map_north_up = true;
+        c.overlay.zoom_driving_m = 777.0;
+        c.overlay.compass = true;
+        c.minimap_north_up = false;
+        c.minimap_zoom_driving_m = 1234.0;
+        c.minimap_show_compass = false;
+        apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::View, &[MapId::Dashboard]));
+        assert!(c.minimap_north_up && c.minimap_show_compass);
+        assert_eq!(c.minimap_zoom_driving_m, 777.0);
+        assert_eq!(ViewCfg::of_app(&c), ViewCfg::of_overlay(&c.overlay));
+
+        // Dashboard -> viewer: three flags + allow pan and zoom, not the zoom.
+        c.minimap_north_up = false;
+        c.minimap_mirror_edges = false;
+        c.minimap_show_compass = true;
+        c.minimap_allow_pan_zoom = false;
+        c.viewer_zoom_m = 4321.0;
+        apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::View, &[MapId::Viewer]));
+        assert_eq!((c.viewer_north_up, c.viewer_mirror_edges, c.viewer_show_compass, c.viewer_allow_pan_zoom), (false, false, true, false));
+        assert_eq!(c.viewer_zoom_m, 4321.0);
+
+        // Viewer -> HUD: the three flags only; the zoom keys stay.
+        c.viewer_north_up = true;
+        c.viewer_mirror_edges = true;
+        c.viewer_show_compass = false;
+        let zoom = c.overlay.zoom_driving_m;
+        apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::View, &[MapId::Minimap]));
+        assert_eq!((c.overlay.map_north_up, c.overlay.map_mirror_edges, c.overlay.compass), (true, true, false));
+        assert_eq!(c.overlay.zoom_driving_m, zoom);
+
+        // Viewer -> Dashboard also takes "allow pan and zoom".
+        c.viewer_allow_pan_zoom = true;
+        let before = c.minimap_zoom_driving_m;
+        apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::View, &[MapId::Dashboard]));
+        assert!(c.minimap_allow_pan_zoom);
+        assert_eq!(c.minimap_zoom_driving_m, before);
     }
 }
