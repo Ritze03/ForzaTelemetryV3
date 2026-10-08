@@ -373,7 +373,7 @@ Start positions come from the `RVAN` block below, **not** from `race_triggers.tz
 ### Rust readers: POIs and race lines (`src/gamedata/`)
 
 Implemented in `poi.rs` and `racelines.rs` (task I28; std only, no new crate, nothing is bundled — read from the
-user's install at runtime). Nothing consumes them yet: the map renderer (I29) will. The icons for these POIs are read by
+user's install at runtime). The shared map renderer consumes them (`src/maprender/data.rs` `GameData::load`). The icons for these POIs are read by
 `icons.rs` ([Rust icon reader](fh6-cars-names-icons.md#rust-icon-reader-srcgamedataiconsrs-srcgamedatabc7rs-i28b)).
 
 - **`poi.rs`** — `Pois::load(media)`: 37 `PoiKind`s (a 38th, `DangerSign`, has its own loader, below) as `Poi { kind, x, z, y, name (slug), n }` plus the 10 region outlines.
