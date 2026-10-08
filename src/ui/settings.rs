@@ -667,6 +667,7 @@ fn map_data_card(ui: &mut Ui, app: &mut ForzaApp) {
         Some(MapAction::Contribute) => ui.ctx().open_url(egui::OpenUrl::new_tab(CONTRIBUTING_URL)),
         Some(MapAction::ResetOverride) => {
             // Only the override file; the cache and the project data stay.
+            app.map_editor_last = None;
             app.map_data.note = Some(match std::fs::remove_file(override_path()) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                     (Dot::Bad, format!("{}: {e}", tr("Could not delete the file")))
@@ -682,6 +683,7 @@ fn map_data_card(ui: &mut Ui, app: &mut ForzaApp) {
         Some(MapAction::StopEditor) => app.stop_map_editor(),
         Some(MapAction::Rebuild) => {
             // Only the cache: never the user's override file.
+            app.map_editor_last = None;
             let _ = std::fs::remove_dir_all(crate::gamedata::terrain::cache_dir());
             app.stop_map_editor();
             app.map_data.note = Some((Dot::Ok, tr("Map data cache cleared").to_string()));
@@ -815,9 +817,6 @@ fn map_data_view(ui: &mut Ui, md: &mut MapData, inp: &MapInputs) -> Option<MapAc
         ),
         Some(MapEvent::Error(e)) => status_wrap(ui, Dot::Bad, e),
         _ => {}
-    }
-    if let Some((dot, msg)) = md.note.clone() {
-        status_wrap(ui, dot, &msg);
     }
     if let Some((dot, msg)) = md.note.clone() {
         status_wrap(ui, dot, &msg);
@@ -1782,6 +1781,8 @@ mod tests {
             });
             texts(&out)
         };
+        let n = render(900.0, false, true).iter().filter(|(x, _)| x == "Reset to project data").count();
+        assert_eq!(n, 1, "note must render exactly once");
         let y_of = |t: &[(String, egui::Pos2)], s: &str| t.iter().find(|(x, _)| x.contains(s)).map(|(_, p)| p.y);
         for w in [700.0, 1000.0, 1235.0] {
             let t = render(w, true, false);
