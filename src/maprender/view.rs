@@ -21,9 +21,12 @@ pub const REF_VIEW_H: f32 = 136.0;
 
 /// A point must be at least this far (px) in front of the eye to be projected.
 const EYE_EPS: f32 = 1.0;
-/// How far ahead of the car (in multiples of the view height, plane px) the tilted map ends:
-/// the demo's canvas is 4 view heights tall with the car 80 % down it, so 3.2.
-pub const FAR_VIEW_HEIGHTS: f32 = 3.2;
+/// The tilted plane ends where things are this small ([`Camera::depth_scale_at_row`]): just short
+/// of the horizon, so the map fills the whole view whenever the horizon is outside it, and reaches
+/// to within a few px of the horizon when a steep tilt brings it into view. (It used to end a
+/// fixed 3.2 view heights ahead, the demo's canvas, which at the HUD's 55 deg left the top fifth
+/// of the pill empty and faded the next third.)
+pub const FAR_MIN_SCALE: f32 = 0.05;
 
 /// Car-centred camera over the map plane. Screen space = egui points.
 #[derive(Clone, Copy, Debug)]
@@ -151,9 +154,23 @@ impl Camera {
         if d < EYE_EPS { 1.0 } else { (self.focal / d).min(4.0) }
     }
 
-    /// How far the tilted plane extends ahead of the car (px).
+    /// The screen row where [`Camera::depth_scale_at_row`] is `k` (tilted only; above the car
+    /// for `k < 1`).
+    pub fn row_of_depth_scale(&self, k: f32) -> f32 {
+        self.centre.y + (k - 1.0) * self.focal / self.pitch.tan().max(1e-6)
+    }
+
+    /// The screen row of the plane's far limit ([`FAR_MIN_SCALE`]); above the rect when the
+    /// horizon is out of view. Flat: no limit (`f32::MIN`).
+    pub fn far_row(&self) -> f32 {
+        if self.is_flat() { f32::MIN } else { self.row_of_depth_scale(FAR_MIN_SCALE) }
+    }
+
+    /// How far the tilted plane extends ahead of the car (px): to the rect's top edge (a px past
+    /// it), or to the far limit when that is lower (the horizon is in view).
     pub fn far_px(&self) -> f32 {
-        FAR_VIEW_HEIGHTS * self.rect.height()
+        let y = self.far_row().max(self.rect.top() - 1.0);
+        self.unproject_offset(pos2(self.centre.x, y)).map_or(0.0, |o| -o[1])
     }
 
     /// The part of the plane that can appear on `rect` (plane offsets, y down): the unprojected
@@ -451,6 +468,36 @@ mod tests {
                         assert!(wx >= b[0] - 0.5 && wx <= b[2] + 0.5 && wz >= b[1] - 0.5 && wz <= b[3] + 0.5, "{p:?} -> {wx},{wz} not in {b:?}");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn the_tilted_plane_reaches_the_top_of_the_pill_or_just_short_of_the_horizon() {
+        // The HUD pill (208 x 136) with its tilt config: perspective 200, car 85 % down.
+        let r = rect(208.0, 136.0);
+        for angle in [30.0f32, 55.0, 60.0, 70.0, 80.0] {
+            let t = TiltCfg { on: true, angle_deg: angle, ..Default::default() };
+            let c = Camera::from_cfg(&t, (0.0, 0.0), 0.3, 300.0, r);
+            let horizon = c.row_of_depth_scale(0.0);
+            let far = c.far_row();
+            assert!(far > horizon && (c.depth_scale_at_row(far) - FAR_MIN_SCALE).abs() < 1e-4, "{angle}");
+            // The far limit's projection is the rect's top, or the far row when that is lower.
+            let edge = c.project_offset(0.0, -c.far_px()).unwrap().y;
+            assert!((edge - far.max(r.top() - 1.0)).abs() < 0.05, "{angle}: edge {edge} far {far} top {}", r.top());
+            // The plane's footprint covers all four corners of the pill below the far row.
+            let pr = c.plane_rect();
+            let top = far.max(r.top());
+            for p in [pos2(r.left(), top + 0.01), pos2(r.right(), top + 0.01), r.left_bottom(), r.right_bottom()] {
+                let o = c.unproject_offset(p).unwrap();
+                assert!(pr.expand(0.01).contains(pos2(o[0], o[1])), "{angle}: {p:?} -> {o:?} not in {pr:?}");
+            }
+            // At the default 55 deg (and below) the horizon is out of view: the pill is all map.
+            if angle <= 55.0 {
+                assert!(far < r.top(), "{angle}: far row {far} inside the pill (top {})", r.top());
+            }
+            if angle >= 70.0 {
+                assert!(far > r.top(), "{angle}: the horizon is in view");
             }
         }
     }

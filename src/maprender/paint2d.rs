@@ -17,7 +17,7 @@ use super::cfg::{DashStyle, ImageCfg, MapLayerConfig, OtherRoads, RaceCfg, RaceL
 use super::data::{MapLayers, NO_CAT};
 use super::racesel::{RaceSel, RoadFocus};
 use super::style::{self, Shape as Marker};
-use super::view::{bbox_hits, clip_convex, clip_polyline_convex, clip_segment_convex, fan, inside_convex, thin, Camera};
+use super::view::{bbox_hits, clip_convex, clip_polyline_convex, clip_segment_convex, fan, inside_convex, thin, Camera, FAR_MIN_SCALE};
 use super::MapTex;
 use crate::gamedata::icons::{PoiIcons, RaceClass};
 use crate::gamedata::poi::{week_index_now, Poi, PoiKind};
@@ -59,8 +59,8 @@ pub struct BaseParams<'a> {
     pub look: ImageLook,
     /// Fade alpha (the HUD's show/hide fade; 1.0 on the Dashboard).
     pub a: f32,
-    /// Tilted only: the image fades out towards the far edge of the plane (over
-    /// [`style::FAR_FADE_FRAC`] of the view's height), into whatever is behind it: the Dashboard's
+    /// Tilted only: the image fades out towards the far edge of the plane, just short of the
+    /// horizon (over [`style::FAR_FADE_DEPTH`] of depth scale), into whatever is behind it: the Dashboard's
     /// background, the HUD's plate (or the game, with no plate). Without it the plane ends in a
     /// hard line. The demo fades the same way, with a gradient of the plate colour over the image.
     pub far_fade: bool,
@@ -72,8 +72,9 @@ pub const TILT_CELLS: usize = 24;
 
 /// The map image under the camera. Flat: a triangle fan over `outline` (cut to the image when
 /// not mirroring) with per-vertex UVs from the inverse mapping, which is exact for an affine
-/// map. Tilted: the visible part of the map plane in `TILT_CELLS`² cells, each projected and
-/// cut to `outline`, with each vertex's UV taken from the inverse projection.
+/// map. Tilted: a screen-space grid of `TILT_CELLS`² cells over `outline` from the plane's far
+/// limit down (each cut to `outline`, and to the image on the plane when not mirroring), with
+/// each vertex's UV taken from the inverse projection.
 pub fn draw_base(p: &Painter, m: &BaseParams) {
     let cam = m.cam;
     let look = m.look;
@@ -87,14 +88,10 @@ pub fn draw_base(p: &Painter, m: &BaseParams) {
     let mut veil = Mesh::default();
     let veil_col = Color32::from_rgba_unmultiplied(110, 110, 110, veil_a);
 
-    // The far-edge fade: alpha 0 at the plane's far limit, 1 `FAR_FADE_FRAC` of the view height lower.
-    let (fade_from, fade_len) = if m.far_fade && !cam.is_flat() {
-        let edge = cam.project_offset(0.0, -cam.far_px()).map_or(cam.rect.top(), |q| q.y.max(cam.rect.top()));
-        (edge, (cam.rect.height() * style::FAR_FADE_FRAC).max(1.0))
-    } else {
-        (f32::MIN, 1.0)
-    };
-    let ramp = |y: f32| if fade_from == f32::MIN { 1.0 } else { ((y - fade_from) / fade_len).clamp(0.0, 1.0) };
+    // The far-edge fade: alpha 0 at the plane's far limit (`FAR_MIN_SCALE`, just short of the
+    // horizon), 1 at `FAR_FADE_DEPTH` more depth scale; linear in the screen row.
+    let fade = m.far_fade && !cam.is_flat();
+    let ramp = |y: f32| if fade { ((cam.depth_scale_at_row(y) - FAR_MIN_SCALE) / style::FAR_FADE_DEPTH).clamp(0.0, 1.0) } else { 1.0 };
 
     let uv_of = |pt: Pos2| -> Pos2 {
         match cam.unproject(pt) {
@@ -136,28 +133,42 @@ pub fn draw_base(p: &Painter, m: &BaseParams) {
         };
         add(&shape);
     } else {
-        let pr = cam.plane_rect();
-        let n = TILT_CELLS;
-        let (dx, dy) = (pr.width() / n as f32, pr.height() / n as f32);
+        // A screen-space grid over the outline, from the far limit (or the outline's top) down:
+        // the whole view is covered by construction. Rows are spaced evenly in the log of the
+        // depth scale, so each row spans the same depth ratio and the affine UV error stays
+        // even; each vertex's UV comes from the exact inverse projection.
         let bounds = outline_bounds(m.outline);
-        let rect_outline = m.outline.len() == 4;
-        for i in 0..n {
-            for j in 0..n {
-                let (x0, y0) = (pr.min.x + dx * i as f32, pr.min.y + dy * j as f32);
-                let cell = [pos2(x0, y0), pos2(x0 + dx, y0), pos2(x0 + dx, y0 + dy), pos2(x0, y0 + dy)];
-                let plane: Vec<Pos2> = if m.mirror { cell.to_vec() } else { clip_convex(&cell, &corners) };
-                if plane.len() < 3 {
+        let top = bounds.top().max(cam.far_row());
+        let bottom = bounds.bottom();
+        let n = TILT_CELLS;
+        if bottom > top {
+            let k0 = cam.depth_scale_at_row(top).max(FAR_MIN_SCALE).ln();
+            let k1 = (1.0 + (bottom - cam.centre.y) * cam.pitch.tan() / cam.focal).max(FAR_MIN_SCALE).ln();
+            let mut rows: Vec<f32> = (0..=n).map(|j| cam.row_of_depth_scale((k0 + (k1 - k0) * j as f32 / n as f32).exp())).collect();
+            rows[0] = top;
+            rows[n] = bottom;
+            let dx = bounds.width() / n as f32;
+            let rect_outline = m.outline.len() == 4;
+            for w in rows.windows(2) {
+                let (y0, y1) = (w[0], w[1]);
+                if y1 <= y0 {
                     continue;
                 }
-                let Some(screen) = plane.iter().map(|q| cam.project_offset(q.x, q.y)).collect::<Option<Vec<Pos2>>>() else { continue };
-                let sb = Rect::from_points(&screen);
-                if !sb.intersects(bounds) {
-                    continue;
-                }
-                if rect_outline && bounds.contains_rect(sb) {
-                    add(&screen);
-                } else {
-                    add(&clip_convex(&screen, m.outline));
+                for i in 0..n {
+                    let x0 = bounds.left() + dx * i as f32;
+                    let cell = Rect::from_min_max(pos2(x0, y0), pos2(x0 + dx, y1));
+                    let quad = [cell.left_top(), cell.right_top(), cell.right_bottom(), cell.left_bottom()];
+                    let shape = if rect_outline && bounds.contains_rect(cell) { quad.to_vec() } else { clip_convex(&quad, m.outline) };
+                    if m.mirror {
+                        add(&shape);
+                        continue;
+                    }
+                    // Cut to the image on the plane (a projection keeps lines straight).
+                    let Some(plane) = shape.iter().map(|&q| cam.unproject_offset(q).map(|o| pos2(o[0], o[1]))).collect::<Option<Vec<Pos2>>>() else { continue };
+                    let cut = clip_convex(&plane, &corners);
+                    if let Some(screen) = cut.iter().map(|q| cam.project_offset(q.x, q.y)).collect::<Option<Vec<Pos2>>>() {
+                        add(&screen);
+                    }
                 }
             }
         }
@@ -618,6 +629,9 @@ fn draw_pois(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut L
             return;
         }
         let [ox, oy] = cam.view.world_to_offset(it.x, it.z);
+        if cam.perspective_at(oy) < style::POI_FAR_K {
+            return;
+        }
         let Some(at) = cam.project_offset(ox, oy) else { return };
         if vis.len() < POI_BUDGET && cx.visible(at, size) {
             vis.push((i, cat, at, cam.perspective_at(oy).max(style::POI_MIN_K)));
@@ -1222,34 +1236,131 @@ mod tests {
         assert_eq!(widths(true, &flat).len(), 1);
     }
 
-    #[test]
-    fn the_far_edge_of_a_tilted_map_fades_out() {
-        let rect = Rect::from_min_size(pos2(20.0, 10.0), vec2(300.0, 200.0));
-        let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+    /// Is `pt` inside one of `mesh`'s triangles (and the alpha there, nearest vertex's)?
+    fn covered(mesh: &egui::epaint::Mesh, pt: Pos2) -> Option<u8> {
+        let cross = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        mesh.indices.chunks(3).find_map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize]);
+            let (d1, d2, d3) = (cross(a.pos, b.pos, pt), cross(b.pos, c.pos, pt), cross(c.pos, a.pos, pt));
+            let inside = (d1 >= -1e-3 && d2 >= -1e-3 && d3 >= -1e-3) || (d1 <= 1e-3 && d2 <= 1e-3 && d3 <= 1e-3);
+            let area = cross(a.pos, b.pos, c.pos).abs();
+            (inside && area > 1e-6).then(|| [a, b, c].iter().min_by(|x, y| (x.pos - pt).length_sq().total_cmp(&(y.pos - pt).length_sq())).unwrap().color.a())
+        })
+    }
+
+    /// The HUD pill (208 x 136, 22 px corners) at `scale`, with the HUD's tilt config at `angle`.
+    fn pill_base(angle: f32, scale: f32, mirror: bool, fade: bool) -> (Camera, Vec<Pos2>, Vec<egui::epaint::Mesh>) {
+        let rect = Rect::from_min_size(pos2(30.0, 40.0), vec2(208.0, 136.0) * scale);
+        let outline = crate::hud::prims::rounded_points(rect.shrink(0.5 * scale), [21.5 * scale; 4]);
+        let mut tilt = MapLayerConfig::hud().tilt;
+        tilt.on = true;
+        tilt.angle_deg = angle;
+        // Near the map's centre so mirror off still has image all around.
+        let cam = Camera::from_cfg(&tilt, (-409.0, -1541.0), 0.4, 300.0, rect);
         let tex = MapTex { id: TextureId::Managed(3), orig_size: [8192, 8192], winter: false };
-        let run = |pitch: f32, fade: bool| {
-            let centre = if pitch == 0.0 { rect.center() } else { Camera::tilt_centre(rect, 0.85) };
-            let cam = Camera::new(-409.0, -6541.0, 0.4, 800.0, rect, centre, pitch, 400.0);
-            let shapes = paint(rect, |p| {
-                draw_base(p, &BaseParams { cam: &cam, cal: MapCalibration::DEFAULT, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: fade });
-            });
-            (cam, meshes(&shapes))
-        };
-        let (cam, m) = run(55f32.to_radians(), true);
-        assert_eq!(m.len(), 1);
-        let edge = cam.project_offset(0.0, -cam.far_px()).unwrap().y.max(rect.top());
-        let len = rect.height() * style::FAR_FADE_FRAC;
+        let shapes = paint(rect, |p| {
+            draw_base(p, &BaseParams { cam: &cam, cal: MapCalibration::DEFAULT, tex, outline: &outline, mirror, look: ImageLook::FULL, a: 1.0, far_fade: fade });
+        });
+        (cam, outline, meshes(&shapes))
+    }
+
+    /// Points spread over the pill's inside, including right next to the rounded top corners.
+    fn pill_samples(cam: &Camera, outline: &[Pos2]) -> Vec<Pos2> {
+        let r = cam.rect;
+        let mut pts = Vec::new();
+        for ix in 0..=20 {
+            for iy in 0..=20 {
+                pts.push(r.min + vec2(r.width() * ix as f32 / 20.0, r.height() * iy as f32 / 20.0));
+            }
+        }
+        // Just inside each outline vertex, towards the centre (the arcs of the corners).
+        pts.extend(outline.iter().map(|&q| q + (r.center() - q).normalized() * 1.5));
+        pts.retain(|&q| inside_convex(q, outline) && outline.iter().all(|&o| (o - q).length() > 0.75));
+        pts
+    }
+
+    #[test]
+    fn the_tilted_base_fills_the_whole_pill() {
+        // The bug: the plane ended a fixed 3.2 view heights ahead, ~26 px under the pill's top at
+        // 55 deg, and faded over the next 41 px. Now every point inside the pill is drawn, fully
+        // opaque at the default tilt, mirrored or cut to the image, at 1x and 3x.
+        for (angle, scale, mirror) in [(55.0, 1.0, true), (55.0, 3.0, true), (55.0, 1.0, false), (45.0, 1.0, true), (52.0, 2.0, true)] {
+            let (cam, outline, m) = pill_base(angle, scale, mirror, true);
+            assert_eq!(m.len(), 1);
+            assert!(cam.far_row() < cam.rect.top(), "{angle}: horizon out of view");
+            for q in pill_samples(&cam, &outline) {
+                let a = covered(&m[0], q);
+                assert_eq!(a, Some(255), "{angle} deg x{scale} mirror {mirror}: {q:?} (top {})", cam.rect.top());
+            }
+        }
+        // Steep (70 deg): the horizon is in the pill. The image reaches to just under it
+        // (`FAR_MIN_SCALE`) and fades there; everything below the far row is covered.
+        let (cam, outline, m) = pill_base(70.0, 1.0, true, true);
+        let far = cam.far_row();
+        let horizon = cam.row_of_depth_scale(0.0);
+        assert!(far > cam.rect.top() && far - horizon < 0.06 * cam.focal / cam.pitch.tan() + 0.01, "far {far} horizon {horizon}");
+        for q in pill_samples(&cam, &outline) {
+            let a = covered(&m[0], q);
+            if q.y > far + 0.5 {
+                assert!(a.is_some(), "{q:?} below the far row {far}");
+            } else if q.y < far - 0.5 {
+                assert!(a.is_none(), "{q:?} above the far row {far}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_far_edge_fades_only_near_the_horizon() {
+        let (cam, _, m) = pill_base(70.0, 1.0, true, true);
         let mut seen = (false, false);
         for v in &m[0].vertices {
-            // Linear in the screen row: transparent at the plane's far edge, opaque `len` px below.
-            let want = ((v.pos.y - edge) / len).clamp(0.0, 1.0);
-            assert!((v.color.a() as f32 / 255.0 - want).abs() < 0.01, "alpha {} at y {} (edge {edge})", v.color.a(), v.pos.y);
+            // Linear in the screen row: transparent at the far limit, opaque FAR_FADE_DEPTH lower.
+            let want = ((cam.depth_scale_at_row(v.pos.y) - FAR_MIN_SCALE) / style::FAR_FADE_DEPTH).clamp(0.0, 1.0);
+            assert!((v.color.a() as f32 / 255.0 - want).abs() < 0.01, "alpha {} at y {}", v.color.a(), v.pos.y);
             seen = (seen.0 | (v.color.a() < 5), seen.1 | (v.color.a() == 255));
         }
         assert_eq!(seen, (true, true), "both the faded far end and the solid near part are there");
-        // No fade asked for, or a flat view: every vertex stays opaque.
-        for (pitch, fade) in [(55f32.to_radians(), false), (0.0, true)] {
-            assert!(run(pitch, fade).1[0].vertices.iter().all(|v| v.color.a() == 255), "pitch {pitch} fade {fade}");
+        // The fade band is a narrow strip: under 10 % of the pill's height at 70 deg.
+        let band = cam.row_of_depth_scale(FAR_MIN_SCALE + style::FAR_FADE_DEPTH) - cam.far_row();
+        assert!(band > 0.0 && band < 0.1 * cam.rect.height(), "{band}");
+        // No fade asked for: every vertex stays opaque.
+        assert!(pill_base(70.0, 1.0, true, false).2[0].vertices.iter().all(|v| v.color.a() == 255));
+        // Flat with the fade on: opaque too.
+        let rect = Rect::from_min_size(pos2(20.0, 10.0), vec2(300.0, 200.0));
+        let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+        let tex = MapTex { id: TextureId::Managed(3), orig_size: [8192, 8192], winter: false };
+        let cam = flat_cam(rect, (-409.0, -6541.0), 0.4, 800.0);
+        let shapes = paint(rect, |p| {
+            draw_base(p, &BaseParams { cam: &cam, cal: MapCalibration::DEFAULT, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: true });
+        });
+        assert!(meshes(&shapes)[0].vertices.iter().all(|v| v.color.a() == 255));
+    }
+
+    #[test]
+    fn a_tilted_dashboard_map_fills_its_rect() {
+        // The Dashboard map: a plain rect outline, focal scaled to its height, tilt on.
+        for (w, h, angle) in [(540.0, 540.0, 55.0), (800.0, 300.0, 55.0), (400.0, 600.0, 62.0)] {
+            let rect = Rect::from_min_size(pos2(5.0, 7.0), vec2(w, h));
+            let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+            let mut tilt = MapLayerConfig::default().tilt;
+            tilt.on = true;
+            tilt.angle_deg = angle;
+            let cam = Camera::from_cfg(&tilt, (-409.0, -1541.0), 1.1, 800.0, rect);
+            let tex = MapTex { id: TextureId::Managed(3), orig_size: [8192, 8192], winter: false };
+            let shapes = paint(rect, |p| {
+                draw_base(p, &BaseParams { cam: &cam, cal: MapCalibration::DEFAULT, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: true });
+            });
+            let m = meshes(&shapes);
+            let top = cam.far_row().max(rect.top());
+            for ix in 0..=16 {
+                for iy in 0..=16 {
+                    let q = pos2(rect.left() + 0.5 + (w - 1.0) * ix as f32 / 16.0, top + 0.5 + (rect.bottom() - top - 1.0) * iy as f32 / 16.0);
+                    assert!(covered(&m[0], q).is_some(), "{w}x{h} {angle}: {q:?}");
+                }
+            }
+            if cam.far_row() < rect.top() {
+                assert!(m[0].vertices.iter().all(|v| v.color.a() == 255), "{w}x{h} {angle}: no fade with the horizon out of view");
+            }
         }
     }
 

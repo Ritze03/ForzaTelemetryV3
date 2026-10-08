@@ -437,7 +437,7 @@ fn render_spec_states() -> Result<(), String> {
     let mut in_race_unfocused = lcar(base(unfocused), 398.0, 20.0, 0.0);
     in_race_unfocused.pkt.race_position = 2;
     let free = lcar(tilted(), 0.0, -60.0, 0.6);
-    let mut hud_cfg = |f: &dyn Fn(&mut OverlayConfig)| {
+    let hud_cfg = |f: &dyn Fn(&mut OverlayConfig)| {
         let mut c = OverlayConfig::default();
         f(&mut c);
         c
@@ -637,6 +637,30 @@ fn render_spec_states() -> Result<(), String> {
                 println!("  {id}: {diff} px differ from the image-only tile");
                 if diff < 1500 {
                     failures.push(format!("{id}: layers barely drew ({diff} px differ)"));
+                }
+                // User: tilted, the image did not fill the pill (the plane ended ~26 px under its
+                // top and faded over the next 41). With plate 0 an unpainted pixel is the game's
+                // background: none may be, edge to edge, rounded top corners included.
+                // (Teammates' and the own arrows' dark outlines are skipped.)
+                if tilt && !name.contains("coop") {
+                    let mut empty = Vec::new();
+                    for y in (4..=132).step_by(4) {
+                        for x in (4..=204).step_by(4) {
+                            // Inside the rounded rect within the 3 px border (corner radius 19).
+                            let (cx, cy) = ((x as f32).clamp(22.0, 186.0), (y as f32).clamp(22.0, 114.0));
+                            if (x as f32 - cx).hypot(y as f32 - cy) > 18.0 || ((x as i32 - 104).abs() < 14 && (y as i32 - 114).abs() < 14) {
+                                continue;
+                            }
+                            let got = px(&plain, x + 10, y + 10);
+                            if got.iter().zip(bgc).all(|(a, b)| a.abs_diff(b) < 8) {
+                                empty.push((x, y));
+                            }
+                        }
+                    }
+                    println!("  {id}: {} unpainted samples in the pill", empty.len());
+                    if !empty.is_empty() {
+                        failures.push(format!("{id}: the tilted image leaves the pill unpainted at {:?}", &empty[..empty.len().min(12)]));
+                    }
                 }
             }
             written.push(save(&img, &id)?);
