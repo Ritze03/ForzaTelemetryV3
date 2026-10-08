@@ -124,8 +124,82 @@ draws that icon for the map-element type tag whose name matches the category), 7
 - Variants per category (`seasonal`, `live` = Forzathon, `evolving_world`, `gold`, `collected`, mascots per region 1..9, …) are listed under `variants` in `mapping.json`.
 - Licensing: the icons are Playground Games' art — extract at runtime from the install, never bundle.
 
-### Rust notes
+### Rust icon reader (`src/gamedata/icons.rs`, `src/gamedata/bc7.rs`, I28b)
 
-- BC7 needs a decoder: the `texture2ddecoder` Rust crate exists (`bcdec_rs` is a smaller alternative); the `image` crate has no BCn. BC1 (map tiles) is ~40 lines by hand.
-- Atlas crops are plain integer-cell rectangles; load each sheet once and slice with the `AtlasPos`/slot values from `MapIncludeSharedResources.xml` (parse the XML at runtime — it is plaintext and ships in `UI.zip`).
-- `0x0d` = RGBA8 is trivial; `0x07` (probably BC6H, HDR images) is unverified and not needed for map icons.
+Nothing consumes it yet (the map renderer, I29b, will). Egui-free, std + the `zip` crate already in use, **no new crate, nothing bundled** (the art is Playground Games'; it is
+read from the user's install at runtime).
+
+```rust
+PoiIcons::load(media: &Path) -> Result<PoiIcons, String>      // = load_sized(media, 64)
+pub struct PoiIcons {
+    pub size: u32,                          // atlas cell edge, 64
+    pub atlas_rgba: Vec<u8>, pub atlas_w: u32, pub atlas_h: u32,   // RGBA8 straight alpha; 512 x 384 today
+    pub uv: HashMap<PoiKind, [f32; 4]>,     // [u0, v0, u1, v1] of the whole (square) cell
+    pub race: HashMap<RaceClass, [f32; 4]>, // 10 race-pin variants (a RacePin is drawn by its route's class)
+    pub mascot: HashMap<u32, [f32; 4]>,     // region 1..=9 (`Poi::n` of a Mascot)
+    pub skipped: Vec<String>,               // icons that could not be read (renderer falls back to shapes)
+}
+```
+
+- **What it does:** reads `Horizon_Map.zip`, decodes the 43 distinct sources of `ICON_TABLE` (27 swatchbin files + 16 cells cut out of the 2048×1024 `ForteMapIconSheet`; the sheet
+  is BC7 and only the needed block-aligned cells are decoded), scales each to fit a 64 px cell **keeping its aspect ratio** (area-average box filter in premultiplied alpha,
+  1 px transparent margin against bilinear bleed, centred in the cell — so every UV rect is square and the quad is drawn centred on the POI) and packs them 8 per row.
+  Rows with the same source share a cell. A missing / undecodable icon goes to `skipped`; `Err` only if the zip or nothing decodes.
+- **Cost:** ~22 ms in a release build on 6 cores (~105 ms on one thread; the decode + scale step runs on up to 8 scoped threads), so **no disk cache** — a cache would cost more
+  in invalidation than it saves. Still call it off the UI thread.
+- **Atlas cells are baked into the table, not parsed from `UI.zip`.** The XML routes each symbol through templates, colour-blind variants and `atlas_NxM` slot grids; a runtime
+  parser would be ~150 lines for 16 cells, and a game update that moves a cell only changes the picture. Grids: `atlas_4x4` = 8×4 slots of 256 px, `atlas_2x2` = 16×8 slots of 128 px.
+  Re-derive with `extract_icons.py` (`icons.json` lists `cell` + `slots` for every crop). The loader applies the same cell geometry as the script (`width / slots`).
+- **Not in the table (no UV → the renderer keeps a shape or draws nothing):** Landmark (name badges with the English name baked in — wrong for German), CreatureZone, Parking,
+  FlagRushFlag (geometry only), Pinata (1536 of them), Eliminator (has an icon in `Eliminator.zip`, not read).
+
+PoiKind → icon (`derived` = the game's own `MapProfiles` XML draws this icon for the map-element type tag of that name; `guessed` = chosen by file name, wants a human look):
+
+| `PoiKind` | Icon (inside `Horizon_Map.zip`, no `.swatchbin`) | Basis |
+|---|---|---|
+| SpeedTrap / DangerSign / DriftZone / SpeedZone | atlas 8×4 cells (0,0) / (1,0) / (2,0) / (3,0) = `pos_prstunt_speedcamera` / `_dangersign` / `_driftzone` / `_speedzone` | derived |
+| Trailblazer | atlas 8×4 (0,1) = `pos_prstunt_trailblazer_start` (the finish gate has `_end` at (1,1), unused: which gate is the start is unverified) | derived |
+| XpBoard | atlas 16×8 (8,3) = `pos_influenceboard_notfound` (the game calls them influence boards) | derived |
+| TreasureChest, TreasureChestBoard | `icons/MapIcons/TreasureHunt/Icon_Treasure_Discovered` (the *Treasure Hunt* chest; the repo's chest objects are linked by name only) | **guessed** |
+| BarnFind / BarnFindHint | `icons/MapIcons/BarnFind` / `Barnfind_Radius_Icon` (search-radius badge) | derived |
+| TreasureCar | `icons/MapIcons/SeeItDriveIt/TreasureCar` | derived |
+| House | `icons/MapIcons/PlayerHouse/Icon_PlayerHouse_Default` | derived |
+| Estate, EstateEntrance | `icons/MapIcons/PlayerHouse/Icon_Estate_Default` (the entrance shares it by name) | derived |
+| FestivalSite | `icons/MapIcons/FestivalSites/Icon_HorizonFestival_Main` | derived |
+| FastTravel | `pins/discount_board_fasttravel` (302×176, pause-menu art: the XML type `travel_board` points at atlas cells that are **blank**) | **guessed — the weakest row** |
+| CarMeet | `icons/MapIcons/Icon_Car_Meet` | derived |
+| Showcase | `icons/MapIcons/Showcases/Icon_Showcase_Mech` (planes / mech differ per showcase, not told apart) | derived |
+| AftermarketSpot, AftermarketBoard | `icons/MapIcons/SeeItDriveIt/AftermarketCar` | derived |
+| Upsell | `icons/MapIcons/SeeItDriveIt/PlaylistCar` | derived |
+| DragMeet | `icons/MapIcons/HorizonLife/Icon_DragEvent` | derived |
+| DragMeetFinish | `icons/MapIcons/CampaignObjective/drag_finish` (the XML has no finish-line symbol of its own) | **guessed** |
+| RushEvent | `icons/MapIcons/Rush/Icon_Rush_Docks` (Docks / Ski / Rocket exist; Docks is the XML default) | derived |
+| SpecialEvent | `icons/MapIcons/Icon_HallOfFame` (catch-all for invitational / legend events) | **guessed** |
+| HorizonStory, StoryActivation | atlas 8×4 (1,2) = `pos_story_background` (the yellow arch; the per-story glyph is drawn on top in the game) | derived |
+| HorizonJob, JobActivation | `icons/MapIcons/HorizonStories/Jobs_Background` (blue arch) | derived |
+| RacePin | atlas 8×4 (3,3) = asphalt circuit (the XML's fallback for a pin without a class) | derived |
+| TougeEvent | atlas 8×4 (4,2) = `pos_raceevent_touge_default` | derived |
+| `RaceClass` ×10 | asphalt p2p (2,3), asphalt circuit (3,3), cross-country p2p (0,3) / circuit (1,3), mixed-surface p2p (4,3) / circuit (5,3), drag (6,3), street (7,3), touge (4,2) — all 8×4 — and `icons/MapIcons/Icon_Midnight_Battle` | derived |
+| Mascot region 1..9 | `regions/Mascots/` Ramen, Dango, Omurice, Curry, Matcha, Kakigori, Edamame, Onigiri, Tempura | derived |
+
+5 of the 50 table rows are guesses (TreasureChest, TreasureChestBoard, FastTravel, DragMeetFinish, SpecialEvent); the other kinds `mapping.json` guesses (`hide_seek_arena`, `ie_route`)
+have no `PoiKind`. The `_Gold` / `_Seasonal` / `_Live` / `_EvolvingWorld` / `_Collected` variants of the families are not used (the files have no per-object state).
+
+**BC7 decoder (`bc7.rs`, ~250 lines, hand-written).** All eight modes: subset count (1-3), partition bits, rotation (modes 4, 5), index selection (mode 4), endpoint precisions,
+p-bit styles (unique, shared per subset, none), anchor indices with one bit less, interpolation weights 0/21/43/64 (2-bit), 3-bit and 4-bit tables, p-bit-aware endpoint expansion; a reserved
+mode (first byte 0) decodes to transparent black. Texel layout is row-major per block; sizes need not be a multiple of 4 (`ceil(w/4)·ceil(h/4)` blocks, edge texels dropped — real icons are
+257², 322×389, 380×340…).
+- **Partition tables.** The 64 two-subset and 64 three-subset partitions and the anchor (fix-up) texels are format constants that cannot be derived. They were **read out of a reference
+  decoder** (Pillow's, fed probe blocks whose subsets have distinct colours, and all-ones index bits to show which texel has the short index) and the two-subset anchors cross-checked with
+  the published table. Why not type them from memory: one wrong entry corrupts only the blocks that use that partition — see the test below, which would catch it.
+- **Validation.** (1) Synthetic blocks, one per feature: mode 6 (endpoints + 4-bit weights), mode 3 (2 subsets, partition 0, anchor 15), mode 2 (3 subsets, anchors 0/3/15), mode 5 with
+  rotation 3, mode 4 with both index-selection values, p-bit expansion of modes 0/1/7, reserved mode, region and clipped decodes. (2) Real install: every distinct icon source the app
+  uses is fingerprinted (FNV-1a over size + RGBA) against **Pillow's decode of the same swatchbin** and must match exactly (`real_install_icons_match_the_pillow_reference`, runs by
+  default). (3) `every_icon_matches_the_python_pngs` (ignored; `FH6_ICON_PNG_DIR=<extract_icons.py --out dir> cargo test --release -- --ignored`) compares **all 1014** `Horizon_Map.zip`
+  swatchbins with the Python PNGs pixel for pixel: **0 differing channel values** over 6 061 350 BC7 blocks, in which all eight modes occur
+  (blocks per mode 0..7: 319 739 / 301 330 / 26 417 / 675 061 / 46 589 / 439 577 / 652 950 / 3 599 687; no reserved block).
+- The BC1 map-tile path is untouched (`parse_swatchbin` is still BC1-only; `tiles.rs` has a generic `parse_swatch` + `Swatch::to_rgba` for the icons). `0x0d` RGBA8 is a copy;
+  `0x07` (probably BC6H, HDR images) is rejected.
+- A game update that redraws an icon fails the fingerprint test on purpose: re-run `extract_icons.py`, look at the new art, regenerate the table (`FH6_PRINT_ICON_HASHES=1 cargo test
+  real_install_icons_match -- --nocapture` prints the Rust side's hashes in the table order; the reference values come from the Pillow PNGs). `FH6_ICON_ATLAS_OUT=<png> cargo test
+  --release -- --ignored dump_atlas_png` writes the atlas as a contact sheet.

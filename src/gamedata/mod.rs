@@ -8,14 +8,24 @@
 // I27's Setup card reads (`Current::note` & co, `Elevation::valid_fraction`) or nothing does yet
 // (`Nav::edges`, `RoadType::from_index`, `Terrain` stats). Remove them as those land.
 pub mod burg;
+// BC7 decoder + the POI icon atlas (I28b): `PoiIcons::load` is what the next renderer task (I29b)
+// calls; nothing consumes them yet.
+#[allow(dead_code)]
+pub mod bc7;
 pub mod cars;
+#[allow(dead_code)]
+pub mod icons;
 pub mod install;
 pub mod lz4;
 #[allow(dead_code)]
 pub mod nav;
 #[allow(dead_code)]
 pub mod pgzp;
-// POIs and race lines (I28): used by the I29 map renderer, nothing consumes them yet.
+// POIs and race lines (I28): consumed by the map renderer (`maprender::data`, I29a). The allows stay
+// for what it doesn't read yet (checked with I29a merged: removing them warns): `Poi::{y, name, n,
+// gate}`, `Region`, `Pois::{of, current_treasure_chest, load_danger_signs}` + the week helpers
+// (I29b wires the danger signs, chest and gate lines), `racelines::race_pins` and the unread
+// `RaceLine` fields.
 #[allow(dead_code)]
 pub mod poi;
 pub mod process;

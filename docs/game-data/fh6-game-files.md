@@ -268,13 +268,14 @@ Pixel data = `bytes[0x8c : 0x8c + size@0x80]`, row-major 4×4 blocks, no gamma c
 | 0x74 | Format | Block | Seen in |
 |---|---|---|---|
 | `0x00` | **BC1 / DXT1** (RGB565 endpoints, 4-colour mode when `c0 > c1`, else 3-colour + transparent; 2-bit indices LSB first) | 8 B | the map tiles (`Map_Brio_*.zip`) |
-| `0x09` | **BC7** | 16 B | all 1020 map icons (`Horizon_Map.zip` + 6 ext) |
+| `0x09` | **BC7** | 16 B | all 1020 map icons (`Horizon_Map.zip` + 6 ext); decoded in Rust by `gamedata/bc7.rs` |
 | `0x0d` | RGBA8, byte order R, G, B, A | 4 B / px | other zips |
 | `0x07` | 16 B / block, **probably BC6H** (HDR) — *unverified, not decoded* | 16 B | `HDRImages.zip` only |
 
 Width @0x4c, height @0x50 need not be multiples of 4 (icons are e.g. 121², 141²): the data is `ceil(w/4)·ceil(h/4)` blocks. Decoders:
 `extract_map.py:decode_bc1` (BC1, numpy), `extract_icons.py:decode` (BC1/RGBA8 + BC7 through Pillow's `bcn` decoder — `Image.frombytes('RGBA', (w, h), data, 'bcn', 7)` —
-with an optional `texture2ddecoder` fallback). Rust: no BCn in the `image` crate — BC1 by hand, BC7 via a crate (`texture2ddecoder` exists).
+with an optional `texture2ddecoder` fallback). Rust: no BCn in the `image` crate — **both BC1 (`tiles.rs`) and BC7 (`bc7.rs`) are decoded by hand**, no crate
+(see [Rust icon reader](fh6-cars-names-icons.md#rust-icon-reader-srcgamedataiconsrs-srcgamedatabc7rs-i28b)).
 
 ### Validation
 
@@ -286,7 +287,9 @@ removed) — so those jpgs were re-encodes of this data and `MapCalibration::DEF
 - Implemented in `src/gamedata/tiles.rs`: zip reading with the **`zip` crate (deflate)**, already in
   `Cargo.toml`; one thread per tile row, each with its own `ZipArchive` (L3 ~60 ms release).
 - BC1 is decoded by hand (~40 lines, no crate); the `image` 0.25 crate cannot decode BC1.
-  `parse_swatchbin` rejects a wrong magic, a total-size mismatch and any pixel format other than 0 (BC1).
+  `parse_swatch` (I28b) is the format-generic container parser (`PixelFormat` = BC1 `0x00`, BC7 `0x09`, RGBA8 `0x0d`; rejects a wrong magic, a total-size
+  mismatch, an unknown format such as `0x07`, an implausible size or too little data; block counts use `ceil(w/4)·ceil(h/4)`); `parse_swatchbin` stays the
+  BC1-only wrapper the map tiles use (any other pixel format is an error there), so the tile path is unchanged.
 - `decode_bc1()` in `extract_map.py` is a compact reference (RGB565 endpoints, 4-colour mode when
   `c0 > c1`, else 3-colour; 2-bit indices LSB first).
 
@@ -370,15 +373,18 @@ Start positions come from the `RVAN` block below, **not** from `race_triggers.tz
 ### Rust readers: POIs and race lines (`src/gamedata/`)
 
 Implemented in `poi.rs` and `racelines.rs` (task I28; std only, no new crate, nothing is bundled — read from the
-user's install at runtime). Nothing consumes them yet: the map renderer (I29) will.
+user's install at runtime). Nothing consumes them yet: the map renderer (I29) will. The icons for these POIs are read by
+`icons.rs` ([Rust icon reader](fh6-cars-names-icons.md#rust-icon-reader-srcgamedataiconsrs-srcgamedatabc7rs-i28b)).
 
-- **`poi.rs`** — `Pois::load(media)`: 37 `PoiKind`s as `Poi { kind, x, z, y, name (slug), n }` plus the 10 region outlines.
+- **`poi.rs`** — `Pois::load(media)`: 37 `PoiKind`s (a 38th, `DangerSign`, has its own loader, below) as `Poi { kind, x, z, y, name (slug), n }` plus the 10 region outlines.
   Reads `race_triggers.tz`, `landmark_triggers.tz`, `creatures_all.tz`, `tz_horizonstories.tz`, `route0.nt`,
   `pinata/eliminator/parkingareas.nt`, `route40001/40900.nt` (car meets), `route40900/4004x/4005x.nt` (upsell pins, merged by rounded x/z),
   `map_region_*.nt`, `Ribbon_00/GameObjs.xml` and `Stripped/gs/brio/gameobjs.xml`. A missing or odd source is skipped and listed in
   `Pois::skipped`; `Err` only if nothing at all was read. The `route0.nt` classification is the if/elif chain of `extract_poi.py` ported 1:1.
   Speed trap = midpoint of its two poles; speed zone / trailblazer / drift zone = one POI per gate (midpoint of LEFT/RIGHT), `…_gate1` / `…_gate2`
   (which is the start stays [unverified](#10-open-items)). Names are the file slugs — no label or translation yet.
+  `Poi::gate: Option<[[f32; 2]; 2]>` keeps the x/z of the `LEFT` and `RIGHT` markers for `SpeedTrap` and the three gate kinds (the line across the road the map draws;
+  `(x, z)` is its midpoint, widths 1-60 m on this install); `None` for everything else. A trap or gate with a missing partner marker is not emitted.
 - **`racelines.rs`** — `load_all(media, step_m)`: all `Route<N>.owt` + the `RVAN` start/finish of `Route<N>.nav`, trimmed to one drive and decimated
   like `extract_racelines.py` (`RaceLine { pts, y, half, length_m, closed, … }`; length summed in f64 — f32 is 7 m off on the 85 km route 5555).
   A route with a bad `.owt` layout, a missing `.nav`/`RVAN` or no finite node is skipped and listed in `RaceLines::skipped`.
@@ -388,6 +394,18 @@ user's install at runtime). Nothing consumes them yet: the map renderer (I29) wi
   zones, danger signs, drift-circuit props, barn buildings) and reads PGZP/GeoChunk props. The Rust skips them: `GameObjs.xml` supersedes the guesses
   (the Python list even double-counts them: 100 + 200 XP boards), and the PGZP props (danger signs 15, drift posts 1027, speed-limit signs 2141) need
   seek-reads in a 40 GB file. Not read either: arena outlines, the rural train line, `VOL_*` volumes, the creator-dump-only categories (encrypted in the install).
+  The one exception is the **danger signs** (below), read on demand because the map shows them.
+- **Danger signs — `Pois::load_danger_signs(media)` (I28b).** `PoiKind::DangerSign`, 15 on this install (`bm_02 … bm_20`; `bm_01/07/10/12/19` do not exist), a port of
+  the danger-sign half of `extract_geochunk.py:geochunk`: `Pgzp::open` on `GeoChunk0.minizip` with a name filter (`*.pgeo` containing `tag_dangersign_bm_`), then a
+  seek-read + LZ4 decode of those few entries and a port of `parse_pgeo` (byte-wise scan for `u32 len, name, u32 count, count × 80-byte instances` inside the
+  header's bounding box; positions are sign-magnitude 16.16). Each sign is a prop group (rush ramp + construction boards + cones, grouped by the model name
+  without `_3D`); its position is the mean of the **first model group containing `constructionbrd`**, else the cones, else the ramp (`bm_05` has only a ramp).
+  The test compares all 15 positions with `geochunk_pois.json` of the Python (≤ 0.011 m, i.e. rounding). **Cost: ~0.13 s warm in release (up to ~0.5 s cold)** —
+  the 411 013-line name list and the 10 MB PGZP index, not the 15 entries — which is why it is **not** part of `Pois::load` (10 ms): the renderer loads it lazily /
+  on a worker thread and `items.extend`s the result. `Pois::load` does not know `DangerSign` (its count test stays 5561).
+- **Current treasure chest — `Pois::current_treasure_chest(week)`** with `week_index_at(unix)` / `week_index_now()` / `treasure_chest_number(week)` (I28b): picks the
+  Ribbon chest (`TreasureChest`) or stripped board (`TreasureChestBoard`) whose number is `week − 53`; the reasoning and the inference's weak spot are under
+  [GameObjs.xml](#gameobjsxml--exact-gameplay-props) ("Which treasure chest is the current one").
 - **No XML parser.** All inputs are machine-written with a fixed attribute order, so a forward `str::find` scan is enough (all POI sources ≈ 18 ms in a release build). A game update that reorders attributes would lose items, not corrupt them; the real-install tests catch it by count.
 
 Counts on this install (Oct 2026 build; the real-install tests in the two modules assert them, so a game update fails them on purpose —
@@ -400,7 +418,7 @@ re-run the Python extractors, check the diff, then update the tests and this tab
 | StoryActivation / JobActivation | 11 / 6 | EstateEntrance / TreasureChest | 37 / 3 |
 | CreatureZone | 47 | SpeedTrap | 30 |
 | House / FastTravel / FestivalSite / Estate | 8 / 11 / 2 / 4 | SpeedZone / Trailblazer / DriftZone (gates) | 60 / 24 / 40 |
-| CarMeet (one is `carmeet_test`) | 6 | TreasureChestBoard / FlagRushFlag | 16 / 6 |
+| CarMeet (one is `carmeet_test`) | 6 | TreasureChestBoard (004-019) / FlagRushFlag | 16 / 6 |
 | DragMeet / DragMeetFinish | 3 / 3 | BarnFind / BarnFindHint | 15 / 15 |
 | AftermarketSpot / AftermarketBoard | 44 / 44 | Showcase / RushEvent / SpecialEvent | 2 / 3 / 3 |
 | TreasureCar | 10 | HorizonJob / HorizonStory / Upsell | 5 / 9 / 5 |
@@ -445,11 +463,19 @@ was wrong: only 27 `ANIM_*` / `STADIUM_FLOOR` objects sit at the origin.)
 | `DRIFTZONEMARKER_NN_{LEFT,RIGHT}_{1,2}` | 20 zones × 2 gates | **drift zones** |
 | `MASCOTS_REGION_R_NNN` | 200 | mascots (region number kept) |
 | `ESTATE_ENTRANCE_NN` | 37 | estate entrances |
-| `DISCOUNT_BOARD_TREASURE_CHEST_N` | 3 | treasure-chest boards |
-
-The highest-numbered `DISCOUNT_BOARD_TREASURE_CHEST_N` (over `gameobjs.xml` and the GeoChunk; 015 today) is the **current season's treasure chest** (user observation, 2026-10-03). The map viewer picks it at build time and shows it as its own highlighted layer (`treasure_chest_current`, on by default).
+| `DISCOUNT_BOARD_TREASURE_CHEST_N` | 3 | treasure-chest boards (N = 001-003; `Stripped/gs/brio/gameobjs.xml` holds N = 004-019, the 6 Oct 2026 update added 016-019) |
 | `BARN_FIND_*` | some | barn-find objects (not extracted by the script) |
 | `ANIM_*`, `STADIUM_FLOOR…` | 27 | at 0,0,0 — ignore |
+
+**Which treasure chest is the current one.** One chest is current per game week and the viewer / app highlights it
+(`treasure_chest_current`, on by default; drawn bigger). The files have **no date or season field** for it, so the mapping is inferred (and should be re-verified
+the next time a chest changes): the user saw **015** current on 2026-10-03; the Festival Playlist series run 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun,
+16 Jul, 13 Aug, 10 Sep, 8 Oct 2026) and the file holds exactly four new chests after the update of 6 Oct (016-019, shipped early). Reading that as four chests per
+series (inferred: 004-007 from 16 Jul, 008-011 from 13 Aug, 012-015 from 10 Sep, **016-019 from 8 Oct**) gives one per week, rolling over **Thursday 14:30 UTC**
+like the map-skin season (`minimap::current_season`, epoch `1_749_738_600`). 015 is then the week from 2026-10-01 14:30 UTC = week 68 of that epoch, so **chest number = week index − 53** (`poi::treasure_chest_number`,
+`Pois::current_treasure_chest(week)`; falls back to the highest chest below the wanted number if the install is older).
+*Why not "the highest number":* that was the rule of the map viewer (`build_viewer.py`, written when 015 was the highest and the current one) and is wrong since the
+6 Oct update, which put 016-019 in the file ahead of their weeks. *Check:* 016 should become current at 2026-10-08 14:30 UTC; if the in-game chest is not 016 then, the offset (53) or the 4-per-series assumption is wrong.
 
 Notes:
 - Speed traps, speed zones, trailblazers and photo spots exist **only** here (and photo spots not even here) — they are in no `.pgeo`.
