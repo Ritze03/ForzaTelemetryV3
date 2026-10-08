@@ -494,7 +494,7 @@ mod tests {
         let d = MapLayerConfig::dashboard();
         assert_eq!(c.viewer_layers.roads, d.roads);
         assert_eq!(c.viewer_layers.image, d.image);
-        assert_eq!(c.viewer_layers.pois.max_zoom_m, 8000.0);
+        assert_eq!(c.viewer_layers.pois.max_zoom_m, 10000.0);
         assert!(c.viewer_layers.pois.max_zoom_m >= map_scene::ZOOM_MAX_M, "POIs show at every viewer zoom");
     }
 

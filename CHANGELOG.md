@@ -22,7 +22,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ### Info
 - **Map settings moved**: the Minimap and Dashboard map settings are now on the Map tab (they were on the Overlay tab) and the map editor / Map data card too (it was in Setup). Nothing was lost; the Overlay tab keeps the HUD's own settings, Setup is shorter.
-- **New Dashboard map defaults on a fresh install**: north-up, 5 km radius and no compass. Your saved settings are not changed.
+- **New Dashboard map defaults on a fresh install**: north-up, 1.5 km radius driving / 4.5 km stopped and no compass. Your saved settings are not changed.
+- **New default map look** (fresh installs): roads by type, zoom, points of interest (a shorter default list, visible up to a 10 km view; on the minimap only nearby ones, 500 m radius, 40 deg tilt, satellite at full opacity). Existing settings are kept.
 - **New HUD minimap default on a fresh install**: a 300 m radius while driving (was 500 m). Your saved overlay settings are not changed.
 
 ## [0.5.0] – 2026-10-07

@@ -1,6 +1,6 @@
 //! Config of the shared map renderer: what the Dashboard map (`AppConfig::minimap_layers`) and
 //! the HUD minimap (`OverlayConfig::map_layers`) draw on top of / instead of the satellite
-//! image. Plain serde types, no egui state; the defaults are the user's demo export (D62).
+//! image. Plain serde types, no egui state; the defaults are the user's own settings of 2026-10-08 (D71; before: the demo export, D62).
 //!
 //! *Why one struct for both maps:* D61 wants one renderer with different parameters. The two
 //! constructors, [`MapLayerConfig::dashboard`] (the `Default`) and [`MapLayerConfig::hud`], are
@@ -235,18 +235,15 @@ impl Default for RoadsCfg {
 
 // ── points of interest ───────────────────────────────────────────────────────────────────────
 
-/// Category names switched on by default (D62): the demo's category ids, see `style::POI_CATS`.
+/// Category names switched on by default on the Dashboard map (D71: the user's own selection;
+/// category ids see `style::POI_CATS`).
 pub const POI_DEFAULT_ON: &[&str] = &[
     "barn_find",
     "car_meet",
-    "fast_travel",
     "festival_site",
     "house",
     "aftermarket_spot",
     "aftermarket_board",
-    "horizon_job",
-    "horizon_story",
-    "xp_board",
     "speed_trap",
     "speed_zone",
     "trailblazer",
@@ -254,6 +251,10 @@ pub const POI_DEFAULT_ON: &[&str] = &[
     "danger_sign",
     "treasure_chest_current",
 ];
+
+/// The HUD minimap's default categories (D71): the ones that matter at a glance in a 300 m view.
+pub const POI_HUD_DEFAULT_ON: &[&str] =
+    &["festival_site", "house", "speed_trap", "speed_zone", "trailblazer", "drift_zone", "danger_sign"];
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -278,7 +279,7 @@ impl Default for PoisCfg {
         Self {
             on: true,
             size_px: 32.0,
-            max_zoom_m: 3000.0,
+            max_zoom_m: 10000.0,
             near_only: false,
             radius_m: 2000.0,
             gates: true,
@@ -453,12 +454,18 @@ impl MapLayerConfig {
         Self::default()
     }
 
-    /// HUD minimap (D62): satellite dimmed to 50 % in opacity, brightness and saturation so the
-    /// vectors carry the picture, and tilted.
+    /// HUD minimap (D62, D71): satellite at full opacity but dimmed to 50 % brightness and
+    /// saturation so the vectors carry the picture, tilted 40 deg, POIs only near the car
+    /// (1 km) and only the [`POI_HUD_DEFAULT_ON`] kinds, hidden above a 3 km view.
     pub fn hud() -> Self {
         let mut c = Self::default();
-        c.image = ImageCfg { on: true, opacity: 0.5, brightness: 0.5, saturation: 0.5 };
+        c.image = ImageCfg { on: true, opacity: 1.0, brightness: 0.5, saturation: 0.5 };
         c.tilt.on = true;
+        c.tilt.angle_deg = 40.0;
+        c.pois.max_zoom_m = 3000.0;
+        c.pois.near_only = true;
+        c.pois.radius_m = 1000.0;
+        c.pois.categories = POI_HUD_DEFAULT_ON.iter().map(|s| s.to_string()).collect();
         c
     }
 
@@ -517,10 +524,10 @@ mod tests {
         let d = MapLayerConfig::default();
         assert_eq!(d.race_lines.mode, RaceLineMode::Current);
         assert_eq!((d.race_lines.width_px, d.race_lines.alpha), (4.0, 0.85));
-        assert_eq!((d.pois.size_px, d.pois.max_zoom_m), (32.0, 3000.0));
+        assert_eq!((d.pois.size_px, d.pois.max_zoom_m), (32.0, 10000.0));
         assert_eq!((d.roads.metres, d.roads.min_px, d.roads.max_px, d.roads.base_px), (10.0, 1.0, 10.0, 3.0));
         assert!(!d.tilt.on && MapLayerConfig::hud().tilt.on);
-        assert_eq!(MapLayerConfig::hud().image.opacity, 0.5);
+        assert_eq!(MapLayerConfig::hud().image.opacity, 1.0);
         assert_eq!(d.roads.styles.highway.width, 1.44);
         assert_eq!(d.roads.styles.tunnel.alpha, 0.85);
         for c in [&d, &MapLayerConfig::hud()] {
@@ -530,6 +537,25 @@ mod tests {
         }
         assert!(d.roads.styles.get(RoadType::Turnaround).is_none());
         assert!(RoadType::ALL.iter().filter(|t| **t != RoadType::Turnaround).all(|t| d.roads.styles.get(*t).is_some()));
+    }
+
+    /// D71: the user's own map settings of 2026-10-08 are the code defaults.
+    #[test]
+    fn defaults_are_the_users_settings_of_d71() {
+        let cats = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let d = MapLayerConfig::dashboard();
+        assert_eq!(d.pois.categories, cats(&["barn_find", "car_meet", "festival_site", "house", "aftermarket_spot", "aftermarket_board", "speed_trap", "speed_zone", "trailblazer", "drift_zone", "danger_sign", "treasure_chest_current"]));
+        assert_eq!((d.pois.max_zoom_m, d.pois.near_only, d.pois.radius_m), (10000.0, false, 2000.0));
+        assert_eq!((d.image.opacity, d.image.brightness, d.image.saturation), (1.0, 1.0, 1.0));
+        assert!(!d.tilt.on);
+        assert_eq!((d.roads.styles.road.color, d.roads.styles.other.width, d.roads.casing_px), (Rgb::hex(0x38bdf8), 0.81, 1.4));
+        let h = MapLayerConfig::hud();
+        assert_eq!(h.pois.categories, cats(&["festival_site", "house", "speed_trap", "speed_zone", "trailblazer", "drift_zone", "danger_sign"]));
+        assert_eq!((h.pois.max_zoom_m, h.pois.near_only, h.pois.radius_m), (3000.0, true, 1000.0));
+        assert_eq!((h.image.opacity, h.image.brightness, h.image.saturation), (1.0, 0.5, 0.5));
+        assert!(h.tilt.on && h.tilt.angle_deg == 40.0);
+        assert_eq!(h.roads, d.roads);
+        assert_eq!(h.race_lines, d.race_lines);
     }
 
     /// A config whose every category differs from `MapLayerConfig::default()`.

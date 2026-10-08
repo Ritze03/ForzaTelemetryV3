@@ -335,12 +335,12 @@ start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compa
   `scale_with_zoom`, else `base_px`; a type's line is `max(0.7, base * its factor)`, its casing that
   plus `casing_px`. Defaults (D62): 10 m, 1 to 10 px, base 3 px, casing +1.4 px at alpha 1; factors road
   1.0, highway 1.44, offroad 0.875, other 0.81, trail 0.75, cross-country 0.75, tunnel 0.94 (alpha .85),
-  jump 0.875. At the Dashboard's default 5 km radius (0.042 px/m on a 420 px map) the base is the 1 px
+  jump 0.875. At a 5 km radius (0.042 px/m on a 420 px map) the base is the 1 px
   minimum; at 300 m it is 7 px.
 - **Dashes**: dashed types (trail, jump) use the demo's `[6,4]` pattern scaled by `max(1, 0.6 w)`, but
   only above 0.02 px/m (below that they are sub-pixel and draw solid). The casing is always solid.
-- **POIs**: a marker per enabled category within the view, nothing above `max_zoom_m` (3 km; **the
-  Dashboard's default 5 km radius therefore shows no POIs until you zoom in**), optionally only within
+- **POIs**: a marker per enabled category within the view, nothing above `max_zoom_m` (Dashboard default 10 km, HUD 3 km; since D71 the
+  Dashboard shows them at its default zooms, the HUD hides them above a 3 km view), optionally only within
   `radius_m` of the car. Back to front by screen y. **Icons (D64)**: each category draws the game's own
   icon (`gamedata::icons::PoiIcons`, one atlas texture per egui context, `IconAtlas` = a UV rect per
   category plus per race class and per mascot region); a category without an icon (landmarks, creature
@@ -434,7 +434,7 @@ over all lines. Release on the real install (39 242 road segments): route 5555 (
 mapping (tested). Tilted, it is a **flat perspective of the 2D map** done on the CPU, the equivalent of
 the demo's CSS `perspective(P) rotateX(a)` about the car: a plane offset `(x, y)` px from the car
 (y down) lands at `(x, y cos a) * P / (P - y sin a)`, and the horizon is `P / tan a` above the car
-(defaults: a = 55 deg, P = 200 px, car 85 % down the view). The image is the visible part of the plane
+(defaults: a = 55 deg Dashboard / 40 deg HUD (D71), P = 200 px, car 85 % down the view). The image is the visible part of the plane
 in 24 x 24 cells, each projected and cut to the map outline, every vertex's UV taken from the inverse
 projection (egui interpolates UVs affinely inside a triangle; a perspective is not affine, hence the
 subdivision). Every layer vertex goes through the same `Camera::project`, so roads, race lines and POIs
@@ -480,16 +480,18 @@ Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a 
 
 | | Dashboard | HUD |
 |---|---|---|
-| Satellite image | on, 100 % opacity / brightness / saturation | on, 50 % / 50 % / 50 % |
+| Satellite image | on, 100 % opacity / brightness / saturation | on, opacity 100 %, brightness and saturation 50 % |
 | Roads, per type | on, "by type" colours | same |
-| POIs | on: barn finds, car meets, fast travel, festival sites, houses, aftermarket spots + boards, Horizon jobs + stories, XP boards, speed traps, speed zones, trailblazers, drift zones, danger signs, current-season treasure chest; every other kind off but selectable | same |
+| POIs | on, hidden above a 10 km view, everywhere: barn finds, car meets, festival sites, houses, aftermarket spots + boards, speed traps, speed zones, trailblazers, drift zones, danger signs, current-season treasure chest; every other kind off but selectable | on, hidden above a 3 km view, only within 1 km of the car: festival sites, houses, speed traps, speed zones, trailblazers, drift zones, danger signs |
 | Race lines | current | current |
-| Tilt | off | on (55 deg, P 200 at 136 px, car 85 %, taper on) |
-| Existing keys (D62) | radius 5 000 m driving and stopped, north-up, no compass | 300 m driving (3 000 m stopped), heading-up, no minimap plate (`map_plate_opacity` 0) |
+| Tilt | off | on (40 deg, P 200 at 136 px, car 85 %, taper on) |
+| Existing keys (D62, D71) | radius 1 500 m driving / 4 500 m stopped, north-up (also when stopped), no compass | 500 m driving (3 000 m stopped), heading-up, no minimap plate (`map_plate_opacity` 0) |
 
 The existing Dashboard keys (`minimap_zoom_*_m`, `minimap_north_up`, `minimap_show_compass`) changed
 **defaults only**: fresh installs get them from the embedded `assets/default-config.json` and
 `AppConfig::default()`; a saved config keeps its own values.
+
+Defaults = the user's own settings of 2026-10-08 (D71; they replaced the demo-export values of D62: POI list, zoom radii, HUD image opacity and tilt angle).
 
 ### Performance
 
