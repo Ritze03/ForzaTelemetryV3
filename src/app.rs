@@ -606,6 +606,9 @@ pub struct ForzaApp {
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
     /// The own trail is kept solo too (drawn white); teammates' only in a co-op session.
     pub minimap_trails: HashMap<String, crate::minimap::Trail>,
+    /// Which race lines the Dashboard map draws (`maprender::RaceSel`); a `RefCell` because the
+    /// map widget only gets `&ForzaApp`.
+    pub minimap_race_sel: std::cell::RefCell<crate::maprender::RaceSel>,
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
     pub coop_last_pos: HashMap<String, CoopSeen>,
@@ -930,6 +933,7 @@ impl ForzaApp {
             minimap_error: None,
             fh6_dir_applied,
             minimap_trails: HashMap::new(),
+            minimap_race_sel: Default::default(),
             coop_last_pos: HashMap::new(),
             trace_history: VecDeque::new(),
             trace_active_secs: 0.0,
@@ -1024,7 +1028,13 @@ impl ForzaApp {
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 MapEvent::Ready { url } => ctx.open_url(egui::OpenUrl::new_tab(url)),
-                ev @ (MapEvent::Saved { .. } | MapEvent::Error(_)) => self.map_editor_last = Some(ev),
+                ev @ (MapEvent::Saved { .. } | MapEvent::Error(_)) => {
+                    if matches!(ev, MapEvent::Saved { .. }) {
+                        // Show the new road types on the maps now, not up to a second later.
+                        crate::maprender::refresh_now();
+                    }
+                    self.map_editor_last = Some(ev);
+                }
             }
         }
     }

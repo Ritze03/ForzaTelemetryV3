@@ -14,11 +14,12 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use egui::epaint::Vertex;
-use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, TextureHandle, TextureId, Vec2};
+use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, TextureHandle, Vec2};
 
 use super::col;
 use super::map_shared::{self, MapCanvas, Remote, TrailFade};
 use super::prims::{self, Xf};
+use crate::maprender::view::{clip_convex, fan};
 use crate::minimap::{self as mm, MapCalibration, MapView, Season, Trail};
 use crate::overlay::snapshot::HudSnapshot;
 
@@ -27,13 +28,8 @@ const RADIUS: f32 = 22.0;
 /// How often the wall-clock season is re-checked, seconds.
 const SEASON_CHECK_SECS: f64 = 60.0;
 
-/// An uploaded season map: texture plus the original image size its calibration is in.
-#[derive(Clone, Copy, Debug)]
-pub struct MapTex {
-    pub id: TextureId,
-    pub orig_size: [u32; 2],
-    pub winter: bool,
-}
+// The uploaded season map is shared with the Dashboard map (`maprender::MapTex`).
+pub use crate::maprender::MapTex;
 
 type Loaded = Result<(egui::ColorImage, [u32; 2]), mm::MapLoadError>;
 
@@ -288,33 +284,6 @@ pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
     p.add(egui::Shape::convex_polygon(vec![c - tip, c - side, c + side], xf.c(col::INK), egui::Stroke::NONE));
 }
 
-/// Sutherland–Hodgman: `subject` clipped to the convex polygon `clip` (either winding).
-/// Used to cut the pill to the map image when edges aren't mirrored.
-fn clip_convex(subject: &[Pos2], clip: &[Pos2]) -> Vec<Pos2> {
-    let cross = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-    let area: f32 = (0..clip.len()).map(|i| cross(Pos2::ZERO, clip[i], clip[(i + 1) % clip.len()])).sum();
-    let sign = if area >= 0.0 { 1.0 } else { -1.0 };
-    let mut out = subject.to_vec();
-    for i in 0..clip.len() {
-        let (a, b) = (clip[i], clip[(i + 1) % clip.len()]);
-        let input = std::mem::take(&mut out);
-        for j in 0..input.len() {
-            let (cur, prev) = (input[j], input[(j + input.len() - 1) % input.len()]);
-            let (dc, dp) = (cross(a, b, cur) * sign, cross(a, b, prev) * sign);
-            if (dc >= 0.0) != (dp >= 0.0) {
-                out.push(prev + (cur - prev) * (dp / (dp - dc)));
-            }
-            if dc >= 0.0 {
-                out.push(cur);
-            }
-        }
-        if out.is_empty() {
-            break;
-        }
-    }
-    out
-}
-
 /// Draw M2′. Returns true while the view is still easing.
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
@@ -412,16 +381,6 @@ fn calibration(snap: &HudSnapshot) -> MapCalibration {
     }
 }
 
-/// Triangle fan from `centre` over the closed `outline`.
-fn fan(mesh: &mut Mesh, centre: Pos2, outline: &[Pos2], vertex: impl Fn(Pos2) -> Vertex) {
-    mesh.vertices.push(vertex(centre));
-    mesh.vertices.extend(outline.iter().map(|&pt| vertex(pt)));
-    let n = outline.len() as u32;
-    for i in 0..n {
-        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,21 +413,6 @@ mod tests {
         assert_eq!(north.arrow_angle(pkt.yaw), 0.8);
         let head = MapView::new(0.0, 0.0, map_target_yaw(&pkt, &crate::config::OverlayConfig::default(), false), 400.0, 136.0);
         assert_eq!(head.arrow_angle(pkt.yaw), 0.0);
-    }
-
-    #[test]
-    fn clip_convex_cuts_a_square_to_the_overlap_either_winding() {
-        let sq = |x0: f32, y0: f32, x1: f32, y1: f32| vec![pos2(x0, y0), pos2(x1, y0), pos2(x1, y1), pos2(x0, y1)];
-        let area = |p: &[Pos2]| (0..p.len()).map(|i| p[i].x * p[(i + 1) % p.len()].y - p[(i + 1) % p.len()].x * p[i].y).sum::<f32>().abs() / 2.0;
-        let subject = sq(0.0, 0.0, 10.0, 10.0);
-        let clip = sq(5.0, 5.0, 20.0, 20.0);
-        assert!((area(&clip_convex(&subject, &clip)) - 25.0).abs() < 1e-3);
-        let mut rev = clip.clone();
-        rev.reverse();
-        assert!((area(&clip_convex(&subject, &rev)) - 25.0).abs() < 1e-3);
-        // Fully inside: unchanged; disjoint: empty.
-        assert!((area(&clip_convex(&subject, &sq(-5.0, -5.0, 50.0, 50.0))) - 100.0).abs() < 1e-3);
-        assert!(clip_convex(&subject, &sq(20.0, 20.0, 30.0, 30.0)).is_empty());
     }
 
     fn input(in_session: bool, remotes: Vec<(f32, f32, bool)>) -> CoopInput {
