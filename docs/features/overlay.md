@@ -278,7 +278,7 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   independent of the Dashboard map's unless reused); stopped = under 5 km/h for 1.5 s.
 - **Layers (I29b, D61/D62):** `minimap::draw` runs the shared renderer (`maprender`, see
   [[minimap]] "Shared renderer & layers") over a **camera** (`Camera::from_cfg(map_layers.tilt, ...)`:
-  flat, or **tilted by default**, 55 deg, perspective 200 px at the pill's height, the car 85 % down):
+  flat, or **tilted by default**, 40 deg, perspective 200 px at the pill's height, the car 85 % down):
   `draw_base` (the dimmed satellite, 50 % opacity / brightness / saturation, with the far edge fading
   out) → `draw_layers` (roads by type, jump lines, race lines, gate lines, POIs with the game's icons,
   the current treasure chest) → markers → compass → frame. The markers use the same camera

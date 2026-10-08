@@ -589,7 +589,7 @@ impl Default for OverlayConfig {
             compass: true,
             // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
             zoom_stopped_m: 3000.0,
-            zoom_driving_m: 300.0,
+            zoom_driving_m: 500.0,
             // Tuned defaults (the HUD map rotates to the movement direction and follows the right stick).
             map_north_up: false,
             map_north_up_when_stopped: false,
@@ -821,11 +821,12 @@ pub enum MapPage {
 }
 
 /// The Map tab viewer's layer defaults (D67): the Dashboard map's look, but POIs stay visible
-/// at the viewer's wide zoom levels (the Dashboard hides them above a 3000 m radius; a viewer
-/// is mostly used zoomed out, where POIs are the point).
+/// at the viewer's wide zoom levels (a viewer is mostly used zoomed out, where POIs are the
+/// point). Since D71 the Dashboard shows them up to 10 km already, so the 8000 m floor only
+/// matters if that default is lowered again.
 pub fn viewer_layers_default() -> crate::maprender::cfg::MapLayerConfig {
     let mut l = crate::maprender::cfg::MapLayerConfig::dashboard();
-    l.pois.max_zoom_m = 8000.0;
+    l.pois.max_zoom_m = l.pois.max_zoom_m.max(8000.0);
     l
 }
 
@@ -1082,8 +1083,8 @@ impl Default for AppConfig {
             minimap_px_per_m: 0.3722,
             minimap_world_origin_x: -12540.0,
             minimap_world_origin_z: 10738.0,
-            minimap_zoom_driving_m: 5000.0,
-            minimap_zoom_stopped_m: 5000.0,
+            minimap_zoom_driving_m: 1500.0,
+            minimap_zoom_stopped_m: 4500.0,
             minimap_quality: 100.0,
             minimap_fps_limit: 60.0,
             minimap_fps_limit_enabled: true,
@@ -1092,7 +1093,7 @@ impl Default for AppConfig {
             minimap_look_stick: true,
             minimap_mirror_edges: true,
             minimap_north_up: true,
-            minimap_north_up_when_stopped: false,
+            minimap_north_up_when_stopped: true,
             minimap_show_compass: false,
             minimap_allow_pan_zoom: true,
             minimap_layers: crate::maprender::cfg::MapLayerConfig::dashboard(),
@@ -2182,7 +2183,7 @@ mod tests {
         let o = OverlayConfig::default();
         assert!(o.enabled && o.focus_only && o.rpm_label && o.coop_use_dashboard && !o.notif_gearbox_mode);
         assert_eq!((o.race_cell, o.notif_cell), (HudCell::BottomRight, HudCell::Center));
-        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 300.0)); // D62: the HUD map's 300 m radius
+        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 500.0)); // D71: the HUD map's 500 m radius
         // An older overlay / gamepad object with only some keys: the rest are the tuned defaults.
         let o: OverlayConfig = serde_json::from_str(r#"{ "scale": 1.5 }"#).unwrap();
         assert_eq!((o.scale, o.margin_px, o.race_cell), (1.5, 4.0, HudCell::BottomRight));
@@ -2312,20 +2313,21 @@ mod tests {
             }
         }
         let c: AppConfig = serde_json::from_value(val).unwrap();
-        assert_eq!((c.minimap_zoom_driving_m, c.minimap_zoom_stopped_m), (5000.0, 5000.0));
+        assert_eq!((c.minimap_zoom_driving_m, c.minimap_zoom_stopped_m), (1500.0, 4500.0)); // D71
+        assert!(c.minimap_north_up_when_stopped && c.minimap_look_stick && c.minimap_smooth_rotation && c.minimap_use_movement_dir && c.minimap_mirror_edges);
         assert!(c.minimap_north_up && !c.minimap_show_compass);
         assert_eq!(c.minimap_layers, MapLayerConfig::dashboard());
         assert!(c.minimap_layers.roads.on && c.minimap_layers.pois.on && !c.minimap_layers.tilt.on);
         assert_eq!(c.minimap_layers.race_lines.mode, RaceLineMode::Current);
-        // The HUD minimap (D62): 300 m radius, heading-up, no plate, the dimmed satellite at
+        // The HUD minimap (D62): 500 m radius (D71), heading-up, no plate, the dimmed satellite at
         // 50 / 50 / 50 and tilted at 55 deg with the car 85 % down, perspective 200 px at the
         // pill's height. From the embedded default and from the code default alike.
         for o in [&c.overlay, &OverlayConfig::default()] {
-            assert_eq!((o.zoom_driving_m, o.map_north_up, o.map_plate_opacity), (300.0, false, 0.0));
+            assert_eq!((o.zoom_driving_m, o.zoom_stopped_m, o.map_north_up, o.map_plate_opacity), (500.0, 3000.0, false, 0.0));
             assert_eq!(o.map_layers, MapLayerConfig::hud());
             let (i, t) = (&o.map_layers.image, &o.map_layers.tilt);
-            assert_eq!((i.opacity, i.brightness, i.saturation), (0.5, 0.5, 0.5));
-            assert!(t.on && t.angle_deg == 55.0 && t.perspective_px == 200.0 && t.car_y == 0.85 && t.taper);
+            assert_eq!((i.opacity, i.brightness, i.saturation), (1.0, 0.5, 0.5)); // D71
+            assert!(t.on && t.angle_deg == 40.0 && t.perspective_px == 200.0 && t.car_y == 0.85 && t.taper);
             assert_eq!(o.map_layers.pois.size_px, 32.0);
             assert_eq!((o.map_layers.race_lines.mode, o.map_layers.race_lines.width_px), (RaceLineMode::Current, 4.0));
         }

@@ -934,22 +934,22 @@ mod tests {
             paint(rect, |p| st = draw_layers(&ctx(p, cam), &layers, cfg));
             st.pois
         };
-        // synthetic: house, fast travel, car meet, speed trap, barn find; all default-on.
-        assert_eq!(n(&cfg, &cam), 5);
+        // synthetic: house, fast travel, car meet, speed trap, barn find; fast travel is off by default since D71.
+        assert_eq!(n(&cfg, &cam), 4);
         cfg.pois.categories = vec!["house".into(), "not_a_category".into()];
         assert_eq!(n(&cfg, &cam), 1);
         cfg.pois = MapLayerConfig::default().pois;
         cfg.pois.on = false;
         assert_eq!(n(&cfg, &cam), 0);
-        // Hidden above max_zoom_m (3000): the Dashboard default of 5000 m shows none.
+        // Hidden above max_zoom_m (10000 since D71): a 12000 m radius shows none.
         cfg.pois.on = true;
-        let wide = flat_cam(rect, (0.0, 0.0), 0.0, 5000.0);
+        let wide = flat_cam(rect, (0.0, 0.0), 0.0, 12000.0);
         assert_eq!(n(&cfg, &wide), 0);
-        // near_only within 400 m of the car at the origin keeps house (316 m), fast travel (316 m)
+        // near_only within 400 m of the car at the origin keeps house (316 m)
         // and car meet (250 m); speed trap and barn find (515 m) go.
         cfg.pois.near_only = true;
         cfg.pois.radius_m = 400.0;
-        assert_eq!(n(&cfg, &cam), 3);
+        assert_eq!(n(&cfg, &cam), 2);
     }
 
     #[test]
@@ -972,8 +972,8 @@ mod tests {
         assert_eq!(meshes.len(), 1);
         assert_eq!(meshes[0].texture_id, TextureId::Managed(7));
         assert_eq!(meshes[0].vertices.len(), 4);
-        // The other four POIs are still markers.
-        assert_eq!(shapes.len(), 5);
+        // The other three POIs are still markers.
+        assert_eq!(shapes.len(), 4);
     }
 
     fn poi(kind: PoiKind, name: &str, n: u32, x: f32, z: f32, gate: Option<[[f32; 2]; 2]>) -> Poi {

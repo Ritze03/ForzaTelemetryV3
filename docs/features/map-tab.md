@@ -95,9 +95,9 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
   `viewer_mirror_edges`, `viewer_show_compass`, `viewer_allow_pan_zoom`, `viewer_zoom_m`);
   `minimap_allow_pan_zoom` is in the Mini-settings group. All `serde(default)`.
 - **Viewer defaults** (`config::viewer_layers_default`): the Dashboard map's look
-  (`MapLayerConfig::dashboard()`) with POIs visible up to an 8000 m radius, i.e. at every viewer
-  zoom (the Dashboard hides them above 3000 m; a viewer is mostly used zoomed out, where the POIs
-  are the point). North-up, mirror at the edges, no compass, 1500 m.
+  (`MapLayerConfig::dashboard()`) with POIs visible up to at least an 8000 m radius, i.e. at every viewer
+  zoom (a viewer is mostly used zoomed out, where the POIs are the point). Since D71 the
+  Dashboard default is 10 000 m, so the viewer just takes that (`max(.., 8000)`). North-up, mirror at the edges, no compass, 1500 m.
 - The viewer's co-op trails (fade time / distance) and player list follow the Dashboard map's
   co-op settings (Mini-Settings → Dashboard → Map → Co-Op), not a set of their own.
 - **Map data page layout:** one card in the first column (three from 1100 px, else two), as wide as
@@ -120,7 +120,7 @@ saved road types were ignored").
   visible, line colour, outline colour, width factor, dash, opacity, outline on/off. Turnarounds
   are never listed (D52). **Reset road styles** restores the "by type" preset.
 - **Points of interest:** on/off, icon size, **Max zoom radius** (tooltip: POIs are hidden
-  while the view radius is above it; the Dashboard's default 5 km is above the default 3 km),
+  while the view radius is above it; the default is 10 km on the Dashboard map and 3 km on the Minimap),
   only near the car + radius, gate lines, and the categories as checkboxes grouped Events /
   Zones and gates / Places / Collectibles with All / None per group. Each shows the game's icon
   (this context's `IconTex`, `ForzaApp::minimap_icons`, the Dashboard's) or, without an
