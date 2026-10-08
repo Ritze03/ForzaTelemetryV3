@@ -236,8 +236,8 @@ impl PoiLayer {
 
 impl PoiLayer {
     /// The treasure chest that is current in game week `week` (`week_index_now()`), by the
-    /// inferred weekly rule of `Pois::current_treasure_chest` (unverified, see
-    /// `docs/features/minimap.md`). Cheap (a few dozen chests), so the renderer asks every frame
+    /// weekly rule of `Pois::current_treasure_chest`: week - 52, confirmed once in game on
+    /// 2026-10-08 (chest 017 in week 69); see `docs/features/minimap.md`. Cheap (a few dozen chests), so the renderer asks every frame
     /// and picks up the Thursday 14:30 UTC rollover without any timer.
     pub fn current_chest(&self, week: i64) -> Option<&Poi> {
         self.chests.current_treasure_chest(week)
@@ -618,14 +618,14 @@ mod tests {
         let p = |kind, name: &str, x| Poi { kind, x, z: 0.0, y: 0.0, name: name.into(), n: 0, gate: None };
         let l = PoiLayer::from_items([
             p(PoiKind::DangerSign, "bm_01", 10.0),
-            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_015", -50.0),
-            p(PoiKind::TreasureChestBoard, "treasure_chest_board_016", 50.0),
-            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_017", 99_999.0), // off the map
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_016", -50.0),
+            p(PoiKind::TreasureChestBoard, "treasure_chest_board_017", 50.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_018", 99_999.0), // off the map
         ]);
         let cats: Vec<&str> = l.cat.iter().map(|&c| super::super::style::POI_CATS[c as usize].id).collect();
         assert_eq!(cats, ["danger_sign", "treasure_chest", "treasure_chest_board"]);
         assert_eq!(l.chests.items.len(), 2);
-        // chest number = week - 53; the board wins a tie, a week past the newest chest keeps the newest.
+        // chest number = week - 52 (68 -> 016, 69 -> 017; 018 is off the map and dropped); the board wins a tie, a week past the newest chest keeps the newest.
         assert_eq!(l.current_chest(68).map(|c| c.x), Some(-50.0));
         assert_eq!(l.current_chest(69).map(|c| c.x), Some(50.0));
         assert_eq!(l.current_chest(80).map(|c| c.x), Some(50.0));

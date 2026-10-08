@@ -1116,7 +1116,7 @@ mod tests {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 300.0));
         let cam = flat_cam(rect, (0.0, 0.0), 0.0, 1000.0);
         let chest = |n: u32, x: f32| poi(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{n:03}"), n, x, 0.0, None);
-        let layers = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([chest(15, -100.0), chest(16, 100.0)])), ..Default::default() };
+        let layers = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([chest(16, -100.0), chest(17, 100.0)])), ..Default::default() };
         let cfg = only_pois(&["treasure_chest_current"]);
         let mut atlas = IconAtlas::new(TextureId::Managed(5));
         atlas.set("treasure_chest_current", Rect::from_min_max(pos2(0.0, 0.0), pos2(0.5, 0.5)));
@@ -1130,7 +1130,7 @@ mod tests {
             });
             (st.pois, shapes)
         };
-        // Chest number = week - 53: week 68 -> chest 015 (west), week 69 -> chest 016 (east).
+        // Chest number = week - 52: week 68 -> chest 016 (west), week 69 -> chest 017 (east).
         for (week, west) in [(68, true), (69, false)] {
             let (n, shapes) = at_week(week, Some(&atlas));
             assert_eq!(n, 1, "week {week}");

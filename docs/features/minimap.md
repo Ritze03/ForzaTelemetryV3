@@ -358,11 +358,13 @@ start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compa
 - **Current treasure chest** (`treasure_chest_current`): of the ~20 chests only the one the week names
   is drawn, with the chest icon 1.5x bigger and on top; `PoiLayer::current_chest(week_index_now())` is
   asked every frame (a few dozen items), so the Thursday 14:30 UTC rollover needs no timer. **The
-  weekly rule is inferred and unverified**: chest number = week index - 53, from "the user saw chest
-  015 current on 2026-10-03" and the Festival Playlist series being 28 days with four chests each
-  (`Pois::current_treasure_chest`, `docs/game-data/fh6-game-files.md`). It should flip to chest 016 on
-  2026-10-08 14:30 UTC; the install has no date field to confirm it. *Why not "the highest number"
-  like the map viewer:* since the 6 Oct update the file holds 016-019 ahead of time.
+  weekly rule is inferred from one in-game sighting**: chest number = week index - 52 (the week of
+  Thursday 14:30 UTC; week 68 = 016, week 69 = 017). Evidence: the user found the current chest in game
+  on 2026-10-08 just after 14:30 UTC (week 69) and it was chest 017; the Festival Playlist series are 28
+  days with four chests each (`Pois::current_treasure_chest`, `docs/game-data/fh6-game-files.md`). The
+  install has no date field to confirm it. **Next check:** chest 018 should go live on 2026-10-15
+  14:30 UTC. *Why not "the highest number" like the map viewer:* since the 6 Oct update the file holds
+  016-019 ahead of time.
 - **Image look**: opacity and brightness are the mesh vertex colour. **Saturation is approximate:**
   egui cannot desaturate a texture, so below 1 a grey veil (alpha `0.6 * (1 - saturation)`) is drawn
   over the same shape.
