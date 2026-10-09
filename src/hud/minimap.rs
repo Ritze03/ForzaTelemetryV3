@@ -3,6 +3,13 @@
 //! `draw_layers` for roads / race lines / POIs, both through one [`Camera`] (flat, or tilted by
 //! default) and cut to the pill's rounded corners.
 //!
+//! **3D (phase K, K3).** With the Map tab's View mode on *3D* the image and roads come from the
+//! shared GL scene (`maprender::gl3d`) instead: [`draw`] adds it as a paint callback over the pill
+//! and draws the vectors that stay on egui (race lines, POIs), the markers, compass and border
+//! over it. Its inputs reach [`draw`] through [`MapAnim`] ([`Scene3dIn`], set per frame by
+//! `overlay::render`) because `draw`'s signature is fixed. Until the scene is `Ready`, and for
+//! good when it failed, the tilted 2D map is drawn instead (`Gl3dHandle::wants_underlay`).
+//!
 //! The season image is loaded on a helper thread ([`MapLoader`]); until it arrives the frame
 //! draws over the plate (none by default). The layer data (`maprender::layers()`) and the POI
 //! icons reach [`draw`] through [`MapAnim`], set per frame by `overlay::render`.
@@ -22,8 +29,8 @@ use super::col;
 use super::map_shared::{self, MapCanvas, Remote, TrailFade};
 use super::prims::{self, Xf};
 use crate::maprender::data::MapLayers;
-use crate::maprender::paint2d::{CornerClip, IconAtlas};
-use crate::maprender::{draw_base, draw_layers, BaseParams, Camera, LayerCtx, RaceSel};
+use crate::maprender::paint2d::{draw_layers_parts, CornerClip, IconAtlas, Parts};
+use crate::maprender::{draw_base, BaseParams, Camera, LayerCtx, RaceSel};
 use crate::minimap::{self as mm, MapCalibration, Season, Trail};
 use crate::overlay::snapshot::HudSnapshot;
 
@@ -105,8 +112,37 @@ impl MapLoader {
     }
 }
 
+/// Everything the 3D branch of [`draw`] needs besides the config and the packet: this context's
+/// GL handle, the terrain (the camera's relief) and the newest road mesh. Set per frame by the
+/// overlay renderer only while the Minimap is in 3D mode and the terrain is loaded
+/// ([`MapAnim::set_scene3d`]); without it [`draw`] is the 2D map, flat or tilted.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[derive(Clone)]
+pub struct Scene3dIn {
+    pub gl3d: crate::maprender::gl3d::Gl3dHandle,
+    pub terrain: Arc<crate::maprender::terrain::Terrain>,
+    /// `store::road_mesh`; `None` while it builds = terrain only.
+    pub mesh: Option<Arc<crate::maprender::mesh3d::RoadMesh>>,
+}
+
+/// Is the Minimap to be drawn in 3D? View mode *3D*, and not on Windows: the Windows overlay path
+/// (WGL context, offscreen FBO + readback) cannot be tested by the developers, so there 3D is
+/// treated as Tilted until a tester has run it (K3; a config opt-in is proposed in
+/// `docs/features/overlay.md`).
+pub fn wants_3d(cfg: &crate::config::OverlayConfig) -> bool {
+    cfg.minimap_on && cfg.map_layers.tilt.view_mode() == crate::maprender::cfg::ViewMode::Relief && !cfg!(windows)
+}
+
+/// The car's height for the 3D camera: the telemetry height plus about a metre (the roof, so the
+/// camera clears the road it drives on) while driving; `None` (the terrain under the car) when
+/// the game is not sending real positions (paused packet, no race on, not connected).
+fn car_height(snap: &HudSnapshot) -> Option<f32> {
+    let p = &snap.pkt;
+    (snap.connected && p.is_race_on != 0 && !p.is_paused()).then_some(p.position_y + 1.0)
+}
+
 /// Eased view state (yaw and zoom follow the car smoothly, like the Dashboard map).
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct MapAnim {
     /// `now` of the previous step (for dt).
     last: Option<f64>,
@@ -126,9 +162,23 @@ pub struct MapAnim {
     icons: Option<Arc<IconAtlas>>,
     /// Which race lines to draw (one selector per map, `maprender::RaceSel`).
     race_sel: RaceSel,
+    /// The 3D scene's inputs; `None` = the 2D map ([`Scene3dIn`]).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    scene3d: Option<Scene3dIn>,
 }
 
 impl MapAnim {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn set_scene3d(&mut self, scene: Option<Scene3dIn>) {
+        self.scene3d = scene;
+    }
+
+    /// The 3D scene still needs frames (staged init, an upload waiting its turn).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn scene3d_busy(&self) -> bool {
+        self.scene3d.as_ref().is_some_and(|s| s.gl3d.busy())
+    }
+
     pub fn set_layers(&mut self, layers: Option<Arc<MapLayers>>) {
         self.layers = layers;
     }
@@ -307,9 +357,16 @@ pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
 
 /// Draw M2′. Returns true while the view is still easing.
 ///
-/// Layers: satellite image ([`draw_base`]) → roads / race lines / POIs ([`draw_layers`], from
+/// Layers: satellite image ([`draw_base`]) → roads / race lines / POIs ([`draw_layers_parts`], from
 /// `anim.layers`, cut to the pill's rounded corners) → markers (`map_shared`) → compass → frame.
 /// The camera (flat or tilted, `OverlayConfig::map_layers.tilt`) is shared by all of them.
+///
+/// **In 3D** (`anim` has a [`Scene3dIn`] and the scene is `Ready`) the image and the roads are the
+/// GL scene's, added as a paint callback over the plate; the tint, the race lines and POIs
+/// (`Parts::OVER_3D`, no occlusion by hills), the markers, compass and border follow over it, all
+/// through the relief camera (`Camera::project` lands on the terrain). *Why the tint comes after:*
+/// it darkens the image so the white marker reads, and a callback is opaque, so a tint drawn
+/// before it would be hidden (it also dims the GL roads a little, 12 % in summer).
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
     let (yaw, zoom) = (anim.view, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
@@ -318,7 +375,20 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let lc = &cfg.map_layers;
     let car = (snap.pkt.position_x, snap.pkt.position_z);
     let rect = xf.rect(0.0, 0.0, w, h);
-    let cam = Camera::from_cfg(&lc.tilt, car, yaw, zoom, rect);
+    let cam2d = Camera::from_cfg(&lc.tilt, car, yaw, zoom, rect);
+    // The relief camera, when 3D is on and the terrain is there; `ready` = the scene is drawing
+    // (otherwise the 2D map is the underlay, see `Gl3dHandle::wants_underlay`).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let three = anim.scene3d.clone().and_then(|sc| {
+        let cam = Camera::from_cfg_relief(&lc.tilt, car, yaw, zoom, rect, Some(&sc.terrain), car_height(snap));
+        cam.relief.is_some().then_some((sc, cam))
+    });
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let cam3: Option<&Camera> = three.as_ref().filter(|(sc, _)| !sc.gl3d.wants_underlay()).map(|(_, c)| c);
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let cam3: Option<&Camera> = None;
+    // What markers and vectors project through.
+    let cam = cam3.unwrap_or(&cam2d);
     let view = cam.view;
 
     // The map shape: the frame's rounded rect, inset 0.5 px so the 3 px border (drawn after,
@@ -328,58 +398,100 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     if plate.a() > 0 {
         p.add(egui::Shape::convex_polygon(outline.clone(), plate, egui::Stroke::NONE));
     }
-    if let Some(tex) = map.filter(|_| lc.image.on) {
-        draw_base(
-            p,
-            &BaseParams {
-                cam: &cam,
-                cal: calibration(snap),
-                tex,
-                outline: &outline,
-                // Mirror on: the texture wraps (MirroredRepeat), so the whole pill is textured and
-                // the reflected continuation shows past the edge. Off: the shape is cut to the
-                // image and the plate shows outside it, like the Dashboard.
-                mirror: cfg.map_mirror_edges,
-                look: (&lc.image).into(),
-                a: xf.a,
-                // The far edge of a tilted map fades out into the plate, or the game when there is none.
-                far_fade: true,
-            },
-        );
-        // Darken so the white marker reads over bright maps (winter more), as strongly as the image shows.
-        let tint = xf.c(if tex.winter { col::MAP_TINT_WINTER } else { col::MAP_TINT }).gamma_multiply(lc.image.opacity.clamp(0.0, 1.0));
-        p.add(egui::Shape::convex_polygon(outline.clone(), tint, egui::Stroke::NONE));
+    // Darken so the white marker reads over bright maps (winter more), as strongly as the image shows.
+    let tint = |tex: MapTex| {
+        let c = xf.c(if tex.winter { col::MAP_TINT_WINTER } else { col::MAP_TINT }).gamma_multiply(lc.image.opacity.clamp(0.0, 1.0));
+        p.add(egui::Shape::convex_polygon(outline.clone(), c, egui::Stroke::NONE));
+    };
+    let image = map.filter(|_| lc.image.on);
+    if cam3.is_none() {
+        if let Some(tex) = image {
+            draw_base(
+                p,
+                &BaseParams {
+                    cam: &cam2d,
+                    cal: calibration(snap),
+                    tex,
+                    outline: &outline,
+                    // Mirror on: the texture wraps (MirroredRepeat), so the whole pill is textured and
+                    // the reflected continuation shows past the edge. Off: the shape is cut to the
+                    // image and the plate shows outside it, like the Dashboard.
+                    mirror: cfg.map_mirror_edges,
+                    look: (&lc.image).into(),
+                    a: xf.a,
+                    // The far edge of a tilted map fades out into the plate, or the game when there is none.
+                    far_fade: true,
+                },
+            );
+            tint(tex);
+        }
     }
 
-    // Roads, race lines, POIs: the shared renderer, vectors cut to the pill's rounded corners
-    // (safe = the rect shrunk by the corner radius, which is wholly inside the pill).
-    if lc.wants_layers() {
-        let MapAnim { layers, icons, race_sel, .. } = anim;
-        if let Some(data) = layers.as_deref() {
-            let picked = race_sel.update(&data.races, &lc.race_lines, car, snap.pkt.yaw, snap.pkt.race_position != 0);
-            let lp = p.with_clip_rect(rect);
-            draw_layers(
-                &LayerCtx {
-                    p: &lp,
-                    cam: &cam,
-                    s: xf.s,
-                    a: xf.a,
-                    car,
-                    corner_clip: Some(CornerClip { poly: &outline, safe: rect.shrink(xf.l(RADIUS)) }),
-                    icons: icons.as_deref(),
-                    race_sel: picked,
-                    week: None,
-                },
-                data,
-                lc,
-            );
+    // Race selection and the in-race focus (shared by the 2D roads and the GL ones).
+    let MapAnim { layers, icons, race_sel, .. } = anim;
+    let data = layers.as_deref().filter(|_| lc.wants_layers());
+    let picked = data.map(|d| &*race_sel.update(&d.races, &lc.race_lines, car, snap.pkt.yaw, snap.pkt.race_position != 0));
+
+    // The 3D scene, over the plate (and, until it is Ready, over the 2D underlay).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    if let Some((sc, c3)) = &three {
+        use crate::maprender::cfg::OtherRoads;
+        use crate::maprender::gl3d::{add_scene, Focus3d, Scene3d};
+        let focus = data.zip(picked).and_then(|(d, rs)| {
+            let focusing = rs.focus_line().is_some_and(|l| l < d.races.lines.len());
+            (focusing && lc.race_lines.focus.other_roads != OtherRoads::Normal).then(|| rs.road_focus(d)).flatten()
+        });
+        add_scene(
+            &p.with_clip_rect(rect),
+            &sc.gl3d,
+            Scene3d {
+                cam: c3.clone(),
+                mesh: sc.mesh.clone(),
+                map: image,
+                cal: calibration(snap),
+                look: (&lc.image).into(),
+                mirror: cfg.map_mirror_edges,
+                a: xf.a,
+                s: xf.s,
+                corner_radius: xf.l(RADIUS),
+                relief: lc.tilt.relief,
+                roads: lc.roads,
+                focus: focus.map(|focus| Focus3d { focus, cfg: lc.race_lines.focus }),
+            },
+        );
+    }
+    if cam3.is_some() {
+        if let Some(tex) = image {
+            tint(tex);
         }
+    }
+
+    // Roads (2D only), race lines, POIs: the shared renderer, vectors cut to the pill's rounded
+    // corners (safe = the rect shrunk by the corner radius, which is wholly inside the pill).
+    if let (Some(data), Some(picked)) = (data, picked) {
+        let lp = p.with_clip_rect(rect);
+        draw_layers_parts(
+            &LayerCtx {
+                p: &lp,
+                cam,
+                s: xf.s,
+                a: xf.a,
+                car,
+                corner_clip: Some(CornerClip { poly: &outline, safe: rect.shrink(xf.l(RADIUS)) }),
+                icons: icons.as_deref(),
+                race_sel: picked,
+                week: None,
+            },
+            data,
+            lc,
+            if cam3.is_some() { Parts::OVER_3D } else { Parts::ALL },
+        );
     }
 
     // Markers: the Dashboard map's drawing code (`map_shared`), clipped to the pill's inner rect.
     let inner = xf.rect(3.0, 3.0, w - 6.0, h - 6.0);
     let mp = p.with_clip_rect(inner);
-    let cv = MapCanvas { p: &mp, cam: &cam, rect: inner, taper: lc.tilt.taper, s: xf.s, a: xf.a, pause_glyph: "||" };
+    let cv = MapCanvas { p: &mp, cam, rect: inner, taper: lc.tilt.taper, s: xf.s, a: xf.a, pause_glyph: "||" };
     let hue = |h: f32| crate::ui::coop::hue_color(h);
     let at = coop.now.unwrap_or_else(Instant::now);
     let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);

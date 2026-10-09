@@ -364,3 +364,86 @@ fn set_layers_feeds_the_minimap_and_the_toggles_switch_it_off() {
     fed.set_layers(None);
     assert_eq!(shapes_of(&ctx, &mut fed, &s, 1.2), without);
 }
+
+// ── the Minimap in 3D (phase K, K3): the CPU side; the GL side is `png::render_3d_states` ────────
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod scene3d {
+    use super::*;
+    use crate::hud::minimap::{self, Scene3dIn};
+    use crate::maprender::cfg::ViewMode;
+    use crate::maprender::gl3d::Gl3dHandle;
+    use crate::maprender::terrain::Terrain;
+
+    fn cfg(mode: ViewMode) -> OverlayConfig {
+        let mut c = OverlayConfig { fade: false, race_on: false, cluster_on: false, ..Default::default() };
+        c.map_layers.tilt.set_view_mode(mode);
+        c
+    }
+
+    fn scene() -> Scene3dIn {
+        Scene3dIn { gl3d: Gl3dHandle::new(), terrain: Arc::new(Terrain::synthetic()), mesh: None }
+    }
+
+    /// (paint callbacks, all shapes) of one frame.
+    fn count(ctx: &egui::Context, hud: &mut Hud, snap: &HudSnapshot, now: f64) -> (usize, usize) {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0))), ..Default::default() };
+        let out = ctx.run(raw, |ctx| {
+            let p = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hud")));
+            hud.draw(&p, ctx.content_rect(), snap, now, None, &Default::default());
+        });
+        (out.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Callback(_))).count(), out.shapes.len())
+    }
+
+    #[test]
+    fn the_hud_is_3d_only_in_the_3d_view_mode_and_not_on_windows() {
+        assert!(!minimap::wants_3d(&cfg(ViewMode::Tilted)));
+        assert!(!minimap::wants_3d(&cfg(ViewMode::Flat)));
+        // Windows stays on Tilted until a tester has run the untested WGL path.
+        assert_eq!(minimap::wants_3d(&cfg(ViewMode::Relief)), !cfg!(windows));
+        let off = OverlayConfig { minimap_on: false, ..cfg(ViewMode::Relief) };
+        assert!(!minimap::wants_3d(&off));
+    }
+
+    /// With a scene set and the 3D view mode on, the minimap queues exactly one paint callback and,
+    /// because the renderer is not `Ready` yet, still draws the 2D underlay (no blank pill); a
+    /// Tilted / Flat config ignores the scene, and without one nothing is queued.
+    #[test]
+    fn a_3d_minimap_queues_one_callback_over_the_2d_underlay() {
+        let ctx = ctx();
+        let layers = Arc::new(crate::maprender::data::MapLayers::synthetic());
+        let mut s = snap(cfg(ViewMode::Relief));
+        s.pkt.position_y = 100.0;
+        let mut plain = Hud::default();
+        plain.set_layers(Some(layers.clone()));
+        let (cb, base) = count(&ctx, &mut plain, &s, 1.0);
+        assert_eq!(cb, 0);
+
+        let mut hud = Hud::default();
+        hud.set_layers(Some(layers.clone()));
+        hud.set_scene3d(Some(scene()));
+        let (cb, with) = count(&ctx, &mut hud, &s, 1.0);
+        assert_eq!(cb, 1, "one scene callback");
+        assert!(with > base, "the 2D underlay is drawn until the scene is Ready ({with} vs {base} shapes)");
+        assert!(hud.scene3d_busy(), "an untried renderer asks for frames");
+
+        for mode in [ViewMode::Tilted, ViewMode::Flat] {
+            let mut hud = Hud::default();
+            hud.set_scene3d(Some(scene()));
+            assert_eq!(count(&ctx, &mut hud, &snap(cfg(mode)), 1.0).0, 0, "{mode:?} draws no scene");
+        }
+    }
+
+    /// A hidden HUD resets its state, the 3D inputs included, so it can never pin the frame loop.
+    #[test]
+    fn a_hidden_hud_forgets_its_scene() {
+        let ctx = ctx();
+        let mut hud = Hud::default();
+        hud.set_scene3d(Some(scene()));
+        let hidden = HudSnapshot { visible: false, ..snap(cfg(ViewMode::Relief)) };
+        count(&ctx, &mut hud, &hidden, 1.0);
+        assert!(!hud.scene3d_busy());
+        hud.set_scene3d(None);
+        assert!(!hud.scene3d_busy());
+    }
+}
