@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -776,10 +776,36 @@ fn car_calibrations_path() -> PathBuf {
 }
 
 pub fn load_car_calibrations() -> HashMap<i32, CarCalibration> {
-    std::fs::read_to_string(car_calibrations_path())
-        .ok()
-        .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_default()
+    let path = car_calibrations_path();
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        if path.exists() {
+            backup_bad_file(&path); // unreadable as text: keep it before a save replaces it
+        }
+        return HashMap::new();
+    };
+    let (map, lossy) = parse_car_calibrations(&data);
+    if lossy {
+        // The next save drops what we couldn't read; keep the original.
+        backup_bad_file(&path);
+    }
+    map
+}
+
+/// Per-entry parse: a bad entry (or a file that isn't a JSON object) loses only itself.
+/// The flag says whether anything was dropped.
+fn parse_car_calibrations(data: &str) -> (HashMap<i32, CarCalibration>, bool) {
+    let Ok(serde_json::Value::Object(m)) = serde_json::from_str::<serde_json::Value>(data) else {
+        return (HashMap::new(), true);
+    };
+    let mut out = HashMap::new();
+    let mut lossy = false;
+    for (k, v) in m {
+        match (k.parse::<i32>(), serde_json::from_value::<CarCalibration>(v)) {
+            (Ok(id), Ok(c)) => { out.insert(id, c); }
+            _ => lossy = true,
+        }
+    }
+    (out, lossy)
 }
 
 pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
@@ -1248,11 +1274,115 @@ fn migrate_tire_display_style(map: &mut serde_json::Map<String, serde_json::Valu
     }
 }
 
-fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) {
+/// What [`AppConfig::parse`] had to do to read a config: `json_invalid` (not JSON at all →
+/// all defaults) and/or the settings that were reset (`key` or `key.inner`).
+struct ConfigRecovery {
+    json_invalid: bool,
+    reset_keys: Vec<String>,
+}
+
+/// Deserialize `val` into an [`AppConfig`], recovering per setting instead of all-or-nothing.
+///
+/// If the whole value deserializes, nothing is reset. Otherwise each top-level key is probed
+/// on its own: `fallback` with only that key replaced by the saved value. A key that fails is
+/// reset to `fallback`'s value. If the bad key is an object, its direct fields are probed the
+/// same way, so only the unreadable field resets (`minimap_layers.race_lines`), not the
+/// whole group; if that doesn't fix it, the whole key resets. Returns the config and the
+/// reset keys. Granularity is therefore two levels (top-level key, or its direct field).
+///
+/// *Why:* one value serde can't read (a renamed enum, a number where a bool is expected, a
+/// file from another version) used to make `load()` fall back to defaults for everything,
+/// and the autosave then overwrote the user's file.
+fn from_value_lenient(val: serde_json::Value, fallback: &AppConfig) -> (AppConfig, Vec<String>) {
+    use serde_json::Value;
+    let (Value::Object(saved), Ok(Value::Object(base))) = (&val, serde_json::to_value(fallback)) else {
+        return (fallback.clone(), vec!["<all>".to_string()]);
+    };
+    if let Ok(cfg) = serde_json::from_value::<AppConfig>(val.clone()) {
+        return (cfg, Vec::new());
+    }
+    // Does `fallback` with `key` set to `v` deserialize?
+    let probe = |key: &str, v: &Value| {
+        let mut m = base.clone();
+        m.insert(key.to_string(), v.clone());
+        serde_json::from_value::<AppConfig>(Value::Object(m)).is_ok()
+    };
+    let mut fixed = saved.clone();
+    let mut reset = Vec::new();
+    for (k, v) in saved {
+        let Some(def) = base.get(k) else { continue }; // unknown key: serde ignores it
+        if v == def || probe(k, v) {
+            continue;
+        }
+        if let (Value::Object(vo), Value::Object(dobj)) = (v, def) {
+            let mut inner = vo.clone();
+            let mut inner_reset = Vec::new();
+            for (ik, iv) in vo {
+                let idef = dobj.get(ik);
+                if idef == Some(iv) {
+                    continue;
+                }
+                let mut cand = dobj.clone();
+                cand.insert(ik.clone(), iv.clone());
+                if !probe(k, &Value::Object(cand)) {
+                    match idef {
+                        Some(d) => { inner.insert(ik.clone(), d.clone()); }
+                        None => { inner.remove(ik); }
+                    }
+                    inner_reset.push(format!("{k}.{ik}"));
+                }
+            }
+            if !inner_reset.is_empty() && probe(k, &Value::Object(inner.clone())) {
+                fixed.insert(k.clone(), Value::Object(inner));
+                reset.extend(inner_reset);
+                continue;
+            }
+        }
+        fixed.insert(k.clone(), def.clone());
+        reset.push(k.clone());
+    }
+    match serde_json::from_value::<AppConfig>(Value::Object(fixed)) {
+        Ok(cfg) => (cfg, reset),
+        // Keys that only fail in combination: give up on the merge, never on the file.
+        Err(_) => (fallback.clone(), vec!["<all>".to_string()]),
+    }
+}
+
+/// Copy `path` to `<file name>.bad-<unix seconds>` next to it (`-2`, `-3`… if taken) and
+/// return the copy's path. Called before anything can overwrite a file we couldn't fully
+/// read, so the user's data survives. Backups are never deleted by the app.
+fn backup_bad_file(path: &Path) -> Option<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let mut dest = path.with_file_name(format!("{name}.bad-{ts}"));
+    for n in 2.. {
+        if !dest.exists() {
+            break;
+        }
+        dest = path.with_file_name(format!("{name}.bad-{ts}-{n}"));
+    }
+    match std::fs::copy(path, &dest) {
+        Ok(_) => {
+            eprintln!("kept the unreadable file as {}", dest.display());
+            Some(dest)
+        }
+        Err(e) => {
+            eprintln!("could not back up {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Overlay `overlay`'s keys onto `cfg`. Keys whose value can't be read keep `cfg`'s current
+/// value; the returned list names them (empty = everything applied).
+fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) -> Vec<String> {
     if let serde_json::Value::Object(ref mut m) = overlay {
         migrate_tire_display_style(m);
     }
-    let Ok(mut base) = serde_json::to_value(&*cfg) else { return; };
+    let Ok(mut base) = serde_json::to_value(&*cfg) else { return Vec::new(); };
     if let (
         serde_json::Value::Object(base_map),
         serde_json::Value::Object(over),
@@ -1260,15 +1390,16 @@ fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) {
     {
         for (k, v) in over { base_map.insert(k, v); }
     }
-    if let Ok(new_cfg) = serde_json::from_value::<AppConfig>(base) {
-        *cfg = new_cfg;
-        inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
-        // A preset/profile replaces the whole `hotkeys` object; an older one lacks newer
-        // actions (e.g. Hide HUD), so fill them like `load()` does (respects `unbound`).
-        inject_missing_hotkeys(&mut cfg.hotkeys);
-    }
+    let (new_cfg, reset) = from_value_lenient(base, cfg);
+    *cfg = new_cfg;
+    inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
+    // A preset/profile replaces the whole `hotkeys` object; an older one lacks newer
+    // actions (e.g. Hide HUD), so fill them like `load()` does (respects `unbound`).
+    inject_missing_hotkeys(&mut cfg.hotkeys);
+    reset
 }
 
+#[cfg(test)] // the app applies presets through `apply_profile_file` / `import_selected`; kept for the tests
 pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
     if let Ok(overlay) = serde_json::from_str::<serde_json::Value>(preset_json) {
         apply_preset_overlay(cfg, overlay);
@@ -1508,15 +1639,58 @@ impl AppConfig {
     }
 
     pub fn load() -> Self {
-        let default = Self::default();
         // No on-disk config yet (fresh install) → start from the embedded
         // "getting started" defaults (a real-world well-rounded config), then run
         // it through the same merge path so any newer field still fills from the
         // code default. Personal Co-Op fields (name/colour/last code) were reset
         // in the snapshot, so they use their neutral defaults. See DEFAULT_CONFIG_JSON.
-        let data = std::fs::read_to_string(Self::path())
-            .unwrap_or_else(|_| DEFAULT_CONFIG_JSON.to_string());
-        let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&data) else { return default; };
+        let path = Self::path();
+        let data = match std::fs::read_to_string(&path) {
+            Ok(d) => d,
+            Err(_) => {
+                // A file that exists but can't be read as text (e.g. invalid UTF-8) must not
+                // be silently replaced by the autosave: keep a copy first.
+                if path.exists() {
+                    backup_bad_file(&path);
+                }
+                DEFAULT_CONFIG_JSON.to_string()
+            }
+        };
+        let (mut cfg, recovery) = Self::parse(&data);
+        // Back the original up BEFORE anything below (or the autosave) can overwrite it.
+        if recovery.json_invalid || !recovery.reset_keys.is_empty() {
+            if recovery.json_invalid {
+                eprintln!("config.json is not valid JSON; using defaults");
+            } else {
+                eprintln!("config.json: reset unreadable settings to defaults: {}", recovery.reset_keys.join(", "));
+            }
+            if path.exists() {
+                backup_bad_file(&path);
+            }
+        }
+        if recovery.json_invalid {
+            return cfg; // defaults, as before: no profile seeding on top of a broken file
+        }
+        // Seed the Profile Manager: an existing install (or fresh default) that has
+        // no snapshot for its active profile gets one written from the live config,
+        // so `profiles/` is never empty and the active profile always has a file.
+        if cfg.active_profile.trim().is_empty() {
+            cfg.active_profile = default_profile_name();
+        }
+        if !profile_path(&cfg.active_profile).exists() {
+            cfg.save();
+        }
+        cfg
+    }
+
+    /// Pure core of [`load`](Self::load) (no IO, unit-testable): config text → config. Fills
+    /// missing keys from the code defaults, applies the migrations, and deserializes
+    /// *leniently* (see [`from_value_lenient`]): one unreadable value resets only itself.
+    fn parse(data: &str) -> (Self, ConfigRecovery) {
+        let default = Self::default();
+        let Ok(mut val) = serde_json::from_str::<serde_json::Value>(data) else {
+            return (default, ConfigRecovery { json_invalid: true, reset_keys: Vec::new() });
+        };
         // Merge: fill any missing keys (e.g. newly added fields) with their default values
         // so that adding a new config field never silently resets the entire config.
         if let Ok(def_val) = serde_json::to_value(&default) {
@@ -1545,21 +1719,12 @@ impl AppConfig {
             }
             migrate_tire_display_style(map);
         }
-        let mut cfg: AppConfig = serde_json::from_value(val).unwrap_or(default);
+        let (mut cfg, reset_keys) = from_value_lenient(val, &default);
         // Ensure every widget kind has at least one entry in the layout.
         // New kinds added to WidgetKind won't appear in old saved configs otherwise.
         inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
         inject_missing_hotkeys(&mut cfg.hotkeys);
-        // Seed the Profile Manager: an existing install (or fresh default) that has
-        // no snapshot for its active profile gets one written from the live config,
-        // so `profiles/` is never empty and the active profile always has a file.
-        if cfg.active_profile.trim().is_empty() {
-            cfg.active_profile = default_profile_name();
-        }
-        if !profile_path(&cfg.active_profile).exists() {
-            cfg.save();
-        }
-        cfg
+        (cfg, ConfigRecovery { json_invalid: false, reset_keys })
     }
 
     pub fn save(&self) {
@@ -1592,14 +1757,30 @@ impl AppConfig {
     /// previously-active profile — callers that must preserve it call `save()`
     /// first (see `switch_profile`); callers deleting the active one must not.
     fn load_profile(&mut self, name: &str) {
-        if let Ok(data) = std::fs::read_to_string(profile_path(name)) {
-            // UI memory, not part of a profile
-            let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
-            apply_preset(self, &data); // full snapshot = overlay every key
-            (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
-        }
+        self.apply_profile_file(&profile_path(name));
         self.active_profile = name.to_string(); // re-assert (file may store a stale name)
         self.save();
+    }
+
+    /// Overlay the profile snapshot at `path` onto the live config. A snapshot that doesn't
+    /// parse is skipped; one with unreadable values has only those values skipped (they keep
+    /// the live config's value). Either way the file is first copied to `<name>.json.bad-<ts>`
+    /// because the `save()` that follows `load_profile` rewrites it from the live config.
+    /// *Why:* a profile with one bad value used to be ignored whole and then overwritten.
+    fn apply_profile_file(&mut self, path: &Path) {
+        let Ok(data) = std::fs::read_to_string(path) else { return };
+        // UI memory, not part of a profile
+        let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
+        let reset = match serde_json::from_str::<serde_json::Value>(&data) {
+            // full snapshot = overlay every key
+            Ok(overlay) => apply_preset_overlay(self, overlay),
+            Err(_) => vec!["<invalid JSON>".to_string()],
+        };
+        (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
+        if !reset.is_empty() {
+            eprintln!("profile {}: could not read: {}", path.display(), reset.join(", "));
+            backup_bad_file(path);
+        }
     }
 
     /// Switch to `target`: flush the current profile, then load the target's
@@ -2359,5 +2540,171 @@ mod tests {
         let old: AppConfig = serde_json::from_value(v).unwrap();
         assert_eq!(old.minimap_zoom_driving_m, 1500.0);
         assert!(!old.minimap_north_up);
+    }
+}
+
+/// Loading must never lose data: one unreadable value resets only itself, and the original
+/// file is copied to `*.bad-<ts>` before anything can overwrite it. All file IO here uses a
+/// private temp dir (never `app_data_dir()`).
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("forza-cfg-test-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn bad_files(dir: &Path, stem: &str) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{stem}.bad-")))
+            .collect()
+    }
+
+    /// A config JSON with a few non-default values, as a mutable object.
+    fn saved_json() -> serde_json::Map<String, Value> {
+        let mut cfg = AppConfig::default();
+        cfg.grid_cols = 33;
+        cfg.listen_port = 4242;
+        cfg.minimap_layers.roads.on = !cfg.minimap_layers.roads.on;
+        let Value::Object(m) = serde_json::to_value(&cfg).unwrap() else { panic!() };
+        m
+    }
+
+    #[test]
+    fn valid_config_resets_nothing() {
+        let (cfg, rec) = AppConfig::parse(&Value::Object(saved_json()).to_string());
+        assert!(!rec.json_invalid);
+        assert!(rec.reset_keys.is_empty(), "{:?}", rec.reset_keys);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn one_bad_enum_resets_only_that_key() {
+        let def = AppConfig::default();
+        let mut m = saved_json();
+        m.insert("top_bar_style".into(), json!("NoSuchStyle"));
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert!(!rec.json_invalid);
+        assert_eq!(rec.reset_keys, vec!["top_bar_style".to_string()]);
+        assert!(cfg.top_bar_style == def.top_bar_style, "bad key falls back to its default");
+        assert_eq!(cfg.grid_cols, 33, "every other setting survives");
+        assert_eq!(cfg.listen_port, 4242);
+        assert_ne!(cfg.minimap_layers.roads.on, def.minimap_layers.roads.on);
+    }
+
+    #[test]
+    fn wrong_type_resets_only_that_key() {
+        let mut m = saved_json();
+        m.insert("listen_port".into(), json!(true)); // bool where a number is expected
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys, vec!["listen_port".to_string()]);
+        assert_eq!(cfg.listen_port, AppConfig::default().listen_port);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn several_bad_keys_all_reset_the_rest_kept() {
+        let mut m = saved_json();
+        m.insert("top_bar_style".into(), json!("NoSuchStyle"));
+        m.insert("listen_port".into(), json!("x"));
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys.len(), 2);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn nested_bad_value_resets_only_the_inner_field() {
+        let def = AppConfig::default();
+        let mut m = saved_json();
+        // `race_lines.mode` is lowercase ("off"); "Off" is the bug-report case.
+        let Some(Value::Object(layers)) = m.get_mut("minimap_layers") else { panic!() };
+        let Some(Value::Object(race)) = layers.get_mut("race_lines") else { panic!() };
+        race.insert("mode".into(), json!("Off"));
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys, vec!["minimap_layers.race_lines".to_string()]);
+        assert_eq!(cfg.minimap_layers.race_lines, def.minimap_layers.race_lines);
+        assert_ne!(cfg.minimap_layers.roads.on, def.minimap_layers.roads.on, "sibling field of the group kept");
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn invalid_json_gives_defaults_and_is_flagged() {
+        let (cfg, rec) = AppConfig::parse("{ this is not json");
+        assert!(rec.json_invalid);
+        assert_eq!(cfg.grid_cols, AppConfig::default().grid_cols);
+    }
+
+    #[test]
+    fn backup_copies_original_and_never_overwrites_an_earlier_backup() {
+        let dir = temp_dir("backup");
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ broken").unwrap();
+        let b1 = backup_bad_file(&path).expect("backup written");
+        let b2 = backup_bad_file(&path).expect("second backup in the same second");
+        assert_ne!(b1, b2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ broken", "original untouched");
+        assert_eq!(std::fs::read_to_string(&b1).unwrap(), "{ broken");
+        assert_eq!(bad_files(&dir, "config.json").len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_with_one_bad_value_applies_the_rest_and_is_backed_up() {
+        let dir = temp_dir("profile");
+        let path = dir.join("Racing.json");
+        let mut m = saved_json();
+        m.insert("top_bar_style".into(), json!("NoSuchStyle"));
+        let text = Value::Object(m).to_string();
+        std::fs::write(&path, &text).unwrap();
+
+        let mut cfg = AppConfig::default();
+        let before = cfg.top_bar_style;
+        cfg.apply_profile_file(&path);
+        assert_eq!(cfg.grid_cols, 33, "good values applied");
+        assert!(cfg.top_bar_style == before, "bad value keeps the live config's");
+        let backups = bad_files(&dir, "Racing.json");
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), text);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_with_invalid_json_is_skipped_and_backed_up_and_a_good_one_is_not() {
+        let dir = temp_dir("profile-bad");
+        let bad = dir.join("Broken.json");
+        std::fs::write(&bad, "nope").unwrap();
+        let mut cfg = AppConfig::default();
+        cfg.grid_cols = 21;
+        cfg.apply_profile_file(&bad);
+        assert_eq!(cfg.grid_cols, 21, "live config untouched");
+        assert_eq!(bad_files(&dir, "Broken.json").len(), 1);
+
+        let good = dir.join("Good.json");
+        std::fs::write(&good, Value::Object(saved_json()).to_string()).unwrap();
+        cfg.apply_profile_file(&good);
+        assert_eq!(cfg.grid_cols, 33);
+        assert!(bad_files(&dir, "Good.json").is_empty(), "a clean profile makes no backup");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn car_calibrations_bad_entry_loses_only_itself() {
+        let good = json!({ "gear_redline_speeds": [1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0], "max_rpm": 7000.0 });
+        let text = json!({ "100": good, "200": { "max_rpm": "fast" }, "abc": good }).to_string();
+        let (map, lossy) = parse_car_calibrations(&text);
+        assert!(lossy);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&100].max_rpm, 7000.0);
+        let (map, lossy) = parse_car_calibrations(&json!({ "100": good }).to_string());
+        assert!(!lossy && map.len() == 1);
+        let (map, lossy) = parse_car_calibrations("garbage");
+        assert!(lossy && map.is_empty());
     }
 }
