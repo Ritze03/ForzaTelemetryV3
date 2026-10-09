@@ -2,7 +2,7 @@
 
 A top-level tab (icon `MAP`, `fa-map`; label **Map**, German **Karte**) between **Overlay** and
 **Power Curve**. Two modes: the **viewer** (the whole tab is the map) and a full-size
-**settings** mode for every map.
+**settings** mode for the maps (Minimap; Dashboard map & Viewer, which share settings; Map data).
 
 *Why (D67, the user, 2026-10-08):* "Instead of having the settings for the minimap and the
 dashboard map in the overlay, we should probably create a new [tab] that is only used for
@@ -26,6 +26,15 @@ texture (`app.minimap_texture`) and POI icons (`app.minimap_icons`): no second c
 load skips it), and reloads when the season changed under such a texture. Without an install the
 Dashboard's "Map needs your Forza Horizon 6 install" state shows (the buttons stay).
 
+**The viewer has no settings of its own (D73).** It draws with the Dashboard map's: `minimap_layers`
+and the `minimap_*` view options (north-up and its sub-options, mirror at edges, compass, right-stick
+look, allow pan and zoom), the same yaw (`minimap_look.view_yaw(minimap_base_yaw())`) and the same
+base zoom (the Dashboard's eased driving / stopped zoom, `ForzaApp::minimap_current_zoom`; a pan /
+zoom the user did is only the temporary `ManualView` on top). *Why (the user, 2026-10-09):* "I think
+that the dashboard map and the viewer should actually share the same settings. Because both are, like,
+big and accessed through the UI, so it only makes sense." Before, the viewer had `viewer_layers`
+and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settings mode*.
+
 - **Drag** pans, **wheel / pinch** zooms (radius 50-8000 m). While the view follows the car the wheel
   zooms around the car (the car stays in the middle; there is nothing to anchor to); once panned
   it zooms **around the cursor** (the point under the pointer stays under it). Panning with a
@@ -34,10 +43,16 @@ Dashboard's "Map needs your Forza Horizon 6 install" state shows (the buttons st
 - **Follow car** (top left, lit while following; the default): the view centre is the car.
   Panning turns it off; pressing the button brings the view back at once (also resets a zoom).
   With nothing manual, pressing it freezes the view where it is.
-- **Settings** (top right, cog) switches the tab to the settings mode. The zoom radius is shown
-  bottom left.
-- **North-up** by default (`viewer_north_up`); off = the map turns with the car's heading
-  (reusing the Dashboard's eased heading, `minimap_smoothed_yaw`).
+- **Settings** (**bottom right**, cog) switches the tab to the settings mode. The zoom radius is shown
+  bottom left. *Why bottom right (the user, 2026-10-09):* "the settings are in the top right, but
+  that's also where the co-op thingy draws ... just move the settings button to the bottom right."
+  The co-op player list (`map_scene::draw`) owns the top right. The compass is drawn top left by the
+  scene, where Follow car is: while the compass is on, Follow car steps right of it
+  (`map_tab::compass_right`, which mirrors the scene's compass size rule). Test:
+  `viewer_controls_stay_inside_the_tab` (corners, no label overlap, clear of a simulated co-op list
+  and the compass; EN + DE, 600-1235 px).
+- **North-up** by default (`minimap_north_up`, the Dashboard map's setting); off = the map turns with
+  the car's heading (the Dashboard's eased heading incl. the right-stick look).
 
 ### Temporary pan / zoom (D72)
 
@@ -62,9 +77,11 @@ player drives off again. Shared by the Dashboard map and the viewer: one state t
   appears in its corner while the view is manual. **Not in the dashboard's layout-edit mode:**
   there the grid owns the drag (the response only senses hover), and a leftover manual view is
   reset. The base zoom is the eased `minimap_current_zoom`.
-- **Viewer:** the base zoom is `viewer_zoom_m` (Viewer page, default 1500 m).
+- **Viewer:** the base zoom is the Dashboard's eased `minimap_current_zoom` (driving / stopped
+  zoom). *Why not the last viewer zoom:* the viewer has no zoom setting any more (D73), and the
+  Dashboard's value is what the user tuned for the map; the temporary manual zoom resets to it.
 - **Option, default on:** `minimap_allow_pan_zoom` (Mini-Settings → Dashboard → Map, and the Map tab's
-  Dashboard map page), `viewer_allow_pan_zoom` (Viewer page). Off = no pan / zoom sensing, the
+  Dashboard map & Viewer page; one switch for both). Off = no pan / zoom sensing, the
   old click-only behaviour (the Dashboard map keeps its waypoint click).
 - **In 3D** (View mode 3D, phase K, K4) nothing changes for the gestures: pan and zoom move over the
   **ground plane at the car's height** ("pan / zoom on the flat plane", design) and anchor the grabbed
@@ -88,33 +105,35 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
 | Page | Content | Config |
 |---|---|---|
 | **Minimap** | the HUD minimap: Minimap card (Enabled, *Use Dashboard map settings*, view options, co-op teammates, *Reset map layers*) + the layer cards | `overlay.map_*`, `overlay.map_layers`, `overlay.map_plate_opacity` |
-| **Dashboard map** | Dashboard map card (view options, **Allow pan and zoom**, *Reset map layers*) + the layer cards | `minimap_*`, `minimap_layers`, `minimap_allow_pan_zoom` |
-| **Viewer** | Viewer card (lock north-up, mirror, compass, **Allow pan and zoom**, **Zoom**, *Reset map layers*) + the layer cards | `viewer_*` |
+| **Dashboard map & Viewer** (DE *Dashboard-Karte & Viewer*) | "Dashboard map & Viewer" card (view options, **Allow pan and zoom**, *Reset map layers*) + the layer cards; edits what both the Dashboard's Map widget and the Map tab viewer draw (D73) | `minimap_*`, `minimap_layers`, `minimap_allow_pan_zoom` |
 | **Map data** | the road-type map editor card, [map-editor.md](map-editor.md) | none |
 
 - **Moved, not copied:** the Minimap and Dashboard map pages came from the Overlay tab
-  (D63-D66) with identical content; the Map data card from Setup. The Overlay tab keeps the HUD
+  (D63-D66) with identical content (the Dashboard page was renamed *Dashboard map & Viewer* in D73); the Map data card from Setup. The Overlay tab keeps the HUD
   modules only (General, Drive cluster, Race / Drift, Notifications), including the Minimap
   module's cell in its Layout card.
 - **Remembered across restarts:** `map_tab_settings` (settings vs viewer) and `map_tab_page`
   (`config::MapPage`), both in `config::EXPORT_EXCLUDE`, like `overlay_page` (where the user
   last looked is not a setting; kept across a profile switch). An old `overlay_page` of
-  `minimap` / `dashboard_map` loads as General.
-- The viewer's settings are the KeyGroup **Map → Map viewer** (`viewer_layers`, `viewer_north_up`,
-  `viewer_mirror_edges`, `viewer_show_compass`, `viewer_allow_pan_zoom`, `viewer_zoom_m`);
-  `minimap_allow_pan_zoom` is in the Mini-settings group. All `serde(default)`.
-- **Viewer defaults** (`config::viewer_layers_default`): the Dashboard map's look
-  (`MapLayerConfig::dashboard()`) with POIs visible up to at least an 8000 m radius, i.e. at every viewer
-  zoom (a viewer is mostly used zoomed out, where the POIs are the point). Since D71 the
-  Dashboard default is 10 000 m, so the viewer just takes that (`max(.., 8000)`). North-up, mirror at the edges, no compass, 1500 m.
+  `minimap` / `dashboard_map` loads as General. An old `map_tab_page` of `viewer` (the page D73
+  removed) loads as the shared Dashboard map & Viewer page (`#[serde(alias = "viewer")]` on
+  `MapPage::DashboardMap`).
+- **Removed config keys (D73):** `viewer_layers`, `viewer_north_up`, `viewer_mirror_edges`,
+  `viewer_show_compass`, `viewer_allow_pan_zoom`, `viewer_zoom_m`, the `viewer_layers_default`
+  function and the export group **Map -> Map viewer** (it was the last group, so no group index
+  shifts). Their values are **not migrated**: the user wants the Dashboard map's look. An old
+  `config.json` / profile that still has them loads normally: `AppConfig` has no
+  `deny_unknown_fields`, so serde ignores them (no `.bad-` backup, nothing reset, see
+  `config::from_value_lenient`), and the next save writes the file without them. An old preset that
+  has them imports with the keys ignored. Test: `map_tab::tests::an_old_config_with_viewer_keys_still_loads`.
 - The viewer's co-op trails (fade time / distance) and player list follow the Dashboard map's
-  co-op settings (Mini-Settings → Dashboard → Map → Co-Op), not a set of their own.
+  co-op settings (Mini-Settings -> Dashboard -> Map -> Co-Op), as they always did.
 - **Map data page layout:** one card in the first column (three from 1100 px, else two), as wide as
   it was in Setup. It runs the Game Install check itself (`Fh6Setup::poll`).
 
 ### The layer cards
 
-All three map pages call **one function**, `maprender::ui::layers_ui` (D61 spirit: one renderer, so
+Both map pages call **one function**, `maprender::ui::layers_ui` (D61 spirit: one renderer, so
 one settings UI, they can't drift apart). It lays the cards out in three columns from 1100 px
 (first column: the page's own lead card + Image, View mode, Race lines; then Roads; then Points
 of interest) or two, and edits a `MapLayerConfig`. Above the cards a status line shows the
@@ -125,7 +144,7 @@ saved road types were ignored").
   only: **Map plate opacity** (`overlay.map_plate_opacity`, the minimap's own plate, not the
   General tab's *Plate opacity*).
 - **Roads:** on/off, scale width with zoom (road width in metres, minimum / maximum px; off =
-  one fixed width), outline width and opacity, then **By type**: per type a block with
+  one fixed width; the three px sliders go up to **100 px**, `maprender::ui::ROAD_PX_MAX`, D74), outline width and opacity, then **By type**: per type a block with
   visible, line colour, outline colour, width factor, dash, opacity, outline on/off. Turnarounds
   are never listed (D52). **Reset road styles** restores the "by type" preset.
 - **Points of interest:** on/off, icon size, **Max zoom radius** (tooltip: POIs are hidden
@@ -152,12 +171,23 @@ saved road types were ignored").
   shows numbers that differ from what is drawn. The plate opacity stays editable: it is not
   copied. With the module or the overlay off the cards are greyed like the other module cards.
 
+- **Road width limit (D74).** *Why (the user, 2026-10-09):* "when I zoom in a lot in the viewer ... at
+  some point it just limits the width when I zoom in really far, and it shouldn't do that ... just
+  raise the limit to, like, 50, and then I should be able to set it the way I actually want it to
+  behave." The zoom rule is `clamp(px_per_metre * metres, min_px, max_px)`
+  (`style::road_base_px`), so what looked like a bug was `max_px` (default 10, slider max was 30).
+  The slider ranges (minimum, maximum, fixed width) are now 0.5-100 px; the **defaults are
+  unchanged** (the user tunes them). Checked: `road_base_px` is the only clamp on the base width in
+  `maprender/{style,paint2d}.rs` and `gl3d/roads.rs` (which calls `road_base_px` too); the per-type
+  factor and outline only multiply / add. Maximum width and minimum width have tooltips.
+  Test: `map_tab::tests::the_road_width_limit_goes_up_to_100_px`.
+
 - *Why colours use egui's `color_edit_button_srgb`:* the config stores `"#rrggbb"` (`Rgb`),
   the picker edits the 3 bytes directly.
 
 ### View mode (D65, D67, phase K)
 
-The card that used to be "Tilted view". Every map (HUD Minimap, Dashboard map, Viewer) has the same
+The card that used to be "Tilted view". Every map (HUD Minimap, Dashboard map and Viewer) has the same
 three modes, picked with a segmented control (`theme::segmented`) at the top of the card:
 
 - **Flat:** the 2D map, top-down. The tilt rows below are greyed.
@@ -196,7 +226,7 @@ on 3D is there because the 3D view needs a GL context and falls back to Tilted w
 Why the 3D rows are hidden, not greyed: they are a whole group that means nothing outside 3D, and
 a card full of dead controls is noise (the tilt rows, which Flat can switch on, stay and grey).
 
-### Copy to … (D68)
+### Copy to … (D68, simplified by D73)
 
 *Why (the user, 2026-10-08):* "to make it easier to configure both the minimap and the dashboard
 map for every category, there should be a button to basically apply, like for example, if I'm in
@@ -207,9 +237,12 @@ them in between."
 
 - **Where:** a small right-aligned **Copy to…** menu button at the end of every card: Image,
   View mode, Race lines (incl. the in-race focus), Roads, Points of interest, and the page's
-  lead card (**View**). It lists the other two maps and **Both**. A pick overwrites **that
+  lead card (**View**). It lists the other map and **Both**. A pick overwrites **that
   category only** on the target; every other category is untouched. The button then reads
   "Copied" for 1.5 s (`copy_menu`, time kept in egui's temp memory).
+- **Two maps since D73:** the viewer shares the Dashboard map's settings, so `MapId` has only
+  `Minimap` and `Dashboard` (shown as "Dashboard map & Viewer"). The menu lists the one other map and
+  **Both** (which is then the same single target; kept so the button looks the same on every card).
 - **Code:** `MapLayerConfig::copy_category(&from, LayerCategory)` (`maprender/cfg.rs`, the one place
   that knows which field is in which category) and `maprender::ui::apply_copy(&mut AppConfig,
   &CopyRequest)`. `layers_ui` stays pure: it only edits the config it was given and **returns** the
@@ -218,26 +251,26 @@ them in between."
   includes this frame's changes and a stale clone never overwrites the target. *Why a request, not
   `&mut` access to the other configs:* testable without an app, no aliasing of three configs
   in one UI function. Tests: `maprender::cfg::tests::copy_category_*`, `maprender::ui::tests`
-  (every category, every map pair, Both, following Minimap, View), `map_tab::tests` (real
+  (every category, both directions, Both, following Minimap, View), `map_tab::tests` (real
   pointer events through the menu).
 - **Minimap following the Dashboard map** (`map_use_dashboard`): copying **into** it is pointless
   (it draws the Dashboard's values), so its entry and *Both* are greyed with a tooltip, and
   `apply_copy` refuses it anyway. Copying **from** its page copies the effective values (the
   Dashboard map's), the Copy buttons stay usable on the greyed cards.
-- **View:** the view options live under different keys per map (`overlay.map_*` / `minimap_*` /
-  `viewer_*`). HUD <-> Dashboard map copies all of `ViewCfg` (north-up and its sub-options, mirror,
-  right stick, compass, both zooms). To or from the **viewer** only what it has: lock north-up,
-  mirror at edges, compass, and *Allow pan and zoom* between the viewer and the Dashboard map (the HUD
-  cannot pan). *Why not the zoom:* the viewer has one zoom, not a driving / stopped pair, so there is no
-  honest mapping. The Image card's **Map plate opacity** (HUD-only, its own key) is not part of the
-  copy. With the Minimap module off the Minimap card (and its View copy) is greyed like the rest of
-  that card.
+- **View:** the view options live under different keys per map (`overlay.map_*` / `minimap_*`).
+  Copying copies all of `ViewCfg` (north-up and its sub-options, mirror, right stick, compass, both
+  zooms). The Image card's **Map plate opacity** (HUD-only, its own key) is not part of the copy.
+  With the Minimap module off the Minimap card (and its View copy) is greyed like the rest of that
+  card. (Before D73 the viewer was a third target with a reduced field set and no zoom pair; that
+  special case is gone with it.)
 
 ## Tests (`ui/map_tab.rs`, `ui/map_data.rs`, `ui/map_scene.rs`)
 
 `ui::test_render` panes at 700 / 1000 / 1100 / 1235 px, **English and German** (the language is
 a process-wide static: such tests go through `i18n::with_language`, which serialises them): the
-Minimap / Dashboard map / Viewer pages (six cards each, following the Dashboard, module off, every
-layer status), the viewer's buttons (inside the tab, never overlapping), the module selector at
-the window minimum, the remembered state (saved, not exported), the viewer defaults; the Map data
+Minimap and Dashboard map & Viewer pages (six cards each, following the Dashboard, module off, every
+layer status), the viewer's buttons (inside the tab, bottom right / left, never overlapping the
+compass or the co-op list), the module selector at the window minimum (three pages), the remembered
+state (saved, not exported), old configs with `viewer_*` keys / `map_tab_page: "viewer"`, the road
+width range; the Map data
 card's pane and confirm-block tests moved with it.

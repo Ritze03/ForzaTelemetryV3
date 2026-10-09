@@ -1107,18 +1107,16 @@ fn de(s: &str) -> Option<&'static str> {
         "Shift at redline" => "Am Begrenzer schalten",
 
         // ── Map tab (D67): viewer, settings mode ───────────────────────
-        "Viewer" => "Kartenansicht",
-        "Map viewer" => "Kartenansicht",
+        // The Viewer shares the Dashboard map's settings (D73), so the page is named after both.
+        "Dashboard map & Viewer" => "Dashboard-Karte & Viewer",
         "Follow car" => "Fahrzeug folgen",
         "Allow pan and zoom" => "Verschieben und Zoomen erlauben",
         "Drag the map to pan and scroll to zoom. The view goes back to the car once you start driving again."
             => "Karte ziehen zum Verschieben, scrollen zum Zoomen. Sobald du wieder losfährst, springt die Ansicht zurück zum Fahrzeug.",
-        "Zoom" => "Zoom",
         "Back to map" => "Zurück zur Karte",
         "Off: the map turns with the car's heading." => "Aus: Die Karte dreht sich mit der Fahrtrichtung des Fahrzeugs.",
 
         // ── Overlay tab: module tabs, map layer settings (D63) ─────────
-        "Dashboard map" => "Dashboard-Karte",
         "The map follows the Dashboard map's settings." => "Die Karte folgt den Einstellungen der Dashboard-Karte.",
         "Reset map layers" => "Kartenebenen zurücksetzen",
         // ── Map tab: "Copy to …" (D68) and the in-race focus (D66) ─────
@@ -1224,6 +1222,9 @@ fn de(s: &str) -> Option<&'static str> {
             => "Wie breit eine Straße in Metern im Maßstab der Karte gezeichnet wird, vor Minimum und Maximum.",
         "Minimum width" => "Mindestbreite",
         "Maximum width" => "Höchstbreite",
+        "The thinnest a road gets when zoomed far out." => "So schmal wird eine Straße höchstens, wenn weit herausgezoomt ist.",
+        "The widest a road gets when zoomed far in. Raise it to let roads keep growing with the zoom."
+            => "So breit wird eine Straße höchstens, wenn weit hineingezoomt ist. Erhöhe den Wert, damit Straßen mit dem Zoom weiter wachsen.",
         "Outline width" => "Breite der Umrandung",
         "Extra width of the dark outline under each line." => "Zusätzliche Breite der dunklen Umrandung unter jeder Linie.",
         "Outline opacity" => "Deckkraft der Umrandung",
