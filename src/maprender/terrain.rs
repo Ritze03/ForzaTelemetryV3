@@ -25,7 +25,6 @@
 //!
 //! Pure CPU, no GL, no egui.
 
-#![allow(dead_code)] // phase K: consumed by the GL renderer (K2) and the call sites (K3, K4); tested here
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -272,6 +271,7 @@ impl HeightGrid {
     }
 
     /// World extent `[min_x, min_z, max_x, max_z]`.
+    #[allow(dead_code)] // tests
     pub fn bounds(&self) -> [f32; 4] {
         [
             self.x0 as f32,

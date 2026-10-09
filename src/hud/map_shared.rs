@@ -40,8 +40,12 @@ impl MapCanvas<'_> {
     /// (far behind the car) goes far off-screen in its flat direction, so the edge markers still
     /// point the right way.
     pub fn to_screen(&self, wx: f32, wz: f32) -> Pos2 {
-        let [ox, oy] = self.cam.view.world_to_offset(wx, wz);
-        self.cam.project_offset(ox, oy).unwrap_or_else(|| self.cam.centre + vec2(ox, oy).normalized() * 1.0e5)
+        // `Camera::project` is the plane maths of a flat / tilted camera and the terrain-surface
+        // point of a 3D one (phase K), so teammates, trails and waypoints sit on the relief.
+        self.cam.project(wx, wz).unwrap_or_else(|| {
+            let [ox, oy] = self.cam.view.world_to_offset(wx, wz);
+            self.cam.centre + vec2(ox, oy).normalized() * 1.0e5
+        })
     }
     fn c(&self, c: Color32) -> Color32 {
         c.gamma_multiply(self.a)

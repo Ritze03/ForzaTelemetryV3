@@ -261,8 +261,9 @@ impl Camera {
     }
 }
 
-// Phase K's 3D camera. Not used by a renderer yet (K2-K4 wire it into the GL scene and the call sites);
-// the unit tests exercise all of it.
+// Phase K's 3D camera. The GL scene (`gl3d`, K2) draws with it; the call sites (K3, K4) build it.
+// What only they use (`with_relief`, `from_cfg_relief`, `with_eye_clearance`, ...) may stay unused until
+// they land; the unit tests exercise all of it.
 #[allow(dead_code)]
 impl Camera {
     /// The same camera with a relief (3D). Call it only for a tilted camera (`tilt.on`): a flat

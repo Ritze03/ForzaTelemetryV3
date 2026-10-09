@@ -591,6 +591,153 @@ Tests: `view::tests` (h = 0 parity, matrices, eye clearance, footprint, `from_cf
 on synthetic data, `real_install_mesh` on the install), `store::tests` (lazy terrain, mesh cache),
 `cfg::tests` (relief serde, view mode, the `copy_category` fixture differs in `relief`).
 
+### 3D renderer (phase K, K2)
+
+`maprender/gl3d/` is the GL scene all three maps will share (D61): terrain from the height raster with
+the satellite image draped on it, roads as ribbons with decks. K2 delivers the renderer, its API and
+the 2D-side API step; **nothing calls it yet** (K3 HUD, K4 Dashboard + Viewer wire it in, K5 builds
+the settings card), so no map's behaviour changed. Module map and the call shape are in the
+`gl3d/mod.rs` header; this section is the reference for the *why*.
+
+**Public API** (`maprender::gl3d`): `Gl3dHandle` (one per GL context, `Clone`: `status()`,
+`wants_underlay()`, `busy()`, `stats()`, `caps()`, `destroy(&glow::Context)`), `Gl3dStatus::{Untried,
+Ready, Failed(String)}`, `Scene3d` (everything one frame needs: the relief `Camera`, the newest
+`Arc<RoadMesh>`, the egui map texture + calibration, image look, fade `a`, size factor `s`, corner
+radius, `ReliefCfg`, `RoadsCfg`, the optional in-race `Focus3d`), `add_scene(&Painter, &Gl3dHandle,
+Scene3d)`, `Gl3dOptions` (requirements and test switches), `last_failure()`. The 2D-side step in
+`paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (race lines + POIs,
+no roads; `draw_layers` = `Parts::ALL`), POIs and the culling boxes go through `Camera::project` /
+`k_at` / `footprint` (identical to the plane maths without a relief), `MapCanvas::to_screen`
+(`hud/map_shared.rs`) goes through `Camera::project`, so teammates, trails and waypoints sit on the
+terrain. In 3D the egui lines of `draw_layers` keep a constant width (`tapered` returns factor 1 for a
+relief camera: its row-based depth scale is a flat-plane formula); the GL roads taper per vertex.
+
+**Architecture and the whys**
+
+- **The scene is rendered into the renderer's own FBO (RGBA8 + 24-bit depth) and composited as a
+  quad inside the same `egui_glow::CallbackFn`**, not shown via `register_native_texture`. That needs
+  `&mut Painter` (only the overlay has it) and eframe offers no *replace* for a resized texture, and
+  the Dashboard's widget code has no `Frame`. The callback needs nothing from the frame loop, so the
+  call is identical at all three sites; the composite shader does the HUD pill's rounded mask (an
+  SDF) and the fade alpha (premultiplied, egui's own blend). Markers, POIs, compass and border are
+  ordinary egui shapes after the callback (egui keeps the layer order).
+- **One `Gl3d` per GL context, created lazily inside the callback** (the one place with the right
+  context current), state in a `Gl3dHandle` the call site owns. The HUD (overlay thread) and the
+  Dashboard + Viewer (UI thread) are different contexts: nothing GL is shared, only the CPU data. The
+  FBO is *transient* (render, then composite in the same callback) and grow-only, so one serves any
+  number of callbacks a frame. The map texture is **not uploaded by us**: `painter.texture(id)` is
+  egui's own, reused (no second 64-256 MB copy). `prepare_map` gives it mipmaps + anisotropy once;
+  egui re-sets `MIN_FILTER` on a re-upload, so the filter is read every frame and the chain rebuilt
+  when it was reset (self-healing; the HUD's texture already has mips and only gets the anisotropy).
+- **Init is spread over frames** (`Gl3dHandle::busy()` = ask for another frame): programs + static
+  buffers, then the 15 MB height texture, then the road buffers (each a few ms), so there is no
+  40-50 ms hitch on the HUD. **Until `Ready` the call site draws the tilted 2D map underneath**
+  (`wants_underlay()`), which is also the whole fallback.
+- **Terrain: `R16UI` height texture + geometry clipmap** (`clipmap.rs`). The grid is the K1
+  `HeightGrid` verbatim, read with `texelFetch` and a hand bilinear (exact, ES 3.0 has no filterable
+  integer textures; the same arithmetic as `HeightGrid::height`, so CPU markers and GPU picture
+  agree). 7 levels of 64 x 64 cells (cell = 8 m x 2^level), one static grid VBO + 10 index buffers
+  (full grid + the 9 ring variants of the hole offset), 7 draws and ~43 k triangles at any zoom. The
+  level centres snap to multiples of 2^(level+1) px so the hole offset is -1/0/+1 cells and rings tile
+  exactly (unit-tested for 7 car positions, no gap or overlap); odd edge vertices take the mean of
+  their even neighbours (no cracks, no skirts). The coarsest level (+-16 km) fades over its outer
+  eighth: the Viewer at 8 km zoom reaches its edge and a hard line looked like a wall.
+  Heights outside the raster are clamped (flat sea at y 100), the satellite wraps by egui's
+  texture option (mirror on) or is discarded (`uMirror`). Hill shading (Lambert, `ReliefCfg::shading`),
+  brightness / saturation / opacity of the image are applied exactly in the fragment shader.
+- **Roads** (`roads.rs`, shaders): static GPU ribbons from K1's `RoadMesh`; heights, deck, width,
+  colour, dashes and focus are all uniforms / per-vertex shader work, so no setting re-uploads
+  anything. Node heights vs terrain drape is one uniform, cross-country always draped, jump lines
+  carry their taut string. The width is the 2D rule evaluated per vertex depth
+  (`clamp(px/m * metres, min, max) * type factor`, casing = the outer band of `casing_px`), so it
+  tapers by construction. Dashes (trail, jump) are in **metres** along the chain, converted from the 2D
+  pixel pattern at the car's scale (so they foreshorten with the road). **Tunnels** are a second range
+  per tile, drawn last with the depth test off (underground, as the editor page). In-race focus
+  (D66): a 1-byte-per-vertex attribute rebuilt (`RoadMesh::build_rel`) only when the `Arc<RoadFocus>`
+  changes; muted roads take the mute colour / alpha / width factor without casing or dashes, hidden
+  ones get alpha 0 (never a moved vertex: it would drag the triangle it shares with a visible sample
+  across the screen).
+- **Depth bias toward the eye** (0.2 % of the camera depth + 0.02 % per draw rank, `BIAS_*`):
+  the coarse clipmap levels (cells ~ distance / 32) sit above or below the exact bilinear surface the
+  roads follow, so unbiased ribbons were buried on slopes at distance; the per-rank step orders
+  overlapping types (highway over road over trail) without z-fighting. A *relative* bias keeps working
+  from the HUD's 1 km eye distance to the Viewer's 25 km (depth resolution is relative too).
+- **LOD** (design 5.5, `roads::plan`): per 1 km tile, from the screen scale at the tile's nearest
+  point: below `FAR_PPM` = 0.1 px/m the 32 m top-only index set, else the 8 m set with the deck; tiles
+  outside the frustum or beyond the far fade are skipped (`Tile::in_frustum`). The HUD at the stopped
+  zoom drops from the design's 585 k triangles to ~99 k.
+- **Winding:** culling back faces of the road mesh needs `FRONT_FACE = CW` (K1's quads are
+  counter-clockwise in a right-handed reading; the world is left-handed). Chosen by looking and
+  pinned by `gl3d_culling_matches_no_culling` (the wrong face removes every road top: 836 -> 0
+  pixels). The terrain is not culled (depth testing is enough).
+- **State hygiene / Windows:** egui sets scissor and viewport before the callback and re-establishes
+  its own state after, *except* the framebuffer binding. `Gl3d::render` reads `FRAMEBUFFER_BINDING`,
+  `VIEWPORT` and `SCISSOR_*` first and restores them before the composite; the binding goes back to
+  what it was (`None` only when it was 0), never a blind 0, because the Windows overlay renders into
+  an offscreen FBO of its own (`wgl.rs`) and `Painter::intermediate_fbo()` is always `None`. Our
+  textures use units 1-3 (egui only uses 0), unit 0 is active again on exit, `UNPACK_ALIGNMENT` is
+  restored after the 2-byte height upload. No readback, no `glFinish` in production.
+- **Dialects / requirements:** `#version 330 core` on desktop GL >= 3.3, `#version 300 es` on ES >=
+  3.0 (also fine in the Windows compatibility context); explicit `layout(location)`, integer vertex
+  attributes, no float textures, no instancing. `probe` demands the version, a 4096 px texture and a
+  vertex texture unit; the shaders compiling, the FBO being complete and a clean `get_error()` in the
+  first frames are checked where they happen. Optional: anisotropic filtering, `GL_TIME_ELAPSED`
+  (desktop only; ES uses the CPU time).
+- **Soft fallback + slow-GPU guard.** Any failure ends in `Gl3dStatus::Failed(reason)` (also
+  `last_failure()`: the settings UI is on another thread than the HUD's context), the GL objects are
+  freed, `eprintln!` says why, and the maps keep drawing 2D. A software GL passes every feature test
+  and then costs 6-40 ms a frame, so the **guard** keeps an EMA of the frame cost (timer query, else
+  the callback's CPU time) and fails with "3D is too slow on this GPU" above 8 ms for 2 s (frames
+  after an upload and a pause > 1 s do not count; `Gl3dOptions::guard = None` disables it). On
+  llvmpipe that means 3D is refused for real scenes, as intended.
+- **Debug:** `FORZA_MAP_3D_DEBUG=1` prints one line per second (status, size, ppp, triangles, draws,
+  tiles near / far, CPU and GPU ms, EMA) and the probe result once, so the user's machine can be
+  checked without a profiler.
+- **Node heights, orphans (K1 note):** nav orphans carry `y = 0` (`data::build_roads`), 100 m below
+  the sea; `mesh3d::known_y` treats a height of exactly 0 or a non-finite one as unknown and uses
+  the terrain there (a node-height road no longer dips to 0 at such a node; test
+  `orphan_nodes_without_a_height_take_the_terrain_not_zero`).
+
+**Defaults used** (design 9.3): sea flat at y 100, POIs / markers / race lines over the 3D in egui
+without occlusion (a POI behind a ridge still shows: K6), exaggeration 1.0, shading 0.35, deck 3 m.
+
+**Measured** (RX 7900 XTX, Mesa 26.2.4, release, `GL_TIME_ELAPSED` around terrain + roads, median of
+20 frames; real island data; the design's numbers in brackets):
+
+| Scene | triangles | draws | GPU ms | CPU ms (render) |
+|---|---|---|---|---|
+| HUD 208 x 136 driving 500 m, city (x3) | 122 k | 29 | 0.014 (0.015) | 0.41 |
+| HUD bridge 150 m (x3) | 138 k | 14 | 0.013 | 0.46 |
+| HUD mountain 500 m (x3) | 61 k | 13 | 0.013 (0.025) | 0.29 |
+| HUD stopped 3 km | 99 k | 211 | 0.023 (0.059, 585 k tri) | 0.72 |
+| Dashboard 600 x 400, 1.5 km, city | 294 k | 176 | 0.034 (0.051) | 0.45 |
+| Viewer 1280 x 720, 8 km, island | 88 k | 180 | 0.028 (0.129, 962 k tri) | 0.58 |
+| Viewer 3 km mountain | 93 k | 24 | 0.031 (0.038) | 1.0 |
+
+The LOD sets make the heavy scenes 3-5x cheaper than the design's unculled 8 m set. ES 3.0 and
+llvmpipe draw the same pictures (ES has no timer query). On llvmpipe (6 cores, release) the real scenes cost 9.5-14 ms of CPU for the HUD at 3x and 19-25 ms for Dashboard / Viewer (the design measured 8 ms for the HUD at 150 k triangles, 40 ms at 585 k), which the slow-GPU guard rejects, as intended. First-use cost: programs ~ms, heights
+~16 ms, roads ~10 ms, one step per frame.
+
+**Tests** (`gl3d/tests.rs`, headless EGL through `overlay::gl::Headless::new_with(Flavour, device)`;
+GL tests are `#[ignore]`, run `GL3D_PNG_DIR=dir cargo test gl3d -- --ignored --test-threads=1
+--nocapture`, GLES 3.0 needs `MESA_GLES_VERSION_OVERRIDE=3.0` in the environment of its own
+process, `GL3D_DEVICE=<n>` runs the real-scene test on another EGL device): `gl3d_default_gl`,
+`gl3d_gles30`, `gl3d_llvmpipe` (HUD at ppp 1 / 1.5, Dashboard, roads of every type by colour, markers
+over the 3D, rounded mask, `get_error() == 0`, target FBO restored, PNGs),
+`gl3d_callback_keeps_egui_state_and_respects_the_clip_rect` (egui meshes before / after, scissor,
+the fade alpha), `gl3d_fallback_status_and_the_2d_map` (too-old context, broken shader, too-slow
+guard: status text, and the picture is exactly the 2D map), `gl3d_culling_matches_no_culling`,
+`gl3d_flat_world_equals_the_tilted_2d_map` (over a flat world the draped image equals the tilted 2D
+base to 0.7/255 and a road lies on `Camera::project` to 0.01 px), `gl3d_in_race_focus_mutes_or_hides_the_other_roads`,
+`gl3d_real_install_scenes` (real island, skipped without an install). Pure tests run in every `cargo
+test`: clipmap tiling, the draw plan, the style table, the guard, mesh orphans.
+
+**What cannot be agent-tested:** the Windows overlay (WGL, legacy compatibility context, offscreen FBO
+readback) and a real eframe window (the Dashboard path is covered by the same `egui_glow::Painter`
+code in the harness, but not by a window framebuffer 0 or a compositor `pixels_per_point`); an
+integrated GPU, and the user's GPU while FH6 runs. The FBO-restore rule is the key defence on
+Windows; K3 / K4 keep 3D opt-in there.
+
 ### Configuration
 
 `AppConfig::minimap_layers` (Dashboard; in `MINISETTINGS_KEYS`) and `OverlayConfig::map_layers` (HUD;

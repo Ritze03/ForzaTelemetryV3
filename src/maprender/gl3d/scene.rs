@@ -1,0 +1,541 @@
+//! [`Gl3d`]: the GL objects of one context and the two passes of a frame - render the scene
+//! into the renderer's own FBO (colour + 24-bit depth), then composite that FBO into whatever
+//! framebuffer the caller had bound. Every method takes the `glow::Context` explicitly (no
+//! context is stored), which is also why [`Gl3d::destroy`] can be called with the context the
+//! owner keeps.
+//!
+//! # State hygiene
+//!
+//! egui's callback leaves us in its state (its VAO and program, scissor = the clip rect, viewport =
+//! the callback rect) and re-establishes its own after we return, *except* the framebuffer
+//! binding. So [`Gl3d::render`] reads `FRAMEBUFFER_BINDING`, `VIEWPORT` and `SCISSOR_*` first and
+//! puts them back before the composite; the framebuffer is restored to **what it was**
+//! (`None` only when it was 0), never to a blind 0, because the Windows overlay renders into an
+//! offscreen FBO of its own (`overlay/wgl.rs`) and `Painter::intermediate_fbo()` is always
+//! `None`. Our textures live on units 1-3 (egui only uses 0), and unit 0 is active again on exit.
+
+use std::num::NonZeroU32;
+use std::time::Instant;
+
+use egui_glow::glow::{self, HasContext};
+
+use super::clipmap::{self, Clipmap, HeightTex};
+use super::probe::{Caps, TEXTURE_MAX_ANISOTROPY, TIME_ELAPSED};
+use super::roads::{self, RoadGpu};
+use super::shaders::{self, compile, Common, Prog};
+use super::Gl3dOptions;
+use crate::maprender::cfg::{ReliefCfg, RoadHeight, RoadsCfg, RaceFocusCfg};
+use crate::maprender::mesh3d::{RoadMesh, LIFT_M};
+use crate::maprender::racesel::RoadFocus;
+use crate::maprender::style;
+use crate::maprender::terrain::Terrain;
+use crate::maprender::view::Camera;
+use crate::minimap::MapCalibration;
+use std::sync::Arc;
+
+/// What a frame needs, in viewport px / design units as documented per field.
+pub struct Frame<'a> {
+    /// The camera with its relief; its `rect` is the callback rect (the GL viewport).
+    pub cam: &'a Camera,
+    /// Pixels per point of the callback.
+    pub ppp: f32,
+    /// The callback viewport in px.
+    pub size: [i32; 2],
+    /// egui's texture of the satellite image (`None` = the plain backing colour).
+    pub map: Option<glow::Texture>,
+    pub cal: MapCalibration,
+    /// Size of the *original* map image, which `cal` is in.
+    pub orig: [u32; 2],
+    pub brightness: f32,
+    pub saturation: f32,
+    /// `ImageCfg::opacity` (the fade alpha is applied to everything at the composite).
+    pub opacity: f32,
+    pub mirror: bool,
+    pub relief: ReliefCfg,
+    /// `None` = no roads at all (`roads.on` is off, or no mesh yet).
+    pub roads: Option<&'a RoadsCfg>,
+    pub focus: Option<&'a RaceFocusCfg>,
+    /// Size factor of strokes (HUD design -> screen).
+    pub s: f32,
+    /// Wait for the GPU and read the timer query in this call (tests, perf numbers).
+    pub sync_timing: bool,
+}
+
+/// What one render did.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderStats {
+    pub triangles: usize,
+    pub draws: usize,
+    pub tiles_near: usize,
+    pub tiles_far: usize,
+    pub cpu_ms: f64,
+    /// GPU time of a finished earlier frame (or of this one with `sync_timing`).
+    pub gpu_ms: Option<f64>,
+}
+
+struct Fbo {
+    fbo: glow::Framebuffer,
+    tex: glow::Texture,
+    depth: glow::Renderbuffer,
+    size: [i32; 2],
+}
+
+#[derive(Clone, Copy)]
+struct Saved {
+    fbo: Option<glow::Framebuffer>,
+    viewport: [i32; 4],
+    scissor_on: bool,
+    scissor: [i32; 4],
+}
+
+/// Which winding the road mesh's front faces have on screen. K1's `top_quad` is counter-clockwise
+/// in a right-handed reading of (x, y, z); the world is left-handed (x east, z north), so on
+/// screen the top faces are **clockwise** (chosen by looking, test `culling_matches_no_culling`).
+const ROAD_FRONT_FACE: u32 = glow::CW;
+
+pub struct Gl3d {
+    pub caps: Caps,
+    terrain: Prog,
+    road: Prog,
+    comp: Prog,
+    clip: Clipmap,
+    pub heights: Option<HeightTex>,
+    pub roads: Option<RoadGpu>,
+    fbo: Option<Fbo>,
+    empty_vao: glow::VertexArray,
+    queries: Vec<glow::Query>,
+    q_inflight: Vec<bool>,
+    q_next: usize,
+    /// The egui texture whose mip chain we have prepared (and its generation: see [`Gl3d::prepare_map`]).
+    map_prepared: Option<glow::Texture>,
+    cull: bool,
+    /// [`Gl3d::destroy`] ran (the context is the owner's, so `Drop` cannot free anything itself).
+    destroyed: bool,
+}
+
+impl Gl3d {
+    /// Compile the programs and build the static clipmap buffers. ~5-15 ms. Heights and roads
+    /// follow separately ([`Gl3d::set_terrain`], [`Gl3d::set_roads`]) so the caller can spread the
+    /// uploads over frames.
+    pub fn new(gl: &glow::Context, caps: Caps, opts: &Gl3dOptions) -> Result<Gl3d, String> {
+        let (tvs, tfs) = (if opts.break_shader { "this is not glsl" } else { shaders::TERRAIN_VS }, shaders::TERRAIN_FS);
+        let terrain = compile(gl, "terrain", tvs, tfs, Common::Yes, shaders::TERRAIN_UNIFORMS)?;
+        let road = compile(gl, "road", shaders::ROAD_VS, shaders::ROAD_FS, Common::Yes, shaders::ROAD_UNIFORMS)?;
+        let comp = compile(gl, "composite", shaders::COMP_VS, shaders::COMP_FS, Common::No, shaders::COMP_UNIFORMS)?;
+        let clip = Clipmap::new(gl)?;
+        // SAFETY: plain GL object creation on the current context.
+        let (empty_vao, queries) = unsafe {
+            let v = gl.create_vertex_array()?;
+            let q: Vec<glow::Query> = if caps.timer { (0..3).filter_map(|_| gl.create_query().ok()).collect() } else { Vec::new() };
+            (v, q)
+        };
+        let n = queries.len();
+        Ok(Gl3d { caps, terrain, road, comp, clip, heights: None, roads: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
+    }
+
+    /// Upload the height raster (15 MB for the island, ~16 ms).
+    pub fn set_terrain(&mut self, gl: &glow::Context, terrain: &Terrain) -> Result<(), String> {
+        let h = HeightTex::upload(gl, &terrain.grid, terrain.rev, self.caps.max_texture)?;
+        if let Some(old) = self.heights.replace(h) {
+            old.destroy(gl);
+        }
+        Ok(())
+    }
+
+    /// Upload a road mesh (25 MB for the island, ~10 ms), replacing the previous one.
+    pub fn set_roads(&mut self, gl: &glow::Context, mesh: Arc<RoadMesh>) -> Result<(), String> {
+        let new = RoadGpu::upload(gl, mesh)?;
+        if let Some(mut old) = self.roads.replace(new) {
+            old.destroy(gl);
+        }
+        Ok(())
+    }
+
+    /// Make the in-race focus flags match `focus` (a new picked line / road rev only; a 0.2 ms
+    /// loop plus a 485 KB `buffer_sub_data`).
+    pub fn sync_focus(&mut self, gl: &glow::Context, focus: Option<&Arc<RoadFocus>>) {
+        let Some(r) = self.roads.as_mut() else { return };
+        let same = match (&r.rel_focus, focus) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        let flags = focus.map(|f| r.mesh.build_rel(f));
+        r.set_rel(gl, flags.as_deref(), focus.cloned());
+    }
+
+    fn ensure_fbo(&mut self, gl: &glow::Context, w: i32, h: i32) -> Result<(), String> {
+        let (w, h) = (w.max(1), h.max(1));
+        if self.fbo.as_ref().is_some_and(|f| f.size[0] >= w && f.size[1] >= h) {
+            return Ok(());
+        }
+        // Grow only: one FBO serves every callback of a frame (they run one after the other).
+        let (cw, ch) = self.fbo.as_ref().map_or((0, 0), |f| (f.size[0], f.size[1]));
+        let (w, h) = (w.max(cw), h.max(ch));
+        let max = self.caps.max_texture.min(self.caps.max_renderbuffer);
+        if w > max || h > max {
+            return Err(format!("the view ({w} x {h} px) is larger than the GPU's limit ({max} px)"));
+        }
+        if let Some(old) = self.fbo.take() {
+            // SAFETY: deleting objects this struct created.
+            unsafe {
+                gl.delete_framebuffer(old.fbo);
+                gl.delete_texture(old.tex);
+                gl.delete_renderbuffer(old.depth);
+            }
+        }
+        // SAFETY: plain GL object creation on the current context; the caller restores the
+        // framebuffer binding afterwards (`render` does).
+        unsafe {
+            let tex = gl.create_texture()?;
+            gl.active_texture(glow::TEXTURE3);
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            let depth = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
+            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, w, h);
+            let fbo = gl.create_framebuffer()?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
+            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(depth));
+            gl.active_texture(glow::TEXTURE0);
+            let st = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            if st != glow::FRAMEBUFFER_COMPLETE {
+                gl.delete_framebuffer(fbo);
+                gl.delete_texture(tex);
+                gl.delete_renderbuffer(depth);
+                return Err(format!("the scene framebuffer is incomplete (0x{st:X})"));
+            }
+            self.fbo = Some(Fbo { fbo, tex, depth, size: [w, h] });
+        }
+        Ok(())
+    }
+
+    fn save(gl: &glow::Context) -> Saved {
+        // SAFETY: plain state queries.
+        unsafe {
+            let id = gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING);
+            let mut viewport = [0i32; 4];
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+            let mut scissor = [0i32; 4];
+            gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut scissor);
+            Saved {
+                // 0 is the window's framebuffer: `None`. Anything else is an FBO of the owner's.
+                fbo: NonZeroU32::new(id as u32).map(glow::NativeFramebuffer),
+                viewport,
+                scissor_on: gl.is_enabled(glow::SCISSOR_TEST),
+                scissor,
+            }
+        }
+    }
+
+    fn restore(gl: &glow::Context, s: &Saved) {
+        // SAFETY: plain state changes.
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, s.fbo);
+            gl.viewport(s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]);
+            gl.scissor(s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3]);
+            if s.scissor_on {
+                gl.enable(glow::SCISSOR_TEST);
+            } else {
+                gl.disable(glow::SCISSOR_TEST);
+            }
+            gl.depth_mask(true);
+            gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::CULL_FACE);
+            gl.front_face(glow::CCW);
+            gl.active_texture(glow::TEXTURE0);
+            gl.use_program(None);
+            gl.bind_vertex_array(None);
+        }
+    }
+
+    /// Mipmaps + anisotropy on the texture egui uploaded (the Dashboard's has none). egui sets
+    /// `MIN_FILTER` on every full upload, so it is read each frame (a cached client-side query
+    /// in the drivers): a texture that is not mipmapped (new, or re-uploaded and reset) gets its
+    /// chain built. A texture egui already mipmapped (the HUD's) only gets the anisotropy.
+    fn prepare_map(&mut self, gl: &glow::Context, t: glow::Texture) {
+        // SAFETY: plain texture state on the current context.
+        unsafe {
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(t));
+            let f = gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32;
+            let mipped = matches!(f, glow::NEAREST_MIPMAP_NEAREST | glow::LINEAR_MIPMAP_NEAREST | glow::NEAREST_MIPMAP_LINEAR | glow::LINEAR_MIPMAP_LINEAR);
+            if !mipped {
+                gl.generate_mipmap(glow::TEXTURE_2D);
+            }
+            if f != glow::LINEAR_MIPMAP_LINEAR || self.map_prepared != Some(t) {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+                if let Some(a) = self.caps.aniso {
+                    gl.tex_parameter_f32(glow::TEXTURE_2D, TEXTURE_MAX_ANISOTROPY, a);
+                }
+            }
+            gl.active_texture(glow::TEXTURE0);
+        }
+        self.map_prepared = Some(t);
+    }
+
+    fn camera_uniforms(&self, gl: &glow::Context, p: &Prog, f: &Frame, h: &HeightTex) {
+        let cam = f.cam;
+        let (n, far) = cam.near_far(f.ppp);
+        let a1 = (far + n) / (far - n);
+        let car = cam.car_exag();
+        // SAFETY: uniform uploads on the current program.
+        unsafe {
+            gl.uniform_matrix_4_f32_slice(p.u("uVP"), false, &cam.view_proj_rel(f.ppp));
+            gl.uniform_3_f32(p.u("uCar"), car[0], car[1], car[2]);
+            gl.uniform_1_f32(p.u("uExag"), cam.exag());
+            gl.uniform_3_f32(p.u("uCam"), cam.view.scale * f.ppp, cam.focal * f.ppp, a1);
+            gl.uniform_1_i32(p.u("uH"), 2);
+            gl.uniform_2_i32(p.u("uHSize"), h.size[0], h.size[1]);
+            gl.uniform_3_f32(p.u("uHGeo"), h.geo[0], h.geo[1], h.geo[2]);
+        }
+    }
+
+    /// Render the scene into the own FBO and put the caller's framebuffer, viewport and scissor
+    /// back. Needs [`Gl3d::set_terrain`] first.
+    pub fn render(&mut self, gl: &glow::Context, f: &Frame) -> Result<RenderStats, String> {
+        let t0 = Instant::now();
+        let Some(h) = self.heights.as_ref().map(|h| (h.tex, h.size, h.geo)) else { return Err("no terrain uploaded".into()) };
+        let saved = Self::save(gl);
+        let r = self.render_inner(gl, f, &h);
+        Self::restore(gl, &saved);
+        let mut st = r?;
+        st.cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
+        Ok(st)
+    }
+
+    fn render_inner(&mut self, gl: &glow::Context, f: &Frame, h: &(glow::Texture, [i32; 2], [f32; 3])) -> Result<RenderStats, String> {
+        let (w, hh) = (f.size[0], f.size[1]);
+        self.ensure_fbo(gl, w, hh)?;
+        let fbo = self.fbo.as_ref().map(|b| b.fbo).ok_or("no framebuffer")?;
+        if let Some(t) = f.map {
+            self.prepare_map(gl, t);
+        }
+        let mut st = RenderStats::default();
+        let heights = HeightTex { tex: h.0, size: h.1, geo: h.2, rev: 0 };
+        // The timer query of an earlier frame, if it finished.
+        let mut gpu_ms = None;
+        let q = if self.queries.is_empty() { None } else { Some(self.q_next) };
+        // SAFETY: GL state and draw calls on the current context with objects this struct owns.
+        unsafe {
+            for (i, q) in self.queries.iter().enumerate() {
+                if self.q_inflight[i] && gl.get_query_parameter_u32(*q, glow::QUERY_RESULT_AVAILABLE) != 0 {
+                    gpu_ms = Some(gl.get_query_parameter_u32(*q, glow::QUERY_RESULT) as f64 / 1e6);
+                    self.q_inflight[i] = false;
+                }
+            }
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, w, hh);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::CULL_FACE);
+            gl.color_mask(true, true, true, true);
+            gl.depth_mask(true);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear_depth_f32(1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(glow::LEQUAL);
+            let q = q.filter(|&i| !self.q_inflight[i]);
+            if let Some(i) = q {
+                gl.begin_query(TIME_ELAPSED, self.queries[i]);
+            }
+
+            // Heights on unit 2, the satellite on unit 1 (egui keeps unit 0).
+            gl.active_texture(glow::TEXTURE2);
+            gl.bind_texture(glow::TEXTURE_2D, Some(h.0));
+            gl.active_texture(glow::TEXTURE1);
+            if let Some(t) = f.map {
+                gl.bind_texture(glow::TEXTURE_2D, Some(t));
+            }
+
+            // ── terrain
+            gl.disable(glow::BLEND);
+            let p = &self.terrain;
+            gl.use_program(Some(p.p));
+            self.camera_uniforms(gl, p, f, &heights);
+            gl.uniform_1_i32(p.u("uMap"), 1);
+            gl.uniform_1_f32(p.u("uHasMap"), f.map.is_some() as u8 as f32);
+            let c = f.cal;
+            gl.uniform_4_f32(p.u("uMapGeo"), c.origin_x, c.origin_z, c.px_per_m / f.orig[0].max(1) as f32, c.px_per_m / f.orig[1].max(1) as f32);
+            gl.uniform_3_f32(p.u("uLook"), f.brightness, f.saturation, f.opacity);
+            let bg = style::MAP_BACKING;
+            gl.uniform_3_f32(p.u("uNoMap"), bg.r() as f32 / 255.0, bg.g() as f32 / 255.0, bg.b() as f32 / 255.0);
+            gl.uniform_3_f32(p.u("uSun"), -0.5, 1.0, 0.35);
+            gl.uniform_1_f32(p.u("uShade"), f.relief.shading);
+            gl.uniform_1_f32(p.u("uMirror"), f.mirror as u8 as f32);
+            gl.uniform_1_i32(p.u("uM"), clipmap::M);
+            gl.bind_vertex_array(Some(self.clip.vao));
+            let (car_x, car_z) = (f.cam.view.car_x as f64, f.cam.view.car_z as f64);
+            let car_px = [(car_x - h.2[0] as f64) / h.2[2] as f64 - 0.5, (h.2[1] as f64 - car_z) / h.2[2] as f64 - 0.5];
+            for lv in clipmap::levels(car_px) {
+                gl.uniform_2_i32(p.u("uBase"), lv.base[0] as i32, lv.base[1] as i32);
+                gl.uniform_1_i32(p.u("uStride"), lv.stride as i32);
+                gl.uniform_1_f32(p.u("uHasCoarser"), lv.has_coarser as u8 as f32);
+                let (ibo, n) = self.clip.ibo[lv.variant];
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+                gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, 0);
+                st.triangles += n as usize / 3;
+                st.draws += 1;
+            }
+
+            // ── roads
+            if let (Some(rc), Some(r)) = (f.roads, self.roads.as_ref()) {
+                self.draw_roads(gl, f, &heights, rc, r, &mut st);
+            }
+            if let Some(i) = q {
+                gl.end_query(TIME_ELAPSED);
+                self.q_inflight[i] = true;
+                self.q_next = (i + 1) % self.queries.len();
+            }
+            if f.sync_timing {
+                gl.finish();
+                if let Some(i) = q {
+                    gpu_ms = Some(gl.get_query_parameter_u32(self.queries[i], glow::QUERY_RESULT) as f64 / 1e6);
+                    self.q_inflight[i] = false;
+                }
+            }
+            gl.bind_vertex_array(None);
+        }
+        st.gpu_ms = gpu_ms;
+        Ok(st)
+    }
+
+    /// # Safety
+    /// The scene FBO is bound with depth testing on; a current context.
+    unsafe fn draw_roads(&self, gl: &glow::Context, f: &Frame, heights: &HeightTex, rc: &RoadsCfg, r: &RoadGpu, st: &mut RenderStats) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let scale_pt = f.cam.view.scale;
+            let table = roads::style_table(rc, f.focus, scale_pt, f.s, f.ppp);
+            let plan = roads::plan(&r.mesh, f.cam, f.ppp, table.rw[2].max(table.rw[1]));
+            st.tiles_near = plan.tiles_near;
+            st.tiles_far = plan.tiles_far;
+            if plan.normal.is_empty() && plan.tunnel.is_empty() {
+                return;
+            }
+            gl.enable(glow::BLEND);
+            gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
+            gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+            let p = &self.road;
+            gl.use_program(Some(p.p));
+            self.camera_uniforms(gl, p, f, heights);
+            gl.uniform_1_f32(p.u("uMode"), (f.relief.road_height == RoadHeight::Nodes) as u8 as f32);
+            gl.uniform_1_f32(p.u("uThick"), f.relief.deck_m);
+            gl.uniform_1_f32(p.u("uLift"), LIFT_M);
+            let flat = |v: &[[f32; 4]; roads::SLOTS]| -> Vec<f32> { v.iter().flatten().copied().collect() };
+            gl.uniform_4_f32_slice(p.u("uSlotA"), &flat(&table.a));
+            gl.uniform_4_f32_slice(p.u("uSlotB"), &flat(&table.b));
+            gl.uniform_4_f32_slice(p.u("uSlotC"), &flat(&table.c));
+            gl.uniform_4_f32(p.u("uRW"), table.rw[0], table.rw[1], table.rw[2], table.rw[3]);
+            gl.uniform_4_f32(p.u("uFocus"), table.focus[0], table.focus[1], table.focus[2], table.focus[3]);
+            gl.uniform_3_f32(p.u("uMuteRgb"), table.mute_rgb[0], table.mute_rgb[1], table.mute_rgb[2]);
+            gl.uniform_2_f32(p.u("uBias"), BIAS_BASE, BIAS_RANK);
+            gl.uniform_1_f32(p.u("uCasingAlpha"), table.casing_alpha);
+            gl.bind_vertex_array(Some(r.vao));
+            if self.cull {
+                gl.enable(glow::CULL_FACE);
+                gl.cull_face(glow::BACK);
+                gl.front_face(ROAD_FRONT_FACE);
+            }
+            let draw = |d: &roads::Draw, st: &mut RenderStats| {
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(if d.far { r.ibo_far } else { r.ibo_near }));
+                gl.draw_elements(glow::TRIANGLES, d.count as i32, glow::UNSIGNED_INT, d.first as i32 * 4);
+                st.triangles += d.count as usize / 3;
+                st.draws += 1;
+            };
+            for d in &plan.normal {
+                draw(d, st);
+            }
+            // Tunnels are underground: drawn last, over everything, without the depth test.
+            gl.disable(glow::DEPTH_TEST);
+            for d in &plan.tunnel {
+                draw(d, st);
+            }
+            gl.disable(glow::CULL_FACE);
+        }
+    }
+
+    /// Draw the scene FBO into the framebuffer [`Gl3d::render`] restored: the viewport and scissor
+    /// are the caller's (egui's callback rect and clip rect). `size` = the callback viewport in
+    /// px, `radius_px` = the rounded-corner mask (the HUD pill, 0 = square), `alpha` = the fade.
+    pub fn composite(&mut self, gl: &glow::Context, size: [i32; 2], radius_px: f32, alpha: f32) -> Result<(), String> {
+        let Some(fb) = self.fbo.as_ref() else { return Err("no scene to composite".into()) };
+        let p = &self.comp;
+        // SAFETY: GL state and one draw on the current context.
+        unsafe {
+            gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::CULL_FACE);
+            gl.enable(glow::BLEND);
+            gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
+            // egui's own blend (premultiplied; destination alpha kept right for the layer surface).
+            gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE_MINUS_DST_ALPHA, glow::ONE);
+            gl.use_program(Some(p.p));
+            gl.active_texture(glow::TEXTURE3);
+            gl.bind_texture(glow::TEXTURE_2D, Some(fb.tex));
+            gl.uniform_1_i32(p.u("uTex"), 3);
+            gl.uniform_2_f32(p.u("uUv"), size[0] as f32 / fb.size[0] as f32, size[1] as f32 / fb.size[1] as f32);
+            gl.uniform_2_f32(p.u("uSizePx"), size[0] as f32, size[1] as f32);
+            gl.uniform_1_f32(p.u("uRadius"), radius_px);
+            gl.uniform_1_f32(p.u("uAlpha"), alpha);
+            gl.bind_vertex_array(Some(self.empty_vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.bind_vertex_array(None);
+            gl.use_program(None);
+            gl.active_texture(glow::TEXTURE0);
+        }
+        Ok(())
+    }
+
+    /// Free every GL object. The context must be current (the owner's drop order: before the
+    /// egui painter's own `destroy`, before the context goes).
+    pub fn destroy(&mut self, gl: &glow::Context) {
+        self.destroyed = true;
+        // SAFETY: deleting objects this struct created, on their context.
+        unsafe {
+            for p in [&self.terrain, &self.road, &self.comp] {
+                gl.delete_program(p.p);
+            }
+            gl.delete_vertex_array(self.empty_vao);
+            for q in self.queries.drain(..) {
+                gl.delete_query(q);
+            }
+            if let Some(f) = self.fbo.take() {
+                gl.delete_framebuffer(f.fbo);
+                gl.delete_texture(f.tex);
+                gl.delete_renderbuffer(f.depth);
+            }
+        }
+        self.clip.destroy(gl);
+        if let Some(h) = self.heights.take() {
+            h.destroy(gl);
+        }
+        if let Some(mut r) = self.roads.take() {
+            r.destroy(gl);
+        }
+    }
+}
+
+impl Drop for Gl3d {
+    /// Nothing can be freed here (no context): an owner that lets the renderer go without
+    /// `Gl3dHandle::destroy` leaks its GL objects until the context dies. Say so, so a wrong drop
+    /// order shows up in the logs instead of as a slow VRAM leak.
+    fn drop(&mut self) {
+        if !self.destroyed && !std::thread::panicking() {
+            eprintln!("gl3d: renderer dropped without destroy(): its GL objects leak until the context is gone");
+        }
+    }
+}
+
+/// Depth bias of roads toward the eye (fractions of the camera depth): the base keeps them above
+/// the coarse terrain levels (cells of ~distance / 32 sit above or below the exact surface the
+/// roads follow), the per-rank step orders overlapping types (highway over road over trail).
+const BIAS_BASE: f32 = 0.002;
+const BIAS_RANK: f32 = 0.0002;

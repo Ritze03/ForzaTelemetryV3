@@ -284,20 +284,47 @@ pub struct LayerStats {
     pub muted: usize,
 }
 
+/// Which parts of [`draw_layers_parts`] to draw. In the 3D view (phase K) the roads and jump
+/// lines are the GL scene's ([`super::gl3d`]); the race lines and POIs are still drawn here, with
+/// egui, **over** the 3D (`Camera::project` follows the terrain, `k_at` sizes the icons), so
+/// the 3D call sites pass [`Parts::OVER_3D`]. *Why not in GL:* the same code, icons, fonts, clip
+/// and per-category rules as the 2D maps; the cost is that nothing hides them behind a ridge
+/// (v1, design 2.1E).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Parts {
+    pub roads: bool,
+    pub race_lines: bool,
+    pub pois: bool,
+}
+
+impl Parts {
+    /// Everything (what [`draw_layers`] draws).
+    pub const ALL: Parts = Parts { roads: true, race_lines: true, pois: true };
+    /// What stays on egui when the GL scene draws the roads.
+    #[allow(dead_code)] // phase K: the 3D call sites (K3, K4)
+    pub const OVER_3D: Parts = Parts { roads: false, race_lines: true, pois: true };
+}
+
 /// Vector layers over the base image: roads (bottom to top: `style::ROAD_DRAW_ORDER`), jump
 /// lines, race lines with start / finish marks, POIs. Each part is skipped when its switch is off.
 pub fn draw_layers(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig) -> LayerStats {
+    draw_layers_parts(cx, layers, cfg, Parts::ALL)
+}
+
+/// [`draw_layers`] restricted to `parts` (a part is drawn when both its `parts` flag and its config
+/// switch are on).
+pub fn draw_layers_parts(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, parts: Parts) -> LayerStats {
     let mut st = LayerStats::default();
     // In-race focus (D66): only with a selected race line (`RaceSel::focus_line`), never on a guess.
     let focusing = cx.race_sel.focus_line().is_some_and(|l| l < layers.races.lines.len());
-    if cfg.roads.on {
+    if parts.roads && cfg.roads.on {
         let focus = (focusing && cfg.race_lines.focus.other_roads != OtherRoads::Normal).then(|| cx.race_sel.road_focus(layers)).flatten();
         draw_roads(cx, layers, cfg, focus.as_deref(), &mut st);
     }
-    if cfg.race_lines.mode != RaceLineMode::Off {
+    if parts.race_lines && cfg.race_lines.mode != RaceLineMode::Off {
         draw_race_lines(cx, layers, &cfg.race_lines, cfg.tilt.taper, &mut st);
     }
-    if cfg.pois.on && !(focusing && cfg.race_lines.focus.hide_pois) {
+    if parts.pois && cfg.pois.on && !(focusing && cfg.race_lines.focus.hide_pois) {
         draw_pois(cx, layers, cfg, &mut st);
     }
     st
@@ -339,7 +366,9 @@ impl LayerCtx<'_> {
     /// Flat view or `taper` off: every line whole with factor 1.
     fn tapered(&self, lines: Vec<Vec<Pos2>>, taper: bool) -> Vec<(f32, Vec<Pos2>)> {
         let cam = self.cam;
-        if !taper || cam.is_flat() {
+        // In 3D the row-based depth scale (a flat-plane formula) is wrong over hills: the egui
+        // lines (race lines) keep a constant width there; the GL roads taper per vertex.
+        if !taper || cam.is_flat() || cam.relief.is_some() {
             return lines.into_iter().map(|l| (1.0, l)).collect();
         }
         let (k0, k1) = (cam.depth_scale_at_row(cam.rect.top()), cam.depth_scale_at_row(cam.rect.bottom()));
@@ -419,7 +448,7 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
     let muted = pass == Pass::Muted;
     let c = &cfg.roads;
     let taper = cfg.tilt.taper;
-    let aabb = cam.world_aabb(30.0);
+    let aabb = cam.footprint(30.0);
     // Widths are in design px (`min_px` / `max_px` / the zoom rule), scaled by the HUD's `s` after.
     let base = style::road_base_px(c, cam.scale() / cx.s) * cx.s;
     let dashes = cam.scale() / cx.s >= style::DASH_MIN_PX_PER_M;
@@ -527,7 +556,7 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
 const RACE_ALL_BUDGET: usize = 40_000;
 
 fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, taper: bool, st: &mut LayerStats) {
-    let aabb = cx.cam.world_aabb(20.0);
+    let aabb = cx.cam.footprint(20.0);
     let lines = &layers.races.lines;
     let idx: Vec<usize> = if rc.mode == RaceLineMode::All { (0..lines.len()).collect() } else { cx.race_sel.picked().iter().copied().filter(|&i| i < lines.len()).collect() };
     let (mut scratch, mut pieces) = (Vec::new(), Vec::new());
@@ -612,7 +641,7 @@ fn draw_pois(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut L
         return;
     }
     let size = pc.size_px * cx.s;
-    let aabb = cam.world_aabb(size / cam.scale().max(1e-6));
+    let aabb = cam.footprint(size / cam.scale().max(1e-6));
     let pois = &layers.pois;
     let r2 = pc.radius_m * pc.radius_m;
     let near = |it: &Poi| !pc.near_only || (it.x - cx.car.0).powi(2) + (it.z - cx.car.1).powi(2) <= r2;
@@ -628,13 +657,14 @@ fn draw_pois(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut L
         if !near(it) {
             return;
         }
-        let [ox, oy] = cam.view.world_to_offset(it.x, it.z);
-        if cam.perspective_at(oy) < style::POI_FAR_K {
+        // `k_at` / `project` are the plane maths without a relief and follow the terrain with one.
+        let k = cam.k_at(it.x, it.z);
+        if k < style::POI_FAR_K {
             return;
         }
-        let Some(at) = cam.project_offset(ox, oy) else { return };
+        let Some(at) = cam.project(it.x, it.z) else { return };
         if vis.len() < POI_BUDGET && cx.visible(at, size) {
-            vis.push((i, cat, at, cam.perspective_at(oy).max(style::POI_MIN_K)));
+            vis.push((i, cat, at, k.max(style::POI_MIN_K)));
         }
     });
     // Back to front: further (smaller y) first, so near icons overlap far ones.
@@ -656,10 +686,9 @@ fn draw_pois(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut L
     if let Some(cat) = style::cat_index("treasure_chest_current").filter(|c| mask & (1u64 << c) != 0) {
         let week = cx.week.unwrap_or_else(week_index_now);
         if let Some(it) = pois.current_chest(week).filter(|it| near(it)) {
-            let [ox, oy] = cam.view.world_to_offset(it.x, it.z);
             let big = size * style::CURRENT_CHEST_SCALE;
-            if let Some(at) = cam.project_offset(ox, oy).filter(|a| cx.visible(*a, big)) {
-                draw_poi(cx, layers, None, cat, at, big * cam.perspective_at(oy).max(style::POI_MIN_K));
+            if let Some(at) = cam.project(it.x, it.z).filter(|a| cx.visible(*a, big)) {
+                draw_poi(cx, layers, None, cat, at, big * cam.k_at(it.x, it.z).max(style::POI_MIN_K));
                 st.pois += 1;
             }
         }
