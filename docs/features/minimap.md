@@ -894,11 +894,36 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
   (full grid + the 9 ring variants of the hole offset), 7 draws and ~43 k triangles at any zoom. The
   level centres snap to multiples of 2^(level+1) px so the hole offset is -1/0/+1 cells and rings tile
   exactly (unit-tested for 7 car positions, no gap or overlap); odd edge vertices take the mean of
-  their even neighbours (no cracks, no skirts). The coarsest level (+-16 km) fades over its outer
+  their even neighbours (no cracks, no skirts; this is the alpha = 1 case of the geomorph below). The coarsest level (+-16 km) fades over its outer
   eighth: the Viewer at 8 km zoom reaches its edge and a hard line looked like a wall.
   Heights outside the raster are clamped (flat sea at y 100), the satellite wraps by egui's
   texture option (mirror on) or is discarded (`uMirror`). Hill shading (Lambert, `ReliefCfg::shading`),
   brightness / saturation / opacity of the image are applied exactly in the fragment shader.
+- **Geomorphed clipmap (hills stop popping).** *User, 2026-10-09: "hills and the height map keep adapting
+  for some reason ... figure out why it shifts the hills and their structures."* Cause (the only one):
+  level `l` re-centres every 16 * 2^l m while driving (vertices are world-locked, bases are multiples of
+  the stride), and the ring strip that switches went from the fine to the coarse height *and* shading
+  normal in one frame; the coarse levels point-sample the 8 m raster and the normal is a +-stride central
+  difference, so far ridge silhouettes and the horizon jumped. Not the cause: the height filtering, the
+  car height bobbing, reloads, depth. Fix, in `TERRAIN_VS`: every vertex of a level blends from its own
+  height to the coarser level's value over the level's outer cells, `alpha = clamp((d - 24) / 7, 0, 1)`
+  with `d` = Chebyshev distance in level cells from the continuous car raster position (`uCarPx`, the
+  `car_px` `scene.rs` already computes; the coarsest level has no coarser one and is not blended). The coarser value is the mean of the two even neighbours
+  for an odd axis, and for odd-odd the mean of the **anti-diagonal** pair (it must be the diagonal the
+  index buffer cuts the cell along, `(b, c)`), the same height for even-even. The same alpha blends the
+  normal stencil from +-stride to +-2*stride. *Why 24..31:* a level's outer boundary is always >= 31
+  cells from the car (the centre snap is <= 1 cell), so alpha is exactly 1 where two rings meet and both
+  sides are identical, while the blend starts well outside the finer level's hole. Measured on the real
+  island (hilliest straight road stretch, 3 m steps, a frame with this step's levels vs the previous
+  step's under the same camera, terrain only): the worst frame changed 0.35 / 0.07 / 0.41 / 0.28 % of the
+  pixels (HUD 500 m / HUD 150 m / Dashboard 800 m / Dashboard 1500 m; mean |diff| 0.099 / 0.049 / 0.114 /
+  0.086 of 255) before and 0.003 / 0.002 / 0.004 / 0.002 % (0.010-0.014) after. Cost: GPU +~0.003 ms (the
+  3D is <= 0.05 ms), plain mix / clamp / `&`, so ES 3.0 is fine. Side effect: the outer cells of every
+  level are a little coarser than before (the static picture differs by ~1/255 on average, up to 3 % of
+  pixels in mountain scenes, only in rings of hills). Regression tests (ignored, EGL):
+  `gl3d_terrain_levels_do_not_pop` (synthetic) and `gl3d_real_install_terrain_levels_do_not_pop`
+  assert the worst-frame share stays below 0.01 % / 0.05 %; the `#[cfg(test)]` hook `clipmap::LOD_CAR`
+  makes `scene.rs` place the levels for another car position to render the "previous frame".
 - **Roads** (`roads.rs`, shaders): static GPU ribbons from K1's `RoadMesh`; heights, deck, width,
   colour, dashes and focus are all uniforms / per-vertex shader work, so no setting re-uploads
   anything. Node heights vs terrain drape is one uniform, cross-country always draped, jump lines
@@ -1024,11 +1049,7 @@ next callback probes afresh (once per appearance; a "too slow" verdict costs two
 map texture needs no change: `app.rs` already loads it with `MirroredRepeat`, and `gl3d` adds the mipmaps
 itself on first use. The eframe window needs no depth or stencil buffer (the renderer has its own FBO).
 
-**Pan, zoom and clicks in 3D.** `ManualView` / `panned` / `zoomed_at` are unchanged: they use the
-relief-less camera, whose `unproject` is the ground plane at the car's height, the very plane the relief
-camera's `h = 0` is (tested), so the grabbed point stays under the pointer. A click for a co-op waypoint
-uses `map_scene::pick` instead: it re-casts the ray onto the plane at the terrain height it found
-(`unproject_at_height`, 6 rounds), so the waypoint lands on the hillside the user points at.
+**Pan, zoom and clicks in 3D.** In 3D, pan and wheel zoom anchor on the terrain surface under the pointer, not the car-height plane. `map_scene::draw` leaves the drawn 3D look in the egui context, keyed by the map's `Ui`, and `ManualView::interact` solves for the view centre that keeps the grabbed or zoomed terrain point under the pointer. A panned view's camera height eases (about 0.2 s) towards the terrain under the centre rather than snapping to it. *Why:* the camera height shifts the whole picture, so a pivot that follows the terrain exaggerates a pan uphill by several times, cancels it downhill, and makes the view jump on the first drag frame. `pick()` now ray-marches the terrain, so waypoint clicks on slopes are exact.
 
 **Status line.** The View mode card shows, while 3D is picked: "Loading terrain…" (store `Loading`), "3D not
 available: <reason>" (`gl3d::last_failure()`: an old GL, a shader that does not compile, "3D is too slow on
