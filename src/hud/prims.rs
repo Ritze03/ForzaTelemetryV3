@@ -48,6 +48,13 @@ impl Xf {
 /// Outline of a rounded rect, clockwise from the top-left corner's arc. `r` = radii
 /// `[nw, ne, se, sw]` in screen px, each clamped to half the shorter side.
 pub fn rounded_points(rect: Rect, r: [f32; 4]) -> Vec<Pos2> {
+    rounded_points_n(rect, r, 12)
+}
+
+/// [`rounded_points`] with up to `max_n` segments per 90° arc (the default 12 is 7.5° steps; a
+/// big circle, like the round Minimap, needs finer ones to stay round: a 4-point-per-octant arc
+/// of radius 150 sags 0.3 px).
+pub fn rounded_points_n(rect: Rect, r: [f32; 4], max_n: usize) -> Vec<Pos2> {
     use std::f32::consts::{FRAC_PI_2, PI};
     let max_r = rect.width().min(rect.height()) / 2.0;
     // Corner centres and the start angle of each 90° arc (screen y down, angle from +x).
@@ -66,7 +73,7 @@ pub fn rounded_points(rect: Rect, r: [f32; 4]) -> Vec<Pos2> {
         }
         let c = corner + vec2(sx * rad, sy * rad);
         // ~one point per 7.5°: chord error at r 23 is 0.05 px.
-        let n = ((rad * 0.5).ceil() as usize).clamp(3, 12);
+        let n = ((rad * 0.5).ceil() as usize).clamp(3, max_n.max(3));
         for k in 0..=n {
             let a = a0 + FRAC_PI_2 * k as f32 / n as f32;
             pts.push(c + rad * vec2(a.cos(), a.sin()));
@@ -87,10 +94,11 @@ pub fn rounded(p: &Painter, xf: &Xf, [x, y, w, h]: [f32; 4], r: [f32; 4], fill: 
 }
 
 /// Inside border of a rounded rect (CSS `border`): a closed stroke centred `width/2` inside.
-pub fn rounded_border(p: &Painter, xf: &Xf, [x, y, w, h]: [f32; 4], r: f32, width: f32, col: Color32) {
+/// `max_n` = arc segments per quarter ([`rounded_points_n`]; 12 is the usual).
+pub fn rounded_border(p: &Painter, xf: &Xf, [x, y, w, h]: [f32; 4], r: f32, width: f32, col: Color32, max_n: usize) {
     let half = width / 2.0;
     let rect = xf.rect(x + half, y + half, w - width, h - width);
-    let pts = rounded_points(rect, [xf.l(r - half); 4]);
+    let pts = rounded_points_n(rect, [xf.l((r - half).max(0.0)); 4], max_n);
     p.add(PathShape::closed_line(pts, PathStroke::new(xf.l(width), xf.c(col))));
 }
 

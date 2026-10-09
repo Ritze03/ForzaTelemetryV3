@@ -536,7 +536,17 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
         let k = if taper { cam.depth_scale_at_row((a.y + b.y) * 0.5) } else { 1.0 };
         let (jw, jcol, jalpha, jdash, jcasing) = if muted { (js.width * rf.mute_width, rf.mute_color, rf.mute_alpha, DashStyle::None, false) } else { (js.width, js.color, js.alpha, js.dash, js.casing) };
         let w = (base * jw * k).max(1.4 * k.min(1.0));
-        let seg = [a, b];
+        let mut seg = [a, b];
+        // Cut to the map shape, like the chains (a jump near a rounded corner, or anywhere
+        // outside a circle, must not poke out into the transparent surround).
+        if let Some(cc) = &cx.corner_clip {
+            if !(cc.safe.contains(a) && cc.safe.contains(b)) {
+                match clip_segment_convex(a, b, cc.poly) {
+                    Some((ca, cb)) => seg = [ca, cb],
+                    None => continue,
+                }
+            }
+        }
         if jcasing {
             cx.p.add(Shape::line_segment(seg, Stroke::new(w + 1.8 * cx.s * k, cx.c(js.casing_color, c.casing_alpha))));
         }

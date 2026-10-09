@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use egui::{pos2, Color32, ColorImage, Painter, Vec2};
+use egui::{pos2, vec2, Color32, ColorImage, Painter, Vec2};
 use egui_glow::glow::{self, HasContext};
 
 use super::super::gl::Headless;
@@ -272,6 +272,76 @@ fn real_spots(l: &MapLayers) -> Vec<(&'static str, f32, f32, f32, bool)> {
         out.push(("race", r.pts[2][0], r.pts[2][1], (r.pts[3][0] - r.pts[2][0]).atan2(r.pts[3][1] - r.pts[2][1]), true));
     }
     out
+}
+
+/// The Minimap frame options (D75) as the PNG states use them: a circle of diameter 200 or a 300 x 200
+/// rounded rect (radius 40), both with a solid, clearly coloured 4-6 px outline, and for the rect a
+/// blue plate showing through the half-transparent image.
+fn frame_cfg(kind: &str, tilted: bool) -> OverlayConfig {
+    let mut c = if tilted { OverlayConfig::default() } else { flat_hud() };
+    c.map_border_opacity = 1.0;
+    match kind {
+        "circle" => {
+            c.map_shape = crate::config::MapShape::Circle;
+            c.map_width = 200.0;
+            c.map_border_width = 4.0;
+            c.map_border_color = [230, 60, 60];
+        }
+        _ => {
+            c.map_width = 300.0;
+            c.map_height = 200.0;
+            c.map_corner_radius = 40.0;
+            c.map_border_width = 6.0;
+            c.map_border_color = [60, 160, 230];
+            c.map_plate_color = [30, 60, 120];
+            c.map_plate_opacity = 0.6;
+            c.map_layers.image.opacity = 0.5;
+        }
+    }
+    c
+}
+
+/// Signed distance (design px, negative inside) of `p` to a rounded rect of `size` with corner
+/// radius `r` (`size / 2` = a circle).
+fn frame_sdf(p: (f32, f32), size: Vec2, r: f32) -> f32 {
+    let (qx, qy) = ((p.0 - size.x / 2.0).abs() - (size.x / 2.0 - r), (p.1 - size.y / 2.0).abs() - (size.y / 2.0 - r));
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+}
+
+/// Checks of a 1x frame tile (widget at +10): every pixel more than 1.5 px outside the shape is the
+/// backdrop (the map is clipped exactly to the circle / rounded rect, nothing pokes out), the
+/// outline ring is `ring` in colour where it has one, and the shape's inside is not backdrop.
+fn check_frame(failures: &mut Vec<String>, img: &ColorImage, id: &str, cfg: &OverlayConfig, ring: Option<[u8; 3]>) {
+    let f = minimap::Frame::of(cfg);
+    let size = vec2(f.w, f.h);
+    let bgc = [GAME_BG.r(), GAME_BG.g(), GAME_BG.b()];
+    let mut bad = Vec::new();
+    for y in 0..img.size[1] {
+        for x in 0..img.size[0] {
+            let p = (x as f32 + 0.5 - 10.0, y as f32 + 0.5 - 10.0);
+            if frame_sdf(p, size, f.radius) > 1.5 && px(img, x, y).iter().zip(bgc).any(|(a, b)| a.abs_diff(b) > 4) {
+                bad.push((x, y));
+            }
+        }
+    }
+    println!("  {id}: {} pixels outside the shape are not the backdrop", bad.len());
+    if !bad.is_empty() {
+        failures.push(format!("{id}: the frame leaks outside its shape at {:?}", &bad[..bad.len().min(8)]));
+    }
+    if let Some(want) = ring {
+        let mid = f.border / 2.0;
+        let pts: Vec<(f32, f32)> = if f.circle {
+            (0..12).map(|i| {
+                let a = i as f32 / 12.0 * std::f32::consts::TAU + 0.2;
+                (f.w / 2.0 + (f.w / 2.0 - mid) * a.cos(), f.h / 2.0 + (f.h / 2.0 - mid) * a.sin())
+            }).collect()
+        } else {
+            vec![(f.w / 2.0, mid), (f.w / 2.0, f.h - mid), (mid, f.h / 2.0), (f.w - mid, f.h / 2.0)]
+        };
+        for (x, y) in pts {
+            check(failures, img, id, (x.round() as usize, y.round() as usize), want, "outline ring");
+        }
+    }
 }
 
 fn save(img: &ColorImage, name: &str) -> Result<PathBuf, String> {
@@ -673,6 +743,35 @@ fn render_spec_states() -> Result<(), String> {
             }
             written.push(save(&img, &id)?);
         }
+        // Frame options (D75): a circle (tilted, flat) and a custom 300 x 200 rect with its own outline
+        // and plate, layers and icons on, teammates and trails in.
+        for (name, kind, tilt) in [("frame_circle_tilted", "circle", true), ("frame_circle_flat", "circle", false), ("frame_rect_300x200", "rect", true), ("frame_rect_300x200_flat", "rect", false)] {
+            let cfg = frame_cfg(kind, tilt);
+            let snap = lcar(base(cfg.clone()), 0.0, -60.0, 0.6);
+            let size = minimap::size(&cfg);
+            let img = tile_on(&mut r, size, s, GAME_BG, |p, xf| {
+                let mut anim = MapAnim::default();
+                anim.set_layers(Some(layer_data.clone()));
+                anim.set_icons(atlas.clone());
+                minimap::draw(p, xf, &snap, NOW, &mut anim, Some(map_s), &layered_mates);
+            });
+            let id = format!("m2_{name}_{sfx}");
+            if s == 1.0 {
+                let ring = Some(cfg.map_border_color);
+                check_frame(&mut failures, &img, &id, &cfg, ring);
+                // The own arrow: at the centre flat, 85 % down when tilted.
+                let car_y = if tilt { size.y * 0.85 } else { size.y / 2.0 };
+                let [or, og, ob, _] = crate::ui::coop::hue_color(snap.coop_hue).to_array();
+                check(&mut failures, &img, &id, ((size.x / 2.0) as usize, car_y as usize), [or, og, ob], "car marker (co-op colour)");
+                if kind == "rect" {
+                    // The plate shows through the half-transparent image corner (tilted: the far fade
+                    // reveals it at the top).
+                    let top = px(&img, 10 + (size.x / 2.0) as usize, 10 + 12);
+                    println!("  {id}: top-centre {top:?}");
+                }
+            }
+            written.push(save(&img, &id)?);
+        }
         if let Some((data, atlas)) = &real {
             for (name, x, z, yaw, in_race) in real_spots(data) {
                 println!("  real spot {name}: car ({x:.0}, {z:.0}) yaw {yaw:.2}");
@@ -879,7 +978,8 @@ impl Rig3d<'_> {
     /// 3D renderer, else the 2D map.
     fn frame(&mut self, snap: &HudSnapshot, mates: &CoopLayer, s: f32, a: f32, scene: bool) -> ColorImage {
         let (h, terrain, mesh, layers, atlas, map) = (self.h.clone(), self.terrain.clone(), self.mesh.clone(), self.layers.clone(), self.atlas.clone(), self.map);
-        let px = [((minimap::SIZE.x + 20.0) * s).round() as u32, ((minimap::SIZE.y + 20.0) * s).round() as u32];
+        let size = minimap::size(&snap.cfg);
+        let px = [((size.x + 20.0) * s).round() as u32, ((size.y + 20.0) * s).round() as u32];
         let r = &mut *self.r;
         paint(&r.ctx, &mut r.painter, r.start, px, GAME_BG.to_normalized_gamma_f32(), |_, p| {
             let mut anim = MapAnim::default();
@@ -1030,6 +1130,48 @@ fn render_3d_states() -> Result<(), String> {
         }
     }
     println!("device {} ({})", headless.device, rig.h.caps().map_or("?".to_string(), |c| c.renderer));
+
+    // Frame options (D75) in 3D: the composite masks the scene to the circle (the rounded-rect mask
+    // with radius = half the size) and to a custom 300 x 200 rect.
+    for (name, kind) in [("frame_circle", "circle"), ("frame_rect_300x200", "rect")] {
+        let cfg = {
+            let mut c = frame_cfg(kind, true);
+            c.map_layers.tilt.set_view_mode(ViewMode::Relief);
+            c
+        };
+        let snap = on_hills(cfg.clone());
+        let size = minimap::size(&cfg);
+        for s in [1.0, 3.0] {
+            let sfx = if s == 1.0 { "1x" } else { "3x" };
+            let img = rig.tile(&snap, &mates, s, 1.0)?;
+            let id = format!("m2_3d_{name}_{sfx}");
+            if s == 1.0 {
+                let err = rig.gl_error();
+                println!("  {id}: GL error {err:#x}, status {:?}", rig.h.status());
+                if err != 0 || rig.h.status() != Gl3dStatus::Ready {
+                    failures.push(format!("{id}: GL error {err:#x}, status {:?}", rig.h.status()));
+                }
+                check_frame(&mut failures, &img, &id, &cfg, Some(cfg.map_border_color));
+                let [or, og, ob, _] = crate::ui::coop::hue_color(snap.coop_hue).to_array();
+                check(&mut failures, &img, &id, ((size.x / 2.0) as usize, (size.y * 0.85) as usize), [or, og, ob], "car marker over the scene (co-op colour)");
+                // The scene fills the shape: most samples well inside differ from the backdrop.
+                let (mut painted, mut total) = (0, 0);
+                for y in (0..size.y as usize).step_by(4) {
+                    for x in (0..size.x as usize).step_by(4) {
+                        if frame_sdf((x as f32, y as f32), size, minimap::Frame::of(&cfg).radius) < -(cfg.map_border_width + 4.0) {
+                            total += 1;
+                            painted += px(&img, x + 10, y + 10).iter().zip(bgc).any(|(a, b)| a.abs_diff(b) >= 8) as usize;
+                        }
+                    }
+                }
+                println!("  {id}: the scene paints {painted}/{total} samples inside the shape");
+                if painted * 100 < total * 80 {
+                    failures.push(format!("{id}: the 3D scene paints only {painted}/{total} samples of the shape"));
+                }
+            }
+            written.push(save(&img, &id)?);
+        }
+    }
 
     // Against the same view in Tilted: relief changed the picture; the roads are GL ones.
     let tilted_cfg = {

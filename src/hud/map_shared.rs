@@ -50,6 +50,27 @@ impl MapCanvas<'_> {
     fn c(&self, c: Color32) -> Color32 {
         c.gamma_multiply(self.a)
     }
+    /// Is `at` inside the bounds, `margin` in? The bounds are `rect`, or with `round` the circle
+    /// inscribed in it (the round Minimap).
+    fn within(&self, at: Pos2, margin: f32, round: bool) -> bool {
+        if round {
+            (at - self.rect.center()).length() <= self.rect.width().min(self.rect.height()) / 2.0 - margin
+        } else {
+            self.rect.shrink(margin).contains(at)
+        }
+    }
+    /// `d` (a point relative to the centre) pulled onto the bounds `margin` in when it is beyond
+    /// them. Rectangles clamp to the box along the ray, circles to the radius.
+    fn pin(&self, d: Vec2, margin: f32, round: bool) -> Vec2 {
+        if round {
+            let r = (self.rect.width().min(self.rect.height()) / 2.0 - margin).max(0.0);
+            return if d.length() > r { d.normalized() * r } else { d };
+        }
+        let half = self.rect.size() * 0.5 - Vec2::splat(margin);
+        let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
+        let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
+        d * kx.min(ky).min(1.0)
+    }
     fn black(&self, alpha: u8) -> Color32 {
         self.c(Color32::from_black_alpha(alpha))
     }
@@ -117,6 +138,12 @@ impl TrailFade {
 
 /// A player's breadcrumb trail in their colour, faint (old / far behind) to solid (recent).
 pub fn draw_trail(cv: &MapCanvas, pts: &Trail, col: Color32, fade: TrailFade, now: Instant) {
+    draw_trail_in(cv, pts, col, fade, now, false);
+}
+
+/// [`draw_trail`]; with `round` the segments are cut to the circle inscribed in `cv.rect` (the
+/// round Minimap: a painter clip rect can only cut a rectangle).
+pub fn draw_trail_in(cv: &MapCanvas, pts: &Trail, col: Color32, fade: TrailFade, now: Instant, round: bool) {
     let n = pts.len();
     if n < 2 {
         return;
@@ -130,10 +157,35 @@ pub fn draw_trail(cv: &MapCanvas, pts: &Trail, col: Color32, fade: TrailFade, no
             continue;
         }
         let c = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
-        let (a, b) = (cv.to_screen(ax, az), cv.to_screen(bx, bz));
+        let (mut a, mut b) = (cv.to_screen(ax, az), cv.to_screen(bx, bz));
+        if round {
+            let (c, r) = (cv.rect.center(), cv.rect.width().min(cv.rect.height()) / 2.0);
+            match clip_segment_circle(a, b, c, r) {
+                Some((ca, cb)) => (a, b) = (ca, cb),
+                None => continue,
+            }
+        }
         let k = if cv.taper { cv.cam.depth_scale_at_row((a.y + b.y) * 0.5).clamp(0.4, 1.5) } else { 1.0 };
         cv.p.line_segment([a, b], Stroke::new(2.0 * cv.s * k, cv.c(c)));
     }
+}
+
+/// The part of segment `a`-`b` inside the circle (`c`, `r`), or `None` when it misses it.
+pub fn clip_segment_circle(a: Pos2, b: Pos2, c: Pos2, r: f32) -> Option<(Pos2, Pos2)> {
+    let (d, f) = (b - a, a - c);
+    let qa = d.dot(d);
+    if qa < 1e-9 {
+        return (f.length() <= r).then_some((a, b));
+    }
+    // |f + t d|^2 = r^2, t in [0, 1].
+    let (qb, qc) = (f.dot(d), f.dot(f) - r * r);
+    let disc = qb * qb - qa * qc;
+    if disc < 0.0 {
+        return None;
+    }
+    let sq = disc.sqrt();
+    let (t0, t1) = (((-qb - sq) / qa).max(0.0), ((-qb + sq) / qa).min(1.0));
+    (t0 <= t1).then(|| (a + d * t0, a + d * t1))
 }
 
 /// Text with a 4-direction dark shadow (the Dashboard's label style).
@@ -158,6 +210,12 @@ fn distance_text(m: f32) -> String {
 /// Paused ones are grey with the pause glyph. `map_yaw` is the view's yaw (arrows turn by
 /// `yaw - map_yaw`).
 pub fn draw_remotes(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw: f32) {
+    draw_remotes_in(cv, remotes, car, map_yaw, false);
+}
+
+/// [`draw_remotes`]; with `round` the map's bounds are the circle inscribed in `cv.rect` (the
+/// pointers pin to the circle, not the box).
+pub fn draw_remotes_in(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw: f32, round: bool) {
     let s = cv.s;
     // Names are drawn in a second pass so labels of cars close together (racing side by
     // side) can be nudged apart instead of stacking illegibly.
@@ -165,7 +223,7 @@ pub fn draw_remotes(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw
     for r in remotes {
         let at = cv.to_screen(r.x, r.z);
         let col = if r.paused { crate::theme::steel(170) } else { r.colour };
-        if cv.rect.shrink(8.0 * s).contains(at) {
+        if cv.within(at, 8.0 * s, round) {
             arrow(cv, at, r.yaw - map_yaw, col);
             let label = if r.paused { format!("{} {}", cv.pause_glyph, r.name) } else { r.name.clone() };
             labels.push((pos2(at.x, at.y - 7.0 * s * 1.9), label, col));
@@ -173,10 +231,7 @@ pub fn draw_remotes(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw
             // Off the map: clamp to the edge and point toward them.
             let c = cv.rect.center();
             let d = at - c;
-            let half = cv.rect.size() * 0.5 - Vec2::splat(10.0 * s);
-            let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
-            let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
-            let edge = c + d * kx.min(ky).min(1.0);
+            let edge = c + cv.pin(d, 10.0 * s, round);
             let (sa, ca) = d.y.atan2(d.x).sin_cos();
             let m = 6.5 * s;
             let rr = |vx: f32, vy: f32| pos2(edge.x + vx * ca - vy * sa, edge.y + vx * sa + vy * ca);
@@ -203,15 +258,17 @@ pub fn draw_remotes(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw
 
 /// A shared waypoint: a pulsing diamond (clamped to the edge when off the map) with the
 /// distance from `car` above it. `colour` is the setter's identity colour, `time` drives the pulse.
-pub fn draw_waypoint(cv: &MapCanvas, (wx, wz): (f32, f32), colour: Color32, car: (f32, f32), time: f32) {
+pub fn draw_waypoint(cv: &MapCanvas, wp: (f32, f32), colour: Color32, car: (f32, f32), time: f32) {
+    draw_waypoint_in(cv, wp, colour, car, time, false);
+}
+
+/// [`draw_waypoint`] with `round` bounds (see [`draw_remotes_in`]).
+pub fn draw_waypoint_in(cv: &MapCanvas, (wx, wz): (f32, f32), colour: Color32, car: (f32, f32), time: f32, round: bool) {
     let s = cv.s;
     let mut at = cv.to_screen(wx, wz);
-    if !cv.rect.shrink(6.0 * s).contains(at) {
+    if !cv.within(at, 6.0 * s, round) {
         let d = at - cv.rect.center();
-        let half = cv.rect.size() * 0.5 - Vec2::splat(8.0 * s);
-        let kx = if d.x.abs() > 0.01 { half.x / d.x.abs() } else { f32::INFINITY };
-        let ky = if d.y.abs() > 0.01 { half.y / d.y.abs() } else { f32::INFINITY };
-        at = cv.rect.center() + d * kx.min(ky).min(1.0);
+        at = cv.rect.center() + cv.pin(d, 8.0 * s, round);
     }
     // Gentle pulse to draw the eye to the destination.
     let p = (1.0 + 0.16 * (time * 4.0).sin()) * s;
@@ -324,6 +381,46 @@ mod tests {
         let poly = shapes.iter().find_map(|s| if let egui::Shape::Path(p) = &s.shape { Some(p.points.clone()) } else { None }).expect("arrow polygon");
         let c = poly.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / poly.len() as f32;
         assert!((c.x - tilted.centre.x).abs() < 0.5 && (c.y - tilted.centre.y).abs() < 5.0, "{c:?} vs {:?}", tilted.centre);
+    }
+
+    #[test]
+    fn segments_are_cut_to_the_circle() {
+        let (c, r) = (pos2(100.0, 100.0), 50.0);
+        // Crossing the whole circle: cut at both ends, on the circle.
+        let (a, b) = clip_segment_circle(pos2(0.0, 100.0), pos2(200.0, 100.0), c, r).unwrap();
+        assert!((a - pos2(50.0, 100.0)).length() < 1e-3 && (b - pos2(150.0, 100.0)).length() < 1e-3, "{a:?} {b:?}");
+        // Inside: untouched. One end out: only that end moves. Missing it: nothing.
+        let (a, b) = clip_segment_circle(pos2(90.0, 100.0), pos2(110.0, 110.0), c, r).unwrap();
+        assert_eq!((a, b), (pos2(90.0, 100.0), pos2(110.0, 110.0)));
+        let (a, b) = clip_segment_circle(pos2(100.0, 100.0), pos2(100.0, 300.0), c, r).unwrap();
+        assert!(a == pos2(100.0, 100.0) && (b - pos2(100.0, 150.0)).length() < 1e-3);
+        assert!(clip_segment_circle(pos2(0.0, 0.0), pos2(200.0, 0.0), c, r).is_none());
+        // Beyond the segment's ends: the line crosses the circle, the segment doesn't.
+        assert!(clip_segment_circle(pos2(0.0, 100.0), pos2(20.0, 100.0), c, r).is_none());
+        // A point-sized segment.
+        assert!(clip_segment_circle(pos2(100.0, 100.0), pos2(100.0, 100.0), c, r).is_some());
+        assert!(clip_segment_circle(pos2(0.0, 0.0), pos2(0.0, 0.0), c, r).is_none());
+    }
+
+    /// Round bounds pin a far teammate / waypoint to the circle, rectangular ones to the box.
+    #[test]
+    fn pointers_pin_to_the_circle_not_the_box() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0));
+        let cam = Camera::new(0.0, 0.0, 0.0, 300.0, rect, rect.center(), 0.0, 1.0);
+        let shapes = |round: bool| {
+            with_canvas(&cam, rect, false, |cv| {
+                // Far to the north-east: the corner direction.
+                draw_waypoint_in(cv, (5000.0, 5000.0), Color32::WHITE, (0.0, 0.0), 0.0, round);
+            })
+        };
+        let tip = |round: bool| -> f32 {
+            // The pinned diamond's centre is the white dot circle.
+            let c = shapes(round).iter().find_map(|s| if let egui::Shape::Circle(c) = &s.shape { Some(c.center) } else { None }).unwrap();
+            (c - rect.center()).length()
+        };
+        // Circle: 8 px in from the radius 100; box: 8 px in along the diagonal, farther out.
+        assert!((tip(true) - 92.0).abs() < 0.5, "{}", tip(true));
+        assert!(tip(false) > 120.0, "{}", tip(false));
     }
 
     #[test]

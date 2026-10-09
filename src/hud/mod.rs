@@ -54,7 +54,6 @@ pub mod col {
     pub const AMBER_TEXT: Color32 = rgba(0x1A, 0x12, 0x04, 1.0);
     pub const DOT: Color32 = rgba(255, 255, 255, 0.22);
     pub const TRACK: Color32 = rgba(255, 255, 255, 0.16);
-    pub const FRAME: Color32 = rgba(12, 17, 27, 0.88);
     pub const COMPASS: Color32 = rgba(12, 17, 27, 0.85);
     pub const NORTH: Color32 = rgba(0xFF, 0x5A, 0x4E, 1.0);
     pub const MAP_TINT: Color32 = rgba(10, 14, 22, 0.12);
@@ -216,7 +215,7 @@ pub fn modules(snap: &HudSnapshot) -> Vec<(Module, HudCell, egui::Vec2)> {
     let cfg = &*snap.cfg;
     let mut items = Vec::with_capacity(3);
     if cfg.minimap_on {
-        items.push((Module::Map, cfg.minimap_cell, minimap::SIZE));
+        items.push((Module::Map, cfg.minimap_cell, minimap::size(cfg)));
     }
     if cfg.cluster_on {
         let size = match cfg.cluster_style {

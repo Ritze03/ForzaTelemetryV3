@@ -1,9 +1,10 @@
 //! Overlay tab: the settings page for the in-game HUD overlay (D24–D28, the tab mockup).
 //!
 //! A module selector (`theme::segmented`, the Co-Op tab's control) at the top picks which
-//! module's cards the page shows: General, Drive cluster, Race / Drift, Notifications. The
-//! selection is `config.overlay_page` (remembered, never exported). (The Minimap and Dashboard
-//! map pages lived here from D63 to D66; they moved to the Map tab in D67, `map_tab`.)
+//! module's cards the page shows: General, Minimap, Drive cluster, Race / Drift, Notifications.
+//! The selection is `config.overlay_page` (remembered, never exported). The Minimap page is the
+//! module's *frame* only (shape, size, outline, background; D75); the map layers and view options
+//! live on the Map tab (the Minimap and Dashboard map pages moved there in D67, `map_tab`).
 //!
 //! It edits `app.config.overlay` (and the shared Hide HUD binding). `ForzaApp::sync_overlay` and the listener's per-frame config push carry every
 //! change to the running HUD, so the page needs no apply step.
@@ -12,7 +13,7 @@
 use egui::{pos2, vec2, Color32, CursorIcon, FontId, Id, Painter, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use crate::app::{ForzaApp, OverlayStatus};
-use crate::config::{ClusterStyle, DriftStyle, HotkeyAction, HudCell, MonitorMethod, OverlayConfig, OverlayPage};
+use crate::config::{ClusterStyle, DriftStyle, HotkeyAction, HudCell, MapShape, MonitorMethod, OverlayConfig, OverlayPage};
 use crate::focus::MonitorStatus;
 use crate::hud::layout::Module;
 use crate::i18n::tr;
@@ -35,6 +36,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // Layout first when narrow: it's the one card you can't find by scrolling past settings.
             cards_page(ui, app, &[&[general], &[monitor], &[layout]], &[&[layout], &[general, monitor]]);
         }
+        OverlayPage::Minimap => cards_page(ui, app, &[&[minimap], &[], &[]], &[&[minimap], &[]]),
         OverlayPage::Cluster => cards_page(ui, app, &[&[cluster], &[], &[]], &[&[cluster], &[]]),
         OverlayPage::Race => cards_page(ui, app, &[&[race], &[drift], &[]], &[&[race], &[drift]]),
         OverlayPage::Notifications => cards_page(ui, app, &[&[notifications], &[], &[]], &[&[notifications], &[]]),
@@ -47,6 +49,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 fn page_selector(ui: &mut Ui, page: &mut OverlayPage) -> bool {
     let opts = [
         (OverlayPage::General, tr("General")),
+        (OverlayPage::Minimap, tr("Minimap")),
         (OverlayPage::Cluster, tr("Drive cluster")),
         (OverlayPage::Race, tr("Race / Drift")),
         (OverlayPage::Notifications, tr("Notifications")),
@@ -661,6 +664,66 @@ fn layout_grid(ui: &mut Ui, o: &mut OverlayConfig, sel: &mut Option<Module>) {
 
 // ── Module cards ─────────────────────────────────────────────────────────────
 
+fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
+    let mut open_map_tab = false;
+    minimap_card(ui, &mut app.config.overlay, &mut open_map_tab);
+    if open_map_tab {
+        // The layers live on the Map tab's settings mode, Minimap page.
+        app.current_tab = crate::app::Tab::Map;
+        app.config.map_tab_settings = true;
+        app.config.map_tab_page = crate::config::MapPage::Minimap;
+    }
+}
+
+/// The Minimap module's frame (D75): shape, size, corner radius, outline and background. What
+/// the map shows is on the Map tab (the button jumps there). Sizes are HUD design px (1080p,
+/// scaled with the resolution and the HUD scale like the Layout card's).
+fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig, open_map_tab: &mut bool) {
+    module_card(ui, o, tr("Minimap frame"), |o| &mut o.minimap_on, None, |ui, o| {
+        let shape_tip = tr("A circle takes its diameter from the width alone.");
+        control_row_tip(ui, tr("Shape"), shape_tip, |ui| {
+            theme::radio_group(ui, &mut o.map_shape, &[(MapShape::RoundedRect, tr("Rounded")), (MapShape::Circle, tr("Circle"))]);
+        });
+        let px_tip = tr("In pixels at 1080p. Both scale with the resolution and the HUD scale.");
+        let size = OverlayConfig::MAP_SIZE_RANGE;
+        if o.map_shape == MapShape::Circle {
+            theme::slider_row(ui, tr("Diameter"), &mut o.map_width, size, 1.0, 0, " px").on_hover_text(px_tip);
+        } else {
+            theme::slider_row(ui, tr("Width"), &mut o.map_width, size.clone(), 1.0, 0, " px").on_hover_text(px_tip);
+            theme::slider_row(ui, tr("Height"), &mut o.map_height, size, 1.0, 0, " px").on_hover_text(px_tip);
+            // The radius can't exceed half the shorter side: the slider stops there, and a value
+            // saved above it is shown clamped (not rewritten until the user touches it).
+            let half = (o.map_width.min(o.map_height) / 2.0).floor().max(1.0);
+            let mut r = o.map_corner_radius.min(half);
+            if theme::slider_row(ui, tr("Corner radius"), &mut r, 0.0..=half, 1.0, 0, " px").changed() {
+                o.map_corner_radius = r;
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(theme::section_label(tr("Outline")));
+        theme::slider_row(ui, tr("Outline width"), &mut o.map_border_width, 0.0..=20.0, 0.5, 1, " px");
+        control_row(ui, tr("Outline colour"), |ui| {
+            egui::color_picker::color_edit_button_srgb(ui, &mut o.map_border_color);
+        });
+        pct_row(ui, tr("Outline opacity"), &mut o.map_border_opacity, 0.0, 100.0, 1.0, None);
+        ui.add_space(4.0);
+        ui.label(theme::section_label(tr("Background")));
+        control_row(ui, tr("Background colour"), |ui| {
+            egui::color_picker::color_edit_button_srgb(ui, &mut o.map_plate_color);
+        });
+        let bg_tip = tr("Behind the map image. At 0 the game shows through; the far edge of a tilted map fades into it.");
+        pct_row(ui, tr("Background opacity"), &mut o.map_plate_opacity, 0.0, 100.0, 1.0, Some(bg_tip));
+        ui.add_space(4.0);
+        if ui.add(theme::secondary_button(tr("Reset frame"))).clicked() {
+            o.reset_map_frame();
+        }
+        let layers_tip = tr("What the map shows (image, roads, POIs, race lines, tilt) and how it moves is set on the Map tab → Minimap.");
+        if ui.add(theme::secondary_button(tr("Map layers…"))).on_hover_text(layers_tip).clicked() {
+            *open_map_tab = true;
+        }
+    });
+}
+
 fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
     cluster_card(ui, &mut app.config.overlay, app.config.use_mph);
 }
@@ -936,6 +999,7 @@ pub(crate) mod tests {
     #[test]
     fn card_pages_stay_inside_their_panes() {
         let layout: Card = |u, o| layout_card(u, o);
+        let minimap: Card = |u, o| minimap_card(u, o, &mut false);
         let cluster: Card = |u, o| cluster_card(u, o, false);
         let race: Card = |u, o| race_card(u, o);
         let drift: Card = |u, o| drift_card(u, o);
@@ -945,6 +1009,7 @@ pub(crate) mod tests {
             let general: Card = general_stand_in;
             let pages: Vec<(&str, usize, Vec<Vec<Card>>)> = vec![
                 ("general", 2, if three { vec![vec![general], vec![layout]] } else { vec![vec![layout, general]] }),
+                ("minimap", 1, vec![vec![minimap]]),
                 ("cluster", 1, vec![vec![cluster]]),
                 ("race", 2, vec![vec![race], vec![drift]]),
                 ("notifications", 1, vec![vec![notif]]),
@@ -967,18 +1032,66 @@ pub(crate) mod tests {
         }
     }
 
+    /// The Minimap frame page (D75), both shapes and both languages, enabled and greyed out:
+    /// nothing leaves the pane or is cut off, and the card fits in one column at every width.
+    /// (The German labels are the long ones.)
+    #[test]
+    fn minimap_frame_page_stays_inside_its_pane_in_both_languages() {
+        use crate::i18n::{with_language, Language};
+        for lang in [Language::English, Language::German] {
+            with_language(lang, || {
+                for w in [700.0, 1000.0, 1235.0] {
+                    for (shape, on) in [(MapShape::RoundedRect, true), (MapShape::Circle, true), (MapShape::RoundedRect, false)] {
+                        let mut o = OverlayConfig { map_shape: shape, minimap_on: on, ..Default::default() };
+                        let out = render(&format!("overlay_minimap_{lang:?}_{shape:?}_{on}"), w, 900.0, |ui, _| {
+                            theme::columns(ui, if w >= THREE_COLS_MIN_W { 3 } else { 2 }, |uis| {
+                                uis[0].spacing_mut().item_spacing.y = 0.0;
+                                minimap_card(&mut uis[0], &mut o, &mut false);
+                            });
+                        });
+                        let n = check_panes(&out, w, &format!("minimap {lang:?} {shape:?}"));
+                        assert_eq!(n, 1, "{lang:?} {shape:?} at {w} px");
+                    }
+                }
+            });
+        }
+    }
+
+    /// The Minimap page edits the frame fields, the Reset button restores exactly the defaults
+    /// (and leaves the map layers alone), and "Map layers…" asks for the Map tab.
+    #[test]
+    fn minimap_frame_reset_restores_the_pill_and_keeps_the_layers() {
+        let mut o = OverlayConfig::default();
+        o.map_shape = MapShape::Circle;
+        o.map_width = 400.0;
+        o.map_height = 300.0;
+        o.map_corner_radius = 60.0;
+        o.map_border_width = 8.0;
+        o.map_border_color = [200, 10, 10];
+        o.map_border_opacity = 0.3;
+        o.map_plate_color = [1, 2, 3];
+        o.map_plate_opacity = 0.5;
+        o.map_layers.roads.on = !o.map_layers.roads.on;
+        let layers = o.map_layers.clone();
+        o.reset_map_frame();
+        assert_eq!(OverlayConfig { map_layers: layers.clone(), ..OverlayConfig::default() }, o);
+        assert_eq!(o.map_layers, layers);
+    }
+
     /// The module selector: one row where the labels fit, two rows where they don't (the long
     /// German labels at the window minimum), and its labels never run into each other.
     #[test]
     fn page_selector_never_overlaps_its_labels() {
         let en = [
             (OverlayPage::General, "General"),
+            (OverlayPage::Minimap, "Minimap"),
             (OverlayPage::Cluster, "Drive cluster"),
             (OverlayPage::Race, "Race / Drift"),
             (OverlayPage::Notifications, "Notifications"),
         ];
         let de = [
             (OverlayPage::General, "Allgemein"),
+            (OverlayPage::Minimap, "Minikarte"),
             (OverlayPage::Cluster, "Fahranzeige"),
             (OverlayPage::Race, "Rennen / Drift"),
             (OverlayPage::Notifications, "Benachrichtigungen"),
@@ -995,7 +1108,7 @@ pub(crate) mod tests {
                         labels.push(t.visual_bounding_rect());
                     }
                 }
-                assert_eq!(labels.len(), 4, "{lang} at {w} px: {:?}", out.shapes.iter().filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.galley.text().to_string()) } else { None }).collect::<Vec<_>>());
+                assert_eq!(labels.len(), 5, "{lang} at {w} px: {:?}", out.shapes.iter().filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.galley.text().to_string()) } else { None }).collect::<Vec<_>>());
                 for (i, a) in labels.iter().enumerate() {
                     assert!(a.left() >= 0.0 && a.right() <= w, "{lang} at {w} px: label leaves the window: {a:?}");
                     for b in &labels[i + 1..] {

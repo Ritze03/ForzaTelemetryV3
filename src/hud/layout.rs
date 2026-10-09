@@ -138,6 +138,30 @@ mod tests {
         assert!((got[2].left() - m).abs() < 1e-3 && (got[2].top() - m).abs() < 1e-3);
     }
 
+    /// A resized Minimap (300 x 200, or a 260 circle) takes its own footprint: the neighbours in
+    /// the stack move by exactly the new height, and it stays anchored to the same margins.
+    #[test]
+    fn a_resized_map_shifts_its_neighbours_and_keeps_its_anchor() {
+        let big = vec2(300.0, 200.0);
+        let round = vec2(260.0, 260.0);
+        for (size, name) in [(big, "rect"), (round, "circle")] {
+            // Top-right: the map highest, the cluster below it.
+            let items = [(Module::Map, HudCell::TopRight, size), (Module::Cluster, HudCell::TopRight, PILL)];
+            let got = layout(SCREEN, 1.0, MARGIN, GAP, &items);
+            assert_eq!(got[0], r(1920.0 - 44.0 - size.x, 44.0, size), "{name}");
+            assert_eq!(got[1], r(1920.0 - 44.0 - 184.0, 44.0 + size.y + 12.0, PILL), "{name}");
+            // Bottom-centre: centred horizontally, lowest, the cluster above it.
+            let items = [(Module::Map, HudCell::BottomCenter, size), (Module::Cluster, HudCell::BottomCenter, PILL)];
+            let got = layout(SCREEN, 1.0, MARGIN, GAP, &items);
+            assert_eq!(got[0], r((1920.0 - size.x) / 2.0, 1080.0 - 44.0 - size.y, size), "{name}");
+            assert_eq!(got[1].bottom(), got[0].top() - 12.0, "{name}");
+            // No overlap in any cell for any pair.
+            let items = [(Module::Map, HudCell::MiddleLeft, size), (Module::Cluster, HudCell::MiddleLeft, PILL), (Module::Race, HudCell::MiddleLeft, RACE)];
+            let got = layout(SCREEN, 1.0, MARGIN, GAP, &items);
+            assert!(!got[0].intersects(got[1]) && !got[1].intersects(got[2]) && !got[0].intersects(got[2]), "{name}: {got:?}");
+        }
+    }
+
     #[test]
     fn custom_margin_and_gap_scale_with_the_hud() {
         let items = [(Module::Map, HudCell::TopLeft, MAP), (Module::Cluster, HudCell::TopLeft, PILL), (Module::Race, HudCell::BottomRight, RACE)];
