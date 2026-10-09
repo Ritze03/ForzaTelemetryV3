@@ -365,6 +365,16 @@ pub enum ClusterStyle {
     Halo,
 }
 
+/// Shape of the HUD minimap's frame (D75).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum MapShape {
+    /// The M2′ rounded rectangle (`map_width` × `map_height`, `map_corner_radius`).
+    #[default]
+    RoundedRect,
+    /// A true circle of diameter `map_width` (`map_height` is not used).
+    Circle,
+}
+
 /// Drift counter look (task 25).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum DriftStyle {
@@ -467,6 +477,24 @@ pub struct OverlayConfig {
     /// plate, the game shows through the image). Independent of the global `plate_opacity`,
     /// which belongs to the other modules; also what the far edge of a tilted map fades into.
     pub map_plate_opacity: f32,
+    // ── Minimap frame (D75): the module's shape, size, outline and background ──
+    /// Rounded rectangle (default) or circle.
+    pub map_shape: MapShape,
+    /// Frame width in HUD design px (1080p, scaled like the other modules); the diameter of a
+    /// [`MapShape::Circle`]. Default 208.
+    pub map_width: f32,
+    /// Frame height in design px, rounded rectangle only. Default 136.
+    pub map_height: f32,
+    /// Corner radius in design px, rounded rectangle only (clamped to half the shorter side).
+    pub map_corner_radius: f32,
+    /// Outline width in design px, 0 = none. Drawn inside the frame. Default 3.
+    pub map_border_width: f32,
+    /// Outline colour (RGB) and its opacity 0.0-1.0; default `rgba(12,17,27,.88)`.
+    pub map_border_color: [u8; 3],
+    pub map_border_opacity: f32,
+    /// The minimap plate's colour (RGB); its opacity is `map_plate_opacity`. Default the other
+    /// modules' plate colour `rgb(9,13,21)`.
+    pub map_plate_color: [u8; 3],
     /// What the HUD map draws besides the markers: satellite look, roads, POIs, race lines,
     /// tilt (`maprender::cfg`). Defaults are the HUD's (D62: dimmed image, tilted).
     pub map_layers: crate::maprender::cfg::MapLayerConfig,
@@ -522,6 +550,28 @@ impl OverlayConfig {
     pub const DEFAULT_RACE_CELL: HudCell = HudCell::BottomRight;
     /// Distance from the screen edges (1080p design px). The HUD's layout fallback is `hud::layout::MARGIN`.
     pub const DEFAULT_MARGIN_PX: f32 = 4.0;
+    /// The Minimap frame's default size and corner radius, design px (the M2′ pill; D75).
+    pub const DEFAULT_MAP_W: f32 = 208.0;
+    pub const DEFAULT_MAP_H: f32 = 136.0;
+    pub const DEFAULT_MAP_RADIUS: f32 = 22.0;
+    /// The Overlay tab's size sliders; `hud::minimap::Frame` clamps a hand-edited file to the wider
+    /// `20..=2000` so nothing degenerate reaches the renderer.
+    pub const MAP_SIZE_RANGE: std::ops::RangeInclusive<f32> = 120.0..=600.0;
+
+    /// The Minimap-frame card's Reset: shape, size, corner radius, outline and background back to
+    /// the M2′ pill (the map layers and the other map options are not touched).
+    pub fn reset_map_frame(&mut self) {
+        let d = Self::default();
+        self.map_shape = d.map_shape;
+        self.map_width = d.map_width;
+        self.map_height = d.map_height;
+        self.map_corner_radius = d.map_corner_radius;
+        self.map_border_width = d.map_border_width;
+        self.map_border_color = d.map_border_color;
+        self.map_border_opacity = d.map_border_opacity;
+        self.map_plate_color = d.map_plate_color;
+        self.map_plate_opacity = d.map_plate_opacity;
+    }
 
     /// The settings the HUD actually draws with: `self`, with the map group (`map_use_dashboard`)
     /// and/or the co-op group (`coop_use_dashboard`) replaced by the Dashboard map's values from
@@ -604,6 +654,14 @@ impl Default for OverlayConfig {
             // Dashboard default.
             map_mirror_edges: true,
             map_plate_opacity: 0.0,
+            map_shape: MapShape::RoundedRect,
+            map_width: Self::DEFAULT_MAP_W,
+            map_height: Self::DEFAULT_MAP_H,
+            map_corner_radius: Self::DEFAULT_MAP_RADIUS,
+            map_border_width: 3.0,
+            map_border_color: [12, 17, 27],
+            map_border_opacity: 0.88,
+            map_plate_color: [9, 13, 21],
             map_layers: crate::maprender::cfg::MapLayerConfig::hud(),
             map_use_dashboard: false,
             map_3d_windows: false,
@@ -826,14 +884,17 @@ fn default_profile_name() -> String { "Default".to_string() }
 /// [`EXPORT_EXCLUDE`]: it is where the user last looked, not a setting, so presets and
 /// profile exports must not carry it (and `overlay` itself stays purely the HUD's settings).
 ///
-/// The Minimap and Dashboard map pages moved to the Map tab (D67); a config saved while one of
-/// them was selected still loads: the aliases map those values to `General`.
+/// The Minimap and Dashboard map pages moved to the Map tab (D67); a config saved while the
+/// Dashboard map one was selected still loads: the alias maps it to `General`. The Minimap page
+/// is back (D75) as the module's *frame* (shape, size, outline, background); the map layers stay
+/// on the Map tab, so an old saved `minimap` simply selects it.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayPage {
     #[default]
-    #[serde(alias = "minimap", alias = "dashboard_map")]
+    #[serde(alias = "dashboard_map")]
     General,
+    Minimap,
     Cluster,
     Race,
     Notifications,
@@ -2073,10 +2134,11 @@ mod tests {
     /// pages moved to the Map tab, D67) still loads, on General.
     #[test]
     fn old_overlay_page_values_load_as_general() {
-        for old in ["minimap", "dashboard_map"] {
-            let p: OverlayPage = serde_json::from_str(&format!("\"{old}\"")).unwrap();
-            assert_eq!(p, OverlayPage::General, "{old}");
-        }
+        let p: OverlayPage = serde_json::from_str("\"dashboard_map\"").unwrap();
+        assert_eq!(p, OverlayPage::General);
+        // The Minimap page is back (D75), so a saved `minimap` selects it.
+        let p: OverlayPage = serde_json::from_str("\"minimap\"").unwrap();
+        assert_eq!(p, OverlayPage::Minimap);
         let p: OverlayPage = serde_json::from_str("\"race\"").unwrap();
         assert_eq!(p, OverlayPage::Race);
         // Whole-config round trip with an old value in it.
@@ -2084,6 +2146,23 @@ mod tests {
         v["overlay_page"] = serde_json::json!("dashboard_map");
         let c: AppConfig = serde_json::from_value(v).unwrap();
         assert_eq!(c.overlay_page, OverlayPage::General);
+    }
+
+    /// The Minimap frame (D75): the defaults are today's pill, an older `overlay` without the keys
+    /// loads them, and a saved partial frame keeps what it has.
+    #[test]
+    fn minimap_frame_defaults_are_the_pill_and_old_configs_load() {
+        let d = OverlayConfig::default();
+        assert_eq!((d.map_shape, d.map_width, d.map_height, d.map_corner_radius), (MapShape::RoundedRect, 208.0, 136.0, 22.0));
+        assert_eq!((d.map_border_width, d.map_border_color, d.map_border_opacity), (3.0, [12, 17, 27], 0.88));
+        assert_eq!((d.map_plate_color, d.map_plate_opacity), ([9, 13, 21], 0.0));
+        let o: OverlayConfig = serde_json::from_str(r#"{ "map_shape": "Circle", "map_width": 260.0 }"#).unwrap();
+        assert_eq!((o.map_shape, o.map_width, o.map_height, o.map_border_width), (MapShape::Circle, 260.0, 136.0, 3.0));
+        // Round trip.
+        let o = OverlayConfig { map_shape: MapShape::Circle, map_border_color: [1, 2, 3], map_plate_opacity: 0.4, ..Default::default() };
+        let back: OverlayConfig = serde_json::from_str(&serde_json::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back, o);
+        assert!(OverlayConfig::MAP_SIZE_RANGE.contains(&OverlayConfig::DEFAULT_MAP_W) && OverlayConfig::MAP_SIZE_RANGE.contains(&OverlayConfig::DEFAULT_MAP_H));
     }
 
     #[test]

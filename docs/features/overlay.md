@@ -256,7 +256,8 @@ default 0.85); **Shift cue before calibration** (`shift_frac`, default 0.93, D21
 
 ### Minimap M2′ (`hud/minimap.rs`)
 
-208×136 pill-framed, heading-up season map with a compass (optional, D12), the **same layers as
+208×136 pill-framed by default (size, shape and outline are options, [Minimap frame](#minimap-frame-d75)),
+heading-up season map with a compass (optional, D12), the **same layers as
 the Dashboard map** (roads, race lines, POIs; below) and the **same markers**: the own arrow, co-op teammates, trails and shared waypoints,
 all drawn by `hud/map_shared.rs`, the code the Dashboard map widget calls too
 ([[minimap]] "Shared drawing"). *Why:* the user wanted the HUD map to look like the Dashboard
@@ -294,7 +295,8 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   the current treasure chest) → markers → compass → frame. The markers use the same camera
   (`MapCanvas`), so trails, teammates and waypoints sit on the tilted roads. **Corner clip:** roads,
   race lines and gate lines are cut to the pill outline (`CornerClip { poly: the 0.5 px inset rounded
-  outline, safe: the pill shrunk by its radius }`, Cyrus-Beck only for segments outside `safe`), icons
+  outline, safe: the pill shrunk by its radius }`, Cyrus-Beck only for segments outside `safe`; jump
+  lines too since D75, they used to poke out), icons
   straddling a corner are clipped to it with their UVs, small markers near a corner are dropped; the
   3 px frame hides the rest. *Why a clip and not a scissor:* a rect scissor lets a road poke out of
   the rounded corner into the transparent surround. **No plate** (`map_plate_opacity` 0): the game
@@ -322,7 +324,7 @@ decks, drawn by the shared GL renderer (`maprender::gl3d`, reference: [[minimap]
 Default stays **Tilted**; 3D is opt-in.
 
 - **Draw order (`hud/minimap.rs::draw`, 3D branch).** plate (as before) → the 3D scene as one egui
-  paint callback over the pill (`gl3d::add_scene`, `corner_radius = 22 * s`, the composite shader does
+  paint callback over the pill (`gl3d::add_scene`, `corner_radius = Frame::radius * s`, 22 by default, the composite shader does
   the rounded mask and the HUD fade) → the **tint** (`MAP_TINT`, drawn *after* the scene because a
   callback is opaque and a tint under it would be invisible; it also dims the GL roads slightly) →
   race lines and POIs (`draw_layers_parts(.., Parts::OVER_3D)`: egui, projected through the relief
@@ -384,6 +386,54 @@ Default stays **Tilted**; 3D is opt-in.
 - **Not agent-testable:** smoothness while FH6 saturates the GPU (the user's check), Windows, and an
   integrated GPU. `FORZA_MAP_3D_DEBUG=1` prints the renderer's status line once a second to stderr.
 
+#### Minimap frame (D75)
+
+The module's **frame** (shape, size, outline, background) is set on the **Overlay tab → Minimap** page
+(`overlay_tab::minimap_card`), not the Map tab: it is the HUD module's look, like the Drive cluster's
+style, while the Map tab keeps what the map *shows* (layers, view, zoom; D67). The card has a
+"Map layers…" button that jumps to the Map tab's Minimap page. *Why (D75):* the user asked, "In the Overlay
+tab, let me change the minimap size (width and height) + edit the outline/background of it. A second
+style that is a circle would also be neat."
+
+- **Config** (`OverlayConfig`, all `serde(default)`, defaults = the M2′ pill exactly, so a saved config
+  and every default PNG are unchanged): `map_shape` (`RoundedRect` | `Circle`), `map_width` /
+  `map_height` (208 / 136 design px, sliders 120-600), `map_corner_radius` (22, rect only, clamped to
+  half the shorter side), `map_border_width` (3, 0 = no outline, 0-20), `map_border_color` (RGB
+  `12,17,27`) + `map_border_opacity` (0.88), `map_plate_color` (RGB `9,13,21`) + the existing
+  `map_plate_opacity` (0). *Why colour + opacity pairs instead of one RGBA:* the plate already was one,
+  the egui colour picker round-trips an alpha channel lossily through premultiplied `Color32`, and
+  the two controls read the same way. The default frame colour is `rgba(12,17,27,.88)`.
+  `OverlayConfig::reset_map_frame` (the card's **Reset frame**) restores exactly these, leaving the
+  map layers alone. `map_plate_opacity` is still also on the Map tab's Image card (one field, two
+  controls).
+- **`hud::minimap::Frame::of(cfg)`** resolves and sanitises it (NaN, absurd sizes 20-2000, a radius
+  past half the side, a border past a quarter of it) so a hand-edited file can't reach the renderer;
+  `minimap::size(cfg)` is the module's layout footprint. **Circle:** the diameter is `map_width`
+  (the height control is hidden, `Frame` is square). *Why the width alone and not `min(w, h)`:* one
+  size control, and a height that silently does nothing would confuse; switching shape keeps the
+  width the user set.
+- **How a circle is drawn.** One code path with the rounded rect, radius = half the size:
+  the outline polygon (`prims::rounded_points_n`, 64 segments per quarter for a circle, the usual 12
+  otherwise, so default pixels are bit-identical) feeds the plate, the tint, `draw_base`, the vector
+  `CornerClip` (`safe` = a square inscribed at 0.68 of the diameter) and the border
+  (`prims::rounded_border`, now with a segment count). **Markers** (`map_shared`) keep the painter's
+  clip rect (the border-inset bounding box) and, for a circle, additionally cut trails to the circle
+  (`clip_segment_circle`) and pin off-map teammates and waypoints to the circle, not the box
+  (`draw_*_in(.., round)`; the plain `draw_*` the Dashboard calls are unchanged). The **compass**
+  sits where the pill's does, `(border + 15, border + 15)` = `(18, 18)` by default, pulled in along
+  the diagonal to stay inside a big corner radius, and on the up-left diagonal of a circle
+  (`Frame::compass`; `draw_compass_at`, `draw_compass` keeps the Dashboard's signature).
+  **3D:** the composite shader's mask is already a rounded-box SDF, so radius = size / 2 *is* a
+  circle: no change to `maprender::gl3d`.
+- **Layout footprint.** `hud::modules` passes `minimap::size(cfg)` instead of a constant; `layout.rs`
+  already works on sizes, so a bigger map pushes its stack neighbours by exactly its height and keeps
+  its margin anchoring (right column: right margin minus width; centre column: centred). The Layout
+  card's chips do not scale with the module size (they only show cell and order).
+- **PNG states** (`m2_frame_*`, `m2_3d_frame_*`): circle tilted / flat, a 300 x 200 rect (radius 40,
+  6 px blue outline, blue plate showing through a half-transparent image), 2D and 3D. The harness checks
+  that every pixel more than 1.5 px outside the shape is the backdrop (the map is clipped exactly), that
+  the outline ring has its colour all round, and the co-op-coloured own arrow.
+
 **Options (Mini-Settings → Overlay tab).** The HUD minimap has the Dashboard map's options.
 *Why:* the user wants everything the Dashboard map has on the HUD too. They live in
 `OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys), in the cog-wheel
@@ -399,7 +449,12 @@ tab's Minimap page edits the same options and all the layer settings, see [map-t
 | `map_use_movement_dir` | on | Heading-up only: rotate to the velocity direction. |
 | `map_look_stick` | on | Rotate the map by the right stick: look relative to the car in north-up and heading-up alike (look-around, see [[minimap]]; the reference heading honours `map_use_movement_dir`). |
 | `map_mirror_edges` | on | **Mirror map at edges**: past the image edge the map continues mirrored; off = the plate shows outside the image. |
-| `map_plate_opacity` | 0 | The minimap's own plate behind the dimmed image (D62: none, the game shows through); the far edge of a tilted map fades into it. Independent of the global `plate_opacity` (the other modules). Map tab → Minimap → Image. |
+| `map_plate_opacity` | 0 | The minimap's own plate behind the dimmed image (D62: none, the game shows through); the far edge of a tilted map fades into it. Independent of the global `plate_opacity` (the other modules). Overlay tab → Minimap ("Background opacity") and Map tab → Minimap → Image. |
+| `map_shape` | `RoundedRect` | **Shape** (D75): rounded rectangle or circle (diameter = `map_width`). Overlay tab → Minimap. |
+| `map_width`, `map_height` | 208, 136 | Frame size in 1080p design px (sliders 120-600), scaled like the other modules; the layout footprint. |
+| `map_corner_radius` | 22 | Rounded rect only; clamped to half the shorter side. |
+| `map_border_width`, `map_border_color`, `map_border_opacity` | 3 px, `[12,17,27]`, 0.88 | The outline, drawn inside the frame; width 0 = none. |
+| `map_plate_color` | `[9,13,21]` | The plate's colour (its opacity is `map_plate_opacity`). |
 | `map_layers` | `MapLayerConfig::hud()` | What the map draws besides the markers: `image` (on, 50 / 50 / 50 %), `roads` (on, by type, per-type colour / width / dash / casing), `pois` (on, 32 px, categories, `max_zoom_m` 3000, `near_only` + `radius_m`, `gates`), `race_lines` (current race only, 4 px, marks), `tilt` (on, `angle_deg` 55, `perspective_px` 200 at the pill's 136 px, `car_y` 0.85, `taper` on). Every field `serde(default)`; edited on the Map tab's Minimap page (D63, moved D67). Follows the Dashboard's `minimap_layers` under `map_use_dashboard`. |
 | `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 300 / 3000 | Compass and the two zoom radii. |
 | `coop_use_dashboard` | on | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
@@ -796,20 +851,23 @@ tab's transport control, in a `WELL` frame) picks which module's settings the pa
 individual modules on one page". (D63 also put all the map settings here; **D67 moved them to
 the [Map tab](map-tab.md)**: "Instead of having the settings for the minimap and the dashboard
 map in the overlay, we should ... create a new [tab] that is only used for configuring those
-two maps." What stays here is the HUD itself, including the Minimap module's on/off and its
-cell in the Layout card.)
+two maps." What stays here is the HUD itself, including the Minimap module's on/off, its
+cell in the Layout card and, since D75, its frame.)
 Tabs (`config::OverlayPage`):
 
 | Tab | Cards |
 |---|---|
 | **General** | General, Monitor Detection, Layout (three columns from 1100 px, otherwise two with Layout first) |
+| **Minimap** | Minimap frame (D75: shape, size, corner radius, outline, background, Reset frame, "Map layers…") |
 | **Drive cluster** | Drive Cluster |
 | **Race / Drift** | Race Block, Drift Counter |
 | **Notifications** | Notifications |
 
-- *Why one tab per module:* the grouping follows the HUD modules of the Layout grid (Drive
-  cluster, Race / Drift), plus Notifications. An old saved `overlay_page` of `minimap` or
-  `dashboard_map` (those pages moved) loads as General (`serde(alias)` on `OverlayPage::General`).
+- *Why one tab per module:* the grouping follows the HUD modules of the Layout grid (Minimap,
+  Drive cluster, Race / Drift), plus Notifications. The Minimap page returned in D75 as the module's
+  *frame* only (the map layers stay on the Map tab). An old saved `overlay_page` of `dashboard_map`
+  (that page moved) loads as General (`serde(alias)` on `OverlayPage::General`); `minimap` now
+  selects the new Minimap page.
 - **Remembered across restarts** in the top-level config key `overlay_page` (an `OverlayPage`
   enum). It is in `config::EXPORT_EXCLUDE`: where the user last looked is not a setting, so it
   must not travel in presets or profile exports, and keeping it out of the `overlay` object
@@ -981,14 +1039,16 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
   every widget in its spec states (cruise / redline / shift / pulse, place gained / lost, lap
   hold, drift chip, both drift styles), the minimap with layers (`m2_layers_*`: flat, tilted, with and
   without icons, in a race, north-up, wide, co-op; synthetic roads, race ring, POIs and icons over a
-  dark backdrop; checks that the rounded corners stay clear and the layers drew) and, when an FH6
+  dark backdrop; checks that the rounded corners stay clear and the layers drew), the frame options
+  (`m2_frame_*`, [Minimap frame](#minimap-frame-d75)) and, when an FH6
   install is found, the same with its real data and icons (`m2_real_*`, a visual check only), plus
   1080p composites through the real `Renderer` on a
   headless EGL device into `target/hud_png/`, at pinned time. It lives in `src/hud/png.rs` but
   is compiled as `overlay::render::png` via `#[path]`. *Why:* a binary crate can't expose its
   modules to `examples/`, and the harness needs the private `Renderer` and `gl::Headless`.
 - **3D PNG states:** `cargo test render_3d_states -- --ignored --nocapture` (see [Minimap in 3D](#minimap-in-3d)),
-  its own headless context with the real gl3d path; `m2_3d_*`, `composite_3d_1080p`, `m2_real_*_3d_*`.
+  its own headless context with the real gl3d path; `m2_3d_*` (incl. `m2_3d_frame_circle` and
+  `m2_3d_frame_rect_300x200`), `composite_3d_1080p`, `m2_real_*_3d_*`.
 - Unit tests cover the classifier, drift window, lap trace, visibility target, layout
   stacking, fade/place/count-up curves, gear labels, the frame-pacing helper and the
   capability probe.
