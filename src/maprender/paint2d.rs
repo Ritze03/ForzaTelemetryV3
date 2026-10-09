@@ -15,7 +15,7 @@ use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, Textur
 
 use super::cfg::{DashStyle, ImageCfg, MapLayerConfig, OtherRoads, RaceCfg, RaceLineMode, Rgb};
 use super::data::{MapLayers, NO_CAT};
-use super::racesel::{RaceSel, RoadFocus};
+use super::racesel::{Poly, RaceSel, RoadFocus};
 use super::style::{self, Shape as Marker};
 use super::view::{bbox_hits, clip_convex, clip_polyline_convex, clip_segment_convex, fan, inside_convex, thin, Camera, FAR_MIN_SCALE};
 use super::MapTex;
@@ -568,7 +568,12 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, taper: bool,
         }
         let color = cx.c(if l.circuit { rc.circuit_color } else { rc.sprint_color }, rc.alpha);
         pieces.clear();
-        cx.polyline(&l.pts, l.closed, &mut pieces, &mut scratch);
+        // An uncertain current race (D76): only the part all candidate routes share, no finish.
+        let span = if rc.mode == RaceLineMode::All { None } else { cx.race_sel.span(i).filter(|_| i < layers.races.cum.len()) };
+        match span {
+            Some(sp) => cx.polyline(&Poly::new(&layers.races, i).slice(sp.s0, sp.s1).0, false, &mut pieces, &mut scratch),
+            None => cx.polyline(&l.pts, l.closed, &mut pieces, &mut scratch),
+        }
         let n: usize = pieces.iter().map(Vec::len).sum();
         if rc.mode == RaceLineMode::All {
             if n > budget {
@@ -582,24 +587,25 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, taper: bool,
             cx.p.add(Shape::line(pc, Stroke::new((rc.width_px * cx.s * k).max(style::MIN_LINE_PX), color)));
         }
         if rc.marks {
-            draw_race_marks(cx, l);
+            draw_race_marks(cx, l, span.is_none_or(|sp| sp.start), span.is_none());
         }
     }
 }
 
-fn draw_race_marks(cx: &LayerCtx, l: &crate::gamedata::racelines::RaceLine) {
+/// `start` / `finish`: which of the two marks belong with what is drawn of the line.
+fn draw_race_marks(cx: &LayerCtx, l: &crate::gamedata::racelines::RaceLine, start: bool, finish: bool) {
     let (Some(&first), Some(&last)) = (l.pts.first(), l.pts.last()) else { return };
     let size = 9.0 * cx.s;
     // Marks stand upright, only shrunk by the perspective of the row they are on.
     let k = |at: Pos2| cx.cam.depth_scale_at_row(at.y).clamp(0.4, 1.5);
-    if let Some(at) = cx.cam.project(first[0], first[1]).filter(|a| cx.visible(*a, size) && cx.fits(*a, size * 0.6)) {
+    if let Some(at) = cx.cam.project(first[0], first[1]).filter(|a| start && cx.visible(*a, size) && cx.fits(*a, size * 0.6)) {
         if l.circuit {
             chequer(cx, at, size * k(at));
         } else {
             cx.p.circle(at, 4.5 * cx.s * k(at), cx.c_col(style::START_DOT), Stroke::new(1.5 * cx.s * k(at), cx.c_col(style::START_DOT_OUTLINE)));
         }
     }
-    if !l.circuit {
+    if !l.circuit && finish {
         if let Some(at) = cx.cam.project(last[0], last[1]).filter(|a| cx.visible(*a, size) && cx.fits(*a, size * 0.6)) {
             chequer(cx, at, size * k(at));
         }

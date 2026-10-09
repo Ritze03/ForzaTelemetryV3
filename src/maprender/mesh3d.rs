@@ -500,17 +500,28 @@ impl RoadMesh {
             })
             .collect();
         let mut out = vec![1u8; self.vertex_count()];
+        let rel_of = |slot: u8, chain: u32, seg: u32| -> bool {
+            if slot == SLOT_JUMP {
+                return focus.jumps.get(chain as usize).copied().unwrap_or(true);
+            }
+            let k = (slot as usize).min(N_TYPES - 1);
+            match index[k].get(&chain) {
+                // Segment k lies in the run with a <= k < b (points a..=b).
+                Some(&(lo, hi)) => focus.runs[k][lo..hi].iter().find(|r| r.a <= seg && seg < r.b).map_or(true, |r| r.relevant),
+                None => true,
+            }
+        };
         for (i, (sm, src)) in self.samples.iter().zip(&self.src).enumerate() {
-            let relevant = if sm.slot == SLOT_JUMP {
-                focus.jumps.get(src.chain as usize).copied().unwrap_or(true)
-            } else {
-                let runs = &focus.runs[(sm.slot as usize).min(N_TYPES - 1)];
-                match index[(sm.slot as usize).min(N_TYPES - 1)].get(&src.chain) {
-                    // Segment k lies in the run with a <= k < b (points a..=b).
-                    Some(&(lo, hi)) => runs[lo..hi].iter().find(|r| r.a <= src.seg && src.seg < r.b).map_or(true, |r| r.relevant),
-                    None => true,
+            let mut relevant = rel_of(sm.slot, src.chain, src.seg);
+            // A sample on a node joins the segment before it and the one it starts: it is
+            // relevant only if both are, so the flag never reaches into an irrelevant stretch
+            // (a side road's stub) from the relevant side by interpolation across the quad.
+            if relevant && i > 0 && sm.slot != SLOT_JUMP {
+                let (ps, pr) = (&self.samples[i - 1], &self.src[i - 1]);
+                if ps.slot == sm.slot && pr.chain == src.chain && pr.seg < src.seg {
+                    relevant = rel_of(sm.slot, src.chain, pr.seg);
                 }
-            };
+            }
             if !relevant {
                 out[i * VERTS_PER_SAMPLE..(i + 1) * VERTS_PER_SAMPLE].fill(0);
             }
@@ -977,6 +988,25 @@ mod tests {
         // Both values occur, and an empty focus (default runs, no jumps) means everything relevant.
         assert!(rel.contains(&0) && rel.contains(&1));
         assert!(m.build_rel(&RoadFocus::default()).iter().all(|&b| b == 1));
+    }
+
+    /// A side road joining the route: its flags are 0 right up to the junction node, even when
+    /// the relevant segment follows the irrelevant one (no interpolated stub on the stub side).
+    #[test]
+    fn rel_flag_of_a_node_sample_is_relevant_only_if_both_its_segments_are() {
+        let t = Terrain::synthetic();
+        let mut roads = RoadLayer::default();
+        roads.by_type[1].push(Chain::new((0..11).map(|i| [i as f32 * 40.0, 100.0]).collect(), vec![5.0; 11]));
+        let m = RoadMesh::build(&roads, &t, 1);
+        let mut focus = RoadFocus::default();
+        let bb = [0.0; 4];
+        // Segments 0..4 are the side road (not relevant), 4..10 run along the route.
+        focus.runs[1] = vec![Run { chain: 0, a: 0, b: 4, relevant: false, bbox: bb }, Run { chain: 0, a: 4, b: 10, relevant: true, bbox: bb }];
+        let rel = m.build_rel(&focus);
+        let node = m.samples.iter().zip(&m.src).position(|(_, s)| s.seg == 4).expect("the sample at node 4");
+        assert_eq!(rel[node * VERTS_PER_SAMPLE], 0, "the junction node belongs to the stub side");
+        let later = m.samples.iter().zip(&m.src).position(|(_, s)| s.seg == 5).unwrap();
+        assert_eq!(rel[later * VERTS_PER_SAMPLE], 1);
     }
 
     /// The same, with the real focus builder: roads along a race line are relevant, a crossing
