@@ -53,6 +53,9 @@ use crate::gamedata::nav::{Nav, NAV_FILE};
 use crate::gamedata::roadtypes::{EdgeKey, RoadTypes};
 use crate::gamedata::terrain::{self, Elevation, NO_DATA, X0, Z1};
 use crate::gamedata::tiles::{self, MapLoadError, MAX_LEVEL, TILE_PX};
+// The hole fill / sea skirt and the sea levels are shared with the in-app 3D map (`maprender::terrain`,
+// which fills open sea with `SEA_Y` = 100 where this page uses the floor `FLOOR_Y` = 40).
+use crate::maprender::terrain::{apply_skirt, fill_holes, FLOOR_Y, SEA_Y};
 
 /// Seasons in the order the editor lists them.
 pub const SEASONS: [&str; 4] = ["Spring", "Summer", "Autumn", "Winter"];
@@ -307,163 +310,8 @@ pub fn p3d_meta_js(seasons: &[String]) -> String {
 
 const HMIN: f32 = -5.0;
 const HSTEP: f32 = 0.025;
-const SEA_Y: f32 = 100.0;
-const FLOOR_Y: f32 = 40.0;
-/// Metres of smooth skirt beyond the island data.
-const SKIRT_M: f32 = 1000.0;
 /// Raster pixels per mesh cell (8 m → 16 m).
 const DECIM: usize = 2;
-/// NaN regions larger than this (px) are open sea, the rest holes.
-const SEA_MIN_PX: usize = 20_000;
-
-/// 8-neighbour mean of the known (non-NaN) pixels around `i`.
-fn nb_mean(h: &[f32], w: usize, hh: usize, i: usize) -> Option<f32> {
-    let (r, c) = ((i / w) as isize, (i % w) as isize);
-    let (mut s, mut n) = (0.0f32, 0u32);
-    for dr in -1..=1isize {
-        for dc in -1..=1isize {
-            if (dr, dc) == (0, 0) {
-                continue;
-            }
-            let (rr, cc) = (r + dr, c + dc);
-            if rr < 0 || cc < 0 || rr >= hh as isize || cc >= w as isize {
-                continue;
-            }
-            let v = h[rr as usize * w + cc as usize];
-            if !v.is_nan() {
-                s += v;
-                n += 1;
-            }
-        }
-    }
-    (n > 0).then(|| s / n as f32)
-}
-
-/// Port of `fill_holes`: NaN heights → (sea mask; holes filled in place). Sea = NaN regions of
-/// more than [`SEA_MIN_PX`] px (4-connected); other NaN regions are holes (a missing 512 m cell,
-/// thin streaks), filled from the coarse raster where it has data, else interpolated from the rim.
-fn fill_holes(h: &mut [f32], w: usize, hh: usize, coarse: Option<&Elevation>) -> Vec<bool> {
-    let n = w * hh;
-    let mut sea = vec![false; n];
-    let mut seen = vec![false; n];
-    let mut holes: Vec<usize> = Vec::new();
-    let (mut stack, mut comp) = (Vec::new(), Vec::new());
-    for s in 0..n {
-        if !h[s].is_nan() || seen[s] {
-            continue;
-        }
-        seen[s] = true;
-        stack.push(s);
-        comp.clear();
-        while let Some(i) = stack.pop() {
-            comp.push(i);
-            let (r, c) = (i / w, i % w);
-            let mut visit = |j: usize| {
-                if h[j].is_nan() && !seen[j] {
-                    seen[j] = true;
-                    stack.push(j);
-                }
-            };
-            if r > 0 {
-                visit(i - w);
-            }
-            if r + 1 < hh {
-                visit(i + w);
-            }
-            if c > 0 {
-                visit(i - 1);
-            }
-            if c + 1 < w {
-                visit(i + 1);
-            }
-        }
-        if comp.len() > SEA_MIN_PX {
-            for &i in &comp {
-                sea[i] = true;
-            }
-        } else {
-            holes.extend_from_slice(&comp);
-        }
-    }
-    if let Some(c) = coarse.filter(|c| c.w == w && c.h == hh) {
-        for &i in &holes {
-            if c.dm[i] != NO_DATA {
-                h[i] = c.dm[i] as f32 / 10.0;
-            }
-        }
-        holes.retain(|&i| h[i].is_nan());
-    }
-    // The rest: grow inwards from the rim (each pass fills the pixels that touch known ones with
-    // the mean of their known neighbours), then relax those pixels towards a smooth surface.
-    let mut filled: Vec<usize> = Vec::new();
-    while !holes.is_empty() {
-        let mut upd: Vec<(usize, f32)> = Vec::new();
-        holes.retain(|&i| match nb_mean(h, w, hh, i) {
-            Some(v) => {
-                upd.push((i, v));
-                false
-            }
-            None => true,
-        });
-        if upd.is_empty() {
-            break;
-        }
-        for (i, v) in upd {
-            h[i] = v;
-            filled.push(i);
-        }
-    }
-    for _ in 0..40 {
-        for &i in &filled {
-            if let Some(v) = nb_mean(h, w, hh, i) {
-                h[i] = v;
-            }
-        }
-    }
-    sea
-}
-
-/// For every pixel the offset `(dx, dy)` to its nearest pixel that is not in `sea` (8SSEDT,
-/// two sweeps; exact enough for a skirt). Pixels that are not in `sea` get `(0, 0)`.
-fn nearest_land(sea: &[bool], w: usize, hh: usize) -> Vec<[i16; 2]> {
-    const INF: i16 = 16_000;
-    let mut g: Vec<[i16; 2]> = sea.iter().map(|&s| if s { [INF, INF] } else { [0, 0] }).collect();
-    let (wi, hi) = (w as isize, hh as isize);
-    let d2 = |v: [i16; 2]| (v[0] as i32) * (v[0] as i32) + (v[1] as i32) * (v[1] as i32);
-    let relax = |g: &mut [[i16; 2]], x: isize, y: isize, dx: isize, dy: isize| {
-        let (nx, ny) = (x + dx, y + dy);
-        if nx < 0 || ny < 0 || nx >= wi || ny >= hi {
-            return;
-        }
-        let nb = g[(ny * wi + nx) as usize];
-        let cand = [nb[0] + dx as i16, nb[1] + dy as i16];
-        let p = (y * wi + x) as usize;
-        if d2(cand) < d2(g[p]) {
-            g[p] = cand;
-        }
-    };
-    for y in 0..hi {
-        for x in 0..wi {
-            for (dx, dy) in [(-1, 0), (0, -1), (-1, -1), (1, -1)] {
-                relax(&mut g, x, y, dx, dy);
-            }
-        }
-        for x in (0..wi).rev() {
-            relax(&mut g, x, y, 1, 0);
-        }
-    }
-    for y in (0..hi).rev() {
-        for x in (0..wi).rev() {
-            for (dx, dy) in [(1, 0), (0, 1), (-1, 1), (1, 1)] {
-                relax(&mut g, x, y, dx, dy);
-            }
-        }
-        for x in 0..wi {
-            relax(&mut g, x, y, -1, 0);
-        }
-    }
-    g
-}
 
 /// The mesh grid of `p3d_terrain_js`: `q` is row-major `nz × nx`, 0 = no terrain.
 struct Terrain {
@@ -491,22 +339,7 @@ fn terrain_grid(e: &Elevation, coarse: Option<&Elevation>) -> Result<Terrain, St
     // smooth skirt: no cliff, no pit); further out nothing is meshed (q = 0), the page's sea
     // plane covers it.
     let mut keep = vec![true; w * hh];
-    if sea.iter().any(|&s| s) {
-        let off = nearest_land(&sea, w, hh);
-        for i in 0..w * hh {
-            if !sea[i] {
-                continue;
-            }
-            let (x, y) = ((i % w) as isize, (i / w) as isize);
-            let [dx, dy] = off[i];
-            let (nx, ny) = (x + dx as isize, y + dy as isize);
-            let dist = ((dx as f32).powi(2) + (dy as f32).powi(2)).sqrt() * e.res as f32;
-            let near = if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < hh { h[ny as usize * w + nx as usize] } else { f32::NAN };
-            let wt = (1.0 - dist / SKIRT_M).clamp(0.0, 1.0).powi(2);
-            h[i] = if near.is_nan() { FLOOR_Y } else { FLOOR_Y + (near - FLOOR_Y) * wt };
-            keep[i] = dist <= SKIRT_M;
-        }
-    }
+    apply_skirt(&mut h, &sea, w, hh, e.res, FLOOR_Y, Some(&mut keep));
     for v in h.iter_mut() {
         if v.is_nan() {
             *v = FLOOR_Y; // a hole nothing could fill (no neighbours at all)

@@ -400,7 +400,7 @@ impl Default for ImageCfg {
 /// height (`Camera::focal_for`), so the same settings give the same picture on both maps.
 /// `car_y` is where the car sits on the view's height (0 = top, 1 = bottom). `taper`: line
 /// widths shrink towards the far edge with the perspective (the demo's CSS tilt does it by
-/// construction); off = constant widths.
+/// construction); off = constant widths. `relief` turns the tilted view into the 3D one (phase K).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(default)]
 pub struct TiltCfg {
@@ -409,11 +409,104 @@ pub struct TiltCfg {
     pub perspective_px: f32,
     pub car_y: f32,
     pub taper: bool,
+    pub relief: ReliefCfg,
 }
 
 impl Default for TiltCfg {
     fn default() -> Self {
-        Self { on: false, angle_deg: 55.0, perspective_px: 200.0, car_y: 0.85, taper: true }
+        Self { on: false, angle_deg: 55.0, perspective_px: 200.0, car_y: 0.85, taper: true, relief: ReliefCfg::default() }
+    }
+}
+
+/// How a map is seen: flat 2D, the tilted flat map (D65), or the 3D relief view (phase K). Not
+/// stored: derived from `tilt.on` and `tilt.relief.on` ([`TiltCfg::view_mode`]).
+#[allow(dead_code)] // phase K: the settings card (K5) and the call sites (K3, K4) read it
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    Flat,
+    Tilted,
+    /// "3D": terrain relief, roads with heights and decks. Called `Relief` because a Rust
+    /// identifier cannot start with a number.
+    Relief,
+}
+
+/// Where 3D roads get their height (D51): the nav **nodes'** own heights (bridges and elevated
+/// expressways float; the default, the user reversed the earlier "always drape" decision) or the
+/// terrain under them (`Terrain`, "drape"). Cross-country is always draped and jump lines are
+/// always a taut string, whatever this says (see `mesh3d`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoadHeight {
+    #[default]
+    Nodes,
+    Terrain,
+}
+
+/// Settings of the 3D view that the flat tilt does not have (phase K, design §8). Nested in
+/// [`TiltCfg`] so old configs load (`serde(default)`), the Copy-to-category machinery
+/// ([`LayerCategory::Tilt`]) copies it with the rest of the view settings, and the angle /
+/// perspective / car position of the tilted view *are* the 3D camera's pitch / FOV / car
+/// position (they are not duplicated here): that is what makes the three modes interchangeable.
+///
+/// Defaults (design §9.3): off on every map until the user has seen it; true relief
+/// (`exaggeration` 1.0); the sea is flat at the real sea level (not configurable); a mild hill
+/// shading of 0.35 over the satellite image; a 3 m deck under the roads.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct ReliefCfg {
+    /// 3D instead of the flat tilt (implies `tilt.on`; ignored when that is off).
+    pub on: bool,
+    pub road_height: RoadHeight,
+    /// Thickness of the road decks in metres (0 = paper-thin ribbons), [`ReliefCfg::DECK_RANGE`].
+    pub deck_m: f32,
+    /// Vertical scale of the world about y = 0 (the eye follows), [`ReliefCfg::EXAG_RANGE`].
+    pub exaggeration: f32,
+    /// Strength of the hill shading over the imagery, [`ReliefCfg::SHADING_RANGE`].
+    pub shading: f32,
+}
+
+impl ReliefCfg {
+    pub const DECK_RANGE: (f32, f32) = (0.0, 20.0);
+    pub const EXAG_RANGE: (f32, f32) = (0.5, 3.0);
+    pub const SHADING_RANGE: (f32, f32) = (0.0, 1.0);
+
+    /// The values clamped to their ranges (a hand-edited config can hold anything; NaN becomes
+    /// the default).
+    pub fn sane(self) -> ReliefCfg {
+        let d = ReliefCfg::default();
+        let fix = |v: f32, r: (f32, f32), d: f32| if v.is_finite() { v.clamp(r.0, r.1) } else { d };
+        ReliefCfg {
+            deck_m: fix(self.deck_m, Self::DECK_RANGE, d.deck_m),
+            exaggeration: fix(self.exaggeration, Self::EXAG_RANGE, d.exaggeration),
+            shading: fix(self.shading, Self::SHADING_RANGE, d.shading),
+            ..self
+        }
+    }
+}
+
+impl Default for ReliefCfg {
+    fn default() -> Self {
+        Self { on: false, road_height: RoadHeight::Nodes, deck_m: 3.0, exaggeration: 1.0, shading: 0.35 }
+    }
+}
+
+#[allow(dead_code)] // see ViewMode
+impl TiltCfg {
+    pub fn view_mode(&self) -> ViewMode {
+        if !self.on {
+            ViewMode::Flat
+        } else if self.relief.on {
+            ViewMode::Relief
+        } else {
+            ViewMode::Tilted
+        }
+    }
+
+    /// Switch to `mode`: writes `on` / `relief.on` and nothing else (the angle etc. stay, so
+    /// going back and forth keeps the user's look).
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        self.on = mode != ViewMode::Flat;
+        self.relief.on = mode == ViewMode::Relief;
     }
 }
 
@@ -563,6 +656,7 @@ mod tests {
         let mut b = MapLayerConfig::hud();
         b.image.opacity = 0.2;
         b.tilt.angle_deg = 33.0;
+        b.tilt.relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 7.0, exaggeration: 2.0, shading: 0.8 }; // the 3D settings travel with the view
         b.race_lines.width_px = 9.0;
         b.race_lines.focus.other_roads = OtherRoads::Hidden; // the focus travels with the race lines
         b.race_lines.focus.mute_alpha = 0.6;
@@ -614,5 +708,56 @@ mod tests {
             t.copy_category(&b, cat);
         }
         assert_eq!(t, b);
+    }
+
+    #[test]
+    fn relief_defaults_and_the_view_mode_derivation() {
+        let r = ReliefCfg::default();
+        assert_eq!((r.on, r.road_height, r.deck_m, r.exaggeration, r.shading), (false, RoadHeight::Nodes, 3.0, 1.0, 0.35));
+        // Today's view modes stay: HUD tilted, Dashboard (and the Viewer) flat; 3D on neither.
+        assert_eq!(MapLayerConfig::hud().tilt.view_mode(), ViewMode::Tilted);
+        assert_eq!(MapLayerConfig::dashboard().tilt.view_mode(), ViewMode::Flat);
+        let mut t = TiltCfg::default();
+        assert_eq!(t.view_mode(), ViewMode::Flat);
+        // `relief.on` alone does nothing without the tilt it implies.
+        t.relief.on = true;
+        assert_eq!(t.view_mode(), ViewMode::Flat);
+        t.on = true;
+        assert_eq!(t.view_mode(), ViewMode::Relief);
+        t.relief.on = false;
+        assert_eq!(t.view_mode(), ViewMode::Tilted);
+        // set_view_mode round trips and keeps the look.
+        t.angle_deg = 42.0;
+        t.relief.deck_m = 9.0;
+        for m in [ViewMode::Relief, ViewMode::Flat, ViewMode::Tilted, ViewMode::Relief] {
+            t.set_view_mode(m);
+            assert_eq!(t.view_mode(), m);
+            assert_eq!((t.angle_deg, t.relief.deck_m), (42.0, 9.0));
+        }
+    }
+
+    #[test]
+    fn relief_serde_round_trips_and_old_configs_get_the_defaults() {
+        let mut c = MapLayerConfig::hud();
+        c.tilt.relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 5.0, exaggeration: 1.5, shading: 0.6 };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains(r#""road_height":"terrain""#), "{json}");
+        assert_eq!(serde_json::from_str::<MapLayerConfig>(&json).unwrap(), c);
+        // A config from before phase K has no `relief`: defaults; the tilt values survive.
+        let old: MapLayerConfig = serde_json::from_str(r#"{"tilt":{"on":true,"angle_deg":40.0,"perspective_px":200.0,"car_y":0.85,"taper":true}}"#).unwrap();
+        assert_eq!(old.tilt.relief, ReliefCfg::default());
+        assert_eq!(old.tilt.view_mode(), ViewMode::Tilted);
+        // Partial relief merges with the defaults.
+        let p: MapLayerConfig = serde_json::from_str(r#"{"tilt":{"relief":{"on":true,"deck_m":8.0}}}"#).unwrap();
+        assert_eq!((p.tilt.relief.on, p.tilt.relief.deck_m, p.tilt.relief.exaggeration, p.tilt.relief.road_height), (true, 8.0, 1.0, RoadHeight::Nodes));
+    }
+
+    #[test]
+    fn relief_sane_clamps_to_the_ranges() {
+        let wild = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: -4.0, exaggeration: 99.0, shading: f32::NAN };
+        let s = wild.sane();
+        assert_eq!((s.deck_m, s.exaggeration, s.shading), (0.0, 3.0, 0.35));
+        assert!(s.on && s.road_height == RoadHeight::Terrain);
+        assert_eq!(ReliefCfg::default().sane(), ReliefCfg::default());
     }
 }
