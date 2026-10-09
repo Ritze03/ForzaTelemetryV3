@@ -8,6 +8,7 @@
 //! scene     Gl3d: the GL objects of one context, render (FBO + depth) and composite
 //! clipmap   terrain: 7-level geometry clipmap, R16UI height texture
 //! roads     road buffers, the per-frame draw plan (tiles, LOD sets), the style table
+//! marker    the own-car marker (3D arrow / low-poly sedan) and the trail ribbons (D77 / D78)
 //! shaders   GLSL for desktop GL 3.3 core and OpenGL ES 3.0
 //! probe     what the context offers; the requirements
 //! ```
@@ -24,7 +25,8 @@
 //!     draw_base(&painter, &base_params_of(&cam_without_relief)); draw_layers(...);
 //! }
 //! gl3d::add_scene(&painter, &gl3d, Scene3d { cam: cam.clone(), mesh: store::road_mesh(..), map: Some(tex), ... });
-//! // then, over the 3D, as ever: draw_layers_parts(.., Parts::OVER_3D), markers, compass, border
+//! // then, over the 3D, as ever: draw_layers_parts(.., Parts::OVER_3D), teammates, then the own car
+//! // (D77: gl3d::add_marker(&painter, &gl3d, MarkerScene { .. }) - its own callback, on top), compass, border
 //! // `gl3d.busy()` -> ask for another frame (the init is spread over a few);
 //! // at shutdown, context current: gl3d.destroy(&gl) (HUD: before painter.destroy()).
 //! ```
@@ -56,6 +58,7 @@
 #![allow(dead_code)]
 
 mod clipmap;
+mod marker;
 mod probe;
 mod roads;
 mod scene;
@@ -78,6 +81,7 @@ use super::MapTex;
 use crate::minimap::MapCalibration;
 use scene::{Frame, Gl3d};
 
+pub use marker::{Marker3d, Trail3d, TrailSeg};
 pub use probe::Caps;
 pub use scene::RenderStats;
 
@@ -212,6 +216,8 @@ pub struct Scene3d {
     pub roads: RoadsCfg,
     /// The in-race focus, when a race line is picked.
     pub focus: Option<Focus3d>,
+    /// Breadcrumb trails at their recorded heights (D77), drawn after the roads.
+    pub trails: Vec<Trail3d>,
 }
 
 /// Queue the 3D scene as an egui paint callback over `scene.cam.rect`, clipped by the painter's
@@ -227,6 +233,36 @@ pub fn add_scene(painter: &Painter, handle: &Gl3dHandle, scene: Scene3d) {
     let rect = scene.cam.rect;
     let h = handle.clone();
     let cb = egui_glow::CallbackFn::new(move |info, painter| h.paint(&info, painter, &scene));
+    painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
+}
+
+/// The own car of one map in 3D (D77 / D78), for [`add_marker`].
+#[derive(Clone)]
+pub struct MarkerScene {
+    /// The same camera as the map's [`Scene3d`].
+    pub cam: Camera,
+    pub marker: Marker3d,
+    /// The fade alpha, size factor and rounded corners, as in the [`Scene3d`].
+    pub a: f32,
+    pub s: f32,
+    pub corner_radius: f32,
+}
+
+/// Queue the own-car marker as a paint callback of its own over `m.cam.rect`: call it **after**
+/// the egui vectors over the scene (POIs, race lines, teammates), where the flat arrow was drawn,
+/// so the car stays on top of them. *Why not in the scene pass:* a callback is composited where it
+/// is queued, and the POIs and race lines are egui shapes queued after the scene; the car under a
+/// POI icon or the HUD's tint would be a regression from the flat arrow.
+///
+/// Draws nothing until the scene of this handle is `Ready` (the call site draws the flat arrow
+/// while [`Gl3dHandle::wants_underlay`]).
+pub fn add_marker(painter: &Painter, handle: &Gl3dHandle, m: MarkerScene) {
+    if m.cam.relief.is_none() || !m.cam.rect.is_positive() {
+        return;
+    }
+    let rect = m.cam.rect;
+    let h = handle.clone();
+    let cb = egui_glow::CallbackFn::new(move |info, painter| h.paint_marker(&info, painter, &m));
     painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
 }
 
@@ -332,6 +368,12 @@ impl Gl3dHandle {
     fn paint(&self, info: &PaintCallbackInfo, painter: &egui_glow::Painter, sc: &Scene3d) {
         let mut s = self.lock();
         s.paint(info, painter, sc);
+    }
+
+    /// The marker callback body ([`add_marker`]).
+    fn paint_marker(&self, info: &PaintCallbackInfo, painter: &egui_glow::Painter, m: &MarkerScene) {
+        let mut s = self.lock();
+        s.paint_marker(info, painter, m);
     }
 }
 
@@ -448,6 +490,7 @@ impl Gl3dState {
             roads: (sc.roads.on && g.roads.is_some()).then_some(&sc.roads),
             focus: sc.focus.as_ref().map(|f| &f.cfg),
             s: sc.s,
+            trails: &sc.trails,
             sync_timing: self.opts.sync_timing,
         };
         let st = g.render(gl, &frame)?;
@@ -456,6 +499,47 @@ impl Gl3dState {
         self.stats.frames += 1;
         self.status = Gl3dStatus::Ready;
         Ok(uploaded)
+    }
+
+    /// Draw the own car into the FBO and composite it. Only once the scene is `Ready` (the same
+    /// context drew its terrain), else nothing. A GL error in the first frames fails the context
+    /// like one in the scene would; later ones are logged.
+    fn paint_marker(&mut self, info: &PaintCallbackInfo, painter: &egui_glow::Painter, m: &MarkerScene) {
+        if self.status != Gl3dStatus::Ready {
+            return;
+        }
+        let gl: &glow::Context = painter.gl();
+        // Errors somebody else left are not ours.
+        // SAFETY: plain error queries.
+        unsafe { for _ in 0..8 { if gl.get_error() == 0 { break; } } }
+        let Some(g) = self.gl3d.as_mut() else { return };
+        let vp = info.viewport_in_pixels();
+        let size = [vp.width_px, vp.height_px];
+        if size[0] <= 0 || size[1] <= 0 {
+            return;
+        }
+        let r = g
+            .render_marker(gl, &m.cam, info.pixels_per_point, size, m.s, &m.marker)
+            .and_then(|tris| g.composite(gl, size, m.corner_radius * info.pixels_per_point, m.a.clamp(0.0, 1.0)).map(|_| tris));
+        match r {
+            Ok(tris) => {
+                self.stats.last.triangles += tris;
+                self.stats.last.draws += 3;
+            }
+            Err(e) => {
+                self.fail(gl, e);
+                return;
+            }
+        }
+        // SAFETY: plain error query.
+        let err = unsafe { gl.get_error() };
+        if err != 0 {
+            if self.stats.frames < 3 {
+                self.fail(gl, format!("OpenGL error 0x{err:X} while drawing the car marker"));
+            } else if self.opts.debug {
+                eprintln!("3D map: GL error 0x{err:X} (marker)");
+            }
+        }
     }
 
     fn feed_guard(&mut self, gl: &glow::Context, uploaded: bool) {

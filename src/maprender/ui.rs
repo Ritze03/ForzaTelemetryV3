@@ -13,7 +13,7 @@
 use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Stroke, TextureId, Ui};
 
 use super::cfg::{
-    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadHeight, RoadsCfg, ReliefCfg, TiltCfg, ViewMode,
+    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, MarkerStyle, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadHeight, RoadsCfg, ReliefCfg, TiltCfg, ViewMode,
 };
 use super::paint2d::IconAtlas;
 use super::store::{LayerStatus, Layers};
@@ -575,6 +575,22 @@ fn relief_rows(ui: &mut Ui, r: &mut ReliefCfg) {
     theme::slider_row(ui, tr("Height exaggeration"), &mut r.exaggeration, e.0..=e.1, 0.1, 1, "×")
         .on_hover_text(tr("Stretches the hills and valleys; 1 = true to scale."));
     pct_row(ui, tr("Hill shading"), &mut r.shading, s.0 * 100.0, s.1 * 100.0, 1.0, Some(tr("Light and shadow on the slopes over the satellite image.")));
+    // D78: the own car in the 3D scene.
+    let tip = tr("How your car is drawn in the 3D view: a 3D arrow or a small car model. Both sit at the car's real position and height, also in tunnels.");
+    let marker_label = |m: MarkerStyle| tr(match m {
+        MarkerStyle::Arrow => "Arrow",
+        MarkerStyle::Sedan => "Car",
+    });
+    control_row_tip(ui, tr("Car marker"), tip, |ui| {
+        egui::ComboBox::from_id_salt("map_relief_marker")
+            .selected_text(marker_label(r.marker))
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for m in [MarkerStyle::Arrow, MarkerStyle::Sedan] {
+                    ui.selectable_value(&mut r.marker, m, marker_label(m));
+                }
+            });
+    });
     *r = r.sane();
 }
 
@@ -1206,7 +1222,7 @@ mod tests {
             perspective_px: 310.0,
             car_y: 0.7,
             taper: false,
-            relief: ReliefCfg { on: false, road_height: RoadHeight::Terrain, deck_m: 6.5, exaggeration: 2.0, shading: 0.8 },
+            relief: ReliefCfg { on: false, road_height: RoadHeight::Terrain, deck_m: 6.5, exaggeration: 2.0, shading: 0.8, marker: MarkerStyle::Sedan },
         }
     }
 
@@ -1243,8 +1259,8 @@ mod tests {
         use crate::i18n::{with_language, Language};
         let ctx = crate::ui::test_render::context();
         for (lang, relief_labels) in [
-            (Language::English, ["Road height", "Deck thickness", "Height exaggeration", "Hill shading"]),
-            (Language::German, ["Straßenhöhe", "Fahrbahndicke", "Höhenüberhöhung", "Hangschattierung"]),
+            (Language::English, ["Road height", "Deck thickness", "Height exaggeration", "Hill shading", "Car marker"]),
+            (Language::German, ["Straßenhöhe", "Fahrbahndicke", "Höhenüberhöhung", "Hangschattierung", "Fahrzeugmarker"]),
         ] {
             with_language(lang, || {
                 let tilt_labels = [tr("Angle"), tr("Perspective"), tr("Car position"), tr("Thinner lines in the distance")];
@@ -1272,7 +1288,7 @@ mod tests {
     fn relief_values_are_clamped_to_the_cfg_ranges() {
         let ctx = crate::ui::test_render::context();
         let mut time = 0.0;
-        let wild = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: -4.0, exaggeration: 99.0, shading: f32::NAN };
+        let wild = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: -4.0, exaggeration: 99.0, shading: f32::NAN, marker: MarkerStyle::Sedan };
         let mut t = TiltCfg { on: true, relief: wild, ..TiltCfg::default() };
         settle(&ctx, &mut t, &mut time);
         let r = t.relief;
@@ -1316,7 +1332,7 @@ mod tests {
     #[test]
     fn copying_view_mode_copies_the_relief_fields() {
         let mut c = two_maps();
-        let relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 9.0, exaggeration: 2.5, shading: 0.9 };
+        let relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 9.0, exaggeration: 2.5, shading: 0.9, marker: MarkerStyle::Sedan };
         c.overlay.map_layers.tilt.on = true;
         c.overlay.map_layers.tilt.relief = relief;
         assert_eq!(c.minimap_layers.tilt.relief, ReliefCfg::default());

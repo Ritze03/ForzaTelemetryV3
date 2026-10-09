@@ -370,7 +370,7 @@ impl CoopLayer {
         let pkt = &snap.pkt;
         if cfg.coop_trails {
             if snap.connected && pkt.is_race_on != 0 && !pkt.is_paused() {
-                mm::trail_push(self.trails.entry("local".into()).or_default(), pkt.position_x, pkt.position_z, now, max_age);
+                mm::trail_push(self.trails.entry("local".into()).or_default(), pkt.position_x, pkt.position_y, pkt.position_z, now, max_age);
             }
             present.insert("local".into());
         }
@@ -392,7 +392,7 @@ impl CoopLayer {
                 if !paused {
                     self.last_pos.insert(info.id.clone(), (rp.position_x, rp.position_z, rp.yaw));
                     if cfg.coop_trails {
-                        mm::trail_push(self.trails.entry(info.id.clone()).or_default(), rp.position_x, rp.position_z, now, max_age);
+                        mm::trail_push(self.trails.entry(info.id.clone()).or_default(), rp.position_x, rp.position_y, rp.position_z, now, max_age);
                     }
                 }
                 if cfg.coop_trails {
@@ -518,6 +518,21 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let data = layers.as_deref().filter(|_| lc.wants_layers());
     let picked = data.map(|d| &*race_sel.update(&d.races, &lc.race_lines, car, snap.pkt.yaw, snap.pkt.race_position != 0));
 
+    let hue = |h: f32| crate::ui::coop::hue_color(h);
+    let at = coop.now.unwrap_or_else(Instant::now);
+    let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
+    // Own arrow and trail: the player's co-op colour in a session, white otherwise (as the
+    // Dashboard).
+    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
+    // The trails to draw: the own one, then the unpaused teammates' (paused ones keep theirs undrawn).
+    let trails: Vec<(&Trail, Color32)> = coop
+        .trails
+        .get("local")
+        .map(|t| (t, own))
+        .into_iter()
+        .chain(coop.teammates.iter().filter(|t| !t.paused).filter_map(|t| coop.trails.get(&t.id).map(|tr| (tr, t.colour))))
+        .collect();
+
     // The 3D scene, over the plate (and, until it is Ready, over the 2D underlay).
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Some((sc, c3)) = &three {
@@ -545,6 +560,8 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 relief: lc.tilt.relief,
                 roads: lc.roads,
                 focus: focus.map(|focus| Focus3d { focus, cfg: lc.race_lines.focus }),
+                // D77: the trails at their recorded heights (through a tunnel: in it, seen through the hill).
+                trails: trails.iter().filter_map(|(t, c)| map_shared::trail_3d(t, *c, fade, at)).collect(),
             },
         );
     }
@@ -582,23 +599,30 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let round = fr.circle;
     let mp = p.with_clip_rect(inner);
     let cv = MapCanvas { p: &mp, cam, rect: inner, taper: lc.tilt.taper, s: xf.s, a: xf.a, pause_glyph: "||" };
-    let hue = |h: f32| crate::ui::coop::hue_color(h);
-    let at = coop.now.unwrap_or_else(Instant::now);
-    let fade = TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
-    // Own arrow and trail: the player's co-op colour in a session, white otherwise (as the
-    // Dashboard).
-    let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
-    if let Some(tr) = coop.trails.get("local") {
-        map_shared::draw_trail_in(&cv, tr, own, fade, at, round);
-    }
-    for t in coop.teammates.iter().filter(|t| !t.paused) {
-        if let Some(tr) = coop.trails.get(&t.id) {
-            map_shared::draw_trail_in(&cv, tr, t.colour, fade, at, round);
+    // In 3D (scene Ready) the own car and the trails are the scene's (D77); the flat ones
+    // otherwise, also while the tilted underlay stands in for it.
+    let flat_own = cam3.is_none();
+    if flat_own {
+        for (tr, c) in &trails {
+            map_shared::draw_trail_in(&cv, tr, *c, fade, at, round);
         }
     }
+    // Teammates and waypoints stay flat markers over the scene (projected onto the terrain).
     map_shared::draw_remotes_in(&cv, &coop.teammates, car, view.yaw, round);
 
-    map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
+    if flat_own {
+        map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
+    }
+    // D77 / D78: the own car in 3D, at the telemetry position and height (in a tunnel: down at its
+    // road, not on the hill), a callback of its own so it stays on top of the POIs and race lines.
+    // Without a real position (paused, no race on) it stands on the terrain.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    if let (Some((sc, c3)), false) = (&three, flat_own) {
+        use crate::maprender::gl3d::{add_marker, Marker3d, MarkerScene};
+        let car_y = car_height(snap).map_or_else(|| sc.terrain.height(car.0, car.1), |y| y - 1.0);
+        let marker = Marker3d { pos: [car.0, car_y, car.1], yaw: snap.pkt.yaw, kind: lc.tilt.relief.marker, colour: own };
+        add_marker(&p.with_clip_rect(rect), &sc.gl3d, MarkerScene { cam: c3.clone(), marker, a: xf.a, s: xf.s, corner_radius: xf.l(fr.radius) });
+    }
     for &(x, z, hue_deg) in &coop.waypoints {
         map_shared::draw_waypoint_in(&cv, (x, z), hue(hue_deg), car, now as f32, round);
     }

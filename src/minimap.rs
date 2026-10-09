@@ -447,30 +447,41 @@ pub fn ease_zoom(current_m: f32, target_m: f32, dt: f32) -> f32 {
 
 // ── Co-op trails (shared by the Dashboard map and the HUD Minimap) ─────────
 
-/// One player's recent world path: `(x, z, recorded_at)`, oldest first. Drawn by
-/// `hud::map_shared::draw_trail`.
-pub type Trail = VecDeque<(f32, f32, Instant)>;
+/// One player's recent world path, oldest first. Drawn by `hud::map_shared::draw_trail` (2D) and,
+/// in the 3D view, as a ribbon in the GL scene at the recorded heights (`gl3d::Trail3d`, D77).
+pub type Trail = VecDeque<TrailPt>;
 
-/// Append `(x, z)` to `trail` the way both maps record it: only after `MIN_MOVE` metres of
-/// travel, a jump of `TELEPORT` metres (fast-travel / reset) starts a fresh trail, points
-/// older than `max_age` are dropped and the length is capped.
-pub fn trail_push(trail: &mut Trail, x: f32, z: f32, now: Instant, max_age: Duration) {
+/// One recorded trail point: world x / z, the telemetry height `y` (metres; the 3D view draws the
+/// trail there, so one that went through a tunnel stays in it, D77) and when it was recorded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrailPt {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub t: Instant,
+}
+
+/// Append `(x, y, z)` to `trail` the way both maps record it: only after `MIN_MOVE` metres of
+/// horizontal travel, a jump of `TELEPORT` metres (fast-travel / reset) starts a fresh trail,
+/// points older than `max_age` are dropped and the length is capped.
+pub fn trail_push(trail: &mut Trail, x: f32, y: f32, z: f32, now: Instant, max_age: Duration) {
     const MIN_MOVE: f32 = 4.0;
     const MAX_PTS: usize = 400;
     const TELEPORT: f32 = 300.0;
+    let pt = TrailPt { x, y, z, t: now };
     match trail.back() {
-        Some(&(px, pz, _)) => {
-            let moved = (px - x).hypot(pz - z);
+        Some(p) => {
+            let moved = (p.x - x).hypot(p.z - z);
             if moved >= TELEPORT {
                 trail.clear();
-                trail.push_back((x, z, now));
+                trail.push_back(pt);
             } else if moved >= MIN_MOVE {
-                trail.push_back((x, z, now));
+                trail.push_back(pt);
             }
         }
-        None => trail.push_back((x, z, now)),
+        None => trail.push_back(pt),
     }
-    while trail.front().is_some_and(|&(_, _, t)| now.duration_since(t) > max_age) {
+    while trail.front().is_some_and(|p| now.duration_since(p.t) > max_age) {
         trail.pop_front();
     }
     if trail.len() > MAX_PTS {

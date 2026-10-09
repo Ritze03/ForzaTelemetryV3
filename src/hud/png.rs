@@ -119,6 +119,13 @@ fn pg_state(pos: u8, gain: Option<f32>, shown: f32, scoring: bool, place: Option
 /// default driving zoom (1500 m, 0.045 px/m) they land about (−18, −36) and (54, 23) px from
 /// the car.
 fn coop_mates(snap: &HudSnapshot) -> CoopLayer {
+    let y = snap.pkt.position_y;
+    coop_mates_on(snap, &|_, _| y)
+}
+
+/// [`coop_mates`] with the trail points at `height(x, z)` (the 3D map draws trails at their
+/// recorded heights, D77).
+fn coop_mates_on(snap: &HudSnapshot, height: &dyn Fn(f32, f32) -> f32) -> CoopLayer {
     let (x, z, yaw) = (snap.pkt.position_x, snap.pkt.position_z, snap.pkt.yaw);
     let at = |ahead: f32, right: f32| (x + ahead * yaw.sin() + right * yaw.cos(), z + ahead * yaw.cos() - right * yaw.sin());
     let mate = |id: &str, (x, z): (f32, f32), dyaw: f32, name: &str, hue: f32| Remote {
@@ -133,7 +140,12 @@ fn coop_mates(snap: &HudSnapshot) -> CoopLayer {
     // A short trail behind the car and behind "Kai", in the same coordinates the arrows use.
     let now = std::time::Instant::now();
     let trail = |from: (f32, f32), back: (f32, f32)| -> crate::minimap::Trail {
-        (0..8).map(|i| (from.0 + back.0 * (7 - i) as f32 * 40.0, from.1 + back.1 * (7 - i) as f32 * 40.0, now)).collect()
+        (0..8)
+            .map(|i| {
+                let (x, z) = (from.0 + back.0 * (7 - i) as f32 * 40.0, from.1 + back.1 * (7 - i) as f32 * 40.0);
+                crate::minimap::TrailPt { x, y: height(x, z), z, t: now }
+            })
+            .collect()
     };
     let mut layer = CoopLayer::default();
     layer.in_session = true;
@@ -914,8 +926,54 @@ fn layers_3d(terrain: &Terrain) -> Arc<MapLayers> {
     let ys: Vec<f32> = pts.iter().map(|p| terrain.height(p[0], p[1]) + 22.0).collect();
     let mut roads = (*m.roads).clone();
     roads.by_type[crate::gamedata::roadtypes::RoadType::Highway.index() as usize].push(Chain::new(pts, ys));
+    // A tunnel through the big hill (-300, 200), 150 m high: the car marker must show down there (D77).
+    let pts: Vec<[f32; 2]> = (0..=17).map(|i| [-640.0 + i as f32 * 40.0, 210.0]).collect();
+    let ys: Vec<f32> = pts.iter().map(|p| tunnel_y(terrain, p[0], p[1])).collect();
+    roads.by_type[crate::gamedata::roadtypes::RoadType::Tunnel.index() as usize].push(Chain::new(pts, ys));
     m.roads = Arc::new(roads);
     Arc::new(m)
+}
+
+/// The tunnel road's height under the big hill: 150 m (70 m under the top), the ground elsewhere.
+fn tunnel_y(terrain: &Terrain, x: f32, z: f32) -> f32 {
+    terrain.height(x, z).min(150.0)
+}
+
+/// The own trail alone (solo, white): `n` points from `from` to the car at `height`.
+fn own_trail(snap: &HudSnapshot, from: (f32, f32), n: usize, height: &dyn Fn(f32, f32) -> f32) -> CoopLayer {
+    let now = std::time::Instant::now();
+    let (x1, z1) = (snap.pkt.position_x, snap.pkt.position_z);
+    let mut layer = CoopLayer::default();
+    let tr: crate::minimap::Trail = (0..=n)
+        .map(|i| {
+            let u = i as f32 / n as f32;
+            let (x, z) = (from.0 + (x1 - from.0) * u, from.1 + (z1 - from.1) * u);
+            crate::minimap::TrailPt { x, y: height(x, z), z, t: now }
+        })
+        .collect();
+    layer.trails.insert("local".into(), tr);
+    layer
+}
+
+/// Like [`check`], but passes when any pixel within `r` design px of (x, y) matches (`tol` per
+/// channel): the 3D car marker is a shaded model, not one flat colour at the exact centre.
+fn check_near(failures: &mut Vec<String>, img: &ColorImage, name: &str, (x, y): (usize, usize), r: usize, want: [u8; 3], tol: u8, what: &str) {
+    let mut best: Option<([u8; 3], u32)> = None;
+    for yy in y.saturating_sub(r)..=y + r {
+        for xx in x.saturating_sub(r)..=x + r {
+            let got = px(img, xx + 10, yy + 10);
+            let d: u32 = got.iter().zip(want).map(|(a, b)| a.abs_diff(b) as u32).sum();
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((got, d));
+            }
+        }
+    }
+    let (got, _) = best.expect("a pixel");
+    let ok = got.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= tol);
+    println!("  {name} near ({x},{y}) {what}: best {got:?}, want {want:?} {}", if ok { "ok" } else { "MISMATCH" });
+    if !ok {
+        failures.push(format!("{name} near ({x},{y}) {what}: best {got:?}, want {want:?}"));
+    }
 }
 
 /// A satellite stand-in calibrated to the synthetic terrain ([`WORLD_CAL`]): hill-shaded greens, a
@@ -1082,7 +1140,18 @@ fn render_3d_states() -> Result<(), String> {
     let steep = on_hills(cfg_3d(|c| c.map_layers.tilt.relief.exaggeration = 2.5));
     let no_roads = on_hills(cfg_3d(|c| c.map_layers.roads.on = false));
     let no_image = on_hills(cfg_3d(|c| c.map_layers.image.on = false));
-    let mates = coop_mates(&hills);
+    let mates = coop_mates_on(&hills, &|x, z| terrain.height(x, z));
+    let sedan = |c: &mut OverlayConfig| c.map_layers.tilt.relief.marker = crate::maprender::cfg::MarkerStyle::Sedan;
+    let hills_sedan = on_hills(cfg_3d(sedan));
+    let mut bridge_sedan = snap_3d(cfg_3d(sedan), &terrain, (-100.0, -500.0), std::f32::consts::FRAC_PI_2, WORLD_CAL);
+    bridge_sedan.pkt.position_y = bridge.pkt.position_y;
+    // In the tunnel under the big hill, heading east, the own trail coming in from the west portal.
+    let mut tunnel = snap_3d(cfg_3d(|_| {}), &terrain, (-300.0, 210.0), std::f32::consts::FRAC_PI_2, WORLD_CAL);
+    tunnel.pkt.position_y = tunnel_y(&terrain, -300.0, 210.0) + 0.45;
+    let mut tunnel_sedan = tunnel.clone();
+    tunnel_sedan.cfg = Arc::new(cfg_3d(sedan));
+    let tunnel_trail = own_trail(&tunnel, (-700.0, 210.0), 40, &|x, z| tunnel_y(&terrain, x, z) + 0.45);
+    let hills_trail = own_trail(&hills, (-120.0 - 300.0 * hill_yaw.sin(), -40.0 - 300.0 * hill_yaw.cos()), 30, &|x, z| terrain.height(x, z));
 
     let states: Vec<(&str, &HudSnapshot, &CoopLayer)> = vec![
         ("hills", &hills, &none),
@@ -1093,6 +1162,11 @@ fn render_3d_states() -> Result<(), String> {
         ("no_roads", &no_roads, &none),
         ("no_image", &no_image, &none),
         ("coop", &hills, &mates),
+        ("hills_trail", &hills, &hills_trail),
+        ("hills_sedan", &hills_sedan, &hills_trail),
+        ("bridge_sedan", &bridge_sedan, &none),
+        ("tunnel", &tunnel, &tunnel_trail),
+        ("tunnel_sedan", &tunnel_sedan, &tunnel_trail),
     ];
     let mut imgs: std::collections::HashMap<&str, ColorImage> = Default::default();
     for s in [1.0, 3.0] {
@@ -1117,7 +1191,8 @@ fn render_3d_states() -> Result<(), String> {
                 } else {
                     [255, 255, 255]
                 };
-                check(&mut failures, &img, &id, (104, 114), own, "car marker over the scene");
+                // (the 3D marker is a lit model: its top is the colour, near the car point)
+                check_near(&mut failures, &img, &id, (104, 114), 6, own, 10, "car marker over the scene");
                 let (painted, total) = pill_coverage(&img, true);
                 println!("  {id}: map paints {painted}/{total} samples");
                 // (no image = backing colour only; the horizon view fades out above the far edge on purpose)
@@ -1153,7 +1228,7 @@ fn render_3d_states() -> Result<(), String> {
                 }
                 check_frame(&mut failures, &img, &id, &cfg, Some(cfg.map_border_color));
                 let [or, og, ob, _] = crate::ui::coop::hue_color(snap.coop_hue).to_array();
-                check(&mut failures, &img, &id, ((size.x / 2.0) as usize, (size.y * 0.85) as usize), [or, og, ob], "car marker over the scene (co-op colour)");
+                check_near(&mut failures, &img, &id, ((size.x / 2.0) as usize, (size.y * 0.85) as usize), 6, [or, og, ob], 10, "car marker over the scene (co-op colour)");
                 // The scene fills the shape: most samples well inside differ from the backdrop.
                 let (mut painted, mut total) = (0, 0);
                 for y in (0..size.y as usize).step_by(4) {
@@ -1253,9 +1328,11 @@ fn render_3d_states() -> Result<(), String> {
         failures.push(format!("frame_at: 3D {:?} after {frames} animating frames (the staged init needs >= 2)", r.gl3d.status()));
     }
     let img = r.painter.read_screen_rgba([1920, 1080]);
-    // The map sits bottom-left at margin 4: its car marker at (4 + 104, 940 + 114).
-    if px(&img, 108, 1054) != [255, 255, 255] {
-        failures.push(format!("composite_3d: car marker is {:?}", px(&img, 108, 1054)));
+    // The map sits bottom-left at margin 4: its car marker at (4 + 104, 940 + 114) (the 3D model:
+    // near-white near that point).
+    let white_near = (1048..=1060).any(|y| (102..=114).any(|x| px(&img, x, y).iter().all(|&v| v >= 245)));
+    if !white_near {
+        failures.push(format!("composite_3d: no car marker near (108, 1054): {:?}", px(&img, 108, 1054)));
     }
     written.push(save(&img, "composite_3d_1080p")?);
     // Tilted again: the 3D objects are freed (and a later 3D switch starts afresh).

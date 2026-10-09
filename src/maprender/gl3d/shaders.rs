@@ -203,6 +203,96 @@ void main() {
 }
 "#;
 
+/// The own-car marker (D77 / D78, `marker.rs`): a model in metres (x right, y up from its ground,
+/// z forward) placed at the telemetry position, turned by the yaw, scaled `uK.x`; heights are
+/// divided by the exaggeration so the model keeps its shape. `uK.y` > 0 = the outline hull,
+/// pushed out along the smoothed normal and drawn flat dark.
+pub const MARKER_VS: &str = r#"
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aN;
+layout(location = 2) in vec3 aSm;
+layout(location = 3) in vec4 aMat;
+uniform vec3 uPos;       // the model's ground point: x, y (real metres), z
+uniform vec2 uYaw;       // sin, cos of the telemetry yaw
+uniform vec2 uK;         // model scale, outline push (metres; 0 = the model itself)
+out vec3 vN;
+out vec4 vMat;
+void main() {
+  vec3 l = aPos * uK.x + aSm * uK.y;
+  vec3 r = vec3(uYaw.y, 0.0, -uYaw.x);
+  vec3 f = vec3(uYaw.x, 0.0, uYaw.y);
+  vec3 w = vec3(uPos.x + l.x * r.x + l.z * f.x, uPos.y + l.y / uExag, uPos.z + l.x * r.z + l.z * f.z);
+  vN = aN.x * r + vec3(0.0, aN.y, 0.0) + aN.z * f;
+  vMat = aMat;
+  gl_Position = projectW(w);
+}
+"#;
+
+pub const MARKER_FS: &str = r#"
+in vec3 vN;
+in vec4 vMat;
+uniform vec3 uColor;     // the car colour, linear 0..1 of the sRGB values (as egui's)
+uniform float uHull;     // 1 = the outline pass
+uniform float uAlpha;
+out vec4 oC;
+void main() {
+  if (uHull > 0.5) {
+    float a = 0.9 * uAlpha;
+    oC = vec4(vec3(0.02, 0.025, 0.035) * a, a);
+    return;
+  }
+  vec3 n = normalize(vN);
+  // Tops at full colour (a white car stays white from above), sides darker, lit from the
+  // terrain's sun side so the shape reads.
+  float sh = clamp(0.60 + 0.40 * n.y + 0.16 * dot(n.xz, normalize(vec2(-0.5, 0.35))), 0.0, 1.0);
+  vec3 c = (uColor * vMat.x + vMat.yzw) * sh;
+  oC = vec4(c * uAlpha, uAlpha);
+}
+"#;
+
+/// The trail ribbons: each vertex carries its end and the other end of its segment and is pushed
+/// sideways on screen, so the line is `uW.x` px wide at the car and follows the perspective
+/// (clamped like the flat trail's taper).
+pub const TRAIL_VS: &str = r#"
+layout(location = 0) in vec3 aP;
+layout(location = 1) in vec3 aQ;
+layout(location = 2) in vec2 aSA;   // side (+1 / -1), alpha
+uniform vec2 uW;         // width px at the car, depth bias
+uniform vec2 uVp;        // viewport px
+out float vA;
+out float vCamZ;
+void main() {
+  vec4 p = projectW(aP);
+  vec4 q = projectW(aQ);
+  vec2 hv = 0.5 * uVp;
+  vec2 sp = p.xy / max(p.w, 1e-3) * hv;
+  vec2 sq = q.xy / max(q.w, 1e-3) * hv;
+  vec2 d = sq - sp;
+  d = dot(d, d) > 1e-8 ? normalize(d) : vec2(1.0, 0.0);
+  float k = clamp(uCam.y / max(p.w, 1.0), 0.4, 1.5);
+  vec2 off = vec2(-d.y, d.x) * aSA.x * 0.5 * uW.x * k;
+  p.xy += off / hv * p.w;
+  p.z -= uCam.z * p.w * uW.y;
+  // A segment reaching behind the eye has no screen direction: leave it out.
+  vA = (p.w > 1.0 && q.w > 1.0) ? aSA.y : 0.0;
+  vCamZ = p.w;
+  gl_Position = p;
+}
+"#;
+
+pub const TRAIL_FS: &str = r#"
+in float vA;
+in float vCamZ;
+uniform vec3 uColor;
+uniform float uAlpha;    // fade x pass strength (the hidden pass is fainter)
+out vec4 oC;
+void main() {
+  float a = vA * uAlpha * farFade(vCamZ);
+  if (a < 0.004) discard;
+  oC = vec4(uColor * a, a);
+}
+"#;
+
 pub const COMP_VS: &str = r#"
 out vec2 vUv;
 void main() {
@@ -300,3 +390,5 @@ pub const ROAD_UNIFORMS: &[&str] = &[
     "uCasingAlpha",
 ];
 pub const COMP_UNIFORMS: &[&str] = &["uTex", "uUv", "uSizePx", "uRadius", "uAlpha"];
+pub const MARKER_UNIFORMS: &[&str] = &["uVP", "uCar", "uExag", "uCam", "uPos", "uYaw", "uK", "uColor", "uHull", "uAlpha"];
+pub const TRAIL_UNIFORMS: &[&str] = &["uVP", "uCar", "uExag", "uCam", "uH", "uHSize", "uHGeo", "uW", "uVp", "uColor", "uAlpha"];

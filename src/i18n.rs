@@ -1205,6 +1205,10 @@ fn de(s: &str) -> Option<&'static str> {
         "Hill shading" => "Hangschattierung",
         "Light and shadow on the slopes over the satellite image."
             => "Licht und Schatten an den Hängen über dem Satellitenbild.",
+        "Car marker" => "Fahrzeugmarker",
+        "Arrow" => "Pfeil",
+        "How your car is drawn in the 3D view: a 3D arrow or a small car model. Both sit at the car's real position and height, also in tunnels."
+            => "Wie dein Fahrzeug in der 3D-Ansicht gezeichnet wird: als 3D-Pfeil oder als kleines Automodell. Beide sitzen an der echten Position und Höhe des Fahrzeugs, auch in Tunneln.",
         "Angle" => "Winkel",
         "Perspective" => "Perspektive",
         "The eye distance for a view as tall as the HUD minimap (136 px). A taller map scales it, so both maps look alike. Smaller = stronger perspective."
