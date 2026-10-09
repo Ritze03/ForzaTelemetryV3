@@ -140,7 +140,7 @@ auto-zooms in while driving and back out once parked.
 
 ## Look-around (right stick)
 
-Option **Rotate with right stick** (`minimap_look_stick`, on by default; Mini-Settings -> Dashboard -> Map; the
+Option **Rotate with right stick** (`minimap_look_stick`, on by default; Map tab -> settings -> "Dashboard map & Viewer" page (view options); the
 HUD Minimap has `OverlayConfig::map_look_stick`, see [[overlay]]). While the right stick
 (`Gamepad::right_stick`, post-deadzone, see [[gamepad]]) is deflected, the view turns to look where the
 stick points **relative to the car**, like the game's camera.
