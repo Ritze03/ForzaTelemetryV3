@@ -467,7 +467,7 @@ Polish (I29b):
   so trails, teammates, waypoints and the own arrow sit where the layers' projection puts the same
   world point on both maps (pitch 0 is the old mapping, tested). Arrows themselves stay upright; trail
   widths taper. A point behind the eye goes far off-screen along its flat direction.
-- Both maps' tilt settings are on the Map tab (Minimap / Dashboard map / Viewer page → View mode).
+- Both maps' tilt settings are on the Map tab (Minimap / Dashboard map & Viewer page → View mode).
 
 ### 3D: data and camera (phase K, K1)
 
@@ -787,7 +787,7 @@ compositor `pixels_per_point` other than 1, Windows.
 `AppConfig::minimap_layers` (Dashboard; in `MINISETTINGS_KEYS`) and `OverlayConfig::map_layers` (HUD;
 `OverlayConfig::effective()` copies the Dashboard's when "Use Dashboard map settings" is on). **All
 of it has a settings UI on the Map tab** (D63, `maprender/ui.rs::layers_ui`, one function for all
-three maps: pages *Minimap*, *Dashboard map* and *Viewer*; see [map-tab.md](map-tab.md), where "Copy
+the maps: pages *Minimap* and *Dashboard map & Viewer*; see [map-tab.md](map-tab.md), where "Copy
 to …" ports a card between them, D68); the JSON stays editable.
 Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a list of ids.
 

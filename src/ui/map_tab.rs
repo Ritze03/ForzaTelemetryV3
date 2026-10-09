@@ -1,11 +1,12 @@
 //! The Map tab (D67): a full-size map viewer, and a full-size settings mode for every map.
 //!
 //! *Viewer* (the tab's default view): the map fills the whole tab, drawn by the shared scene
-//! (`map_scene`, the same code as the Dashboard's Map widget) with the viewer's own layer settings
-//! (`AppConfig::viewer_layers`). Drag pans, the wheel zooms, "Follow car" keeps the car centred.
+//! (`map_scene`, the same code as the Dashboard's Map widget) with the **Dashboard map's settings**
+//! (`minimap_layers`, `minimap_*`; D73: the viewer has none of its own). Drag pans, the wheel
+//! zooms, "Follow car" keeps the car centred.
 //!
 //! *Settings* (the cog on the viewer; "Back to map" returns): a module selector, the Overlay
-//! tab's control, over the pages Minimap · Dashboard map · Viewer · Map data. The first two moved
+//! tab's control, over the pages Minimap · Dashboard map & Viewer · Map data. The first two moved
 //! here from the Overlay tab, the last from Setup. Which mode and page were last open is
 //! remembered (`map_tab_settings`, `map_tab_page`; never exported).
 //!
@@ -37,7 +38,8 @@ use crate::theme;
 /// The viewer's state (not saved: where you left the view is not worth a config key; the tab
 /// opens on the car).
 pub struct MapTabState {
-    /// The user's pan and zoom over the base view (the car, `viewer_zoom_m`). Temporary: it
+    /// The user's pan and zoom over the base view (the car, at the Dashboard map's eased zoom,
+    /// `ForzaApp::minimap_current_zoom`). Temporary: it
     /// resets once the player drives off again (`map_scene::DriveGate`, D72).
     pub manual: ManualView,
     /// The viewer's own race-line selection state (see `racesel`).
@@ -61,17 +63,19 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
     app.ensure_map_image();
     let rect = ui.available_rect_before_wrap();
-    let allow = app.config.viewer_allow_pan_zoom;
+    // The viewer is the Dashboard map's twin (D73): same layers, same view options, same yaw
+    // (incl. the right-stick look), same base zoom.
+    let allow = app.config.minimap_allow_pan_zoom;
     let resp = ui.allocate_rect(rect, if allow { Sense::click_and_drag() } else { Sense::click() });
     let car = (app.minimap_cached_car_x, app.minimap_cached_car_z);
-    let yaw = if app.config.viewer_north_up { 0.0 } else { app.minimap_smoothed_yaw };
+    let yaw = app.minimap_look.view_yaw(app.minimap_base_yaw());
     let speed = app.telemetry.latest.as_ref().map(|p| p.speed);
-    let base_zoom_m = app.config.viewer_zoom_m;
+    let base_zoom_m = app.minimap_current_zoom;
 
     // Input first; the scene is then drawn from the updated view, so a drag moves the map in
     // the same frame.
     if allow {
-        let v = ViewIn { layers: &app.config.viewer_layers, yaw, rect, car, base_zoom_m, speed, now: ui.input(|i| i.time) };
+        let v = ViewIn { layers: &app.config.minimap_layers, yaw, rect, car, base_zoom_m, speed, now: ui.input(|i| i.time) };
         app.map_tab.manual.interact(ui, &resp, &v);
     } else {
         app.map_tab.manual.reset();
@@ -81,12 +85,12 @@ fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
     if let Some(texture) = map_scene::texture_or_status(ui, app, rect) {
         let cfg = &app.config;
         let scene = Scene {
-            layers: &cfg.viewer_layers,
+            layers: &cfg.minimap_layers,
             centre,
             yaw,
             zoom_m,
-            mirror: cfg.viewer_mirror_edges,
-            compass: cfg.viewer_show_compass,
+            mirror: cfg.minimap_mirror_edges,
+            compass: cfg.minimap_show_compass,
             race_sel: &app.map_tab.race_sel,
         };
         let cam = map_scene::draw(ui, app, rect, texture, &scene);
@@ -106,7 +110,7 @@ fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
     // Controls on top of the map (drawn after it, so they take the clicks).
     let mv = &mut app.map_tab.manual;
     let following = mv.centre.is_none();
-    let (follow_clicked, open_settings) = controls(ui, rect, following, zoom_m);
+    let (follow_clicked, open_settings) = controls(ui, rect, following, zoom_m, app.config.minimap_show_compass);
     if follow_clicked {
         // Following: freeze the view where it is. Panned (or only zoomed): back to the car and
         // the configured zoom, at once.
@@ -121,20 +125,30 @@ fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
     }
 }
 
+/// Right edge of the map's compass (`map_scene::draw`: `hud::minimap::draw_compass`, centre
+/// (18, 18), radius 11, scaled by `s`), px from the map's left edge. The compass sits where
+/// "Follow car" does, so the button steps aside while the compass is on.
+fn compass_right(rect: Rect) -> f32 {
+    let s = (rect.width().min(rect.height()) / 200.0).clamp(0.8, 1.6);
+    (18.0 + 11.0) * s
+}
+
 /// The viewer's buttons and zoom readout over the map: "Follow car" top left (lit while the view
-/// follows the car), "Settings" top right, the radius bottom left. Returns (Follow car pressed,
-/// Settings pressed).
-fn controls(ui: &mut Ui, rect: Rect, following: bool, zoom_m: f32) -> (bool, bool) {
+/// follows the car; right of the compass when that is on), the radius bottom left, "Settings"
+/// bottom right. *Why bottom right:* the top right belongs to the co-op player list (D73).
+/// Returns (Follow car pressed, Settings pressed).
+fn controls(ui: &mut Ui, rect: Rect, following: bool, zoom_m: f32, compass: bool) -> (bool, bool) {
     const M: f32 = 10.0;
     let (mut follow_clicked, mut open) = (false, false);
-    let left = Rect::from_min_size(rect.left_top() + vec2(M, M), vec2((rect.width() * 0.5 - M).max(0.0), 30.0));
+    let dx = if compass { (compass_right(rect) + 6.0 - M).max(0.0) } else { 0.0 };
+    let left = Rect::from_min_size(rect.left_top() + vec2(M + dx, M), vec2((rect.width() * 0.5 - M - dx).max(0.0), 30.0));
     ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Min)), |ui| {
         let label = format!("{}  {}", icons::CROSSHAIRS, tr("Follow car"));
         let btn = if following { theme::primary_button(label) } else { theme::secondary_button(label) };
         follow_clicked = ui.add(btn).clicked();
     });
-    let right = Rect::from_min_max(pos2(rect.center().x, rect.top() + M), pos2(rect.right() - M, rect.top() + M + 30.0));
-    ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Min)), |ui| {
+    let right = Rect::from_min_max(pos2(rect.center().x, rect.bottom() - M - 30.0), pos2(rect.right() - M, rect.bottom() - M));
+    ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Max)), |ui| {
         open = ui.add(theme::secondary_button(format!("{}  {}", icons::COG, tr("Settings")))).clicked();
     });
     let text = format!("{:.0} m", zoom_m);
@@ -167,10 +181,6 @@ fn settings(ui: &mut Ui, app: &mut ForzaApp) {
             let (l, atlas) = layers_and_icons(ui, app);
             dashboard_page(ui, &mut app.config, &l, atlas.as_deref());
         }
-        MapPage::Viewer => {
-            let (l, atlas) = layers_and_icons(ui, app);
-            viewer_page(ui, &mut app.config, &l, atlas.as_deref());
-        }
         MapPage::MapData => crate::ui::map_data::page(ui, app),
     });
 }
@@ -179,8 +189,7 @@ fn settings(ui: &mut Ui, app: &mut ForzaApp) {
 fn page_selector(ui: &mut Ui, page: &mut MapPage) -> bool {
     let opts = [
         (MapPage::Minimap, tr("Minimap")),
-        (MapPage::DashboardMap, tr("Dashboard map")),
-        (MapPage::Viewer, tr("Viewer")),
+        (MapPage::DashboardMap, tr("Dashboard map & Viewer")),
         (MapPage::MapData, tr("Map data")),
     ];
     page_selector_with(ui, page, &opts)
@@ -245,7 +254,8 @@ fn apply_requests(cfg: &mut AppConfig, reqs: [Option<CopyRequest>; 2]) {
     }
 }
 
-/// Dashboard map page: the view options and all layer settings of `minimap_layers`. (Mini-Settings
+/// Dashboard map & Viewer page: the view options and all layer settings of `minimap_layers`,
+/// which the Dashboard's Map widget and the Map tab viewer both draw with (D73). (Mini-Settings
 /// → Dashboard → Map keeps its quick options; both edit the same keys.)
 fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
     status_ui(ui, l);
@@ -258,7 +268,7 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     let mut view_req = None;
     let follows = cfg.overlay.map_use_dashboard;
     let mut lead = |ui: &mut Ui| {
-        theme::card(ui, tr("Dashboard map"), |ui| {
+        theme::card(ui, tr("Dashboard map & Viewer"), |ui| {
             view_rows(ui, &mut view);
             theme::checkbox_row(ui, &mut allow, tr("Allow pan and zoom")).on_hover_text(tr(PAN_ZOOM_TIP));
             if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
@@ -276,45 +286,6 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     cfg.overlay.map_3d_windows = win3d;
     view.apply_app(cfg);
     cfg.minimap_allow_pan_zoom = allow;
-    apply_requests(cfg, [layer_req, view_req]);
-}
-
-/// Viewer page: the viewer's own view options and all layer settings of `viewer_layers`. Its
-/// co-op trails and player list follow the Dashboard map's co-op settings (Mini-Settings).
-fn viewer_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
-    status_ui(ui, l);
-    ui.add_space(4.0);
-    let mut layers = cfg.viewer_layers.clone();
-    let (mut north_up, mut mirror, mut compass) = (cfg.viewer_north_up, cfg.viewer_mirror_edges, cfg.viewer_show_compass);
-    let (mut allow, mut zoom) = (cfg.viewer_allow_pan_zoom, cfg.viewer_zoom_m);
-    let mut win3d = cfg.overlay.map_3d_windows;
-    let mut reset = false;
-    let mut view_req = None;
-    let follows = cfg.overlay.map_use_dashboard;
-    let mut lead = |ui: &mut Ui| {
-        theme::card(ui, tr("Viewer"), |ui| {
-            theme::checkbox_row(ui, &mut north_up, tr("Lock map north-up"))
-                .on_hover_text(tr("Off: the map turns with the car's heading."));
-            theme::checkbox_row(ui, &mut mirror, tr("Mirror map at edges"));
-            theme::checkbox_row(ui, &mut compass, tr("Show compass"));
-            theme::checkbox_row(ui, &mut allow, tr("Allow pan and zoom")).on_hover_text(tr(PAN_ZOOM_TIP));
-            theme::slider_row(ui, tr("Zoom"), &mut zoom, 50.0..=8000.0, 50.0, 0, " m")
-                .on_hover_text(tr("Metres from the centre of the map to its edge."));
-            if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
-                reset = true;
-            }
-            view_req = copy_row(ui, MapId::Viewer, follows, CopyWhat::View);
-        });
-    };
-    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Viewer, minimap_follows: follows, windows_3d: Some(&mut win3d) };
-    let layer_req = layers_ui(ui, &mut layers, aux, &mut lead);
-    if reset {
-        layers = crate::config::viewer_layers_default();
-    }
-    cfg.viewer_layers = layers;
-    cfg.overlay.map_3d_windows = win3d;
-    (cfg.viewer_north_up, cfg.viewer_mirror_edges, cfg.viewer_show_compass) = (north_up, mirror, compass);
-    (cfg.viewer_allow_pan_zoom, cfg.viewer_zoom_m) = (allow, zoom);
     apply_requests(cfg, [layer_req, view_req]);
 }
 
@@ -357,28 +328,46 @@ mod tests {
     use crate::ui::overlay_tab::tests::{check_panes, layers_ready, render, WIDTHS};
 
     /// The viewer's buttons and readout stay inside the tab at the window minimum and wider, in
-    /// both languages, and the two buttons never overlap.
+    /// both languages, and never overlap each other, the compass (top left) or the co-op player
+    /// list (top right). The Settings button sits bottom right (D73).
     #[test]
     fn viewer_controls_stay_inside_the_tab() {
         use crate::i18n::{with_language, Language};
         for lang in [Language::English, Language::German] {
             with_language(lang, || {
                 for w in [600.0, 700.0, 1000.0, 1235.0] {
-                    let out = render("map_viewer", w, 500.0, |ui, _| {
-                        let rect = ui.available_rect_before_wrap();
-                        controls(ui, rect, true, 1500.0);
-                    });
-                    check_panes(&out, w, "viewer controls");
-                    let mut labels = Vec::new();
-                    for c in &out.shapes {
-                        if let egui::Shape::Text(t) = &c.shape {
-                            labels.push(t.visual_bounding_rect());
+                    for compass in [false, true] {
+                        let h = 500.0;
+                        let out = render("map_viewer", w, h, |ui, _| {
+                            let rect = ui.available_rect_before_wrap();
+                            controls(ui, rect, true, 1500.0, compass);
+                        });
+                        check_panes(&out, w, "viewer controls");
+                        // Text shapes in paint order: Follow car, Settings, the radius.
+                        let labels: Vec<Rect> = out
+                            .shapes
+                            .iter()
+                            .filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.visual_bounding_rect()) } else { None })
+                            .collect();
+                        assert_eq!(labels.len(), 3, "{lang:?} at {w} px: follow, settings, radius");
+                        let (follow, settings, radius) = (labels[0], labels[1], labels[2]);
+                        for (i, a) in labels.iter().enumerate() {
+                            for b in &labels[i + 1..] {
+                                assert!(!a.intersects(*b), "{lang:?} at {w} px: labels touch: {a:?} / {b:?}");
+                            }
                         }
-                    }
-                    assert_eq!(labels.len(), 3, "{lang:?} at {w} px: follow, settings, radius");
-                    for (i, a) in labels.iter().enumerate() {
-                        for b in &labels[i + 1..] {
-                            assert!(!a.intersects(*b), "{lang:?} at {w} px: labels touch: {a:?} / {b:?}");
+                        // Corners: Follow top left, Settings bottom right, the radius bottom left.
+                        assert!(follow.center().x < w * 0.5 && follow.center().y < h * 0.25, "{lang:?} {w}: follow top left {follow:?}");
+                        assert!(settings.center().x > w * 0.5 && settings.center().y > h * 0.75, "{lang:?} {w}: settings bottom right {settings:?}");
+                        assert!(radius.center().x < w * 0.5 && radius.center().y > h * 0.75, "{lang:?} {w}: radius bottom left {radius:?}");
+                        // The co-op list: top right, up to ~320 px wide and 9 rows (17 px each) tall.
+                        let list = Rect::from_min_size(pos2(w - 320.0 - 6.0, 6.0), vec2(320.0, 10.0 + 17.0 * 9.0));
+                        assert!(!list.intersects(settings), "{lang:?} at {w} px: settings under the co-op list");
+                        assert!(!list.intersects(follow) || w < 700.0, "{lang:?} at {w} px: follow under the co-op list");
+                        // The compass (top left, scaled with the map) is clear of the button.
+                        if compass {
+                            let c = Rect::from_min_size(pos2(0.0, 0.0), vec2(compass_right(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), 50.0));
+                            assert!(!c.intersects(follow), "{lang:?} at {w} px: follow car over the compass");
                         }
                     }
                 }
@@ -386,9 +375,9 @@ mod tests {
         }
     }
 
-    /// Both maps' pages (the shared `layers_ui`), the viewer's, plus the HUD page following the
-    /// Dashboard and with its module off: six cards each, nothing leaves its pane. In German too
-    /// (the long labels).
+    /// Both maps' pages (the shared `layers_ui`), plus the HUD page following the Dashboard and
+    /// with its module off: six cards each, nothing leaves its pane. In German too (the long
+    /// labels).
     #[test]
     fn map_pages_stay_inside_their_panes() {
         use crate::i18n::{with_language, Language};
@@ -403,24 +392,21 @@ mod tests {
                         ("minimap_follow", true, true, false),
                         ("minimap_off", false, false, false),
                         ("dashboard", false, true, false),
-                        ("viewer", false, true, false),
                         ("minimap_3d", false, true, true),
                         ("minimap_follow_3d", true, true, true),
                         ("dashboard_3d", false, true, true),
-                        ("viewer_3d", false, true, true),
                     ] {
                         let mut cfg = AppConfig::default();
                         cfg.overlay.map_use_dashboard = follow;
                         cfg.overlay.minimap_on = module_on;
                         if relief {
-                            for t in [&mut cfg.overlay.map_layers.tilt, &mut cfg.minimap_layers.tilt, &mut cfg.viewer_layers.tilt] {
+                            for t in [&mut cfg.overlay.map_layers.tilt, &mut cfg.minimap_layers.tilt] {
                                 t.set_view_mode(crate::maprender::cfg::ViewMode::Relief);
                             }
                         }
                         let out = render(&format!("map_{name}"), w, 3600.0, |ui, atlas| match name {
                             n if n.starts_with("minimap") => minimap_page(ui, &mut cfg, &l, Some(atlas)),
-                            n if n.starts_with("dashboard") => dashboard_page(ui, &mut cfg, &l, Some(atlas)),
-                            _ => viewer_page(ui, &mut cfg, &l, Some(atlas)),
+                            _ => dashboard_page(ui, &mut cfg, &l, Some(atlas)),
                         });
                         assert_eq!(check_panes(&out, w, name), 6, "{lang:?} {name} at {w} px: expected 6 card frames");
                     }
@@ -439,7 +425,7 @@ mod tests {
             let mut cfg = AppConfig::default();
             let out = render("map_status", 700.0, 3600.0, |ui, _| minimap_page(ui, &mut cfg, &l, None));
             assert_eq!(check_panes(&out, 700.0, "status"), 6);
-            let out = render("map_status", 700.0, 3600.0, |ui, _| viewer_page(ui, &mut cfg, &l, None));
+            let out = render("map_status", 700.0, 3600.0, |ui, _| dashboard_page(ui, &mut cfg, &l, None));
             assert_eq!(check_panes(&out, 700.0, "status"), 6);
         }
     }
@@ -451,14 +437,12 @@ mod tests {
     fn module_selector_never_overlaps_its_labels() {
         let en = [
             (MapPage::Minimap, "Minimap"),
-            (MapPage::DashboardMap, "Dashboard map"),
-            (MapPage::Viewer, "Viewer"),
+            (MapPage::DashboardMap, "Dashboard map & Viewer"),
             (MapPage::MapData, "Map data"),
         ];
         let de = [
             (MapPage::Minimap, "Minikarte"),
-            (MapPage::DashboardMap, "Dashboard-Karte"),
-            (MapPage::Viewer, "Kartenansicht"),
+            (MapPage::DashboardMap, "Dashboard-Karte & Viewer"),
             (MapPage::MapData, "Kartendaten"),
         ];
         for (lang, opts) in [("en", &en), ("de", &de)] {
@@ -472,7 +456,7 @@ mod tests {
                     .iter()
                     .filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.visual_bounding_rect()) } else { None })
                     .collect();
-                assert_eq!(labels.len(), 4, "{lang} at {w} px");
+                assert_eq!(labels.len(), 3, "{lang} at {w} px");
                 for (i, a) in labels.iter().enumerate() {
                     assert!(a.left() >= 0.0 && a.right() <= w, "{lang} at {w} px: label leaves the window: {a:?}");
                     for b in &labels[i + 1..] {
@@ -483,37 +467,72 @@ mod tests {
         }
     }
 
-    /// The remembered mode and page round-trip through the config JSON and are never exported;
-    /// the viewer's own settings are exported.
+    /// The remembered mode and page round-trip through the config JSON and are never exported.
     #[test]
     fn remembered_state_is_saved_but_not_exported() {
         let mut c = AppConfig::default();
         c.map_tab_settings = true;
         c.map_tab_page = MapPage::MapData;
-        c.viewer_north_up = false;
         let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert!(back.map_tab_settings);
         assert_eq!(back.map_tab_page, MapPage::MapData);
         let all = vec![true; crate::config::KEY_GROUPS.len()];
         let json = crate::config::export_selected(&c, &all);
         assert!(!json.contains("map_tab_settings") && !json.contains("map_tab_page"));
-        assert!(json.contains("viewer_layers") && json.contains("viewer_north_up"));
     }
 
-    /// Defaults: the viewer opens north-up on a Dashboard-like look, with POIs kept visible at
-    /// its wide zoom levels.
+    /// The viewer has no settings of its own (D73): a new config has no `viewer_*` keys, and
+    /// the old default of its pan / zoom option is the Dashboard map's.
     #[test]
-    fn viewer_defaults() {
+    fn the_viewer_has_no_config_keys_of_its_own() {
         let c = AppConfig::default();
-        assert!(c.viewer_north_up && c.viewer_mirror_edges && !c.viewer_show_compass);
-        assert!(c.viewer_allow_pan_zoom && c.minimap_allow_pan_zoom);
-        assert_eq!(c.viewer_zoom_m, 1500.0);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("viewer_"), "no viewer_* key is written any more");
+        let all = vec![true; crate::config::KEY_GROUPS.len()];
+        assert!(!crate::config::export_selected(&c, &all).contains("viewer_"));
+        assert!(c.minimap_allow_pan_zoom);
         assert!(!c.map_tab_settings && c.map_tab_page == MapPage::Minimap);
-        let d = MapLayerConfig::dashboard();
-        assert_eq!(c.viewer_layers.roads, d.roads);
-        assert_eq!(c.viewer_layers.image, d.image);
-        assert_eq!(c.viewer_layers.pois.max_zoom_m, 10000.0);
-        assert!(c.viewer_layers.pois.max_zoom_m >= map_scene::ZOOM_MAX_M, "POIs show at every viewer zoom");
+    }
+
+    /// An old config (D67/D72, before D73) with the Viewer's own keys and the removed Viewer page
+    /// loads: every other key is kept, nothing counts as unreadable (so no `.bad-` backup), and
+    /// the next save drops the old keys. `map_tab_page: "viewer"` becomes the shared page.
+    #[test]
+    fn an_old_config_with_viewer_keys_still_loads() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["minimap_zoom_driving_m"] = 1234.0.into();
+        v["map_tab_page"] = "viewer".into();
+        v["viewer_layers"] = serde_json::to_value(MapLayerConfig::dashboard()).unwrap();
+        v["viewer_north_up"] = false.into();
+        v["viewer_mirror_edges"] = false.into();
+        v["viewer_show_compass"] = true.into();
+        v["viewer_allow_pan_zoom"] = false.into();
+        v["viewer_zoom_m"] = 2500.0.into();
+        let c: AppConfig = serde_json::from_value(v.clone()).expect("old keys are ignored, not an error");
+        assert_eq!(c.map_tab_page, MapPage::DashboardMap);
+        assert_eq!(c.minimap_zoom_driving_m, 1234.0, "other keys are kept");
+        assert!(c.minimap_north_up && c.minimap_allow_pan_zoom, "the viewer's old values are not migrated");
+        assert!(!serde_json::to_string(&c).unwrap().contains("viewer_"), "the next save drops them");
+        // The page name written before D73 for the Dashboard page still loads too.
+        v["map_tab_page"] = "dashboard_map".into();
+        let c: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(c.map_tab_page, MapPage::DashboardMap);
+    }
+
+    /// The Roads card's width sliders reach 100 px (D74), and the zoom rule really lets a road
+    /// grow that far: nothing in `road_base_px` caps it below `max_px`.
+    #[test]
+    fn the_road_width_limit_goes_up_to_100_px() {
+        use crate::maprender::ui::ROAD_PX_MAX;
+        assert_eq!(ROAD_PX_MAX, 100.0);
+        let mut c = MapLayerConfig::dashboard().roads;
+        assert_eq!(c.max_px, 10.0, "the default stays; the user tunes it");
+        c.max_px = ROAD_PX_MAX;
+        c.min_px = 1.0;
+        c.metres = 10.0;
+        // 12 px per metre: far zoomed in. The rule would give 120 px, the limit holds it at 100.
+        assert_eq!(crate::maprender::style::road_base_px(&c, 12.0), ROAD_PX_MAX);
+        assert_eq!(crate::maprender::style::road_base_px(&c, 5.0), 50.0, "below the limit it follows the zoom exactly");
     }
 
     /// Run frames of `page` with `events` in the first one; returns the last frame's output.
@@ -551,9 +570,8 @@ mod tests {
     }
 
     /// The whole flow with real pointer events: press the "Copy to…" of the Dashboard map page's
-    /// view card, pick "Viewer" in the menu, and the viewer's view options now match the
-    /// Dashboard map's; the button then reads "Copied". Also the Roads card's button: copies
-    /// the roads to the Minimap through "Both"... only the greyed state is checked there.
+    /// view card, pick "Minimap" in the menu, and the HUD minimap's view options now match the
+    /// Dashboard map's; the button then reads "Copied".
     #[test]
     fn clicking_copy_to_applies_the_request() {
         let ctx = crate::ui::test_render::context();
@@ -561,8 +579,8 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.minimap_north_up = false;
         cfg.minimap_show_compass = true;
-        cfg.viewer_north_up = true;
-        cfg.viewer_show_compass = false;
+        cfg.overlay.map_north_up = true;
+        cfg.overlay.compass = false;
         cfg.overlay.map_use_dashboard = false;
         let w = 1235.0;
         for _ in 0..3 {
@@ -575,10 +593,11 @@ mod tests {
         for _ in 0..2 {
             out = frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
         }
-        let item = find_text(&out, "Viewer").expect("the menu lists the Viewer");
-        assert!(find_text(&out, "Minimap").is_some() && find_text(&out, "Both").is_some());
+        let item = find_text(&out, "Minimap").expect("the menu lists the Minimap");
+        assert!(find_text(&out, "Both").is_some());
+        assert!(find_text(&out, "Viewer").is_none(), "no separate Viewer entry: it shares the Dashboard map's settings");
         click(&ctx, w, item, &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
-        assert!(!cfg.viewer_north_up && cfg.viewer_show_compass, "the viewer took the Dashboard map's view options");
+        assert!(!cfg.overlay.map_north_up && cfg.overlay.compass, "the HUD minimap took the Dashboard map's view options");
         assert!(!cfg.minimap_north_up, "the source is unchanged");
         let out = frame(&ctx, w, vec![], &mut |ui| dashboard_page(ui, &mut cfg, &l, None));
         let copied = |c: &egui::epaint::ClippedShape| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().ends_with("Copied"));
@@ -586,8 +605,7 @@ mod tests {
     }
 
     /// The menu with the Minimap following the Dashboard map: the Minimap entry and "Both" are
-    /// disabled (clicking them does nothing: the menu stays open, no "Copied"), the Viewer entry
-    /// works.
+    /// disabled (clicking them does nothing: the menu stays open, no "Copied", nothing written).
     #[test]
     fn copy_menu_blocks_the_following_minimap() {
         let ctx = crate::ui::test_render::context();
@@ -617,13 +635,9 @@ mod tests {
             let p = find_text(&out, entry).expect("entry");
             click(&ctx, w, p, &mut page);
             out = frame(&ctx, w, vec![], &mut page);
-            assert!(find_text(&out, "Viewer").is_some(), "{entry} is disabled: the menu stays open");
+            assert!(find_text(&out, "Both").is_some() && find_text(&out, "Minimap").is_some(), "{entry} is disabled: the menu stays open");
             assert!(!copied(&out), "{entry} must not copy");
         }
-        let p = find_text(&out, "Viewer").unwrap();
-        click(&ctx, w, p, &mut page);
-        let out = frame(&ctx, w, vec![], &mut page);
-        assert!(copied(&out), "the Viewer entry copies");
         assert_eq!(cfg.overlay.map_layers, own, "the following Minimap's own config is never written");
     }
 }

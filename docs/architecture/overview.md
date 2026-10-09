@@ -323,7 +323,7 @@ might produce.
 | `style.rs` | Road draw order, width rule, dash patterns, the POI category table (`POI_CATS`). |
 | `racesel.rs` | `RaceSel`: which race lines to draw (nearest / near / the best-effort current race). |
 | `paint2d.rs` | `draw_base` (image mesh incl. the subdivided tilted one and its far-edge fade) and `draw_layers` (roads with the tilt taper, jump lines, race lines, gate lines, POIs with the game's icons, the current treasure chest) onto an egui `Painter`; `draw_layers_parts` + `Parts` (K2: draw a subset, the 3D views keep race lines and POIs here and leave the roads to `gl3d`; POIs project through `Camera::project` / `k_at` so they follow the terrain); `IconAtlas`, `CornerClip` (the HUD pill). |
-| `ui.rs` | Settings cards for both maps (`layers_ui`, `view_rows` / `ViewCfg`, `status_ui`); used by the Map tab's Minimap, Dashboard map and Viewer pages. |
+| `ui.rs` | Settings cards for both maps (`layers_ui`, `view_rows` / `ViewCfg`, `status_ui`); used by the Map tab's Minimap and Dashboard map & Viewer pages. |
 
 ### `src/mapedit/` (the FH6 map editor inside the app, I26; D50) — see `docs/game-data/fh6-map-tooling.md`
 
@@ -356,7 +356,7 @@ might produce.
 | `mod.rs` | Declares the compiled tab modules. |
 | `dashboard.rs` | The draggable/resizable widget grid (largest UI file). See [[dashboard]]. |
 | `overlay_tab.rs` | Overlay tab: the HUD overlay's settings page (General, Monitor Detection, drag-and-drop 3×3 Layout, per-module cards). Also hosts the module selector (`page_selector_with`) and `module_card` the Map tab reuses. See [[overlay]]. |
-| `map_tab.rs` | Map tab (D67): the full-size viewer (drag / wheel / follow) and the settings mode with the Minimap · Dashboard map · Viewer · Map data pages. See [[map-tab]]. |
+| `map_tab.rs` | Map tab (D67): the full-size viewer (drag / wheel / follow) and the settings mode with the Minimap · Dashboard map & Viewer · Map data pages. See [[map-tab]]. |
 | `map_scene.rs` | The map scene the Dashboard Map widget and the viewer both draw (`draw`, `texture_or_status`), and their temporary pan / zoom state with the reset-when-driving rule (`ManualView`, `DriveGate`, D72). |
 | `map_data.rs` | The Map data page (road-type map editor card), moved from `settings.rs`. See [[map-editor]]. |
 | `backfire.rs` | Backfire tab controls (`show_backfire`). |
@@ -405,7 +405,7 @@ might produce.
 - **Minimap maths / season image (both maps)** → `minimap.rs`. See [[minimap]].
 - **3D map data, camera and road mesh (phase K)** → `maprender/terrain.rs`, `view.rs` (`Camera` relief), `mesh3d.rs`, `store.rs` (`terrain()`, `road_mesh()`); settings in `cfg.rs` (`tilt.relief`). The GL renderer is `maprender/gl3d/` (K2; the call sites are K3 HUD / K4 Dashboard + Viewer). See [[minimap]] ("3D: data and camera", "3D renderer").
 - **Map layers (roads, POIs, race lines, tilt) on the Dashboard / HUD map** → `maprender/` (`paint2d.rs` draws, `style.rs` looks, `cfg.rs` settings and defaults, `store.rs` data lifecycle); the call sites are `ui/dashboard.rs:show_minimap_widget` and `hud/minimap.rs:draw` (data handed over by `overlay/render.rs`). See [[minimap]], [[overlay]].
-- **Map settings UI (layer / view cards for the Minimap, Dashboard map and Viewer pages)** → `ui/map_tab.rs` + `maprender/ui.rs`. See [[map-tab]].
+- **Map settings UI (layer / view cards for the Minimap and Dashboard map & Viewer pages)** → `ui/map_tab.rs` + `maprender/ui.rs`. See [[map-tab]].
 - **HUD overlay: a widget's look** → `hud/<widget>.rs` (+ `hud::col` colours, `hud/anim.rs`
   timings); check it with the PNG harness `cargo test render_spec_states -- --ignored`.
   See [[overlay]].
