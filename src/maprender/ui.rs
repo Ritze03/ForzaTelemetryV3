@@ -433,6 +433,9 @@ pub struct LayerAux<'a> {
     pub which: MapId,
     /// The Minimap follows the Dashboard map, so it cannot be copied into.
     pub minimap_follows: bool,
+    /// The "allow 3D on Windows" flag (`OverlayConfig::map_3d_windows`), shown on the View mode
+    /// card on Windows only; a copy the page writes back, like `plate`.
+    pub windows_3d: Option<&'a mut bool>,
 }
 
 /// All layer settings of one map as cards in two or three columns, with `lead` (the page's own
@@ -441,13 +444,14 @@ pub struct LayerAux<'a> {
 /// [`apply_copy`] (this function only edits `cfg`, it never sees the other maps).
 pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut dyn FnMut(&mut Ui)) -> Option<CopyRequest> {
     let three = ui.available_width() >= THREE_COLS_MIN_W;
-    let LayerAux { icons, plate, enabled, which, minimap_follows } = ax;
+    let LayerAux { icons, plate, enabled, which, minimap_follows, windows_3d } = ax;
+    let mut win3d = windows_3d;
     let cp = CopyCtx { which, minimap_follows, out: Default::default() };
     let cp = &cp;
     let MapLayerConfig { image, roads, pois, race_lines, tilt } = cfg;
     let mut plate = plate;
     let mut image_card_ = |ui: &mut Ui| image_card(ui, image, plate.as_mut().map(|(v, e)| (&mut **v, *e)), enabled, cp);
-    let mut tilt_card_ = |ui: &mut Ui| tilt_card(ui, tilt, enabled, cp);
+    let mut tilt_card_ = |ui: &mut Ui| tilt_card(ui, tilt, enabled, cp, win3d.as_deref_mut());
     let mut race_card_ = |ui: &mut Ui| race_lines_card(ui, race_lines, enabled, cp);
     let mut roads_card_ = |ui: &mut Ui| roads_card(ui, roads, enabled, cp);
     let mut pois_card_ = |ui: &mut Ui| pois_card(ui, pois, icons, enabled, cp);
@@ -516,14 +520,32 @@ fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, en
 /// *hidden* in the other modes (not greyed): it is a whole group of rows that mean nothing
 /// there. `ViewMode` is derived (`TiltCfg::view_mode`), so the control only writes `on` /
 /// `relief.on` and the rest of the user's look stays when switching back and forth.
-fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx) {
+///
+/// `win3d` is the one "allow 3D on Windows" flag (`OverlayConfig::map_3d_windows`): on Windows the
+/// 3D segment reads "3D (experimental)" and, while 3D is picked, a checkbox turns it on (until
+/// then the maps stay Tilted and the status line says so). Elsewhere it is not shown.
+fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx, win3d: Option<&mut bool>) {
     theme::card(ui, tr("View mode"), |ui| {
         ui.add_enabled_ui(enabled, |ui| {
             view_mode_picker(ui, c);
             let mode = c.view_mode();
             if mode == ViewMode::Relief {
+                let mut allowed = true;
+                if cfg!(windows) {
+                    ui.add_space(4.0);
+                    let mut local = false;
+                    let flag = win3d.unwrap_or(&mut local);
+                    theme::checkbox_row(ui, flag, tr("Allow 3D on Windows")).on_hover_text(tr(
+                        "The 3D map has not been tested on Windows yet. Tick this to try it; if the map misbehaves, untick it to get the Tilted view back.",
+                    ));
+                    allowed = *flag;
+                }
                 ui.add_space(4.0);
-                status_3d_row(ui, &live_status_3d());
+                if allowed {
+                    status_3d_row(ui, &live_status_3d());
+                } else {
+                    status_3d_row(ui, &Some(Status3d::Unavailable(tr("switched off on Windows until you allow it above").to_string())));
+                }
             }
             ui.add_space(4.0);
             ui.add_enabled_ui(mode != ViewMode::Flat, |ui| {
@@ -560,7 +582,7 @@ fn view_mode_picker(ui: &mut Ui, c: &mut TiltCfg) {
     let mut mode = c.view_mode();
     let top = ui.cursor().min.y;
     let (left, width) = (ui.cursor().min.x, ui.available_width());
-    let opts = [(ViewMode::Flat, tr("Flat")), (ViewMode::Tilted, tr("Tilted")), (ViewMode::Relief, tr("3D"))];
+    let opts = [(ViewMode::Flat, tr("Flat")), (ViewMode::Tilted, tr("Tilted")), (ViewMode::Relief, if cfg!(windows) { tr("3D (experimental)") } else { tr("3D") })];
     if theme::segmented(ui, &mut mode, &opts) {
         c.set_view_mode(mode);
     }
@@ -1211,7 +1233,7 @@ mod tests {
             ..Default::default()
         };
         ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| tilt_card(ui, t, true, &cp));
+            egui::CentralPanel::default().show(ctx, |ui| tilt_card(ui, t, true, &cp, None));
         })
     }
 

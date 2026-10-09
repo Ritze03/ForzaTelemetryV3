@@ -473,6 +473,11 @@ pub struct OverlayConfig {
     /// "Use Dashboard map settings": the map options above (and the two zooms and the compass)
     /// follow the Dashboard map's; their controls are hidden. See [`OverlayConfig::effective`].
     pub map_use_dashboard: bool,
+    /// Allow the 3D map view on Windows (K3/K4): the Windows GL path (WGL overlay, eframe window) is
+    /// untested by the developers, so there 3D (HUD minimap, Dashboard map, Map-tab viewer) is
+    /// treated as Tilted until the user ticks this on the View mode card. One flag for all three
+    /// maps; ignored elsewhere.
+    pub map_3d_windows: bool,
     pub coop_teammates: bool,
     /// Draw co-op trails behind each player (own included), like the Dashboard map.
     pub coop_trails: bool,
@@ -601,6 +606,7 @@ impl Default for OverlayConfig {
             map_plate_opacity: 0.0,
             map_layers: crate::maprender::cfg::MapLayerConfig::hud(),
             map_use_dashboard: false,
+            map_3d_windows: false,
             coop_teammates: true,
             coop_trails: true,
             coop_trail_fade_secs: 10.0,

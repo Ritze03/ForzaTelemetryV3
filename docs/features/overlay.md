@@ -187,14 +187,16 @@ A changed monitor layout recreates the window within a second.
 4. Things to look at: colours/transparency (premultiplied alpha), the HUD sitting on the right
    monitor, flicker or a one-frame white/black flash on show, CPU use at 1440p/4K (readback),
    and the Hide HUD hotkey / focus-only behaviour.
-5. **The 3D minimap is off on Windows** (K3): the Map tab's View mode *3D* is treated as *Tilted*
-   there (`hud::minimap::wants_3d`: `!cfg!(windows)`). *Why:* the 3D scene renders into its own FBO
-   inside the paint callback and restores the framebuffer binding it read first; the Windows overlay
-   draws into its *own* offscreen FBO (`wgl.rs`) and reads it back, a combination nobody could run.
-   For a tester: drop the `!cfg!(windows)` in `wants_3d` (or the proposed
-   `overlay.map_3d_windows` flag, see [Minimap in 3D](#minimap-in-3d)), set View mode to 3D and
-   check the pill shows terrain with roads, no flicker, and that Hide/Show and a switch back to
-   Tilted leave no stale picture; `FORZA_MAP_3D_DEBUG=1` prints a status line per second to stderr.
+5. **The 3D minimap is opt-in on Windows** (K3, K4): the Map tab's View mode *3D* (labelled "3D
+   (experimental)" there) is treated as *Tilted* until **Allow 3D on Windows** is ticked on the View
+   mode card (`OverlayConfig::map_3d_windows`; `hud::minimap::wants_3d`: `!cfg!(windows) ||
+   map_3d_windows`). *Why:* the 3D scene renders into its own FBO inside the paint callback and
+   restores the framebuffer binding it read first; the Windows overlay draws into its *own* offscreen
+   FBO (`wgl.rs`) and reads it back, a combination nobody could run. For a tester: tick the box, set
+   View mode to 3D and check the pill shows terrain with roads, no flicker, and that Hide/Show and a
+   switch back to Tilted leave no stale picture; `FORZA_MAP_3D_DEBUG=1` prints a status line per
+   second to stderr. The same flag also gates the Dashboard map and the Map-tab viewer
+   ([map-tab.md](map-tab.md)).
 
 ## Widgets
 
@@ -360,14 +362,15 @@ Default stays **Tilted**; 3D is opt-in.
   `Renderer::drop` destroys it **before** `painter.destroy()` (see
   [Lifecycle and drop order](#lifecycle-and-drop-order)): its GL objects were made through the
   painter's context, which must still be current.
-- **Windows: off.** The Windows overlay path (WGL context, offscreen FBO, readback) cannot be
-  tested here, and the 3D callback's FBO save/restore is the part most likely to differ, so
-  `wants_3d` is false on Windows and *3D* behaves as *Tilted* there. **Proposed opt-in:** an
-  `overlay.map_3d_windows: bool` (default false) in `OverlayConfig` read by `wants_3d`, plus the
-  Map tab's View-mode hint "3D (experimental)" on Windows; not added yet (it needs `config.rs` and
-  the settings card). Untested pieces on Windows: the FBO restore (`FRAMEBUFFER_BINDING` is read
-  first and put back, which is what the offscreen path needs), the compat-profile `#version 330
-  core` compile, the 8 ms guard on integrated GPUs.
+- **Windows: opt-in.** The Windows overlay path (WGL context, offscreen FBO, readback) cannot be
+  tested here, and the 3D callback's FBO save/restore is the part most likely to differ, so on
+  Windows `wants_3d` needs `OverlayConfig::map_3d_windows` (default false; one flag for the HUD,
+  the Dashboard map and the viewer, ticked with **Allow 3D on Windows** on the View mode card, which
+  reads "3D (experimental)" on Windows); without it *3D* behaves as *Tilted* there and the card's
+  status line says so. *Why one flag:* the untested part is the Windows GL path as a whole, not a
+  single map, and one tick is easier for a tester than three. Untested pieces on Windows: the FBO
+  restore (`FRAMEBUFFER_BINDING` is read first and put back, which is what the offscreen path
+  needs), the compat-profile `#version 330 core` compile, the 8 ms guard on integrated GPUs.
 - **Verification** (Linux, headless EGL): `cargo test render_3d_states -- --ignored --nocapture`
   writes `target/hud_png/m2_3d_*` (synthetic terrain: hills, a bridge, race focus, horizon view,
   exaggeration, no roads / no image, co-op, fade 0.5, the failed-renderer fallback),

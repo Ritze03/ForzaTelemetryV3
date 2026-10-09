@@ -125,12 +125,14 @@ pub struct Scene3dIn {
     pub mesh: Option<Arc<crate::maprender::mesh3d::RoadMesh>>,
 }
 
-/// Is the Minimap to be drawn in 3D? View mode *3D*, and not on Windows: the Windows overlay path
-/// (WGL context, offscreen FBO + readback) cannot be tested by the developers, so there 3D is
-/// treated as Tilted until a tester has run it (K3; a config opt-in is proposed in
-/// `docs/features/overlay.md`).
+/// Is the Minimap to be drawn in 3D? View mode *3D*, and on Windows only when the user allowed it
+/// (`OverlayConfig::map_3d_windows`): the Windows overlay path (WGL context, offscreen FBO +
+/// readback) cannot be tested by the developers, so there 3D is treated as Tilted until a tester
+/// has run it.
 pub fn wants_3d(cfg: &crate::config::OverlayConfig) -> bool {
-    cfg.minimap_on && cfg.map_layers.tilt.view_mode() == crate::maprender::cfg::ViewMode::Relief && !cfg!(windows)
+    cfg.minimap_on
+        && cfg.map_layers.tilt.view_mode() == crate::maprender::cfg::ViewMode::Relief
+        && (!cfg!(windows) || cfg.map_3d_windows)
 }
 
 /// The car's height for the 3D camera: the telemetry height plus about a metre (the roof, so the

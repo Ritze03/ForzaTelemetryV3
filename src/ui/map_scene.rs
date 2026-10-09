@@ -382,6 +382,13 @@ impl Map3d {
     fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel) {}
 }
 
+/// May a map go 3D on this platform? Windows only with the user's opt-in (`map_3d_windows`: its GL
+/// path is untested by the developers); everywhere else yes.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn allowed_3d(windows_flag: bool) -> bool {
+    !cfg!(windows) || windows_flag
+}
+
 /// The 3D camera for this scene, when the map is in 3D mode and the terrain is loaded; `None`
 /// draws the plain camera (Flat / Tilted, a terrain still loading or missing, or a platform
 /// without GL 3D). Polls the terrain store, which starts its lazy load: this is the only place
@@ -395,7 +402,7 @@ fn relief_camera(app: &ForzaApp, sc: &Scene, rect: Rect) -> Option<Camera> {
     {
         use crate::maprender::cfg::ViewMode;
         use crate::maprender::store::{self, TerrainStatus};
-        if sc.layers.tilt.view_mode() != ViewMode::Relief {
+        if sc.layers.tilt.view_mode() != ViewMode::Relief || !allowed_3d(app.config.overlay.map_3d_windows) {
             return None;
         }
         app.map3d.drew.set(true);
@@ -593,34 +600,34 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     }
     let sel: &RaceSel = &sel;
     let icons = data.and_then(|d| app.minimap_icons.borrow_mut().ensure(ui.ctx(), d.icons.as_ref()));
-    let layer_pass = |cam: &Camera, parts: Parts| {
+    let layer_pass = |cam: &Camera, over_3d: bool| {
         if let Some(data) = data {
-            crate::maprender::paint2d::draw_layers_parts(
-                &crate::maprender::LayerCtx {
-                    p: &painter,
-                    cam,
-                    s: 1.0,
-                    a: 1.0,
-                    car: (car_x, car_z),
-                    corner_clip: None,
-                    icons: icons.as_deref(),
-                    race_sel: sel,
-                    week: None,
-                },
-                data,
-                lc,
-                parts,
-            );
+            let cx = crate::maprender::LayerCtx {
+                p: &painter,
+                cam,
+                s: 1.0,
+                a: 1.0,
+                car: (car_x, car_z),
+                corner_clip: None,
+                icons: icons.as_deref(),
+                race_sel: sel,
+                week: None,
+            };
+            if over_3d {
+                crate::maprender::paint2d::draw_layers_parts(&cx, data, lc, Parts::OVER_3D);
+            } else {
+                crate::maprender::draw_layers(&cx, data, lc);
+            }
         }
     };
     if underlay {
-        layer_pass(&cam, Parts::ALL);
+        layer_pass(&cam, false);
     }
     if let Some(r) = &relief {
         app.map3d.add_scene(&painter, r, sc, lc.image.on.then_some(tex), cal, data, sel);
     }
     if !underlay {
-        layer_pass(&cam, Parts::OVER_3D); // the roads are in the scene; race lines and POIs over it
+        layer_pass(&cam, true); // the roads are in the scene; race lines and POIs over it
     }
 
     // Markers (trails, teammates, own arrow, waypoints) come from `hud::map_shared`, the same
@@ -1048,6 +1055,19 @@ mod tests {
         let cam = Camera::from_cfg_relief(&layers.tilt, (0.0, 0.0), 0.3, 500.0, VIEW, Some(&level), Some(150.0));
         let (a, b) = (pick(&cam, pos2(300.0, 400.0)).unwrap(), cam.unproject(pos2(300.0, 400.0)).unwrap());
         assert!((a[0] - b[0]).abs() < 1e-2 && (a[1] - b[1]).abs() < 1e-2);
+    }
+
+    /// Windows runs 3D only with the opt-in flag; the other platforms never ask for it. The one
+    /// flag (`OverlayConfig::map_3d_windows`) is off by default and is the HUD's too.
+    #[test]
+    fn windows_needs_the_opt_in_for_3d() {
+        assert!(allowed_3d(true));
+        assert_eq!(allowed_3d(false), !cfg!(windows));
+        assert!(!crate::config::OverlayConfig::default().map_3d_windows);
+        let o: crate::config::OverlayConfig = serde_json::from_str("{}").unwrap();
+        assert!(!o.map_3d_windows, "a config saved before the flag existed");
+        assert_eq!(crate::hud::minimap::wants_3d(&crate::config::OverlayConfig { map_layers: layers_3d(), ..Default::default() }), !cfg!(windows));
+        assert!(crate::hud::minimap::wants_3d(&crate::config::OverlayConfig { map_layers: layers_3d(), map_3d_windows: true, ..Default::default() }));
     }
 
     /// The retry fires once per appearance of a 3D map, and only for a failed context.
