@@ -12,6 +12,11 @@
 //! they all coincide behind the car up to the fork ahead, with no finish mark. Once one candidate
 //! is left (or the rest are the same geometry to the finish) the whole route is drawn as before.
 //! Details and the numbers: `docs/features/minimap.md`, "Race lines and the current race".
+//! Once certain, the route is **locked** for the rest of the race (through lap wraps; given up only
+//! after [`LOCK_DROP_M`] off it, a race end or a mode change).
+//!
+//! **Race road (D80).** With `RouteStyle::Road` the focus also carries what is drawn of the line as
+//! a [`RaceRoad`] (points, heights, colour): the 3D scene builds its race road mesh from it.
 //!
 //! **In-race focus (D66).** The same selection also says which *roads* belong to the race, so the
 //! renderer can mute or hide the rest (`cfg::RaceFocusCfg`). The focus is on only when the mode is
@@ -26,7 +31,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::cfg::{RaceCfg, RaceLineMode};
+use super::cfg::{RaceCfg, RaceLineMode, Rgb, RouteStyle};
 use super::data::{MapLayers, RaceLayer, RoadLayer, N_TYPES};
 use super::mesh3d::known_y;
 use super::view::bbox_hits;
@@ -63,6 +68,12 @@ const WALK_LOOK_M: f32 = 40.0;
 /// Two routes that coincide to the end are "the same" when the longer one has at most this much
 /// left (m): duplicates with a slightly different finish line.
 pub const FINISH_TOL_M: f32 = 30.0;
+/// A route the selector was certain of stays the race's route until the car has driven this far
+/// off it (m). *Why (the user, 2026-10-09):* on lap 2 of a circuit whose start a sprint shares,
+/// the selection "just threw away that information and just started fresh … it should stay with
+/// its decision". A lap wrap, the start area or a short excursion never resets it; only the race
+/// ending (`race_position` 0), a mode change or this much driving elsewhere does.
+pub const LOCK_DROP_M: f32 = 200.0;
 
 /// One route the car may be on: the line and the car's progress `s` along it (metres from the
 /// line's first point; closed circuits wrap), and how far the car has driven since it last matched.
@@ -112,6 +123,12 @@ pub struct RaceSel {
     /// The road focus of the drawn extent. A `Mutex` (not a `RefCell`) so the selector can be
     /// shared by `&` with the renderer and still be a `static` in tests.
     cache: Mutex<Option<(FocusKey, Arc<RoadFocus>)>>,
+    /// The race road's colours (circuit, sprint) when race lines are drawn as roads (D80,
+    /// `RouteStyle::Road`), from the config of the last `update`; `None` = drawn as a line.
+    route_cols: Option<(Rgb, Rgb)>,
+    /// The route the selector is certain of (D80 fix): kept for the rest of the race, through
+    /// lap wraps and past routes that share its start (see [`LOCK_DROP_M`]).
+    locked: Option<usize>,
 }
 
 /// Squared distance from point p to segment a-b, and the segment's direction (unit).
@@ -417,20 +434,29 @@ impl RaceSel {
     pub fn road_focus(&self, layers: &MapLayers) -> Option<Arc<RoadFocus>> {
         let li = self.focus_line()?;
         let line = layers.races.lines.get(li)?;
-        let key: FocusKey = (layers.rev, Arc::as_ptr(&layers.roads) as usize, Arc::as_ptr(&layers.races) as usize, li, self.shown_gen);
+        let colour = self.route_cols.map(|(c, s)| if line.circuit { c } else { s });
+        let key: FocusKey = (layers.rev, Arc::as_ptr(&layers.roads) as usize, Arc::as_ptr(&layers.races) as usize, li, self.shown_gen, colour.map(|c| c.0));
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((k, f)) = cache.as_ref() {
             if *k == key {
                 return Some(f.clone());
             }
         }
-        let f = Arc::new(match self.span(li) {
+        let mut f = match self.span(li) {
             Some(sp) if li < layers.races.cum.len() => {
                 let (pts, half, y) = Poly::new(&layers.races, li).slice(sp.s0, sp.s1);
-                RoadFocus::build_pts(&layers.roads, &pts, &half, &y, false)
+                let mut f = RoadFocus::build_pts(&layers.roads, &pts, &half, &y, false);
+                f.race = colour.map(|color| RaceRoad { pts, y, closed: false, color });
+                f
             }
-            _ => RoadFocus::build(&layers.roads, line),
-        });
+            _ => {
+                let mut f = RoadFocus::build(&layers.roads, line);
+                f.race = colour.map(|color| RaceRoad { pts: line.pts.clone(), y: line.y.clone(), closed: line.closed, color });
+                f
+            }
+        };
+        f.race = f.race.take().filter(|r| r.pts.len() >= 2);
+        let f = Arc::new(f);
         *cache = Some((key, f.clone()));
         Some(f)
     }
@@ -444,6 +470,7 @@ impl RaceSel {
     /// Forget the candidates and what was drawn for them (the race ended, the mode changed).
     fn reset_current(&mut self) {
         self.cands.clear();
+        self.locked = None;
         self.last_car = None;
         if self.shown.take().is_some() {
             self.shown_gen = self.shown_gen.wrapping_add(1);
@@ -455,6 +482,10 @@ impl RaceSel {
         let fwd = (yaw.sin(), yaw.cos());
         let travelled = self.last_car.map_or(0.0, |p| (p.0 - car.0).hypot(p.1 - car.1));
         self.last_car = Some(car);
+        if let Some(li) = self.locked {
+            self.track_locked(layer, li, car, fwd, travelled);
+            return;
+        }
         // Every segment near the car that runs the way the car faces and has it inside its corridor.
         let mut hits: Vec<Hit> = Vec::new();
         layer.grid.near(car.0, car.1, 40.0, |li, s| {
@@ -477,7 +508,9 @@ impl RaceSel {
             let poly = Poly::new(layer, c.line);
             let delta = |arc: f32| {
                 let d = arc - c.s;
-                if poly.closed {
+                // A circuit wraps even when its line does not close within CLOSED_M (the progress jumps
+                // from its end to its start at the line): the lap-2 reset the user saw.
+                if poly.closed || layer.lines[c.line].circuit {
                     (d + poly.total / 2.0).rem_euclid(poly.total.max(1e-3)) - poly.total / 2.0
                 } else {
                     d
@@ -525,6 +558,41 @@ impl RaceSel {
         }
     }
 
+    /// Follow the locked route one frame: its nearest stretch under the car (any progress: a lap
+    /// wraps from the end to the start, and a circuit whose line does not close exactly jumps
+    /// there), heading agreeing. Unlocked only after [`LOCK_DROP_M`] driven off it; then the usual
+    /// candidate rules apply again (it stays the pick until another route matches).
+    fn track_locked(&mut self, layer: &RaceLayer, li: usize, car: (f32, f32), fwd: (f32, f32), travelled: f32) {
+        let mut best: Option<(f32, f32)> = None;
+        layer.grid.near(car.0, car.1, 40.0, |l, s| {
+            let (l, s) = (l as usize, s as usize);
+            let line = &layer.lines[l];
+            if l != li || s + 1 >= line.pts.len() {
+                return;
+            }
+            let (d, dir, t) = seg_dist([car.0, car.1], line.pts[s], line.pts[s + 1]);
+            if d > half_width(layer, l, s) + ON_LINE_SLACK_M || dir[0] * fwd.0 + dir[1] * fwd.1 <= 0.0 {
+                return;
+            }
+            let c = &layer.cum[l];
+            if best.is_none_or(|b| d < b.1) {
+                best = Some((c[s] + t * (c[s + 1] - c[s]), d));
+            }
+        });
+        if self.cands.len() != 1 || self.cands[0].line != li {
+            self.cands = vec![Cand { line: li, s: 0.0, off_m: 0.0 }];
+        }
+        let c = &mut self.cands[0];
+        match best {
+            Some((arc, _)) => (c.s, c.off_m) = (arc, 0.0),
+            None => c.off_m += travelled,
+        }
+        if c.off_m > LOCK_DROP_M {
+            // Back to candidate tracking: the route stays the pick until another one matches.
+            self.locked = None;
+        }
+    }
+
     /// Recompute what is drawn when the candidate set changed.
     fn refresh_shown(&mut self, layer: &RaceLayer) {
         if self.cands.is_empty() {
@@ -539,6 +607,13 @@ impl RaceSel {
             let new = compute_shown(layer, &self.cands);
             if self.shown.as_ref().is_none_or(|s| s.line != new.line || s.span != new.span) {
                 self.shown_gen = self.shown_gen.wrapping_add(1);
+            }
+            // Certain (one route, or the rest the same road to the finish): lock it for the race.
+            // Only when the set changes: a lock given up after LOCK_DROP_M stays given up until
+            // the candidates move on.
+            if new.span.is_none() {
+                self.locked = Some(new.line);
+                self.cands.retain(|c| c.line == new.line);
             }
             self.shown = Some(new);
         }
@@ -582,6 +657,7 @@ impl RaceSel {
         }
         self.key = key;
         self.focus_on = cfg.mode == RaceLineMode::Current && in_race && !self.picked.is_empty();
+        self.route_cols = (cfg.route == RouteStyle::Road).then_some((cfg.circuit_color, cfg.sprint_color));
         self
     }
 }
@@ -703,6 +779,23 @@ pub struct RoadFocus {
     /// Road segments looked at / found relevant (diagnostics, tests).
     pub segments: usize,
     pub relevant_segments: usize,
+    /// D80: what is drawn of the race line as a road of its own (`RouteStyle::Road`), for the 3D
+    /// scene, which gets the race only through this focus (`gl3d::Focus3d`); `None` for
+    /// `RouteStyle::Line`. Built with the focus, so it follows the drawn extent (D76).
+    pub race: Option<RaceRoad>,
+}
+
+/// The race line drawn as a road (D80): the drawn extent's points and heights and its colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RaceRoad {
+    pub pts: Vec<[f32; 2]>,
+    /// The line's own height per point (the AI's driving line: on the road, in the tunnel,
+    /// across the field), which the 3D deck follows.
+    pub y: Vec<f32>,
+    /// A whole closed circuit: the road closes on itself (no ends).
+    pub closed: bool,
+    /// The race colour (`RaceCfg::circuit_color` / `sprint_color`), drawn opaque.
+    pub color: Rgb,
 }
 
 impl RoadFocus {
@@ -767,7 +860,7 @@ impl RoadFocus {
 
 /// What [`RaceSel::road_focus`] cached for: the road data (rev and the `Arc`'s identity, so a
 /// rebuild is noticed), the race layer and the line.
-type FocusKey = (u64, usize, usize, usize, u32);
+type FocusKey = (u64, usize, usize, usize, u32, Option<[u8; 3]>);
 
 /// A straight line along +z at x = `x`, from z = 0 to 1000, 5 m spacing, half-width 6 m (tests,
 /// here and in `paint2d`).
@@ -1128,6 +1221,29 @@ mod tests {
         }
     }
 
+    /// D80: the focus carries the race road of what is drawn (the shared part while uncertain,
+    /// the whole route once certain) in the route's colour, and none for `RouteStyle::Line`.
+    #[test]
+    fn the_focus_carries_the_race_road_of_the_drawn_extent() {
+        let layer = fork_layer();
+        let layers = MapLayers { rev: 1, roads: Arc::new(RoadLayer::default()), races: Arc::new(RaceLayer::new(layer.lines.clone())), ..Default::default() };
+        let mut sel = RaceSel::default();
+        drive_line(&mut sel, &layers.races, 0, 20.0, 200.0, 0.0, |_, _| {});
+        let f = sel.road_focus(&layers).expect("focus");
+        let r = f.race.as_ref().expect("a race road");
+        let len: f32 = r.pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        assert!((len - 400.0).abs() < 8.0 && !r.closed && r.y.len() == r.pts.len(), "the shared 400 m: {len}");
+        assert_eq!(r.color, RaceCfg::default().sprint_color);
+        // Certain on route 1: the whole line.
+        drive_line(&mut sel, &layers.races, 0, 202.0, 520.0, 0.0, |_, _| {});
+        let f = sel.road_focus(&layers).expect("focus");
+        assert_eq!(f.race.as_ref().map(|r| r.pts.len()), Some(layers.races.lines[0].pts.len()));
+        // The thin line instead: no race road.
+        let line_cfg = RaceCfg { mode: RaceLineMode::Current, route: RouteStyle::Line, ..RaceCfg::default() };
+        sel.update(&layers.races, &line_cfg, Poly::new(&layers.races, 0).at(530.0).0.into(), 0.0, true);
+        assert!(sel.road_focus(&layers).expect("focus").race.is_none());
+    }
+
     #[test]
     fn while_uncertain_the_focus_corridor_is_the_shared_part_only() {
         let layer = fork_layer();
@@ -1163,12 +1279,20 @@ mod tests {
         sel.update(&layer, &c, (1.0, 100.0), 0.0, true);
         assert_eq!((sel.candidates(), sel.picked()), (1, &[0][..]));
         // Off both for a long way (a shortcut across the verge): the last pick is kept.
-        for z in (110..300).step_by(2) {
+        for z in (110..250).step_by(2) {
             sel.update(&layer, &c, (20.0, z as f32), 0.0, true);
         }
         assert_eq!(sel.picked(), &[0]);
-        // Back on route 2 instead: it replaces the set.
-        sel.update(&layer, &c, (41.0, 320.0), 0.0, true);
+        // Route 1 was certain: it is locked, so a short visit to route 2 keeps it.
+        sel.update(&layer, &c, (41.0, 252.0), 0.0, true);
+        assert_eq!(sel.picked(), &[0]);
+        // Off route 1 for more than LOCK_DROP_M: unlocked, but still the last pick ...
+        for z in (254..320).step_by(2) {
+            sel.update(&layer, &c, (20.0, z as f32), 0.0, true);
+        }
+        assert_eq!(sel.picked(), &[0]);
+        // ... until the car is on route 2: it replaces the set.
+        sel.update(&layer, &c, (41.0, 322.0), 0.0, true);
         assert_eq!(sel.picked(), &[1]);
     }
 
@@ -1178,7 +1302,8 @@ mod tests {
         let layer = RaceLayer::new(vec![route(1, &[[0.0, 0.0], [0.0, 500.0]], false), route(2, &[[1.5, 0.0], [1.5, 488.0]], false)]);
         let mut sel = RaceSel::default();
         drive_line(&mut sel, &layer, 0, 10.0, 200.0, 0.0, |sel, _| {
-            assert_eq!(sel.candidates(), 2);
+            // Certain at once: locked onto the one that stands for both.
+            assert_eq!(sel.candidates(), 1);
             assert_eq!(sel.span(sel.picked()[0]), None, "drawn whole, finish included");
             assert_eq!(sel.picked(), &[0], "the lowest line index stands for both");
         });
@@ -1216,6 +1341,45 @@ mod tests {
         // Past the split, on route 1: certain, the whole closed circuit.
         drive_line(&mut sel, &layer, 0, 122.0, 400.0, 0.0, |_, _| {});
         assert_eq!((sel.candidates(), sel.span(0)), (1, None));
+    }
+
+    /// The user's lap-2 bug: a circuit whose start and first stretch a sprint shares. Lap 1 makes
+    /// the circuit certain; crossing the line into lap 2 (back on the shared stretch) must keep it,
+    /// with the sprint not added again; the race ending resets it. Also with a circuit line that
+    /// does not close exactly (the car's progress jumps from its end to its start).
+    #[test]
+    fn a_certain_circuit_stays_locked_through_the_next_lap() {
+        let sq = [[0.0, 0.0], [200.0, 0.0], [200.0, 200.0], [0.0, 200.0], [0.0, 0.0]];
+        let open_circuit = {
+            let mut l = route(1, &sq, true);
+            let n = l.pts.len();
+            l.pts.truncate(n - 2); // ends 10 m short of its start
+            l.y.truncate(n - 2);
+            l.half.truncate(n - 2);
+            l.closed = false;
+            l
+        };
+        for circuit in [route(1, &sq, true), open_circuit] {
+            let sprint = route(2, &[[0.0, 0.0], [200.0, 0.0], [600.0, 0.0]], false);
+            let layer = RaceLayer::new(vec![circuit, sprint]);
+            let total = Poly::new(&layer, 0).total;
+            let mut sel = RaceSel::default();
+            // Lap 1, on the shared stretch: both routes.
+            drive_line(&mut sel, &layer, 0, 4.0, 150.0, 0.0, |sel, _| assert_eq!(sel.candidates(), 2));
+            // Round the first corner: the circuit is certain.
+            drive_line(&mut sel, &layer, 0, 152.0, total - 1.0, 0.0, |_, _| {});
+            assert_eq!((sel.candidates(), sel.picked(), sel.span(0)), (1, &[0][..], None));
+            // Lap 2: across the line and along the stretch the sprint shares.
+            drive_line(&mut sel, &layer, 0, 1.0, 190.0, 0.0, |sel, s| {
+                assert_eq!((sel.candidates(), sel.picked(), sel.span(0)), (1, &[0][..], None), "lap 2 at {s} m");
+            });
+            // The race ends: forgotten; the next race starts afresh with both.
+            let c = cfg(RaceLineMode::Current);
+            sel.update(&layer, &c, (100.0, 0.0), std::f32::consts::FRAC_PI_2, false);
+            assert_eq!((sel.candidates(), sel.picked().len()), (0, 0));
+            sel.update(&layer, &c, (20.0, 0.0), std::f32::consts::FRAC_PI_2, true);
+            assert_eq!(sel.candidates(), 2);
+        }
     }
 
     #[test]

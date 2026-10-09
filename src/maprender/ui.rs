@@ -611,6 +611,8 @@ fn other_roads_label(o: OtherRoads) -> &'static str {
         OtherRoads::Normal => "Normal",
         OtherRoads::Muted => "Muted",
         OtherRoads::Hidden => "Hidden",
+        // D82: its own label and dropdown entry come with #211.
+        OtherRoads::RaceOnly => "Hidden",
     })
 }
 

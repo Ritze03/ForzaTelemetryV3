@@ -472,6 +472,7 @@ impl Gl3dState {
             }
         }
         g.sync_focus(gl, sc.focus.as_ref().map(|f| &f.focus));
+        g.sync_race(gl, sc.focus.as_ref().map(|f| &f.focus), &relief.terrain)?;
         let ppp = info.pixels_per_point;
         let map = sc.map.and_then(|m| painter.texture(m.id).map(|t| (t, m.orig_size)));
         let frame = Frame {
@@ -489,6 +490,7 @@ impl Gl3dState {
             relief: sc.relief.sane(),
             roads: (sc.roads.on && g.roads.is_some()).then_some(&sc.roads),
             focus: sc.focus.as_ref().map(|f| &f.cfg),
+            race: g.race.as_ref().and_then(|(f, _)| f.race.as_ref()).map(|r| (&sc.roads, r.color)),
             s: sc.s,
             trails: &sc.trails,
             sync_timing: self.opts.sync_timing,

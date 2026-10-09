@@ -50,6 +50,13 @@ pub fn road_base_px(c: &RoadsCfg, px_per_m: f32) -> f32 {
     }
 }
 
+/// Width factor of the race road (D80, `RouteStyle::Road`) on the roads' width rule, 2D and 3D.
+/// *Why the road rule and not the track's own half-width:* the rule keeps every road readable at
+/// the HUD's and the Viewer's zooms (a 12 m track is a hairline at 3 km and a slab at 150 m);
+/// a little wider than a highway (1.44) so the race road covers whatever road it runs on, the
+/// other road's casing showing as its edge.
+pub const RACE_ROAD_WIDTH: f32 = 1.5;
+
 /// Final line width of a type: `max(0.7, base * type factor)`.
 pub fn line_px(base: f32, factor: f32) -> f32 {
     (base * factor).max(MIN_LINE_PX)

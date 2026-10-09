@@ -59,8 +59,8 @@
 use std::collections::HashMap;
 
 use super::cfg::RoadHeight;
-use super::data::{End, RoadLayer, N_TYPES};
-use super::racesel::RoadFocus;
+use super::data::{Chain, End, RoadLayer, N_TYPES};
+use super::racesel::{RaceRoad, RoadFocus};
 use super::terrain::Terrain;
 
 /// Tile edge, m.
@@ -307,6 +307,45 @@ pub struct RoadMesh {
     pub idx_far: Vec<u32>,
 }
 
+/// The slot the race road's open stretches use in its own mesh (the `Road` slot; the renderer
+/// gives every slot of the race mesh the race look).
+pub const SLOT_RACE: u8 = 1;
+/// A race road point this far (m) or more under the terrain is in a tunnel.
+pub const RACE_TUNNEL_DEPTH_M: f32 = 4.0;
+
+/// The race road as a road layer (D80, [`RoadMesh::race_road`]): one chain per run of open /
+/// tunnel segments, consecutive runs sharing their boundary vertex (a mitred join); a closed
+/// circuit ends on its first point, so its ends join too.
+pub fn race_road_layer(r: &RaceRoad, terrain: &Terrain) -> RoadLayer {
+    let mut l = RoadLayer::default();
+    let (mut pts, mut ys) = (r.pts.clone(), r.y.clone());
+    ys.resize(pts.len(), 0.0);
+    if r.closed && pts.len() >= 3 {
+        if pts[0] != pts[pts.len() - 1] {
+            pts.push(pts[0]);
+            ys.push(ys[0]);
+        } else {
+            let n = pts.len();
+            ys[n - 1] = ys[0];
+        }
+    }
+    let n = pts.len();
+    if n < 2 {
+        return l;
+    }
+    let under: Vec<bool> = (0..n).map(|i| known_y(ys[i]).is_some_and(|y| terrain.height(pts[i][0], pts[i][1]) - y >= RACE_TUNNEL_DEPTH_M)).collect();
+    let tunnel = |s: usize| under[s] && under[s + 1];
+    let mut start = 0usize;
+    for s in 1..=n - 1 {
+        if s == n - 1 || tunnel(s) != tunnel(start) {
+            let slot = if tunnel(start) { SLOT_TUNNEL } else { SLOT_RACE } as usize;
+            l.by_type[slot].push(Chain::new(pts[start..=s].to_vec(), ys[start..=s].to_vec()));
+            start = s;
+        }
+    }
+    l
+}
+
 /// A dense chain point before it is split into pieces.
 #[derive(Clone, Copy)]
 struct Dense {
@@ -551,6 +590,16 @@ impl RoadMesh {
         }
         mesh.build_indices();
         mesh
+    }
+
+    /// The race line as a road of its own (D80): the same ribbon, deck, mitred joins and round
+    /// caps as the roads, along the line's own points and heights. Stretches more than
+    /// [`RACE_TUNNEL_DEPTH_M`] under the terrain go into the tunnel slot, so the renderer draws
+    /// them like the road tunnels (last, without the depth test: seen through the hill); the rest
+    /// is slot [`SLOT_RACE`]. A closed circuit closes on itself (one mitred join, no ends).
+    /// A few hundred samples per km; the 85 km route 5555 builds in a few ms.
+    pub fn race_road(r: &RaceRoad, terrain: &Terrain) -> RoadMesh {
+        RoadMesh::build(&race_road_layer(r, terrain), terrain, 0)
     }
 
     /// Fill `idx_near` / `idx_far` and the tiles' ranges from the pieces.
@@ -1431,5 +1480,41 @@ mod tests {
         assert_eq!(rel.len(), m.vertex_count());
         let ones = rel.iter().filter(|&&b| b == 1).count();
         assert!(ones > 0 && ones < rel.len() / 2, "relevant vertices {ones} of {}", rel.len());
+    }
+
+    /// D80: the race road's own mesh: open stretches in the race slot, a stretch under the hill
+    /// in the tunnel slot, mitred where they meet (no caps there), round caps at the two ends; a
+    /// closed circuit is one loop with no caps at all.
+    #[test]
+    fn the_race_road_mesh_splits_tunnels_and_closes_circuits() {
+        let t = Terrain::synthetic();
+        // West to east through the big hill at (-300, 200), 150 m high inside it.
+        let pts: Vec<[f32; 2]> = (0..=90).map(|i| [-800.0 + i as f32 * 10.0, 205.0]).collect();
+        let y: Vec<f32> = pts.iter().map(|p| t.height(p[0], p[1]).min(150.0) + 0.5).collect();
+        let r = RaceRoad { pts: pts.clone(), y: y.clone(), closed: false, color: crate::maprender::cfg::Rgb::hex(0xfb7185) };
+        let l = race_road_layer(&r, &t);
+        let (open, tun) = (&l.by_type[SLOT_RACE as usize], &l.by_type[SLOT_TUNNEL as usize]);
+        assert_eq!((open.len(), tun.len()), (2, 1), "open, tunnel, open");
+        assert!(tun[0].pts.iter().zip(&tun[0].y).all(|(p, y)| t.height(p[0], p[1]) - y >= RACE_TUNNEL_DEPTH_M - 1e-3));
+        let ends: Vec<[End; 2]> = (0..2).map(|c| l.joins().get(SLOT_RACE as usize, c)).collect();
+        assert!(matches!(ends[0], [End::Dead, End::Join { .. }]) && matches!(ends[1], [End::Join { .. }, End::Dead]), "{ends:?}");
+        let m = RoadMesh::race_road(&r, &t);
+        let caps: u32 = m.pieces.iter().map(|p| p.caps.count_ones()).sum();
+        assert_eq!(caps, 2, "round caps at the two ends only");
+        assert!(m.samples.iter().all(|s| s.slot == SLOT_RACE || s.slot == SLOT_TUNNEL));
+        assert!(m.triangles().0 > 0 && m.tiles.iter().any(|t| t.near[1].count > 0), "a tunnel range to draw last");
+        // The deck follows the line's own heights (not the terrain): inside the hill it is 150.5 m.
+        assert!(m.samples.iter().filter(|s| s.slot == SLOT_TUNNEL).all(|s| (s.y_node - 150.5).abs() < 0.6));
+        // A closed circuit on flat ground: one loop, mitred onto itself.
+        let sq: Vec<[f32; 2]> = (0..40).map(|i| {
+            let a = i as f32 / 40.0 * std::f32::consts::TAU;
+            [300.0 + 200.0 * a.cos(), -300.0 + 200.0 * a.sin()]
+        }).collect();
+        let ys: Vec<f32> = sq.iter().map(|p| t.height(p[0], p[1]) + 0.5).collect();
+        let ring = RaceRoad { pts: sq, y: ys, closed: true, color: crate::maprender::cfg::Rgb::hex(0x38bdf8) };
+        let m = RoadMesh::race_road(&ring, &t);
+        assert_eq!(m.pieces.iter().map(|p| p.caps.count_ones()).sum::<u32>(), 0, "a loop has no ends");
+        let l = race_road_layer(&ring, &t);
+        assert!(matches!(l.joins().get(SLOT_RACE as usize, 0), [End::Join { .. }, End::Join { .. }]));
     }
 }

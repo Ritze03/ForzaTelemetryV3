@@ -25,7 +25,7 @@ use super::probe::{Caps, TEXTURE_MAX_ANISOTROPY, TIME_ELAPSED};
 use super::roads::{self, RoadGpu};
 use super::shaders::{self, compile, Common, Prog};
 use super::Gl3dOptions;
-use crate::maprender::cfg::{ReliefCfg, RoadHeight, RoadsCfg, RaceFocusCfg};
+use crate::maprender::cfg::{ReliefCfg, Rgb, RoadHeight, RoadsCfg, RaceFocusCfg};
 use crate::maprender::mesh3d::{RoadMesh, LIFT_M};
 use crate::maprender::racesel::RoadFocus;
 use crate::maprender::style;
@@ -56,6 +56,9 @@ pub struct Frame<'a> {
     /// `None` = no roads at all (`roads.on` is off, or no mesh yet).
     pub roads: Option<&'a RoadsCfg>,
     pub focus: Option<&'a RaceFocusCfg>,
+    /// The race road (D80): the road settings for its width rule and casing, and its colour.
+    /// Drawn when [`Gl3d::sync_race`] holds a mesh.
+    pub race: Option<(&'a RoadsCfg, Rgb)>,
     /// Size factor of strokes (HUD design -> screen).
     pub s: f32,
     /// Breadcrumb trails at their recorded heights (D77).
@@ -110,6 +113,8 @@ pub struct Gl3d {
     clip: Clipmap,
     pub heights: Option<HeightTex>,
     pub roads: Option<RoadGpu>,
+    /// The race road (D80): its own small mesh, for the focus it was built from.
+    pub race: Option<(Arc<RoadFocus>, RoadGpu)>,
     fbo: Option<Fbo>,
     empty_vao: glow::VertexArray,
     queries: Vec<glow::Query>,
@@ -141,7 +146,7 @@ impl Gl3d {
             (v, q)
         };
         let n = queries.len();
-        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
+        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, race: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
     }
 
     /// Upload the height raster (15 MB for the island, ~16 ms).
@@ -176,6 +181,31 @@ impl Gl3d {
         }
         let flags = focus.map(|f| r.mesh.build_rel(f));
         r.set_rel(gl, flags.as_deref(), focus.cloned());
+    }
+
+    /// Make the race road mesh match `focus` (D80): built and uploaded when the focus `Arc`
+    /// changes (a new drawn extent, D76) and it carries a race road; dropped otherwise. A few ms
+    /// for the longest route, once per change, never per frame.
+    pub fn sync_race(&mut self, gl: &glow::Context, focus: Option<&Arc<RoadFocus>>, terrain: &Terrain) -> Result<(), String> {
+        let want = focus.filter(|f| f.race.is_some());
+        let same = match (&self.race, want) {
+            (None, None) => true,
+            (Some((a, _)), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same {
+            return Ok(());
+        }
+        if let Some((_, mut old)) = self.race.take() {
+            old.destroy(gl);
+        }
+        if let Some(f) = want {
+            let mesh = RoadMesh::race_road(f.race.as_ref().expect("filtered"), terrain);
+            if !mesh.samples.is_empty() {
+                self.race = Some((f.clone(), RoadGpu::upload(gl, Arc::new(mesh))?));
+            }
+        }
+        Ok(())
     }
 
     fn ensure_fbo(&mut self, gl: &glow::Context, w: i32, h: i32) -> Result<(), String> {
@@ -401,8 +431,16 @@ impl Gl3d {
             }
 
             // ── roads
-            if let (Some(rc), Some(r)) = (f.roads, self.roads.as_ref()) {
-                self.draw_roads(gl, f, &heights, rc, r, &mut st);
+            // D82: "race road only" draws nothing of the road mesh while the race road is there.
+            let race_only = f.race.is_some() && self.race.is_some() && f.focus.is_some_and(|c| c.other_roads == crate::maprender::cfg::OtherRoads::RaceOnly);
+            if let (Some(rc), Some(r), false) = (f.roads, self.roads.as_ref(), race_only) {
+                let table = roads::style_table(rc, f.focus, f.cam.view.scale, f.s, f.ppp);
+                self.draw_roads(gl, f, &heights, &table, r, None, &mut st);
+            }
+            // ── the race road (D80): after every road, over them
+            if let (Some((rc, color)), Some((_, r))) = (f.race, self.race.as_ref()) {
+                let table = roads::race_table(rc, color, f.cam.view.scale, f.s, f.ppp);
+                self.draw_roads(gl, f, &heights, &table, r, Some(RACE_BIAS), &mut st);
             }
             // ── trails (D77; the own car is a pass of its own, `render_marker`)
             if !f.trails.is_empty() {
@@ -429,11 +467,11 @@ impl Gl3d {
 
     /// # Safety
     /// The scene FBO is bound with depth testing on; a current context.
-    unsafe fn draw_roads(&self, gl: &glow::Context, f: &Frame, heights: &HeightTex, rc: &RoadsCfg, r: &RoadGpu, st: &mut RenderStats) {
+    /// `race` = the race road's pass (D80): its depth bias base (casing; the fill a step nearer),
+    /// node heights always (the line's own heights), no per-rank steps.
+    unsafe fn draw_roads(&self, gl: &glow::Context, f: &Frame, heights: &HeightTex, table: &roads::StyleTable, r: &RoadGpu, race: Option<f32>, st: &mut RenderStats) {
         // SAFETY: the caller's contract.
         unsafe {
-            let scale_pt = f.cam.view.scale;
-            let table = roads::style_table(rc, f.focus, scale_pt, f.s, f.ppp);
             let plan = roads::plan(&r.mesh, f.cam, f.ppp, table.rw[2].max(table.rw[1]));
             st.tiles_near = plan.tiles_near;
             st.tiles_far = plan.tiles_far;
@@ -446,7 +484,7 @@ impl Gl3d {
             let p = &self.road;
             gl.use_program(Some(p.p));
             self.camera_uniforms(gl, p, f, heights);
-            gl.uniform_1_f32(p.u("uMode"), (f.relief.road_height == RoadHeight::Nodes) as u8 as f32);
+            gl.uniform_1_f32(p.u("uMode"), (race.is_some() || f.relief.road_height == RoadHeight::Nodes) as u8 as f32);
             gl.uniform_1_f32(p.u("uThick"), f.relief.deck_m);
             gl.uniform_1_f32(p.u("uLift"), LIFT_M);
             let flat = |v: &[[f32; 4]; roads::SLOTS]| -> Vec<f32> { v.iter().flatten().copied().collect() };
@@ -472,9 +510,15 @@ impl Gl3d {
             // Two passes (D81): every casing, then every fill over them (`shaders::ROAD_VS`).
             let pass = |which: f32| {
                 gl.uniform_1_f32(p.u("uPass"), which);
-                let (base, rank) = if which == 0.0 { (BIAS_BASE, BIAS_RANK_CASING) } else { (BIAS_BASE + BIAS_FILL, BIAS_RANK) };
+                let (base, rank) = match race {
+                    Some(b) => (if which == 0.0 { b } else { b + RACE_BIAS_FILL }, 0.0),
+                    None if which == 0.0 => (BIAS_BASE, BIAS_RANK_CASING),
+                    None => (BIAS_BASE + BIAS_FILL, BIAS_RANK),
+                };
                 gl.uniform_2_f32(p.u("uBias"), base, rank);
             };
+            // (the roads' tunnel pass before a race road pass left the depth test off)
+            gl.enable(glow::DEPTH_TEST);
             for which in [0.0, 1.0] {
                 pass(which);
                 for d in &plan.normal {
@@ -681,6 +725,9 @@ impl Gl3d {
         if let Some(mut r) = self.roads.take() {
             r.destroy(gl);
         }
+        if let Some((_, mut r)) = self.race.take() {
+            r.destroy(gl);
+        }
     }
 }
 
@@ -705,3 +752,9 @@ const BIAS_RANK: f32 = 0.0002;
 /// (0.002 + 0.0005 + 8 x 0.0002 = 0.0041) stays under the trails (`BIAS_RANK * 12` = 0.0044).
 const BIAS_RANK_CASING: f32 = 0.00005;
 const BIAS_FILL: f32 = 0.0005;
+/// The race road (D80) lies on the road it runs on (its heights are the driving line's, within a
+/// metre of the road's nodes): its casing is biased nearer than every road fill (top 0.0041), its
+/// fill a step more, both under the trails (0.0044). So it reads as one road over the other one,
+/// with no z-fighting.
+const RACE_BIAS: f32 = 0.0042;
+const RACE_BIAS_FILL: f32 = 0.00008;

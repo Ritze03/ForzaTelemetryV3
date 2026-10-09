@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use egui::epaint::Vertex;
 use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2};
 
-use super::cfg::{DashStyle, ImageCfg, MapLayerConfig, OtherRoads, RaceCfg, RaceLineMode, Rgb};
+use super::cfg::{DashStyle, ImageCfg, MapLayerConfig, OtherRoads, RaceLineMode, Rgb, RouteStyle};
 use super::data::{End, Joins, MapLayers, NO_CAT};
 use super::racesel::{Poly, RaceSel, RoadFocus};
 use super::style::{self, Shape as Marker};
@@ -320,12 +320,19 @@ pub fn draw_layers_parts(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig
     let mut st = LayerStats::default();
     // In-race focus (D66): only with a selected race line (`RaceSel::focus_line`), never on a guess.
     let focusing = cx.race_sel.focus_line().is_some_and(|l| l < layers.races.lines.len());
-    if parts.roads && cfg.roads.on {
-        let focus = (focusing && cfg.race_lines.focus.other_roads != OtherRoads::Normal).then(|| cx.race_sel.road_focus(layers)).flatten();
-        draw_roads(cx, layers, cfg, focus.as_deref(), &mut st);
+    let rc = &cfg.race_lines;
+    let other = rc.focus.other_roads.effective(rc.route);
+    // D82: "race road only" draws no road of the road layer while the focus is on.
+    if parts.roads && cfg.roads.on && !(focusing && other == OtherRoads::RaceOnly) {
+        let focus = (focusing && other != OtherRoads::Normal).then(|| cx.race_sel.road_focus(layers)).flatten();
+        draw_roads(cx, layers, cfg, other, focus.as_deref(), &mut st);
     }
-    if parts.race_lines && cfg.race_lines.mode != RaceLineMode::Off {
-        draw_race_lines(cx, layers, &cfg.race_lines, cfg.tilt.taper, &mut st);
+    if parts.race_lines && rc.mode != RaceLineMode::Off {
+        // Over the 3D scene (D80) the focus line's race road is the GL scene's: it gets it with the
+        // focus, which the call sites hand over whenever the other roads are not drawn normally.
+        let in_gl = !parts.roads && focusing && rc.route == RouteStyle::Road && other != OtherRoads::Normal;
+        let skip = if in_gl { cx.race_sel.focus_line() } else { None };
+        draw_race_lines(cx, layers, cfg, skip, &mut st);
     }
     if parts.pois && cfg.pois.on && !(focusing && cfg.race_lines.focus.hide_pois) {
         draw_pois(cx, layers, cfg, &mut st);
@@ -607,8 +614,8 @@ enum Pass {
 }
 
 /// Roads, and with the in-race `focus` (D66) the other roads muted underneath, or not at all.
-fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Option<&RoadFocus>, st: &mut LayerStats) {
-    match (focus, cfg.race_lines.focus.other_roads) {
+fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, other: OtherRoads, focus: Option<&RoadFocus>, st: &mut LayerStats) {
+    match (focus, other) {
         (Some(f), OtherRoads::Muted) => {
             road_pass(cx, layers, cfg, Some(f), Pass::Muted, st);
             road_pass(cx, layers, cfg, Some(f), Pass::Relevant, st);
@@ -941,25 +948,47 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
 /// Vertex budget for the "all lines" mode (one frame).
 const RACE_ALL_BUDGET: usize = 40_000;
 
-fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, taper: bool, st: &mut LayerStats) {
+/// The race lines (`RouteStyle::Line`: thin lines) or race roads (`RouteStyle::Road`, D80: the
+/// road look along the line — every casing, then every fill, round ends, in the race colour,
+/// opaque, [`style::RACE_ROAD_WIDTH`] on the roads' width rule), then the start / finish marks.
+/// `skip` = a line whose race road the 3D scene draws (only its marks are drawn here).
+fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, skip: Option<usize>, st: &mut LayerStats) {
+    let rc = &cfg.race_lines;
+    let taper = cfg.tilt.taper;
+    let road = rc.route == RouteStyle::Road;
     let aabb = cx.cam.footprint(20.0);
     let lines = &layers.races.lines;
     let idx: Vec<usize> = if rc.mode == RaceLineMode::All { (0..lines.len()).collect() } else { cx.race_sel.picked().iter().copied().filter(|&i| i < lines.len()).collect() };
     let (mut scratch, mut pieces) = (Vec::new(), Vec::new());
     let mut budget = RACE_ALL_BUDGET;
+    // Race roads: (colour, tapered pieces, round ends), drawn after the loop.
+    let mut roads: Vec<(Color32, Vec<(f32, Vec<Pos2>)>, Vec<Pos2>)> = Vec::new();
+    let mut marks: Vec<(usize, bool, bool)> = Vec::new();
     for i in idx {
         let l = &lines[i];
         if !bbox_hits(&l.bbox, &aabb) {
             continue;
         }
-        let color = cx.c(if l.circuit { rc.circuit_color } else { rc.sprint_color }, rc.alpha);
-        pieces.clear();
+        let rgb = if l.circuit { rc.circuit_color } else { rc.sprint_color };
         // An uncertain current race (D76): only the part all candidate routes share, no finish.
         let span = if rc.mode == RaceLineMode::All { None } else { cx.race_sel.span(i).filter(|_| i < layers.races.cum.len()) };
-        match span {
-            Some(sp) => cx.polyline(&Poly::new(&layers.races, i).slice(sp.s0, sp.s1).0, false, &mut pieces, &mut scratch),
-            None => cx.polyline(&l.pts, l.closed, &mut pieces, &mut scratch),
+        if rc.marks {
+            marks.push((i, span.is_none_or(|sp| sp.start), span.is_none()));
         }
+        if skip == Some(i) {
+            st.race_lines += 1;
+            continue;
+        }
+        pieces.clear();
+        let sliced;
+        let (pts, closed): (&[[f32; 2]], bool) = match span {
+            Some(sp) => {
+                sliced = Poly::new(&layers.races, i).slice(sp.s0, sp.s1).0;
+                (&sliced, false)
+            }
+            None => (&l.pts, l.closed),
+        };
+        cx.polyline(pts, closed, &mut pieces, &mut scratch);
         let n: usize = pieces.iter().map(Vec::len).sum();
         if rc.mode == RaceLineMode::All {
             if n > budget {
@@ -969,12 +998,42 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, rc: &RaceCfg, taper: bool,
         }
         st.race_lines += 1;
         st.vertices += n;
-        for (k, pc) in cx.tapered(std::mem::take(&mut pieces), taper) {
-            cx.p.add(Shape::line(pc, Stroke::new((rc.width_px * cx.s * k).max(style::MIN_LINE_PX), color)));
+        if road {
+            let ends = if closed { Vec::new() } else { [pts.first(), pts.last()].into_iter().flatten().filter_map(|q| cx.cam.project(q[0], q[1])).collect() };
+            roads.push((cx.c(rgb, 1.0), cx.tapered(std::mem::take(&mut pieces), taper), ends));
+        } else {
+            let color = cx.c(rgb, rc.alpha);
+            for (k, pc) in cx.tapered(std::mem::take(&mut pieces), taper) {
+                cx.p.add(Shape::line(pc, Stroke::new((rc.width_px * cx.s * k).max(style::MIN_LINE_PX), color)));
+            }
         }
-        if rc.marks {
-            draw_race_marks(cx, l, span.is_none_or(|sp| sp.start), span.is_none());
+    }
+    if !roads.is_empty() {
+        let c = &cfg.roads;
+        let w = style::line_px(style::road_base_px(c, cx.cam.scale() / cx.s) * cx.s, style::RACE_ROAD_WIDTH);
+        let extra = c.casing_px * cx.s;
+        let casing = cx.c(c.styles.road.casing_color, c.casing_alpha);
+        let wk = |k: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
+        // Every casing under every fill, as the roads (D81): two race roads crossing or a circuit
+        // crossing itself join like a junction.
+        for (fill, pass) in [(false, 0), (true, 1)] {
+            for (col, pcs, ends) in &roads {
+                let col = if fill { *col } else { casing };
+                for (k, l) in pcs {
+                    cx.p.add(Shape::line(l.clone(), Stroke::new(wk(*k) + if fill { 0.0 } else { extra * k }, col)));
+                }
+                for &at in ends {
+                    let k = cx.taper_k(at.y, taper);
+                    let r = 0.5 * (wk(k) + if pass == 0 { extra * k } else { 0.0 });
+                    if r >= DECO_MIN_R && cx.visible(at, r) && cx.fits(at, r) {
+                        cx.p.circle_filled(at, r, col);
+                    }
+                }
+            }
         }
+    }
+    for (i, start, finish) in marks {
+        draw_race_marks(cx, &lines[i], start, finish);
     }
 }
 
@@ -1646,7 +1705,7 @@ mod tests {
         let mut cfg = only_roads();
         cfg.race_lines.focus.other_roads = OtherRoads::Hidden;
         let mut st = LayerStats::default();
-        let shapes = paint(rect, |p| draw_roads(&ctx(p, &cam), &layers, &cfg, Some(&focus), &mut st));
+        let shapes = paint(rect, |p| draw_roads(&ctx(p, &cam), &layers, &cfg, OtherRoads::Hidden, Some(&focus), &mut st));
         assert_eq!(st.chains, 3);
         let mesh = tessellate(&shapes);
         let c = rect.center();
@@ -1961,6 +2020,7 @@ mod tests {
         let cam = flat_cam(rect, (0.0, 0.0), 0.0, 600.0);
         let layers = MapLayers::synthetic();
         let mut cfg = MapLayerConfig::default();
+        cfg.race_lines.route = RouteStyle::Line;
         cfg.roads.on = false;
         cfg.pois.on = false;
         let run = |cfg: &MapLayerConfig, sel: &[usize]| {
@@ -1987,7 +2047,7 @@ mod tests {
         assert_eq!(run(&cfg, &[0]).0.race_lines, 0);
         // The selector feeds the painter: put the car on the ring and let `Current` pick it.
         let mut sel = RaceSel::default();
-        let rc = RaceCfg::default();
+        let rc = crate::maprender::cfg::RaceCfg::default();
         let picked = sel.update(&layers.races, &rc, (400.0, 0.0), 0.0, true).picked().to_vec();
         assert_eq!(picked, vec![0]);
     }
@@ -2073,6 +2133,7 @@ mod tests {
         let cam = flat_cam(rect, (0.0, 300.0), 0.0, 1500.0);
         let layers = focus_layers();
         let mut cfg = MapLayerConfig::default();
+        cfg.race_lines.route = RouteStyle::Line;
         cfg.roads.on = false;
         assert!(cfg.race_lines.focus.hide_pois);
         let sel = RaceSel::fixed(vec![0], true);
@@ -2085,6 +2146,75 @@ mod tests {
         assert_eq!((st.race_lines, st.pois), (1, 0));
         // line + start dot (circle) + finish chequer (1 backing + 9 cells)
         assert_eq!(shapes.len(), 1 + 1 + 10);
+    }
+
+    /// D80: `RouteStyle::Road` (the default) draws the race line as a road: its casing under its
+    /// fill (the road width rule, x RACE_ROAD_WIDTH), round ends, opaque race colour; over the 3D
+    /// scene the focus line's road is the GL scene's, so only its marks are left here.
+    #[test]
+    fn the_race_line_is_drawn_as_a_road() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 300.0), 0.0, 1500.0);
+        let layers = focus_layers();
+        let mut cfg = MapLayerConfig::default();
+        assert_eq!(cfg.race_lines.route, RouteStyle::Road);
+        let sel = RaceSel::fixed(vec![0], true);
+        let run = |cfg: &MapLayerConfig, parts: Parts| {
+            let mut st = LayerStats::default();
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.race_sel = &sel;
+                st = draw_layers_parts(&c, &layers, cfg, parts);
+            });
+            (st, shapes)
+        };
+        cfg.roads.on = false;
+        let (st, shapes) = run(&cfg, Parts::ALL);
+        assert_eq!(st.race_lines, 1);
+        // casing + fill, 2 round ends each (casing, fill), start dot, finish chequer (1 + 9)
+        assert_eq!(shapes.len(), 2 + 4 + 1 + 10);
+        let strokes: Vec<(f32, Color32)> = shapes
+            .iter()
+            .filter_map(|s| if let Shape::Path(p) = &s.shape { if let egui::epaint::ColorMode::Solid(c) = p.stroke.color { Some((p.stroke.width, c)) } else { None } } else { None })
+            .collect();
+        let fill = cfg.race_lines.sprint_color.color(1.0);
+        let casing = cfg.roads.styles.road.casing_color.color(cfg.roads.casing_alpha);
+        assert_eq!(strokes.len(), 2, "{strokes:?}");
+        assert_eq!((strokes[0].1, strokes[1].1), (casing, fill), "casing first, then the opaque race colour");
+        let base = style::road_base_px(&cfg.roads, cam.scale());
+        assert!((strokes[1].0 - style::line_px(base, style::RACE_ROAD_WIDTH)).abs() < 1e-3 && strokes[0].0 > strokes[1].0, "{strokes:?}");
+        // Over the 3D scene with the other roads muted (the scene has the focus): marks only.
+        let (st, shapes) = run(&cfg, Parts::OVER_3D);
+        assert_eq!((st.race_lines, shapes.len()), (1, 1 + 10));
+        // ... with the other roads Normal the scene gets no focus: drawn here.
+        cfg.race_lines.focus.other_roads = OtherRoads::Normal;
+        assert_eq!(run(&cfg, Parts::OVER_3D).1.len(), 2 + 4 + 1 + 10);
+    }
+
+    /// D82: "race road only" draws no road of the road layer in a race (2D), only the race road;
+    /// outside a race the roads are back; with `RouteStyle::Line` it is `Hidden`.
+    #[test]
+    fn race_only_draws_no_normal_roads_in_a_race() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 300.0), 0.0, 1500.0);
+        let layers = focus_layers();
+        let mut cfg = MapLayerConfig::default();
+        cfg.pois.on = false;
+        cfg.race_lines.focus.other_roads = OtherRoads::RaceOnly;
+        let run = |cfg: &MapLayerConfig, sel: &RaceSel| {
+            let mut st = LayerStats::default();
+            paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.race_sel = sel;
+                st = draw_layers(&c, &layers, cfg);
+            });
+            st
+        };
+        let st = run(&cfg, &RaceSel::fixed(vec![0], true));
+        assert_eq!((st.chains, st.race_lines), (0, 1), "no road pieces, the race road");
+        assert_eq!(run(&cfg, &RaceSel::fixed(vec![0], false)).chains, 5, "not in a race: every road");
+        cfg.race_lines.route = RouteStyle::Line;
+        assert_eq!(run(&cfg, &RaceSel::fixed(vec![0], true)).chains, 2, "with the line: Hidden (the corridor's road + jump)");
     }
 
     /// Frame cost on the real data: `cargo test --release bench_ -- --ignored --nocapture`.

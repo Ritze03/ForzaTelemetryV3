@@ -320,6 +320,25 @@ pub struct RaceCfg {
     pub marks: bool,
     /// What the rest of the map does while racing (D66).
     pub focus: RaceFocusCfg,
+    /// How the race lines are drawn (D80): as a road of their own (casing + fill in the race
+    /// colour; in 3D a road deck along the line's own heights) or as the thin line of before.
+    pub route: RouteStyle,
+}
+
+/// How race lines are drawn (D80).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteStyle {
+    /// A road of its own along the race line: the road look (width rule, casing under fill,
+    /// round ends), in the race colour, over the roads it runs on. In 3D a road deck at the line's
+    /// own heights (`racesel::RaceRoad`, `gl3d`). *Why (the user, 2026-10-09):* first "I dont like
+    /// the way that the racetrack is drawn on top of the road", then, after a cross-country race
+    /// off the road network, "it should also just draw a 3d road to draw the race line" (so not the
+    /// nav roads recoloured: a race does not have to follow them).
+    #[default]
+    Road,
+    /// The thin race line drawn on top of the map (the look before D80).
+    Line,
 }
 
 impl Default for RaceCfg {
@@ -333,6 +352,7 @@ impl Default for RaceCfg {
             alpha: 0.85,
             marks: true,
             focus: RaceFocusCfg::default(),
+            route: RouteStyle::Road,
         }
     }
 }
@@ -348,8 +368,25 @@ pub enum OtherRoads {
     /// Drawn in one faint neutral colour without casing (see [`RaceFocusCfg`]).
     #[default]
     Muted,
-    /// Not drawn.
+    /// Not drawn (the roads along the race corridor still are).
     Hidden,
+    /// No road of the road layer at all, along the race or not (no casings, caps or jump lines
+    /// either): only the race road (D82). Needs `RouteStyle::Road`; with `RouteStyle::Line` it
+    /// falls back to `Hidden` (a lone thin line on the image would be all that is left). *Why (the
+    /// user, 2026-10-09):* "Here should be a setting, to not draw anything from the normal road
+    /// mesh and only draw the circuit using the 3d renderer".
+    #[serde(rename = "race_only")]
+    RaceOnly,
+}
+
+impl OtherRoads {
+    /// What applies with race lines drawn as `route`: `RaceOnly` needs the race road.
+    pub fn effective(self, route: RouteStyle) -> OtherRoads {
+        match (self, route) {
+            (OtherRoads::RaceOnly, RouteStyle::Line) => OtherRoads::Hidden,
+            (o, _) => o,
+        }
+    }
 }
 
 /// The in-race focus (D66): while the car is in a race **and** a race line is selected (the
@@ -624,6 +661,10 @@ mod tests {
         assert_eq!(p.race_lines.focus, RaceFocusCfg::default());
         let f: MapLayerConfig = serde_json::from_str(r#"{"race_lines":{"focus":{"other_roads":"hidden"}}}"#).unwrap();
         assert_eq!((f.race_lines.focus.other_roads, f.race_lines.focus.mute_alpha, f.race_lines.focus.hide_pois), (OtherRoads::Hidden, 0.25, true));
+        // D80: a config saved before the route style existed draws the route as roads.
+        assert_eq!(p.race_lines.route, RouteStyle::Road);
+        let r: MapLayerConfig = serde_json::from_str(r#"{"race_lines":{"route":"line"}}"#).unwrap();
+        assert_eq!(r.race_lines.route, RouteStyle::Line);
     }
 
     #[test]
