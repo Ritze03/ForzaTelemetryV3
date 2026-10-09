@@ -902,17 +902,18 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
         .iter()
         .filter_map(|(info, pkt)| {
             let paused = pkt.is_paused();
-            let (x, z, yaw) = if paused {
+            let (x, y, z, yaw) = if paused {
                 let s = app.coop_last_pos.get(&info.id)?; // never seen at a valid spot — nothing to show
-                (s.x, s.z, s.yaw)
+                (s.x, s.y, s.z, s.yaw)
             } else {
-                (pkt.position_x, pkt.position_z, pkt.yaw)
+                (pkt.position_x, pkt.position_y, pkt.position_z, pkt.yaw)
             };
             Some(crate::hud::map_shared::Remote {
                 id: info.id.clone(),
                 name: info.name.clone(),
                 x,
                 z,
+                y: Some(y),
                 yaw,
                 colour: crate::ui::coop::hue_color(info.hue),
                 paused,

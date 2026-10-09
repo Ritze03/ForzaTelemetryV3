@@ -42,10 +42,29 @@ impl MapCanvas<'_> {
     pub fn to_screen(&self, wx: f32, wz: f32) -> Pos2 {
         // `Camera::project` is the plane maths of a flat / tilted camera and the terrain-surface
         // point of a 3D one (phase K), so teammates, trails and waypoints sit on the relief.
-        self.cam.project(wx, wz).unwrap_or_else(|| {
-            let [ox, oy] = self.cam.view.world_to_offset(wx, wz);
-            self.cam.centre + vec2(ox, oy).normalized() * 1.0e5
-        })
+        self.cam.project(wx, wz).unwrap_or_else(|| self.off_screen(wx, wz))
+    }
+    /// Far off-screen in the flat direction of (x, z) from the car (for points the camera cannot
+    /// project).
+    fn off_screen(&self, wx: f32, wz: f32) -> Pos2 {
+        let [ox, oy] = self.cam.view.world_to_offset(wx, wz);
+        self.cam.centre + vec2(ox, oy).normalized() * 1.0e5
+    }
+    /// [`MapCanvas::to_screen`] for something that stands at a real height `y` (a teammate's
+    /// telemetry height): in the 3D view it is projected at that height (minus the car-centre
+    /// offset, like the own car marker: road level), so a teammate in a tunnel shows down at the
+    /// tunnel and not on the hill above it. `None` height, a non-finite one, and every flat /
+    /// tilted camera give exactly [`MapCanvas::to_screen`]. *Why:* D77 did this for the own car;
+    /// teammates were still projected onto the terrain surface.
+    pub fn to_screen_at(&self, wx: f32, wz: f32, y: Option<f32>) -> Pos2 {
+        if let (Some(_), Some(y)) = (&self.cam.relief, y.filter(|y| y.is_finite())) {
+            let ground = y - crate::maprender::gl3d::GROUND_BELOW_M;
+            if let Some((p, _)) = self.cam.project3(wx, ground, wz) {
+                return p;
+            }
+            return self.off_screen(wx, wz);
+        }
+        self.to_screen(wx, wz)
     }
     fn c(&self, c: Color32) -> Color32 {
         c.gamma_multiply(self.a)
@@ -110,6 +129,10 @@ pub struct Remote {
     pub name: String,
     pub x: f32,
     pub z: f32,
+    /// The telemetry height in metres (a paused one: its last known). Used by the 3D view to put
+    /// the marker where the car is (a tunnel) instead of on the terrain surface; `None` = on the
+    /// terrain. Flat and tilted views ignore it.
+    pub y: Option<f32>,
     pub yaw: f32,
     pub colour: Color32,
     pub paused: bool,
@@ -241,7 +264,7 @@ pub fn draw_remotes_in(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_
     // side) can be nudged apart instead of stacking illegibly.
     let mut labels: Vec<(Pos2, String, Color32)> = Vec::new();
     for r in remotes {
-        let at = cv.to_screen(r.x, r.z);
+        let at = cv.to_screen_at(r.x, r.z, r.y);
         let col = if r.paused { crate::theme::steel(170) } else { r.colour };
         if cv.within(at, 8.0 * s, round) {
             arrow(cv, at, r.yaw - map_yaw, col);
@@ -401,6 +424,52 @@ mod tests {
         let poly = shapes.iter().find_map(|s| if let egui::Shape::Path(p) = &s.shape { Some(p.points.clone()) } else { None }).expect("arrow polygon");
         let c = poly.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / poly.len() as f32;
         assert!((c.x - tilted.centre.x).abs() < 0.5 && (c.y - tilted.centre.y).abs() < 5.0, "{c:?} vs {:?}", tilted.centre);
+    }
+
+    /// D77 for teammates: in 3D a teammate sits at its telemetry height - a tunnel under a hill
+    /// shows down at the road, not at the hill's surface - while flat / tilted cameras and a
+    /// teammate without a height keep the terrain / plane mapping, and waypoints (no height on
+    /// the wire) stay on the terrain.
+    #[test]
+    fn teammate_in_a_tunnel_is_drawn_at_its_own_height_in_3d_not_on_the_hill() {
+        use crate::maprender::terrain::Terrain;
+        use crate::maprender::view::Relief;
+        use std::sync::Arc;
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(208.0, 136.0));
+        let terrain = Arc::new(Terrain::synthetic());
+        // The big hill at (-300, 200); the car approaches from the south-east side.
+        let (hx, hz) = (-300.0f32, 200.0f32);
+        let top = terrain.height(hx, hz);
+        let tunnel_y = 100.0f32;
+        assert!(top > tunnel_y + 40.0, "the spot is deep under the hill ({top} m)");
+        let car = (hx + 150.0, hz - 150.0);
+        let cam3 = Camera::new(car.0, car.1, -0.78, 600.0, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0)
+            .with_relief(Relief::new(terrain.clone(), 1.0, terrain.height(car.0, car.1)));
+        let mate = |y: Option<f32>| Remote { id: "kai".into(), name: "Kai".into(), x: hx, z: hz, y, yaw: 0.0, colour: Color32::from_rgb(255, 128, 0), paused: false };
+        let arrow_centre = |cam: &Camera, y: Option<f32>| -> Pos2 {
+            let shapes = with_canvas(cam, rect, false, |cv| draw_remotes(cv, &[mate(y)], car, 0.0));
+            let poly = shapes.iter().find_map(|s| if let egui::Shape::Path(p) = &s.shape { Some(p.points.clone()) } else { None }).expect("teammate arrow");
+            (poly.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / poly.len() as f32).to_pos2()
+        };
+        let want = |y: f32| cam3.project3(hx, y - crate::maprender::gl3d::GROUND_BELOW_M, hz).unwrap().0;
+        let on_hill = cam3.project(hx, hz).unwrap();
+        let in_tunnel = arrow_centre(&cam3, Some(tunnel_y));
+        // The arrow's centroid is within a few px of the projected point.
+        assert!((in_tunnel - want(tunnel_y)).length() < 3.0, "{in_tunnel:?} vs {:?}", want(tunnel_y));
+        assert!((in_tunnel - on_hill).length() > 15.0, "the tunnel teammate must not sit on the hill: {in_tunnel:?} vs {on_hill:?}");
+        // No height: the terrain surface, as before.
+        assert!((arrow_centre(&cam3, None) - on_hill).length() < 8.0);
+        // Flat and tilted cameras ignore the height.
+        let tilted = Camera::new(car.0, car.1, -0.78, 600.0, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0);
+        let flat = Camera::new(car.0, car.1, -0.78, 600.0, rect, rect.center(), 0.0, 1.0);
+        for cam in [&tilted, &flat] {
+            let (a, b) = (arrow_centre(cam, Some(tunnel_y)), arrow_centre(cam, None));
+            assert!((a - b).length() < 1e-3, "2D / tilted unchanged: {a:?} vs {b:?}");
+        }
+        // A waypoint at the same spot stays on the terrain surface in 3D.
+        let shapes = with_canvas(&cam3, rect, false, |cv| draw_waypoint(cv, (hx, hz), Color32::WHITE, car, 0.0));
+        let dot = shapes.iter().find_map(|s| if let egui::Shape::Circle(c) = &s.shape { Some(c.center) } else { None }).unwrap();
+        assert!((dot - on_hill).length() < 1.0, "{dot:?} vs {on_hill:?}");
     }
 
     #[test]
