@@ -1218,6 +1218,21 @@ fn de(s: &str) -> Option<&'static str> {
             => "Wo das Fahrzeug auf der Kartenhöhe sitzt: 0 % = oben, 100 % = unten.",
         "Thinner lines in the distance" => "Dünnere Linien in der Ferne",
         "Race lines" => "Rennlinien",
+        "Race line style" => "Rennlinien-Stil",
+        "Line" => "Linie",
+        "Race road only" => "Nur die Rennstraße",
+        "Road: the race is drawn as a road of its own in the race colour (outline, rounded ends, as wide as a highway); in 3D a real road at the race's own heights. Line: a thin line on top of the map."
+            => "Straße: Das Rennen wird als eigene Straße in der Rennfarbe gezeichnet (Umrandung, runde Enden, so breit wie eine Autobahn); in 3D eine echte Straße in den Höhen des Rennens. Linie: eine dünne Linie über der Karte.",
+        "Only for the Line style: a race road has its own width and is opaque."
+            => "Nur für den Stil Linie: Eine Rennstraße hat eine eigene Breite und ist deckend.",
+        "In a race, nothing of the road network is drawn, only the race road. Needs the Road style; with the Line style it hides the other roads instead."
+            => "In einem Rennen wird nichts vom Straßennetz gezeichnet, nur die Rennstraße. Braucht den Stil Straße; beim Stil Linie werden stattdessen die anderen Straßen ausgeblendet.",
+        "Limits how often the Dashboard map takes the car's position and heading. Off = every frame."
+            => "Begrenzt, wie oft die Dashboard-Karte Position und Fahrtrichtung des Autos übernimmt. Aus = jedes Bild.",
+        "Map image" => "Kartenbild",
+        "Builds the map image again, at the quality above." => "Erstellt das Kartenbild neu, in der oben eingestellten Qualität.",
+        "Deletes the cached map images and builds them again." => "Löscht die zwischengespeicherten Kartenbilder und erstellt sie neu.",
+        "Show everything and fade the trails like the Dashboard map does." => "Alles anzeigen und die Spuren wie die Dashboard-Karte ausblenden.",
         "Current race is a best guess from where the car is and which way it drives: the game doesn't say which race it is. Nearest and Near use the search radius."
             => "Aktuelles Rennen ist eine Schätzung aus Position und Fahrtrichtung des Fahrzeugs: Das Spiel verrät nicht, um welches Rennen es geht. Nächste und In der Nähe nutzen den Suchradius.",
         "Show" => "Anzeigen",

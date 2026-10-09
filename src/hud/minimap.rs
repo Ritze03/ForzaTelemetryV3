@@ -536,11 +536,11 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     // The 3D scene, over the plate (and, until it is Ready, over the 2D underlay).
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Some((sc, c3)) = &three {
-        use crate::maprender::cfg::OtherRoads;
         use crate::maprender::gl3d::{add_scene, Focus3d, Scene3d};
         let focus = data.zip(picked).and_then(|(d, rs)| {
             let focusing = rs.focus_line().is_some_and(|l| l < d.races.lines.len());
-            (focusing && lc.race_lines.focus.other_roads != OtherRoads::Normal).then(|| rs.road_focus(d)).flatten()
+            // Also for a race road over normal roads: 3D draws it only from the focus (D80, D82).
+            (focusing && crate::maprender::cfg::focus_wanted(&lc.race_lines)).then(|| rs.road_focus(d)).flatten()
         });
         add_scene(
             &p.with_clip_rect(rect),

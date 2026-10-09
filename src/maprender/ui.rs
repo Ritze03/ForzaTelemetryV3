@@ -13,7 +13,7 @@
 use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Stroke, TextureId, Ui};
 
 use super::cfg::{
-    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, MarkerStyle, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadHeight, RoadsCfg, ReliefCfg, TiltCfg, ViewMode,
+    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, MarkerStyle, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadHeight, RoadsCfg, ReliefCfg, RouteStyle, TiltCfg, ViewMode,
 };
 use super::paint2d::IconAtlas;
 use super::store::{LayerStatus, Layers};
@@ -611,8 +611,14 @@ fn other_roads_label(o: OtherRoads) -> &'static str {
         OtherRoads::Normal => "Normal",
         OtherRoads::Muted => "Muted",
         OtherRoads::Hidden => "Hidden",
-        // D82: its own label and dropdown entry come with #211.
-        OtherRoads::RaceOnly => "Hidden",
+        OtherRoads::RaceOnly => "Race road only",
+    })
+}
+
+fn route_label(r: RouteStyle) -> &'static str {
+    tr(match r {
+        RouteStyle::Road => "Road",
+        RouteStyle::Line => "Line",
     })
 }
 
@@ -634,14 +640,29 @@ fn race_lines_card(ui: &mut Ui, c: &mut RaceCfg, enabled: bool, cp: &CopyCtx) {
             ui.add_enabled_ui(matches!(c.mode, RaceLineMode::Nearest | RaceLineMode::Near), |ui| {
                 theme::slider_row(ui, tr("Search radius"), &mut c.radius_m, 100.0..=5000.0, 50.0, 0, " m");
             });
-            theme::slider_row(ui, tr("Line width"), &mut c.width_px, 1.0..=12.0, 0.5, 1, " px");
+            let route_tip = tr("Road: the race is drawn as a road of its own in the race colour (outline, rounded ends, as wide as a highway); in 3D a real road at the race's own heights. Line: a thin line on top of the map.");
+            control_row_tip(ui, tr("Race line style"), route_tip, |ui| {
+                egui::ComboBox::from_id_salt("map_race_route")
+                    .selected_text(route_label(c.route))
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for r in [RouteStyle::Road, RouteStyle::Line] {
+                            ui.selectable_value(&mut c.route, r, route_label(r));
+                        }
+                    });
+            });
+            // The race road has its own width and is opaque: width and opacity are the Line style's.
+            let line_only = tr("Only for the Line style: a race road has its own width and is opaque.");
+            ui.add_enabled_ui(c.route == RouteStyle::Line, |ui| {
+                theme::slider_row(ui, tr("Line width"), &mut c.width_px, 1.0..=12.0, 0.5, 1, " px");
+                pct_row(ui, tr("Opacity"), &mut c.alpha, 0.0, 100.0, 1.0, Some(line_only));
+            });
             control_row(ui, tr("Circuit colour"), |ui| {
                 egui::color_picker::color_edit_button_srgb(ui, &mut c.circuit_color.0);
             });
             control_row(ui, tr("Sprint colour"), |ui| {
                 egui::color_picker::color_edit_button_srgb(ui, &mut c.sprint_color.0);
             });
-            pct_row(ui, tr("Opacity"), &mut c.alpha, 0.0, 100.0, 1.0, None);
             theme::checkbox_row(ui, &mut c.marks, tr("Start / finish marks"));
             race_focus_rows(ui, c);
         });
@@ -658,13 +679,17 @@ fn race_focus_rows(ui: &mut Ui, c: &mut RaceCfg) {
         ui.add_space(2.0);
         ui.label(theme::section_label(tr("In a race"))).on_hover_text(tip);
         let f = &mut c.focus;
+        let race_only_tip = tr("In a race, nothing of the road network is drawn, only the race road. Needs the Road style; with the Line style it hides the other roads instead.");
         control_row_tip(ui, tr("Other roads"), tip, |ui| {
             egui::ComboBox::from_id_salt("map_race_other_roads")
                 .selected_text(other_roads_label(f.other_roads))
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
-                    for o in [OtherRoads::Normal, OtherRoads::Muted, OtherRoads::Hidden] {
-                        ui.selectable_value(&mut f.other_roads, o, other_roads_label(o));
+                    for o in [OtherRoads::Normal, OtherRoads::Muted, OtherRoads::Hidden, OtherRoads::RaceOnly] {
+                        let r = ui.selectable_value(&mut f.other_roads, o, other_roads_label(o));
+                        if o == OtherRoads::RaceOnly {
+                            r.on_hover_text(race_only_tip);
+                        }
                     }
                 });
         });
