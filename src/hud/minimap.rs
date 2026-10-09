@@ -1,5 +1,6 @@
-//! M2′ minimap (pill frame, no scale bar), 208 × 136. Heading-up season map clipped to a
-//! rounded rect, drawn by the shared renderer (`maprender`, D61): `draw_base` for the image, then
+//! M2′ minimap (pill frame, no scale bar), 208 × 136 by default. Heading-up season map clipped to
+//! the frame's shape (a rounded rect, or a circle, at the size and with the outline and plate the
+//! Overlay tab sets, [`Frame`], D75), drawn by the shared renderer (`maprender`, D61): `draw_base` for the image, then
 //! `draw_layers` for roads / race lines / POIs, both through one [`Camera`] (flat, or tilted by
 //! default) and cut to the pill's rounded corners.
 //!
@@ -34,8 +35,84 @@ use crate::maprender::{draw_base, BaseParams, Camera, LayerCtx, RaceSel};
 use crate::minimap::{self as mm, MapCalibration, Season, Trail};
 use crate::overlay::snapshot::HudSnapshot;
 
+/// The default frame size (the M2′ pill); the real one is [`size`].
+#[cfg(test)]
 pub const SIZE: Vec2 = vec2(208.0, 136.0);
-const RADIUS: f32 = 22.0;
+
+/// The Minimap's frame resolved from the config (D75): shape, size, corner radius and outline
+/// width, sanitised so a hand-edited file can't reach the renderer with a NaN or a degenerate
+/// size. Design px; `w == h` and `radius == w / 2` for a circle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    pub w: f32,
+    pub h: f32,
+    pub radius: f32,
+    pub circle: bool,
+    /// The outline width, 0 = none.
+    pub border: f32,
+}
+
+impl Frame {
+    pub fn of(cfg: &crate::config::OverlayConfig) -> Frame {
+        use crate::config::{MapShape, OverlayConfig as O};
+        let fin = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        let circle = cfg.map_shape == MapShape::Circle;
+        let w = fin(cfg.map_width, O::DEFAULT_MAP_W).clamp(20.0, 2000.0);
+        // Why the circle takes its diameter from the width alone: one size control, and a
+        // "height" that does nothing would only confuse (D75).
+        let h = if circle { w } else { fin(cfg.map_height, O::DEFAULT_MAP_H).clamp(20.0, 2000.0) };
+        let half = w.min(h) / 2.0;
+        let radius = if circle { half } else { fin(cfg.map_corner_radius, O::DEFAULT_MAP_RADIUS).clamp(0.0, half) };
+        let border = fin(cfg.map_border_width, 3.0).clamp(0.0, half / 2.0);
+        Frame { w, h, radius, circle, border }
+    }
+
+    /// Arc segments per quarter for the outline: the default 12 (7.5° steps) for a rounded rect,
+    /// finer for a circle, whose whole outline is one arc.
+    fn arc_n(&self) -> usize {
+        if self.circle { 64 } else { 12 }
+    }
+
+    /// A rect fully inside the frame's shape, for [`CornerClip::safe`] (anything outside it is
+    /// tested against the outline): the rect shrunk by the corner radius, or for a circle the
+    /// inscribed square, slightly smaller.
+    fn safe(&self, xf: &Xf) -> egui::Rect {
+        if self.circle {
+            egui::Rect::from_center_size(xf.rect(0.0, 0.0, self.w, self.h).center(), Vec2::splat(xf.l(self.w * 0.68)))
+        } else {
+            xf.rect(0.0, 0.0, self.w, self.h).shrink(xf.l(self.radius))
+        }
+    }
+
+    /// The compass disc's centre in the frame's design px. The pill's `(18, 18)` (3 px border +
+    /// 11 px disc + 4 px air) follows the border width; a big corner radius pulls it in along the
+    /// diagonal to stay inside the arc, and on a circle it sits on the up-left diagonal.
+    fn compass(&self) -> [f32; 2] {
+        const R: f32 = 11.0;
+        let (bw, h2) = (self.border, std::f32::consts::FRAC_1_SQRT_2);
+        if self.circle {
+            let d = (self.w / 2.0 - bw - R - 4.0).max(0.0);
+            let c = self.w / 2.0;
+            return [c - d * h2, c - d * h2];
+        }
+        let mut b = bw + R + 4.0;
+        let r = self.radius;
+        if b < r {
+            // The disc must stay inside the corner arc (centre (r, r), radius r - border).
+            let max_d = (r - bw - R - 1.0).max(0.0);
+            if (r - b) / h2 > max_d {
+                b = r - max_d * h2;
+            }
+        }
+        [b, b]
+    }
+}
+
+/// The Minimap's footprint in the HUD layout, design px.
+pub fn size(cfg: &crate::config::OverlayConfig) -> Vec2 {
+    let f = Frame::of(cfg);
+    vec2(f.w, f.h)
+}
 /// How often the wall-clock season is re-checked, seconds.
 const SEASON_CHECK_SECS: f64 = 60.0;
 
@@ -348,7 +425,12 @@ impl CoopLayer {
 /// `north` is the unit screen direction of world-north (`MapView::north_dir`). Shared with
 /// the Dashboard map so the two compasses can't drift apart.
 pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
-    let c = xf.p(18.0, 18.0);
+    draw_compass_at(p, xf, [18.0, 18.0], north);
+}
+
+/// [`draw_compass`] with the disc centred at `at` (design px), for frames other than the pill.
+pub fn draw_compass_at(p: &Painter, xf: &Xf, at: [f32; 2], north: [f32; 2]) {
+    let c = xf.p(at[0], at[1]);
     p.circle_filled(c, xf.l(11.0), xf.c(col::COMPASS));
     let n = vec2(north[0], north[1]);
     let side = vec2(-n.y, n.x) * xf.l(3.0);
@@ -372,8 +454,9 @@ pub fn draw_compass(p: &Painter, xf: &Xf, north: [f32; 2]) {
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
     let animating = anim.step(snap, now);
     let (yaw, zoom) = (anim.view, anim.zoom.unwrap_or(snap.cfg.zoom_driving_m));
-    let (w, h) = (SIZE.x, SIZE.y);
     let cfg = &*snap.cfg;
+    let fr = Frame::of(cfg);
+    let (w, h) = (fr.w, fr.h);
     let lc = &cfg.map_layers;
     let car = (snap.pkt.position_x, snap.pkt.position_z);
     let rect = xf.rect(0.0, 0.0, w, h);
@@ -393,10 +476,11 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let cam = cam3.unwrap_or(&cam2d);
     let view = cam.view;
 
-    // The map shape: the frame's rounded rect, inset 0.5 px so the 3 px border (drawn after,
+    // The map shape: the frame's rounded rect or circle, inset 0.5 px so the border (drawn after,
     // feathered) covers the mesh's hard edge.
-    let outline = prims::rounded_points(xf.rect(0.5, 0.5, w - 1.0, h - 1.0), [xf.l(RADIUS - 0.5); 4]);
-    let plate = xf.c(col::plate(cfg.map_plate_opacity));
+    let outline = prims::rounded_points_n(xf.rect(0.5, 0.5, w - 1.0, h - 1.0), [xf.l((fr.radius - 0.5).max(0.0)); 4], fr.arc_n());
+    let [pr, pg, pb] = cfg.map_plate_color;
+    let plate = xf.c(Color32::from_rgba_unmultiplied(pr, pg, pb, (cfg.map_plate_opacity.clamp(0.0, 1.0) * 255.0).round() as u8));
     if plate.a() > 0 {
         p.add(egui::Shape::convex_polygon(outline.clone(), plate, egui::Stroke::NONE));
     }
@@ -455,7 +539,9 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 mirror: cfg.map_mirror_edges,
                 a: xf.a,
                 s: xf.s,
-                corner_radius: xf.l(RADIUS),
+                // A circle is the rounded rect with radius = half the size: the composite's SDF mask
+                // is then exactly a circle (no shader change).
+                corner_radius: xf.l(fr.radius),
                 relief: lc.tilt.relief,
                 roads: lc.roads,
                 focus: focus.map(|focus| Focus3d { focus, cfg: lc.race_lines.focus }),
@@ -479,7 +565,7 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 s: xf.s,
                 a: xf.a,
                 car,
-                corner_clip: Some(CornerClip { poly: &outline, safe: rect.shrink(xf.l(RADIUS)) }),
+                corner_clip: Some(CornerClip { poly: &outline, safe: fr.safe(xf) }),
                 icons: icons.as_deref(),
                 race_sel: picked,
                 week: None,
@@ -490,8 +576,10 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
         );
     }
 
-    // Markers: the Dashboard map's drawing code (`map_shared`), clipped to the pill's inner rect.
-    let inner = xf.rect(3.0, 3.0, w - 6.0, h - 6.0);
+    // Markers: the Dashboard map's drawing code (`map_shared`), clipped to the frame's inner rect
+    // (inside the outline); a circle also cuts trails and pins pointers to its curve (`round`).
+    let inner = xf.rect(fr.border, fr.border, w - 2.0 * fr.border, h - 2.0 * fr.border);
+    let round = fr.circle;
     let mp = p.with_clip_rect(inner);
     let cv = MapCanvas { p: &mp, cam, rect: inner, taper: lc.tilt.taper, s: xf.s, a: xf.a, pause_glyph: "||" };
     let hue = |h: f32| crate::ui::coop::hue_color(h);
@@ -501,25 +589,29 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     // Dashboard).
     let own = if coop.in_session { hue(snap.coop_hue) } else { Color32::WHITE };
     if let Some(tr) = coop.trails.get("local") {
-        map_shared::draw_trail(&cv, tr, own, fade, at);
+        map_shared::draw_trail_in(&cv, tr, own, fade, at, round);
     }
     for t in coop.teammates.iter().filter(|t| !t.paused) {
         if let Some(tr) = coop.trails.get(&t.id) {
-            map_shared::draw_trail(&cv, tr, t.colour, fade, at);
+            map_shared::draw_trail_in(&cv, tr, t.colour, fade, at, round);
         }
     }
-    map_shared::draw_remotes(&cv, &coop.teammates, car, view.yaw);
+    map_shared::draw_remotes_in(&cv, &coop.teammates, car, view.yaw, round);
 
     map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
     for &(x, z, hue_deg) in &coop.waypoints {
-        map_shared::draw_waypoint(&cv, (x, z), hue(hue_deg), car, now as f32);
+        map_shared::draw_waypoint_in(&cv, (x, z), hue(hue_deg), car, now as f32, round);
     }
 
     if cfg.compass {
-        draw_compass(p, xf, view.north_dir());
+        draw_compass_at(p, xf, fr.compass(), view.north_dir());
     }
 
-    prims::rounded_border(p, xf, [0.0, 0.0, w, h], RADIUS, 3.0, col::FRAME);
+    if fr.border > 0.0 && cfg.map_border_opacity > 0.0 {
+        let [br, bg, bb] = cfg.map_border_color;
+        let c = prims::rgba(br, bg, bb, cfg.map_border_opacity.clamp(0.0, 1.0));
+        prims::rounded_border(p, xf, [0.0, 0.0, w, h], fr.radius, fr.border, c, fr.arc_n());
+    }
     animating
 }
 
@@ -536,7 +628,76 @@ fn calibration(snap: &HudSnapshot) -> MapCalibration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{MapShape, OverlayConfig};
     use crate::minimap::MapView;
+
+    /// The default config is exactly today's pill: 208 x 136, radius 22, 3 px border, compass at
+    /// (18, 18), the `rgba(12,17,27,.88)` frame colour.
+    #[test]
+    fn default_frame_is_the_m2_pill() {
+        let cfg = OverlayConfig::default();
+        let f = Frame::of(&cfg);
+        assert_eq!(f, Frame { w: 208.0, h: 136.0, radius: 22.0, circle: false, border: 3.0 });
+        assert_eq!(size(&cfg), SIZE);
+        assert_eq!(f.compass(), [18.0, 18.0]);
+        let [r, g, b] = cfg.map_border_color;
+        assert_eq!(prims::rgba(r, g, b, cfg.map_border_opacity), prims::rgba(12, 17, 27, 0.88));
+        assert_eq!(cfg.map_plate_opacity, 0.0);
+    }
+
+    /// A circle's diameter is the width, whatever the height says; the radius is half of it.
+    #[test]
+    fn circle_frame_is_square_with_half_radius() {
+        let cfg = OverlayConfig { map_shape: MapShape::Circle, map_width: 240.0, map_height: 99.0, ..Default::default() };
+        let f = Frame::of(&cfg);
+        assert_eq!((f.w, f.h, f.radius, f.circle), (240.0, 240.0, 120.0, true));
+        assert_eq!(size(&cfg), vec2(240.0, 240.0));
+    }
+
+    /// A hand-edited file can't reach the renderer with NaN, a negative size, or a corner radius
+    /// beyond half the shorter side.
+    #[test]
+    fn frame_is_sanitised() {
+        let cfg = OverlayConfig { map_width: f32::NAN, map_height: -5.0, map_corner_radius: f32::INFINITY, map_border_width: -1.0, ..Default::default() };
+        let f = Frame::of(&cfg);
+        assert_eq!((f.w, f.h), (208.0, 20.0));
+        assert_eq!((f.radius, f.border), (10.0, 0.0));
+        let big = Frame::of(&OverlayConfig { map_width: 1e9, map_height: 300.0, map_corner_radius: 500.0, map_border_width: 1000.0, ..Default::default() });
+        assert_eq!((big.w, big.radius, big.border), (2000.0, 150.0, 75.0));
+    }
+
+    /// The compass disc stays wholly inside the frame's shape (and outside the border): in the
+    /// corner arc of a big radius, on a circle, with a thick border.
+    #[test]
+    fn compass_disc_stays_inside_the_shape() {
+        let rects = [(208.0, 136.0, 22.0, 3.0), (300.0, 200.0, 100.0, 3.0), (300.0, 200.0, 0.0, 3.0), (208.0, 136.0, 22.0, 12.0), (160.0, 120.0, 60.0, 6.0)];
+        for (w, h, radius, border) in rects {
+            let f = Frame::of(&OverlayConfig { map_width: w, map_height: h, map_corner_radius: radius, map_border_width: border, ..Default::default() });
+            let [cx, cy] = f.compass();
+            // Depth of the disc's centre inside the frame shrunk by the border (a rounded rect's
+            // signed distance).
+            let (rin, b) = ((f.radius - f.border).max(0.0), f.border);
+            let (qx, qy) = ((cx - w / 2.0).abs() - (w / 2.0 - b - rin), (cy - h / 2.0).abs() - (h / 2.0 - b - rin));
+            let inside = -(qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - rin);
+            assert!(inside >= 11.0 - 1e-3, "{w}x{h} r{radius} b{border}: compass at {cx},{cy} leaves {inside}");
+        }
+        for d in [120.0, 208.0, 600.0] {
+            let f = Frame::of(&OverlayConfig { map_shape: MapShape::Circle, map_width: d, map_border_width: 4.0, ..Default::default() });
+            let [cx, cy] = f.compass();
+            let dist = (cx - d / 2.0).hypot(cy - d / 2.0);
+            assert!(dist + 11.0 <= d / 2.0 - 4.0 + 1e-3, "circle {d}: compass at {cx},{cy}");
+            assert!(cx < d / 2.0 && cy < d / 2.0, "up-left of the centre");
+        }
+    }
+
+    /// The layout footprint is the configured size (circle: a square of the diameter).
+    #[test]
+    fn module_footprint_follows_the_frame() {
+        let mut cfg = OverlayConfig { map_width: 300.0, map_height: 200.0, ..Default::default() };
+        assert_eq!(size(&cfg), vec2(300.0, 200.0));
+        cfg.map_shape = MapShape::Circle;
+        assert_eq!(size(&cfg), vec2(300.0, 300.0));
+    }
 
     #[test]
     fn compass_north_follows_map_rotation() {
