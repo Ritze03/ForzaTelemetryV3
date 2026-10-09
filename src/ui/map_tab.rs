@@ -389,19 +389,30 @@ mod tests {
         for lang in [Language::English, Language::German] {
             with_language(lang, || {
                 for w in WIDTHS {
-                    for (name, follow, module_on) in [
-                        ("minimap", false, true),
-                        ("minimap_follow", true, true),
-                        ("minimap_off", false, false),
-                        ("dashboard", false, true),
-                        ("viewer", false, true),
+                    // `relief`: the View mode card in 3D mode, with all its extra rows (the
+                    // tallest and widest the card gets).
+                    for (name, follow, module_on, relief) in [
+                        ("minimap", false, true, false),
+                        ("minimap_follow", true, true, false),
+                        ("minimap_off", false, false, false),
+                        ("dashboard", false, true, false),
+                        ("viewer", false, true, false),
+                        ("minimap_3d", false, true, true),
+                        ("minimap_follow_3d", true, true, true),
+                        ("dashboard_3d", false, true, true),
+                        ("viewer_3d", false, true, true),
                     ] {
                         let mut cfg = AppConfig::default();
                         cfg.overlay.map_use_dashboard = follow;
                         cfg.overlay.minimap_on = module_on;
+                        if relief {
+                            for t in [&mut cfg.overlay.map_layers.tilt, &mut cfg.minimap_layers.tilt, &mut cfg.viewer_layers.tilt] {
+                                t.set_view_mode(crate::maprender::cfg::ViewMode::Relief);
+                            }
+                        }
                         let out = render(&format!("map_{name}"), w, 3600.0, |ui, atlas| match name {
                             n if n.starts_with("minimap") => minimap_page(ui, &mut cfg, &l, Some(atlas)),
-                            "dashboard" => dashboard_page(ui, &mut cfg, &l, Some(atlas)),
+                            n if n.starts_with("dashboard") => dashboard_page(ui, &mut cfg, &l, Some(atlas)),
                             _ => viewer_page(ui, &mut cfg, &l, Some(atlas)),
                         });
                         assert_eq!(check_panes(&out, w, name), 6, "{lang:?} {name} at {w} px: expected 6 card frames");

@@ -107,7 +107,7 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
 
 All three map pages call **one function**, `maprender::ui::layers_ui` (D61 spirit: one renderer, so
 one settings UI, they can't drift apart). It lays the cards out in three columns from 1100 px
-(first column: the page's own lead card + Image, Tilted view, Race lines; then Roads; then Points
+(first column: the page's own lead card + Image, View mode, Race lines; then Roads; then Points
 of interest) or two, and edits a `MapLayerConfig`. Above the cards a status line shows the
 layer store's state (no install / loading / loaded / error) and `MapLayers::note` (e.g. "your
 saved road types were ignored").
@@ -133,7 +133,7 @@ saved road types were ignored").
   and *Hide points of interest in a race*. Tooltip: applies only in the Current race mode while
   the car is in a race and a line was detected. The rows are greyed in the other modes (the
   focus never applies there), the three muted-look rows unless *Muted* is chosen.
-- **Tilted view:** on/off, angle, perspective, car position, thinner lines in the distance.
+- **View mode:** Flat / Tilted / 3D, then the tilt rows and (3D only) the relief options; see below.
 - **View options** (the lead card): lock north-up and its heading-up-only options, mirror,
   right-stick look, compass, zoom driving / stopped (50-6000 m). `maprender::ui::ViewCfg`
   copies them out of `AppConfig::minimap_*` or `OverlayConfig::map_*` so one function edits
@@ -146,6 +146,41 @@ saved road types were ignored").
 - *Why colours use egui's `color_edit_button_srgb`:* the config stores `"#rrggbb"` (`Rgb`),
   the picker edits the 3 bytes directly.
 
+### View mode (D65, D67, phase K)
+
+The card that used to be "Tilted view". Every map (HUD Minimap, Dashboard map, Viewer) has the same
+three modes, picked with a segmented control (`theme::segmented`) at the top of the card:
+
+- **Flat:** the 2D map, top-down. The tilt rows below are greyed.
+- **Tilted:** a flat perspective of the 2D map (D65): **Angle**, **Perspective**, **Car position**,
+  **Thinner lines in the distance** (`TiltCfg::{angle_deg, perspective_px, car_y, taper}`).
+- **3D:** the same camera, now over the terrain (relief) with the roads as decks. The same tilt rows
+  apply (angle, perspective and car position *are* the 3D camera's pitch / lens / car position), except
+  *Thinner lines*, greyed because 3D sets line widths itself. Tooltip on the **3D** segment: "Uses your
+  graphics card; falls back to Tilted if it isn't supported." Below the tilt rows a **3D** group appears
+  (hidden in Flat and Tilted, not greyed: a block of rows that mean nothing there):
+  - **Road height** (`ReliefCfg::road_height`): *Node heights* (default) or *On the terrain*.
+    Tooltip: node heights put bridges and ramps at the height of the game's road network, the other
+    option lays every road on the ground; cross-country is always on the ground and jumps are a taut string.
+  - **Deck thickness** (`deck_m`, 0 to 20 m, step 0.5), **Height exaggeration** (`exaggeration`,
+    0.5 to 3 x), **Hill shading** (`shading`, 0 to 100 %). The ranges are `ReliefCfg::*_RANGE`; the
+    card applies `ReliefCfg::sane()` while the 3D rows show, so a hand-edited config can't leave them.
+
+The control writes only `tilt.on` / `tilt.relief.on` (`TiltCfg::set_view_mode`; the mode is derived by
+`view_mode()`), so switching Flat -> 3D -> Tilted keeps every value the user set. Code:
+`maprender::ui::{tilt_card, view_mode_picker, relief_rows}`; the card's "Copy to…" is
+`LayerCategory::Tilt`, which copies `tilt` whole, relief included (test:
+`copying_view_mode_copies_the_relief_fields`).
+
+*Why:* **D67** put all map settings on the Map tab and gave all three maps 2D / tilted / 3D, so the
+choice is one card instead of a checkbox plus a separate 3D switch; **D65** made tilted the flat
+perspective and 3D the same camera plus relief, so the tilt rows are shared rather than duplicated;
+**D51 / D61**: *Node heights* is the default because the user reversed the earlier "always drape"
+decision (bridges and expressways should float), and the drape stays one click away. The tooltip
+on 3D is there because the 3D view needs a GL context and falls back to Tilted without one.
+Why the 3D rows are hidden, not greyed: they are a whole group that means nothing outside 3D, and
+a card full of dead controls is noise (the tilt rows, which Flat can switch on, stay and grey).
+
 ### Copy to … (D68)
 
 *Why (the user, 2026-10-08):* "to make it easier to configure both the minimap and the dashboard
@@ -156,7 +191,7 @@ a button that basically overrides the other map with the same settings, so I can
 them in between."
 
 - **Where:** a small right-aligned **Copy to…** menu button at the end of every card: Image,
-  Tilted view, Race lines (incl. the in-race focus), Roads, Points of interest, and the page's
+  View mode, Race lines (incl. the in-race focus), Roads, Points of interest, and the page's
   lead card (**View**). It lists the other two maps and **Both**. A pick overwrites **that
   category only** on the target; every other category is untouched. The button then reads
   "Copied" for 1.5 s (`copy_menu`, time kept in egui's temp memory).

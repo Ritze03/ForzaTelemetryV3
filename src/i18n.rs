@@ -1157,8 +1157,28 @@ fn de(s: &str) -> Option<&'static str> {
         "Map plate opacity" => "Deckkraft der Kartenplatte",
         "A plate behind the minimap's image; the far edge of a tilted map fades into it. Not the same as the General tab's Plate opacity."
             => "Eine Platte hinter dem Bild der Minikarte; der ferne Rand einer geneigten Karte blendet in sie über. Nicht dasselbe wie die Plattendeckkraft im Reiter Allgemein.",
-        "Tilted view" => "Geneigte Ansicht",
-        "Tilt the map" => "Karte neigen",
+        "View mode" => "Ansicht",
+        "Flat" => "Flach",
+        "Tilted" => "Geneigt",
+        "3D" => "3D",
+        "Uses your graphics card; falls back to Tilted if it isn't supported."
+            => "Nutzt deine Grafikkarte; fällt auf Geneigt zurück, wenn sie das nicht unterstützt.",
+        "Only for the Tilted view: the 3D view sets the line widths itself."
+            => "Nur für die geneigte Ansicht: Die 3D-Ansicht bestimmt die Linienbreiten selbst.",
+        "Road height" => "Straßenhöhe",
+        "Node heights" => "Knotenhöhen",
+        "On the terrain" => "Auf dem Gelände",
+        "Where the roads get their height. Node heights: bridges and ramps float at the height the game's road network has. On the terrain: every road is laid on the ground. Cross-country is always laid on the ground, jumps are a taut string between take-off and landing."
+            => "Woher die Straßen ihre Höhe bekommen. Knotenhöhen: Brücken und Rampen schweben auf der Höhe, die das Straßennetz des Spiels vorgibt. Auf dem Gelände: Jede Straße liegt auf dem Boden. Querfeldein liegt immer auf dem Boden, Sprünge sind eine gespannte Schnur zwischen Absprung und Landung.",
+        "Deck thickness" => "Fahrbahndicke",
+        "How thick the road bodies are. 0 = paper-thin ribbons."
+            => "Wie dick die Straßenkörper sind. 0 = hauchdünne Bänder.",
+        "Height exaggeration" => "Höhenüberhöhung",
+        "Stretches the hills and valleys; 1 = true to scale."
+            => "Streckt Hügel und Täler; 1 = maßstabsgetreu.",
+        "Hill shading" => "Hangschattierung",
+        "Light and shadow on the slopes over the satellite image."
+            => "Licht und Schatten an den Hängen über dem Satellitenbild.",
         "Angle" => "Winkel",
         "Perspective" => "Perspektive",
         "The eye distance for a view as tall as the HUD minimap (136 px). A taller map scales it, so both maps look alike. Smaller = stronger perspective."

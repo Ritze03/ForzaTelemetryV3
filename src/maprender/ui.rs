@@ -13,7 +13,7 @@
 use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Stroke, TextureId, Ui};
 
 use super::cfg::{
-    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadsCfg, TiltCfg,
+    DashStyle, ImageCfg, LayerCategory, MapLayerConfig, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadHeight, RoadsCfg, ReliefCfg, TiltCfg, ViewMode,
 };
 use super::paint2d::IconAtlas;
 use super::store::{LayerStatus, Layers};
@@ -447,29 +447,91 @@ fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, en
     });
 }
 
+/// The "View mode" card: Flat / Tilted / 3D (D67), then the tilt rows (Tilted and 3D share the
+/// camera, so they are one set of rows) and, for 3D only, the relief options. The 3D group is
+/// *hidden* in the other modes (not greyed): it is a whole group of rows that mean nothing
+/// there. `ViewMode` is derived (`TiltCfg::view_mode`), so the control only writes `on` /
+/// `relief.on` and the rest of the user's look stays when switching back and forth.
 fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx) {
-    theme::card(ui, tr("Tilted view"), |ui| {
+    theme::card(ui, tr("View mode"), |ui| {
         ui.add_enabled_ui(enabled, |ui| {
-        theme::checkbox_row(ui, &mut c.on, tr("Tilt the map"));
-        ui.add_enabled_ui(c.on, |ui| {
-            theme::slider_row(ui, tr("Angle"), &mut c.angle_deg, 5.0..=80.0, 1.0, 0, "°");
-            theme::slider_row(ui, tr("Perspective"), &mut c.perspective_px, 50.0..=600.0, 10.0, 0, " px").on_hover_text(tr(
-                "The eye distance for a view as tall as the HUD minimap (136 px). A taller map scales it, so both maps look alike. Smaller = stronger perspective.",
-            ));
-            pct_row(
-                ui,
-                tr("Car position"),
-                &mut c.car_y,
-                10.0,
-                95.0,
-                1.0,
-                Some(tr("Where the car sits on the map's height: 0 % = top, 100 % = bottom.")),
-            );
-            theme::checkbox_row(ui, &mut c.taper, tr("Thinner lines in the distance"));
-        });
+            view_mode_picker(ui, c);
+            let mode = c.view_mode();
+            ui.add_space(4.0);
+            ui.add_enabled_ui(mode != ViewMode::Flat, |ui| {
+                theme::slider_row(ui, tr("Angle"), &mut c.angle_deg, 5.0..=80.0, 1.0, 0, "°");
+                theme::slider_row(ui, tr("Perspective"), &mut c.perspective_px, 50.0..=600.0, 10.0, 0, " px").on_hover_text(tr(
+                    "The eye distance for a view as tall as the HUD minimap (136 px). A taller map scales it, so both maps look alike. Smaller = stronger perspective.",
+                ));
+                pct_row(
+                    ui,
+                    tr("Car position"),
+                    &mut c.car_y,
+                    10.0,
+                    95.0,
+                    1.0,
+                    Some(tr("Where the car sits on the map's height: 0 % = top, 100 % = bottom.")),
+                );
+                // In 3D the lines are meshes whose widths follow the perspective by themselves.
+                ui.add_enabled_ui(mode != ViewMode::Relief, |ui| {
+                    theme::checkbox_row(ui, &mut c.taper, tr("Thinner lines in the distance"))
+                        .on_disabled_hover_text(tr("Only for the Tilted view: the 3D view sets the line widths itself."));
+                });
+            });
+            if mode == ViewMode::Relief {
+                relief_rows(ui, &mut c.relief);
+            }
         });
         card_copy_row(ui, cp, LayerCategory::Tilt);
     });
+}
+
+/// The Flat / Tilted / 3D control. The tooltip sits on the 3D segment only (`theme::segmented`
+/// has no per-segment response): a hover-only widget over its third.
+fn view_mode_picker(ui: &mut Ui, c: &mut TiltCfg) {
+    let mut mode = c.view_mode();
+    let top = ui.cursor().min.y;
+    let (left, width) = (ui.cursor().min.x, ui.available_width());
+    let opts = [(ViewMode::Flat, tr("Flat")), (ViewMode::Tilted, tr("Tilted")), (ViewMode::Relief, tr("3D"))];
+    if theme::segmented(ui, &mut mode, &opts) {
+        c.set_view_mode(mode);
+    }
+    let third = Rect::from_min_max(pos2(left + width * 2.0 / 3.0, top), pos2(left + width, ui.min_rect().bottom()));
+    ui.interact(third, ui.id().with("view_mode_3d_tip"), Sense::hover())
+        .on_hover_text(tr("Uses your graphics card; falls back to Tilted if it isn't supported."));
+}
+
+fn road_height_label(h: RoadHeight) -> &'static str {
+    tr(match h {
+        RoadHeight::Nodes => "Node heights",
+        RoadHeight::Terrain => "On the terrain",
+    })
+}
+
+/// The 3D-only options (phase K, D51). Values are clamped to `ReliefCfg`'s ranges (the sliders
+/// do it for typing too, `sane()` also catches a hand-edited config).
+fn relief_rows(ui: &mut Ui, r: &mut ReliefCfg) {
+    *r = r.sane();
+    ui.add_space(2.0);
+    ui.label(theme::section_label(tr("3D")));
+    let tip = tr("Where the roads get their height. Node heights: bridges and ramps float at the height the game's road network has. On the terrain: every road is laid on the ground. Cross-country is always laid on the ground, jumps are a taut string between take-off and landing.");
+    control_row_tip(ui, tr("Road height"), tip, |ui| {
+        egui::ComboBox::from_id_salt("map_relief_road_height")
+            .selected_text(road_height_label(r.road_height))
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for h in [RoadHeight::Nodes, RoadHeight::Terrain] {
+                    ui.selectable_value(&mut r.road_height, h, road_height_label(h));
+                }
+            });
+    });
+    let (d, e, s) = (ReliefCfg::DECK_RANGE, ReliefCfg::EXAG_RANGE, ReliefCfg::SHADING_RANGE);
+    theme::slider_row(ui, tr("Deck thickness"), &mut r.deck_m, d.0..=d.1, 0.5, 1, " m")
+        .on_hover_text(tr("How thick the road bodies are. 0 = paper-thin ribbons."));
+    theme::slider_row(ui, tr("Height exaggeration"), &mut r.exaggeration, e.0..=e.1, 0.1, 1, "×")
+        .on_hover_text(tr("Stretches the hills and valleys; 1 = true to scale."));
+    pct_row(ui, tr("Hill shading"), &mut r.shading, s.0 * 100.0, s.1 * 100.0, 1.0, Some(tr("Light and shadow on the slopes over the satellite image.")));
+    *r = r.sane();
 }
 
 // ── race lines ───────────────────────────────────────────────────────────────────────────────
@@ -1067,5 +1129,196 @@ mod tests {
         apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::View, &[MapId::Dashboard]));
         assert!(c.minimap_allow_pan_zoom);
         assert_eq!(c.minimap_zoom_driving_m, before);
+    }
+
+    // ── the "View mode" card ─────────────────────────────────────────────────────────────────
+
+    /// One frame of the View mode card alone, with `events` fed in. Returns the frame's output.
+    fn card_frame(ctx: &egui::Context, t: &mut TiltCfg, events: Vec<egui::Event>, time: f64) -> egui::FullOutput {
+        let cp = CopyCtx { which: MapId::Viewer, minimap_follows: false, out: Default::default() };
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(420.0, 900.0))),
+            events,
+            time: Some(time),
+            ..Default::default()
+        };
+        ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| tilt_card(ui, t, true, &cp));
+        })
+    }
+
+    fn texts(out: &egui::FullOutput) -> Vec<(String, Rect)> {
+        out.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.visual_bounding_rect())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_text(out: &egui::FullOutput, s: &str) -> bool {
+        texts(out).iter().any(|(t, _)| t == s)
+    }
+
+    /// Frames until the layout has settled; returns the last output.
+    fn settle(ctx: &egui::Context, t: &mut TiltCfg, time: &mut f64) -> egui::FullOutput {
+        let mut out = card_frame(ctx, t, vec![], *time);
+        for _ in 0..2 {
+            *time += 0.1;
+            out = card_frame(ctx, t, vec![], *time);
+        }
+        out
+    }
+
+    /// Click the centre of the (first) text `label` in the card.
+    fn click_label(ctx: &egui::Context, t: &mut TiltCfg, time: &mut f64, label: &str) {
+        let out = settle(ctx, t, time);
+        let pos = texts(&out).iter().find(|(s, _)| s == label).unwrap_or_else(|| panic!("no {label:?} in the card")).1.center();
+        let btn = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        for evs in [vec![egui::Event::PointerMoved(pos)], vec![btn(true)], vec![btn(false)]] {
+            *time += 0.1;
+            card_frame(ctx, t, evs, *time);
+        }
+        *time += 0.1;
+        card_frame(ctx, t, vec![], *time);
+    }
+
+    fn odd_tilt() -> TiltCfg {
+        TiltCfg {
+            on: false,
+            angle_deg: 47.0,
+            perspective_px: 310.0,
+            car_y: 0.7,
+            taper: false,
+            relief: ReliefCfg { on: false, road_height: RoadHeight::Terrain, deck_m: 6.5, exaggeration: 2.0, shading: 0.8 },
+        }
+    }
+
+    /// The control writes `on` / `relief.on` and nothing else, so going back and forth keeps the
+    /// user's angle, perspective and 3D options.
+    #[test]
+    fn view_mode_control_writes_the_mode_fields_only() {
+        crate::i18n::with_language(crate::i18n::Language::English, || {
+            let ctx = crate::ui::test_render::context();
+            let mut time = 0.0;
+            let mut t = odd_tilt();
+            assert_eq!(t.view_mode(), ViewMode::Flat);
+            let look = TiltCfg { on: false, relief: ReliefCfg { on: false, ..t.relief }, ..t };
+            for (label, mode, on, relief_on) in [
+                ("Tilted", ViewMode::Tilted, true, false),
+                ("3D", ViewMode::Relief, true, true),
+                ("Flat", ViewMode::Flat, false, false),
+                ("3D", ViewMode::Relief, true, true),
+                ("Tilted", ViewMode::Tilted, true, false),
+            ] {
+                click_label(&ctx, &mut t, &mut time, label);
+                assert_eq!(t.view_mode(), mode, "after clicking {label}");
+                assert_eq!((t.on, t.relief.on), (on, relief_on), "after clicking {label}");
+                assert_eq!((t.angle_deg, t.perspective_px, t.car_y, t.taper), (look.angle_deg, look.perspective_px, look.car_y, look.taper));
+                assert_eq!(ReliefCfg { on: false, ..t.relief }, look.relief, "the 3D options survive a switch");
+            }
+        });
+    }
+
+    /// Road height, deck thickness, exaggeration and hill shading exist in 3D only; the tilt
+    /// rows are there for Tilted and 3D (greyed in Flat).
+    #[test]
+    fn relief_rows_show_in_3d_only() {
+        use crate::i18n::{with_language, Language};
+        let ctx = crate::ui::test_render::context();
+        for (lang, relief_labels) in [
+            (Language::English, ["Road height", "Deck thickness", "Height exaggeration", "Hill shading"]),
+            (Language::German, ["Straßenhöhe", "Fahrbahndicke", "Höhenüberhöhung", "Hangschattierung"]),
+        ] {
+            with_language(lang, || {
+                let tilt_labels = [tr("Angle"), tr("Perspective"), tr("Car position"), tr("Thinner lines in the distance")];
+                let mut time = 0.0;
+                for mode in [ViewMode::Flat, ViewMode::Tilted, ViewMode::Relief] {
+                    let mut t = odd_tilt();
+                    t.set_view_mode(mode);
+                    let out = settle(&ctx, &mut t, &mut time);
+                    for l in tilt_labels {
+                        assert!(has_text(&out, l), "{lang:?} {mode:?}: {l:?} missing");
+                    }
+                    for l in relief_labels {
+                        assert_eq!(has_text(&out, l), mode == ViewMode::Relief, "{lang:?} {mode:?}: {l:?}");
+                    }
+                    assert_eq!(has_text(&out, tr("3D")), true, "the segment is always there");
+                    assert_eq!(t.view_mode(), mode, "showing the card changes nothing");
+                }
+            });
+        }
+    }
+
+    /// A hand-edited config with values outside the ranges is clamped when the 3D rows show
+    /// (NaN falls back to the default); in the other modes the card leaves it alone.
+    #[test]
+    fn relief_values_are_clamped_to_the_cfg_ranges() {
+        let ctx = crate::ui::test_render::context();
+        let mut time = 0.0;
+        let wild = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: -4.0, exaggeration: 99.0, shading: f32::NAN };
+        let mut t = TiltCfg { on: true, relief: wild, ..TiltCfg::default() };
+        settle(&ctx, &mut t, &mut time);
+        let r = t.relief;
+        assert_eq!(r, wild.sane());
+        assert_eq!((r.deck_m, r.exaggeration, r.shading), (ReliefCfg::DECK_RANGE.0, ReliefCfg::EXAG_RANGE.1, ReliefCfg::default().shading));
+        assert_eq!(r.road_height, RoadHeight::Terrain);
+
+        let mut t = TiltCfg { on: true, relief: ReliefCfg { on: false, ..wild }, ..TiltCfg::default() };
+        settle(&ctx, &mut t, &mut time);
+        assert_eq!(t.relief.exaggeration, 99.0, "Tilted does not touch the 3D options");
+    }
+
+    /// The tooltip of the 3D segment: only over that segment, not over Flat.
+    #[test]
+    fn the_3d_segment_has_the_graphics_card_tooltip() {
+        crate::i18n::with_language(crate::i18n::Language::English, || {
+            let ctx = crate::ui::test_render::context();
+            ctx.style_mut(|s| s.interaction.tooltip_delay = 0.0);
+            let mut time = 0.0;
+            let mut t = TiltCfg::default();
+            let out = settle(&ctx, &mut t, &mut time);
+            let find = |l: &str| texts(&out).iter().find(|(s, _)| s == l).unwrap().1.center();
+            let tip = tr("Uses your graphics card; falls back to Tilted if it isn't supported.");
+            for (label, shown) in [("Flat", false), ("3D", true)] {
+                let pos = find(label);
+                let mut last = None;
+                for i in 0..6 {
+                    time += 0.2;
+                    let evs = if i == 0 { vec![egui::Event::PointerMoved(pos)] } else { vec![] };
+                    last = Some(card_frame(&ctx, &mut t, evs, time));
+                }
+                assert_eq!(has_text(&last.unwrap(), tip), shown, "tooltip over {label}");
+                time += 0.2;
+                card_frame(&ctx, &mut t, vec![egui::Event::PointerGone], time);
+            }
+        });
+    }
+
+    /// "Copy to …" on the View mode card is `LayerCategory::Tilt`: it takes the 3D options and
+    /// the mode with it, leaves every other category of the target alone.
+    #[test]
+    fn copying_view_mode_copies_the_relief_fields() {
+        let mut c = three_maps();
+        let relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 9.0, exaggeration: 2.5, shading: 0.9 };
+        c.viewer_layers.tilt.on = true;
+        c.viewer_layers.tilt.relief = relief;
+        assert_eq!(c.minimap_layers.tilt.relief, ReliefCfg::default());
+        let before = c.clone();
+        let done = apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Tilt), &[MapId::Dashboard, MapId::Minimap]));
+        assert_eq!(done, vec![MapId::Dashboard, MapId::Minimap]);
+        for tilt in [&c.minimap_layers.tilt, &c.overlay.map_layers.tilt] {
+            assert_eq!(tilt.relief, relief);
+            assert_eq!(tilt.view_mode(), ViewMode::Relief);
+            assert_eq!(tilt.angle_deg, 33.0, "the tilt rows travel with it");
+        }
+        assert_eq!(c.minimap_layers.roads, before.minimap_layers.roads);
+        assert_eq!(c.minimap_layers.image, before.minimap_layers.image);
+        assert_eq!(c.viewer_layers, before.viewer_layers);
+        // The other categories do not carry the 3D options.
+        let mut d = before.clone();
+        apply_copy(&mut d, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Roads), &[MapId::Dashboard]));
+        assert_eq!(d.minimap_layers.tilt, before.minimap_layers.tilt);
     }
 }
