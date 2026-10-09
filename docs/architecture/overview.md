@@ -57,6 +57,7 @@ described below.
   window. Helpers: `overlay-start` (runs the blocking `OverlayHandle::spawn`, up to 5 s),
   `overlay-drop` (drop = shutdown + join, kept off the UI thread), `hud-map` (loads the
   season map for the HUD minimap, from the FH6 install's tiles). See [[overlay]].
+- **`input-probe` thread** (`input.rs:ProbeTask`, spawned by `ui/settings.rs:refresh_input_facts` about every 2 s, and once at startup; exits after sending one `InputProbe` over an `mpsc` channel, which the UI polls each frame) — runs `input::probe`, whose `hotkeys::inventory()` `open()`s every `/dev/input/event*` node (~155 ms with 32 nodes, one RGB-controller node alone ~57 ms). **Why off the UI thread:** run inline every 2 s it froze the window for that long each time and, with it, the UI-side timing (the packets-per-second readout swung 60 <-> 80 at a true 70 Hz). At most one runs at a time. See `docs/features/hotkeys.md` ("Live status").
 - **Map editor server threads** (only after the map editor was opened, `mapedit/server.rs`, I26b; stopped by dropping `ForzaApp::map_editor`) — `mapedit-accept` (blocking `accept` on `127.0.0.1:<sticky port>`), one short-lived `mapedit-conn` thread per HTTP connection, and `mapedit-build` (builds `mapedit::data::EditorData` once, 0.5-3 s release, then exits). They never touch `ForzaApp`: events (`MapEvent::{Ready, Saved, Error}`) go over an `mpsc` channel polled once a frame by `app.rs:poll_map_editor` (which opens the browser on `Ready`), plus `ctx.request_repaint()`. **Why Save updates its state inside the server thread:** the egui frame loop stops while the window is hidden (see the listener thread above), so a Save made in the browser must not wait for a frame to take effect; the UI only learns of it later. Drop = stop flag + a self-connect to wake `accept` (like `NetworkHandle`, which polls with a read timeout instead). See `docs/game-data/fh6-map-tooling.md` ("Local server").
 - **`map-terrain` / `map-mesh` threads** (`maprender/store.rs`, K1; spawned on demand by `maprender::store::terrain()` / `road_mesh()`, which the maps call only while in 3D mode; exit when done) — build the 3D height grid (cached elevation rasters, 0.2-0.4 s warm, +2 s per raster cold) and the GPU road mesh (~15 ms). Separate from `map-layers` so a cold terrain build never delays the 2D layers.
 - **GL contexts and the 3D map scene** (`maprender/gl3d/`, K2) — no thread of its own: the 3D scene is drawn by an `egui_glow` paint callback **on whichever thread paints**, in that thread's own GL context. There are two contexts, so two independent `Gl3d`s (own shaders, 15 MB height texture, 25 MB road buffers, scene FBO): the overlay thread's EGL / WGL context (owned by `overlay::render::Renderer`, which will destroy its `Gl3dHandle` before `painter.destroy()`) and eframe's on the UI thread (a `Gl3dHandle` on `ForzaApp`, destroyed in `on_exit`). Nothing GL is shared between them; the CPU data (`Arc<Terrain>`, `Arc<RoadMesh>` from the `map-terrain` / `map-mesh` threads) is. The settings UI (UI thread) cannot see the HUD context's state, so a failure is also published process-wide (`gl3d::last_failure()`).
@@ -177,8 +178,13 @@ listener thread itself never falls behind — it drains continuously and process
 as it arrives, so it can never replay stale input.
 
 `telemetry.rs:TelemetryState` holds `latest: Option<ForzaPacket>`, `is_connected`, and
-`packets_per_sec` (recomputed each 1 s window). Connection is marked **down** at the tail
-of `drain_packets` if no packet arrived for 2 s. `ForzaPacket::is_paused()` (all position
+`packets_per_sec`. The rate is **not** counted on the UI thread: `ForzaApp::adopt_listener_view`
+copies `ListenerView::pps` into it every frame (the listener thread counts packets on receipt in
+1 s windows, `worker.rs:PpsMeter`, and publishes 0 once nothing arrived for 2 s). *Why:* the UI
+drains in batches whenever a frame stalls, so a UI-side count came out as 70 packets in 1.16 s
+then 82 in 1.0 s (a "60 <-> 80" readout at a steady 70 Hz). Connection is marked **down** at the
+tail of `drain_packets` if no packet arrived for 2 s. The accel / braking tests
+(`listeners/perf_test.rs`) time runs with `pkt.timestamp_ms` deltas for the same reason. `ForzaPacket::is_paused()` (all position
 + orientation fields zero) distinguishes an actively-driving packet from a paused-game one,
 which several stats and the Co-Op relay respect.
 

@@ -1,6 +1,15 @@
-use std::time::{Duration, Instant};
-
 use crate::packet::ForzaPacket;
+
+/// Seconds between two packet timestamps (`wrapping_sub`, like the sprint timer, so a `u32`
+/// wrap of the game clock doesn't break a run).
+///
+/// *Why packet timestamps and not `Instant::now()` at drain time:* the UI drains the packet
+/// queue once per frame, so a UI stall (a frame that takes 160 ms) delivers a batch of packets
+/// at once and wall-clock timing at drain time is off by up to the stall. The game's own clock
+/// in each packet is exact regardless of when the UI got round to it.
+fn ts_diff_secs(start: u32, end: u32) -> f32 {
+    end.wrapping_sub(start) as f32 / 1000.0
+}
 
 /// Configurable acceleration test (e.g. 0→100 or 80→120 km/h).
 #[derive(Default)]
@@ -9,7 +18,8 @@ pub struct AccelTest {
     pub running: bool,
     pub progress: f32,
     pub current_g: f32,
-    start_time: Option<Instant>,
+    /// `pkt.timestamp_ms` of the packet the run started on.
+    start_time: Option<u32>,
     start_speed: f32,
     end_speed: f32,
 }
@@ -35,7 +45,7 @@ impl AccelTest {
             }
             if speed >= start_kmh && speed < end_kmh {
                 self.running = true;
-                self.start_time = Some(Instant::now());
+                self.start_time = Some(pkt.timestamp_ms);
                 self.result_secs = None;
             }
         } else {
@@ -45,7 +55,7 @@ impl AccelTest {
 
             if speed >= self.end_speed {
                 if let Some(start) = self.start_time.take() {
-                    self.result_secs = Some(start.elapsed().as_secs_f32());
+                    self.result_secs = Some(ts_diff_secs(start, pkt.timestamp_ms));
                 }
                 self.running = false;
                 self.progress = 1.0;
@@ -71,11 +81,12 @@ pub struct DecelTest {
     pub current_g: f32,
     pub dynamic_mode: bool,
     pub dynamic_start: f32,
-    start_time: Option<Instant>,
+    start_time: Option<u32>,
     start_speed: f32,
     end_speed: f32,
     last_speed: f32,
-    accel_start: Option<Instant>,
+    /// `pkt.timestamp_ms` since when the car has been re-accelerating (dynamic-mode abort).
+    accel_start: Option<u32>,
 }
 
 impl DecelTest {
@@ -110,7 +121,7 @@ impl DecelTest {
             if arm {
                 self.running = true;
                 self.dynamic_start = speed;
-                self.start_time = Some(Instant::now());
+                self.start_time = Some(pkt.timestamp_ms);
                 self.result_secs = None;
                 self.accel_start = None;
             }
@@ -121,7 +132,7 @@ impl DecelTest {
 
             if speed <= self.end_speed {
                 if let Some(start) = self.start_time.take() {
-                    self.result_secs = Some(start.elapsed().as_secs_f32());
+                    self.result_secs = Some(ts_diff_secs(start, pkt.timestamp_ms));
                 }
                 self.running = false;
                 self.progress = 1.0;
@@ -136,9 +147,9 @@ impl DecelTest {
                 // Abort: re-accelerating for more than 500 ms
                 if speed > self.last_speed {
                     if self.accel_start.is_none() {
-                        self.accel_start = Some(Instant::now());
+                        self.accel_start = Some(pkt.timestamp_ms);
                     } else if self.accel_start
-                        .map(|t| t.elapsed() > Duration::from_millis(500))
+                        .map(|t| pkt.timestamp_ms.wrapping_sub(t) > 500)
                         .unwrap_or(false)
                     {
                         self.running = false;
@@ -185,5 +196,63 @@ impl PerfTest {
     pub fn reset(&mut self) {
         self.accel.reset();
         self.decel.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A running car: `speed` in km/h at game-clock `ts` ms.
+    fn pkt(ts: u32, kmh: f32) -> ForzaPacket {
+        ForzaPacket { is_race_on: 1, timestamp_ms: ts, speed: kmh / 3.6, ..Default::default() }
+    }
+
+    #[test]
+    fn accel_time_comes_from_packet_timestamps_not_drain_time() {
+        // All packets are fed back-to-back (a UI stall drains them in one go), but the game
+        // clock says the run took 4.2 s.
+        let mut t = AccelTest::default();
+        t.update(&pkt(1_000, 10.0), 0.0, 100.0);
+        assert!(t.running);
+        t.update(&pkt(3_000, 60.0), 0.0, 100.0);
+        t.update(&pkt(5_200, 101.0), 0.0, 100.0);
+        assert!(!t.running);
+        assert_eq!(t.result_secs, Some(4.2));
+    }
+
+    #[test]
+    fn accel_time_survives_timestamp_wrap() {
+        let mut t = AccelTest::default();
+        t.update(&pkt(u32::MAX - 999, 10.0), 0.0, 100.0);
+        t.update(&pkt(1_000, 101.0), 0.0, 100.0);
+        assert_eq!(t.result_secs, Some(2.0));
+    }
+
+    #[test]
+    fn decel_time_comes_from_packet_timestamps() {
+        let mut t = DecelTest::default();
+        t.update(&pkt(0, 90.0), 100.0, 10.0);
+        t.update(&pkt(1_000, 100.0), 100.0, 10.0); // crosses start upward: arms
+        assert!(t.running);
+        t.update(&pkt(4_500, 50.0), 100.0, 10.0);
+        t.update(&pkt(7_300, 9.0), 100.0, 10.0);
+        assert!(!t.running);
+        assert_eq!(t.result_secs, Some(6.3));
+    }
+
+    #[test]
+    fn dynamic_decel_abort_uses_the_game_clock() {
+        let mut t = DecelTest { dynamic_mode: true, ..Default::default() };
+        t.update(&pkt(0, 150.0), 100.0, 10.0);
+        t.update(&pkt(100, 140.0), 100.0, 10.0); // slowing above start: arms
+        assert!(t.running);
+        // Re-accelerating, 400 ms of game clock: still running no matter how fast we drain.
+        t.update(&pkt(200, 141.0), 100.0, 10.0);
+        t.update(&pkt(600, 142.0), 100.0, 10.0);
+        assert!(t.running);
+        // 700 ms of game clock since the re-acceleration started: abort.
+        t.update(&pkt(900, 143.0), 100.0, 10.0);
+        assert!(!t.running);
     }
 }

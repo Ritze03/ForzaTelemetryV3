@@ -380,17 +380,35 @@ fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
 /// once per ~2 s, or at once with `force` (Re-check). *Why app-level and live:* the probe used to
 /// run once at startup (and only while Setup was open afterwards), so a reader thread or the key
 /// sender dying later left a stale green, and the startup modal could never notice a fix or a
-/// new breakage. Cost: sysfs reads + `open()` of the event nodes + the uinput open (sub-ms).
+/// new breakage.
 ///
-/// Also applies the modal rule ([`crate::input::modal_should_open`]): it re-opens once when the
-/// status turns from fine to missing, never repeatedly while it stays missing.
+/// *Cost, and why it is off the UI thread:* sysfs reads + an `open()` of **every**
+/// `/dev/input/event*` node + the uinput open. That is NOT sub-ms: ~155 ms with 32 nodes (one
+/// RGB-controller node alone takes ~57 ms), which froze the window every 2 s (and made the
+/// packets-per-second readout and the perf-test timers swing). So the periodic probe runs on an
+/// `input-probe` thread ([`crate::input::ProbeTask`]), at most one at a time; each frame this
+/// only checks the channel and applies a finished result. The cheap inputs
+/// (`active_keyboards`, `uinput_ready`: an atomic read each) are read on the UI thread at spawn.
+/// `force` (the Re-check click) stays synchronous: one stall on a deliberate click is fine and
+/// the user wants the answer now; it also discards any probe still in flight.
+///
+/// Applying a result also runs the modal rule ([`crate::input::modal_should_open`]): it re-opens
+/// once when the status turns from fine to missing, never repeatedly while it stays missing.
 pub fn refresh_input_facts(app: &mut ForzaApp, force: bool) {
-    const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
-    if !force && app.input_probe_at.is_some_and(|t| t.elapsed() < EVERY) {
-        return;
-    }
-    app.input_probe = crate::input::probe(app.hotkeys.active_keyboards(), app.uinput_ready());
-    app.input_probe_at = Some(std::time::Instant::now());
+    let now = std::time::Instant::now();
+    let result = if force {
+        app.input_probe_task.cancel(now);
+        Some(crate::input::probe(app.hotkeys.active_keyboards(), app.uinput_ready()))
+    } else {
+        let result = app.input_probe_task.poll(now);
+        if app.input_probe_task.due(now) {
+            let (kbs, ready) = (app.hotkeys.active_keyboards(), app.uinput_ready());
+            app.input_probe_task.spawn(move || crate::input::probe(kbs, ready));
+        }
+        result
+    };
+    let Some(probe) = result else { return };
+    app.input_probe = probe;
     let missing = crate::input::evaluate(&app.input_probe).any_missing();
     if cfg!(target_os = "linux")
         && crate::input::modal_should_open(app.input_prev_missing, missing, !app.config.input_perm_dont_remind)

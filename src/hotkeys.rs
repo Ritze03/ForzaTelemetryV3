@@ -196,6 +196,9 @@ fn working_keyboards(nodes: &[Node]) -> Vec<bool> {
 
 /// Probe `/dev/input/event*` for a readable **working** keyboard (Linux). Windows polls
 /// `GetAsyncKeyState`, which needs nothing, so it is always `Ok`.
+///
+/// **Slow:** [`inventory`] `open()`s every event node (~155 ms with 32 nodes). Never call it from
+/// the UI thread in a loop; `input::ProbeTask` runs it on a thread.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn probe_status() -> HotkeyStatus {
     #[cfg(target_os = "linux")]
@@ -269,7 +272,7 @@ impl HotkeyListener {
         me.rescan();
         // Keep looking for keyboards with no reader. Here, not in the UI frame loop: hotkeys must
         // keep working while the window is hidden and no frames are drawn. A scan is sysfs reads
-        // plus `open()`s (sub-millisecond) and only starts readers for nodes without one.
+        // plus an `open()` of every node (~155 ms with 32 nodes, fine on this thread) and only starts readers for nodes without one.
         #[cfg(target_os = "linux")]
         {
             let (binds, tx, guard, open, stop) =

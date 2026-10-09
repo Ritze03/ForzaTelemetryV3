@@ -42,9 +42,9 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
 - **`src/telemetry.rs` — `TelemetryState`.** Connection state, held at
   `ForzaApp::telemetry`: `latest: Option<ForzaPacket>` (most recent packet),
   `is_connected: bool`, `packets_per_sec: f32`. `TelemetryState::update()` is called
-  per received packet; it flips `is_connected = true` and recomputes
-  `packets_per_sec` once per second from a rolling `packet_count`/`last_pps_update`
-  window. There is no disconnect detection here — `is_connected` only ever goes
+  per received packet; it flips `is_connected = true`. `packets_per_sec` is not counted
+  here: `ForzaApp::adopt_listener_view` copies the listener thread's `ListenerView::pps` into it
+  every frame (see `architecture/overview.md`). There is no disconnect detection here — `is_connected` only ever goes
   true; `ForzaApp::last_packet_time: Option<Instant>` is what the UI uses elsewhere to
   notice a stall.
 

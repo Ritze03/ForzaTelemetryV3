@@ -45,8 +45,8 @@ while nobody drained it. A `sync_channel` was rejected because `try_send` drops 
 3. Calls each **UI-side** listener's `update(&pkt, …)` (see table below).
 4. Relays the packet to Co-Op (`self.coop.push_local`), then calls
    `self.telemetry.update(pkt)` (`src/telemetry.rs`), which stores `latest`, flips
-   `is_connected`, and recomputes `packets_per_sec` once per second of wall-clock
-   elapsed.
+   `is_connected`. (`packets_per_sec` comes from the listener thread's own counter, copied in
+   each frame with the rest of `ListenerView`.)
 
 `self.last_packet_time` drives a 2-second-since-last-packet disconnect check right after
 the drain loop.
