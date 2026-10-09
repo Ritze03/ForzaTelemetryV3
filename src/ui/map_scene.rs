@@ -161,6 +161,30 @@ pub fn zoom_factor(scroll_y: f32, pinch: f32) -> f32 {
     (-scroll_y * 0.002).exp() / pinch.max(0.05)
 }
 
+/// Time constant (s) of the panned 3D camera's height easing towards the terrain under the view
+/// centre ([`eased_car_y`]).
+const HEIGHT_EASE_S: f32 = 0.2;
+
+/// The relief camera's height for a *panned* view this frame: `prev` (last frame's) eased towards
+/// `target` (the terrain under the view centre), `dt` seconds on. `None` = no previous frame in 3D:
+/// straight to the target.
+///
+/// *Why eased, not the plain terrain height (the first K4 version):* the camera is a pivot over
+/// the ground plane through the car, so its height shifts the whole picture. With the pivot at the
+/// terrain under the centre, moving the centre up a slope lifts the pivot at the same time and
+/// moves the picture several times further than the drag (measured: 4x at exaggeration 3 on a
+/// 80 % slope (synthetic hill)), and down a slope the sinking pivot cancels the movement on screen (the map barely
+/// moves under a drag: "panning does not work"); on top of that the picture lurches vertically as
+/// the pivot jumps from the telemetry height to the terrain's on the first drag frame. Eased with a short time constant, the pivot changes by a
+/// small fraction of the height difference per frame: a drag moves the map with the pointer (the
+/// pan solves for it, see [`Ground::centre_over`]) and the new height settles in smoothly after.
+fn eased_car_y(prev: Option<f32>, target: f32, dt: f32) -> f32 {
+    match prev.filter(|p| p.is_finite()) {
+        Some(p) => p + (target - p) * (1.0 - (-dt.clamp(0.0, 0.25) / HEIGHT_EASE_S).exp()),
+        None => target,
+    }
+}
+
 /// How a map looked on its last frame when that frame was drawn in **3D** (`draw` leaves it in the
 /// egui context, keyed by the map's `Ui`; [`ManualView::interact`] reads it). Pan and zoom need it
 /// because the relief camera is not the flat one: the picture shows the terrain *surface*, up to
@@ -199,25 +223,53 @@ impl Ground {
         ui.ctx().data_mut(|d| d.insert_temp(Self::id(ui), g));
     }
 
-    /// The camera `draw` builds for a view over this ground. `car_y` `None` = the terrain height
-    /// under `centre` (a panned view); `Some` = the telemetry-based height of a following one.
-    fn camera(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, car_y: Option<f32>) -> Camera {
-        Camera::from_cfg_relief(&layers.tilt, centre, yaw, zoom_m, rect, Some(&self.terrain), car_y)
+    /// The camera `draw` builds for a view over this ground. `car_y` `None` = a panned view:
+    /// its height is the one eased from this ground's towards the terrain under `centre`, `dt`
+    /// s on ([`eased_car_y`], the very formula `draw` uses); `Some` = the telemetry-based height
+    /// of a following one (or the drawn camera's own).
+    fn camera(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, car_y: Option<f32>, dt: f32) -> Camera {
+        let y = car_y.unwrap_or_else(|| eased_car_y(Some(self.car_y), self.terrain.height(centre.0, centre.1), dt));
+        Camera::from_cfg_relief(&layers.tilt, centre, yaw, zoom_m, rect, Some(&self.terrain), Some(y))
     }
 
-    /// The view centre that puts the world point `anchor` under screen point `at` for this
-    /// yaw / zoom, with the camera built the way a panned view's is (its height follows the
-    /// terrain under the centre, so the camera moves while the centre does: no closed form).
-    /// Each round re-casts the pointer and moves the centre by the miss; the camera is a pure
-    /// translation of the view over the ground, so the miss shrinks fast on any slope the view
-    /// ray can see. `None` = the pointer is over no ground (above the horizon).
-    fn centre_over(&self, layers: &MapLayerConfig, start: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, at: Pos2, anchor: [f32; 2]) -> Option<(f32, f32)> {
-        let mut c = start;
-        for _ in 0..16 {
-            let p = pick(&self.camera(layers, c, yaw, zoom_m, rect, None), at)?;
-            let (dx, dz) = (anchor[0] - p[0], anchor[1] - p[1]);
-            c = (c.0 + dx, c.1 + dz);
-            if dx.abs().max(dz.abs()) < 0.02 {
+    /// The view centre that puts the world point `anchor` (on the terrain) under screen point
+    /// `at` for this yaw / zoom, with the camera built the way a panned view's is: its height is
+    /// the terrain's under the centre, so the camera rises and sinks as the centre moves over hills
+    /// and there is no closed form (a fixed-point iteration on the picked ground point oscillates
+    /// on steep ground). Newton's method on the anchor's *screen* error instead, the 2x2 Jacobian by
+    /// finite differences in the centre, damped so a step never makes the error worse. Never worse
+    /// than `start`; `None` = the anchor cannot be shown at all.
+    fn centre_over(&self, layers: &MapLayerConfig, start: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, dt: f32, at: Pos2, anchor: [f32; 2]) -> Option<(f32, f32)> {
+        let miss = |c: (f32, f32)| -> Option<Vec2> {
+            let cam = self.camera(layers, c, yaw, zoom_m, rect, None, dt);
+            let y = self.terrain.height(anchor[0], anchor[1]);
+            cam.project3(anchor[0], y, anchor[1]).map(|(s, _)| s - at)
+        };
+        let (mut c, mut e) = (start, miss(start)?);
+        const H: f32 = 2.0; // metres, for the finite differences
+        for _ in 0..24 {
+            if e.length() < 0.1 {
+                break;
+            }
+            let (ex, ez) = (miss((c.0 + H, c.1))?, miss((c.0, c.1 + H))?);
+            let (jx, jz) = ((ex - e) / H, (ez - e) / H); // screen px per metre of centre x / z
+            let det = jx.x * jz.y - jz.x * jx.y;
+            if det.abs() < 1e-9 {
+                break;
+            }
+            // Solve [jx jz] d = -e.
+            let d = ((-e.x * jz.y + e.y * jz.x) / det, (-e.y * jx.x + e.x * jx.y) / det);
+            let mut stepped = false;
+            for damp in [1.0_f32, 0.5, 0.25, 0.1, 0.04, 0.015] {
+                let next = (c.0 + d.0 * damp, c.1 + d.1 * damp);
+                if let Some(ne) = miss(next) {
+                    if ne.length() < e.length() {
+                        (c, e, stepped) = (next, ne, true);
+                        break;
+                    }
+                }
+            }
+            if !stepped {
                 break;
             }
         }
@@ -225,18 +277,18 @@ impl Ground {
     }
 
     /// 3D [`panned`]: the *terrain point* grabbed at `prev` ends up under `now`.
-    fn panned(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, prev: Pos2, now: Pos2) -> (f32, f32) {
-        let drawn = self.camera(layers, centre, yaw, zoom_m, rect, Some(self.car_y));
+    fn panned(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, dt: f32, prev: Pos2, now: Pos2) -> (f32, f32) {
+        let drawn = self.camera(layers, centre, yaw, zoom_m, rect, Some(self.car_y), dt);
         pick(&drawn, prev)
-            .and_then(|anchor| self.centre_over(layers, centre, yaw, zoom_m, rect, now, anchor))
+            .and_then(|anchor| self.centre_over(layers, centre, yaw, zoom_m, rect, dt, now, anchor))
             .unwrap_or(centre)
     }
 
     /// 3D [`zoomed_at`]: the terrain point under `at` stays under it.
-    fn zoomed_at(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, at: Pos2, factor: f32) -> ((f32, f32), f32) {
+    fn zoomed_at(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, dt: f32, at: Pos2, factor: f32) -> ((f32, f32), f32) {
         let new = (zoom_m * factor).clamp(ZOOM_MIN_M, ZOOM_MAX_M);
-        let drawn = self.camera(layers, centre, yaw, zoom_m, rect, Some(self.car_y));
-        let c = pick(&drawn, at).and_then(|anchor| self.centre_over(layers, centre, yaw, new, rect, at, anchor));
+        let drawn = self.camera(layers, centre, yaw, zoom_m, rect, Some(self.car_y), dt);
+        let c = pick(&drawn, at).and_then(|anchor| self.centre_over(layers, centre, yaw, new, rect, dt, at, anchor));
         (c.unwrap_or(centre), new)
     }
 }
@@ -291,12 +343,13 @@ impl ManualView {
     /// drawn in 3D both anchor on the terrain surface under the pointer ([`Ground`]).
     pub fn interact(&mut self, ui: &Ui, resp: &egui::Response, v: &ViewIn) {
         let ground = Ground::of(ui);
+        let dt = ui.input(|i| i.stable_dt);
         let (centre, zoom) = self.view(v.car, v.base_zoom_m);
         if resp.dragged_by(egui::PointerButton::Primary) && resp.drag_delta() != Vec2::ZERO {
             if let Some(now) = resp.interact_pointer_pos() {
                 let prev = now - resp.drag_delta();
                 let new = match &ground {
-                    Some(g) => g.panned(v.layers, centre, v.yaw, zoom, v.rect, prev, now),
+                    Some(g) => g.panned(v.layers, centre, v.yaw, zoom, v.rect, dt, prev, now),
                     None => panned(&camera(v.layers, centre, v.yaw, zoom, v.rect), centre, prev, now),
                 };
                 self.touch(v.speed);
@@ -312,7 +365,7 @@ impl ManualView {
                 let (new_centre, new_zoom) = match anchor {
                     Some(at) => {
                         let (c, z) = match &ground {
-                            Some(g) => g.zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, at, factor),
+                            Some(g) => g.zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, dt, at, factor),
                             None => zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, at, factor),
                         };
                         (Some(c), z)
@@ -328,10 +381,29 @@ impl ManualView {
     }
 }
 
+/// The north compass's scale for a map over `rect`: the HUD design size (1.0) scaled with the
+/// widget and clamped so it stays proportionate.
+fn compass_scale(rect: Rect) -> f32 {
+    (rect.width().min(rect.height()) / 200.0).clamp(0.8, 1.6)
+}
+
+/// Where [`draw`] paints the compass over a map of `rect` (`hud::minimap::draw_compass`: disc of
+/// radius 11 at (18, 18) in HUD units, scaled by [`compass_scale`]). It sits top left, where the
+/// "Follow car" buttons do, so those step aside while it is on (the Dashboard's
+/// [`follow_button`] does; the viewer's own button should use this too).
+pub fn compass_rect(rect: Rect) -> Rect {
+    let s = compass_scale(rect);
+    Rect::from_min_max(rect.min + vec2(7.0, 7.0) * s, rect.min + vec2(29.0, 29.0) * s)
+}
+
 /// The small "Follow car" button the Dashboard map shows in its corner while its view is manual
-/// (the viewer has its own, always there). True = pressed (the caller resets the view).
+/// (the viewer has its own, always there). True = pressed (the caller resets the view). Right of
+/// the compass when that is on: [`draw`] leaves whether it painted one in the egui context,
+/// keyed by the map's `Ui`, so the caller needs no extra argument.
 pub fn follow_button(ui: &mut Ui, rect: Rect) -> bool {
-    let at = Rect::from_min_size(rect.left_top() + vec2(8.0, 8.0), vec2(rect.width().min(220.0) - 8.0, 26.0));
+    let compass = ui.ctx().data(|d| d.get_temp::<bool>(compass_id(ui))).unwrap_or(false);
+    let dx = if compass { (compass_rect(rect).right() + 6.0 - rect.left()).max(8.0) } else { 8.0 };
+    let at = Rect::from_min_size(rect.left_top() + vec2(dx, 8.0), vec2((rect.width().min(220.0) - dx).max(0.0), 26.0));
     let mut hit = false;
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(at).layout(egui::Layout::left_to_right(egui::Align::Min)),
@@ -342,6 +414,10 @@ pub fn follow_button(ui: &mut Ui, rect: Rect) -> bool {
         },
     );
     hit
+}
+
+fn compass_id(ui: &Ui) -> egui::Id {
+    ui.id().with("map_scene_compass")
 }
 
 // ── 3D (phase K, K4) ─────────────────────────────────────────────────────────────────────────
@@ -484,9 +560,10 @@ fn allowed_3d(windows_flag: bool) -> bool {
 /// the eframe side asks for it, so it loads only while a map is *in 3D and on screen*.
 ///
 /// `car_y`: while the view follows the car, the telemetry height + 1 m (the camera sits above the
-/// car, not above the terrain mesh under it); a panned view, or no race on, uses the terrain
-/// height under the view centre (`Camera::from_cfg_relief` with `None`).
-fn relief_camera(app: &ForzaApp, sc: &Scene, rect: Rect) -> Option<Camera> {
+/// car, not above the terrain mesh under it); a panned view, or no race on, eases (`prev_car_y`
+/// = last frame's, `dt` s) towards the terrain height under the view centre ([`eased_car_y`]).
+/// The `bool` is "the height has settled": false = keep the frames coming.
+fn relief_camera(app: &ForzaApp, sc: &Scene, rect: Rect, prev_car_y: Option<f32>, dt: f32) -> Option<(Camera, bool)> {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         use crate::maprender::cfg::ViewMode;
@@ -499,10 +576,13 @@ fn relief_camera(app: &ForzaApp, sc: &Scene, rect: Rect) -> Option<Camera> {
             return None; // the status line in the View mode card says why
         };
         let following = sc.centre == (app.minimap_cached_car_x, app.minimap_cached_car_z);
-        let car_y = following
+        let telemetry_y = following
             .then(|| app.telemetry.latest.as_ref().filter(|p| p.is_race_on != 0).map(|p| p.position_y + 1.0))
             .flatten();
-        Some(Camera::from_cfg_relief(&sc.layers.tilt, sc.centre, sc.yaw, sc.zoom_m, rect, Some(&terrain), car_y))
+        let ground = terrain.height(sc.centre.0, sc.centre.1);
+        let car_y = telemetry_y.unwrap_or_else(|| eased_car_y(prev_car_y, ground, dt));
+        let settled = telemetry_y.is_some() || (car_y - ground).abs() < 0.25;
+        Some((Camera::from_cfg_relief(&sc.layers.tilt, sc.centre, sc.yaw, sc.zoom_m, rect, Some(&terrain), Some(car_y)), settled))
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -530,14 +610,56 @@ fn unproject_at_height(cam: &Camera, p: Pos2, h: f32) -> Option<[f32; 2]> {
     Some(cam.view.offset_to_world(dx * cz, oy))
 }
 
+/// Where the view ray through screen point `p` first meets the terrain surface, as world (x, z):
+/// the ray is the line of points `unproject_at_height` gives for every height, walked from the eye
+/// down in coarse steps until it is below the surface, then bisected. `None` = it never gets
+/// there (it points up, or leaves the terrain's depth range). Needs a relief camera.
+fn terrain_hit(cam: &Camera, p: Pos2) -> Option<[f32; 2]> {
+    let r = cam.relief.as_ref()?;
+    let k = cam.view.scale * r.exag;
+    let top = cam.focal * cam.pitch.cos() * 0.999; // the eye's height above the car's plane, px
+    let bottom = (-200.0 - r.car_y) * k; // 200 m below sea level: under any terrain
+    if !(top > bottom) {
+        return None;
+    }
+    // Terrain height above the ray (px): > 0 = the ray point is still above the surface.
+    let above = |h: f32| -> Option<([f32; 2], f32)> {
+        let at = unproject_at_height(cam, p, h)?;
+        Some((at, h - (r.terrain.height(at[0], at[1]) - r.car_y) * k))
+    };
+    const STEPS: usize = 384;
+    let mut last = (top, above(top)?.1);
+    for i in 1..=STEPS {
+        let h = top + (bottom - top) * i as f32 / STEPS as f32;
+        let Some((_, d)) = above(h) else { return None };
+        if d <= 0.0 {
+            let (mut hi, mut lo) = (last.0, h);
+            for _ in 0..28 {
+                let mid = 0.5 * (hi + lo);
+                match above(mid) {
+                    Some((_, d)) if d > 0.0 => hi = mid,
+                    Some(_) => lo = mid,
+                    None => break,
+                }
+            }
+            return above(0.5 * (hi + lo)).map(|(at, _)| at);
+        }
+        last = (h, d);
+    }
+    None
+}
+
 /// The world point (x, z) under screen point `p` for a click: on the flat plane for a flat or
-/// tilted camera; in 3D the point of the *terrain surface* the pointer is over (found by
-/// re-casting the ray onto the plane at the height found, a few rounds: converges for any slope
-/// gentler than the view ray). `Camera::unproject` alone would land on the plane at the car's
-/// height, up to hundreds of metres off on a hillside.
+/// tilted camera; in 3D the point of the *terrain surface* the pointer is over ([`terrain_hit`];
+/// where that finds none, a few rounds of re-casting onto the plane at the height found, which
+/// converge for any slope gentler than the view ray). `Camera::unproject` alone would land on the
+/// plane at the car's height, up to hundreds of metres off on a hillside.
 pub fn pick(cam: &Camera, p: Pos2) -> Option<[f32; 2]> {
     let mut at = cam.unproject(p)?;
     if let Some(r) = &cam.relief {
+        if let Some(hit) = terrain_hit(cam, p) {
+            return Some(hit);
+        }
         let k = cam.view.scale * r.exag;
         for _ in 0..6 {
             let h = (r.terrain.height(at[0], at[1]) - r.car_y) * k;
@@ -646,7 +768,12 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     // renderer (`add_scene`); until it is `Ready`, and for good when the context failed, the tilted
     // 2D map (`flat_cam`) is drawn under it AND over it (POIs, markers): everything on screen then
     // agrees with the 2D picture. `cam` is the one the markers and the caller use.
-    let relief = relief_camera(app, sc, rect);
+    let prev_car_y = Ground::of(ui).map(|g| g.car_y);
+    let relief = relief_camera(app, sc, rect, prev_car_y, ui.input(|i| i.stable_dt));
+    if relief.as_ref().is_some_and(|(_, settled)| !settled) {
+        ui.ctx().request_repaint(); // the camera height is still easing
+    }
+    let relief = relief.map(|(c, _)| c);
     let underlay = relief.is_none() || app.map3d.wants_underlay();
     let cam = match &relief {
         Some(r) if !underlay => r.clone(),
@@ -797,8 +924,9 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
 
     // North compass: shared with the HUD Minimap (`hud::minimap::draw_compass`), scaled
     // with the widget (HUD design size = 1.0) and clamped so it stays proportionate.
+    ui.ctx().data_mut(|d| d.insert_temp(compass_id(ui), sc.compass));
     if sc.compass {
-        let s = (rect.width().min(rect.height()) / 200.0).clamp(0.8, 1.6);
+        let s = compass_scale(rect);
         let xf = crate::hud::prims::Xf { o: rect.min, s, a: 1.0 };
         crate::hud::minimap::draw_compass(&painter, &xf, view.north_dir());
     }
@@ -1095,6 +1223,159 @@ mod tests {
             let zoomed = cam_3d(&layers, c2, yaw, z2, 260.0);
             let (under, _) = zoomed.project3(before[0], 260.0, before[1]).expect("visible");
             assert!((under - at).length() < 0.2, "yaw {yaw}: {under:?} vs {at:?}");
+        }
+    }
+
+    // ── pan / zoom on the terrain surface (3D) ──────────────────────────────────────────────
+
+    /// A 3D map's last frame over the synthetic hills, the camera at `car_y`.
+    fn ground(car_y: f32) -> Ground {
+        Ground { terrain: Arc::new(Terrain::synthetic()), car_y, pass: 0 }
+    }
+
+    /// One frame at 60 Hz.
+    const DT: f32 = 1.0 / 60.0;
+
+    /// Where the terrain point `at` (x, z) shows in the 3D frame `draw` makes for `centre`: the
+    /// panned view's camera, its height eased towards the terrain's under the centre.
+    fn shows_at(g: &Ground, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom: f32, at: [f32; 2]) -> Pos2 {
+        let cam = g.camera(layers, centre, yaw, zoom, VIEW, None, DT);
+        cam.project3(at[0], g.terrain.height(at[0], at[1]), at[1]).expect("visible").0
+    }
+
+    /// The bug: pan worked out on the car-height plane (`panned`, a relief-less camera) slides the
+    /// map against the pointer in 3D, because the picture shows the terrain surface. The 3D pan
+    /// keeps the grabbed terrain point under the pointer, frame after frame (the camera height
+    /// follows the terrain under the centre, so the view moves while the centre does), from the
+    /// following view (telemetry height) and the panned one, at any yaw.
+    #[test]
+    fn pan_keeps_the_grabbed_terrain_point_under_the_pointer_in_3d() {
+        let layers = layers_3d();
+        let t = Terrain::synthetic();
+        let mut worst_plane = 0.0_f32;
+        for yaw in [0.0_f32, 1.0, -2.2] {
+            // The car beside the 220 m hill (-300, 200); the view starts on it, following.
+            let car = (-250.0, 80.0);
+            let mut g = ground(t.height(car.0, car.1) + 1.0);
+            let mut centre = car;
+            let mut now = pos2(400.0, 420.0);
+            for step in 0..14 {
+                let prev = now;
+                now += vec2(14.0, -9.0); // a drag up and to the right, over the hill
+                let drawn = g.camera(&layers, centre, yaw, 400.0, VIEW, Some(g.car_y), DT);
+                let anchor = pick(&drawn, prev).expect("ground under the pointer");
+                let plane = panned(&camera(&layers, centre, yaw, 400.0, VIEW), centre, prev, now);
+                let new = g.panned(&layers, centre, yaw, 400.0, VIEW, DT, prev, now);
+                assert!(new != centre, "yaw {yaw} step {step}: the view must move");
+                let under = shows_at(&g, &layers, new, yaw, 400.0, anchor);
+                assert!((under - now).length() < 0.5, "yaw {yaw} step {step}: the grabbed point shows at {under:?}, pointer at {now:?}");
+                worst_plane = worst_plane.max((shows_at(&g, &layers, plane, yaw, 400.0, anchor) - now).length());
+                centre = new;
+                g.car_y = g.camera(&layers, centre, yaw, 400.0, VIEW, None, DT).relief.unwrap().car_y; // the next frame's camera
+            }
+        }
+        assert!(worst_plane > 5.0, "the plane pan was meant to miss on these hills (worst {worst_plane} px)");
+    }
+
+    /// Wheel zoom in 3D keeps the terrain point under the cursor under it, zooming in and out.
+    #[test]
+    fn zoom_keeps_the_terrain_point_under_the_cursor_in_3d() {
+        let layers = layers_3d();
+        let t = Terrain::synthetic();
+        for yaw in [0.0_f32, 0.8] {
+            let centre = (-270.0, 120.0);
+            let g = ground(t.height(centre.0, centre.1));
+            for (at, factor) in [(pos2(560.0, 380.0), 0.6), (pos2(300.0, 450.0), 1.7), (pos2(420.0, 250.0), 0.8)] {
+                let drawn = g.camera(&layers, centre, yaw, 500.0, VIEW, Some(g.car_y), DT);
+                let anchor = pick(&drawn, at).expect("ground under the cursor");
+                let (c, z) = g.zoomed_at(&layers, centre, yaw, 500.0, VIEW, DT, at, factor);
+                assert!((z - 500.0 * factor).abs() < 1e-3);
+                let under = shows_at(&g, &layers, c, yaw, z, anchor);
+                assert!((under - at).length() < 0.5, "yaw {yaw} x{factor}: {under:?} vs {at:?}");
+            }
+            // The radius stays clamped.
+            let (_, z) = g.zoomed_at(&layers, centre, yaw, 60.0, VIEW, DT, pos2(400.0, 300.0), 0.1);
+            assert_eq!(z, ZOOM_MIN_M);
+        }
+    }
+
+    /// The easing of the panned camera's height: no previous frame = the target at once; else a
+    /// fraction per frame that grows with `dt` and never overshoots.
+    #[test]
+    fn the_panned_camera_height_eases_towards_the_terrain() {
+        assert_eq!(eased_car_y(None, 300.0, DT), 300.0);
+        assert_eq!(eased_car_y(Some(f32::NAN), 300.0, DT), 300.0);
+        let (a, b) = (eased_car_y(Some(100.0), 300.0, DT), eased_car_y(Some(100.0), 300.0, 0.05));
+        assert!(a > 100.0 && a < b && b < 300.0, "{a} {b}");
+        // A long frame is capped, so a hitch does not teleport the camera.
+        assert!(eased_car_y(Some(100.0), 300.0, 5.0) < 300.0);
+        // It converges.
+        let mut y = Some(0.0);
+        for _ in 0..300 {
+            y = Some(eased_car_y(y, 300.0, DT));
+        }
+        assert!((y.unwrap() - 300.0).abs() < 0.25);
+    }
+
+    /// The reason for the easing: with the pivot at the terrain under the centre, the picture
+    /// moves several times too far uphill and hardly at all downhill (the sinking pivot cancels the
+    /// drag). With it, a drag in either direction on a steep slope moves the grabbed point
+    /// under the pointer, and the view really moves.
+    #[test]
+    fn dragging_up_and_down_a_slope_moves_the_map_in_3d() {
+        let mut layers = layers_3d();
+        layers.tilt.relief.exaggeration = 3.0;
+        let t = Terrain::synthetic();
+        // On the south flank of the 220 m hill (-300, 200): north is uphill.
+        let car = (-300.0, 20.0);
+        let g = ground(t.height(car.0, car.1) + 1.0);
+        for (prev, now) in [(pos2(400.0, 330.0), pos2(400.0, 380.0)), (pos2(400.0, 380.0), pos2(400.0, 330.0))] {
+            let anchor = pick(&g.camera(&layers, car, 0.0, 400.0, VIEW, Some(g.car_y), DT), prev).unwrap();
+            let centre = g.panned(&layers, car, 0.0, 400.0, VIEW, DT, prev, now);
+            assert!((shows_at(&g, &layers, centre, 0.0, 400.0, anchor) - now).length() < 0.5, "{prev:?} -> {now:?}");
+            assert!((centre.1 - car.1).abs() > 5.0, "the view must have moved: {centre:?}");
+        }
+    }
+
+    /// A pointer over no ground (above the horizon of the plane) leaves the view where it is.
+    #[test]
+    fn pan_over_the_sky_does_nothing_in_3d() {
+        let layers = layers_3d();
+        let g = ground(100.0);
+        let c = (-250.0, 80.0);
+        assert_eq!(g.panned(&layers, c, 0.0, 400.0, VIEW, DT, pos2(400.0, -3000.0), pos2(420.0, -3000.0)), c);
+    }
+
+    /// `draw` leaves the 3D look for the next frame's input, and clears it when it draws flat.
+    #[test]
+    fn the_3d_look_is_handed_from_draw_to_interact() {
+        let layers = layers_3d();
+        let cam = cam_3d(&layers, (-250.0, 150.0), 0.0, 400.0, 260.0);
+        let flat = camera(&layers, (-250.0, 150.0), 0.0, 400.0, VIEW);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                assert!(Ground::of(ui).is_none(), "nothing drawn yet");
+                Ground::publish(ui, Some(&cam));
+                assert_eq!(Ground::of(ui).map(|g| g.car_y), Some(260.0));
+                Ground::publish(ui, Some(&flat));
+                assert!(Ground::of(ui).is_none(), "a flat frame clears it");
+                Ground::publish(ui, Some(&cam));
+                Ground::publish(ui, None);
+                assert!(Ground::of(ui).is_none());
+            });
+        });
+    }
+
+    /// The compass box is where `draw_compass` paints (disc of radius 11 at (18, 18) HUD units).
+    #[test]
+    fn the_compass_rect_covers_the_drawn_compass() {
+        for (w, h) in [(160.0_f32, 100.0_f32), (800.0, 600.0), (3000.0, 1500.0)] {
+            let r = Rect::from_min_size(pos2(10.0, 20.0), vec2(w, h));
+            let s = compass_scale(r);
+            let c = compass_rect(r);
+            assert!((c.center() - (r.min + vec2(18.0, 18.0) * s)).length() < 1e-3);
+            assert!((c.width() - 22.0 * s).abs() < 1e-3);
         }
     }
 
