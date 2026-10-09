@@ -20,6 +20,7 @@ use std::time::Instant;
 use egui_glow::glow::{self, HasContext};
 
 use super::clipmap::{self, Clipmap, HeightTex};
+use super::marker::{self, Marker3d, ModelGpu, Trail3d, TrailGpu};
 use super::probe::{Caps, TEXTURE_MAX_ANISOTROPY, TIME_ELAPSED};
 use super::roads::{self, RoadGpu};
 use super::shaders::{self, compile, Common, Prog};
@@ -57,6 +58,8 @@ pub struct Frame<'a> {
     pub focus: Option<&'a RaceFocusCfg>,
     /// Size factor of strokes (HUD design -> screen).
     pub s: f32,
+    /// Breadcrumb trails at their recorded heights (D77).
+    pub trails: &'a [Trail3d],
     /// Wait for the GPU and read the timer query in this call (tests, perf numbers).
     pub sync_timing: bool,
 }
@@ -98,6 +101,12 @@ pub struct Gl3d {
     terrain: Prog,
     road: Prog,
     comp: Prog,
+    marker: Prog,
+    trail: Prog,
+    /// The arrow and the sedan (`MarkerStyle` order), uploaded at the first marker.
+    models: Option<[ModelGpu; 2]>,
+    /// The streamed trail buffer, created at the first trail.
+    trail_buf: Option<TrailGpu>,
     clip: Clipmap,
     pub heights: Option<HeightTex>,
     pub roads: Option<RoadGpu>,
@@ -122,6 +131,8 @@ impl Gl3d {
         let terrain = compile(gl, "terrain", tvs, tfs, Common::Yes, shaders::TERRAIN_UNIFORMS)?;
         let road = compile(gl, "road", shaders::ROAD_VS, shaders::ROAD_FS, Common::Yes, shaders::ROAD_UNIFORMS)?;
         let comp = compile(gl, "composite", shaders::COMP_VS, shaders::COMP_FS, Common::No, shaders::COMP_UNIFORMS)?;
+        let marker = compile(gl, "marker", shaders::MARKER_VS, shaders::MARKER_FS, Common::Yes, shaders::MARKER_UNIFORMS)?;
+        let trail = compile(gl, "trail", shaders::TRAIL_VS, shaders::TRAIL_FS, Common::Yes, shaders::TRAIL_UNIFORMS)?;
         let clip = Clipmap::new(gl)?;
         // SAFETY: plain GL object creation on the current context.
         let (empty_vao, queries) = unsafe {
@@ -130,7 +141,7 @@ impl Gl3d {
             (v, q)
         };
         let n = queries.len();
-        Ok(Gl3d { caps, terrain, road, comp, clip, heights: None, roads: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
+        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
     }
 
     /// Upload the height raster (15 MB for the island, ~16 ms).
@@ -283,16 +294,19 @@ impl Gl3d {
     }
 
     fn camera_uniforms(&self, gl: &glow::Context, p: &Prog, f: &Frame, h: &HeightTex) {
-        let cam = f.cam;
-        let (n, far) = cam.near_far(f.ppp);
+        Self::cam_uniforms(gl, p, f.cam, f.ppp, h);
+    }
+
+    fn cam_uniforms(gl: &glow::Context, p: &Prog, cam: &Camera, ppp: f32, h: &HeightTex) {
+        let (n, far) = cam.near_far(ppp);
         let a1 = (far + n) / (far - n);
         let car = cam.car_exag();
         // SAFETY: uniform uploads on the current program.
         unsafe {
-            gl.uniform_matrix_4_f32_slice(p.u("uVP"), false, &cam.view_proj_rel(f.ppp));
+            gl.uniform_matrix_4_f32_slice(p.u("uVP"), false, &cam.view_proj_rel(ppp));
             gl.uniform_3_f32(p.u("uCar"), car[0], car[1], car[2]);
             gl.uniform_1_f32(p.u("uExag"), cam.exag());
-            gl.uniform_3_f32(p.u("uCam"), cam.view.scale * f.ppp, cam.focal * f.ppp, a1);
+            gl.uniform_3_f32(p.u("uCam"), cam.view.scale * ppp, cam.focal * ppp, a1);
             gl.uniform_1_i32(p.u("uH"), 2);
             gl.uniform_2_i32(p.u("uHSize"), h.size[0], h.size[1]);
             gl.uniform_3_f32(p.u("uHGeo"), h.geo[0], h.geo[1], h.geo[2]);
@@ -390,6 +404,11 @@ impl Gl3d {
             if let (Some(rc), Some(r)) = (f.roads, self.roads.as_ref()) {
                 self.draw_roads(gl, f, &heights, rc, r, &mut st);
             }
+            // ── trails (D77; the own car is a pass of its own, `render_marker`)
+            if !f.trails.is_empty() {
+                self.draw_trails(gl, f, &heights, &mut st)?;
+            }
+
             if let Some(i) = q {
                 gl.end_query(TIME_ELAPSED);
                 self.q_inflight[i] = true;
@@ -463,6 +482,131 @@ impl Gl3d {
         }
     }
 
+    /// The trail ribbons: depth-tested against the terrain and roads at full strength, then the
+    /// parts behind them (through a tunnel, behind a hill) again with the test inverted at
+    /// [`marker::GHOST`] strength, so a trail into a tunnel stays visible like the tunnel.
+    ///
+    /// # Safety
+    /// The scene FBO is bound with depth testing on; a current context.
+    unsafe fn draw_trails(&mut self, gl: &glow::Context, f: &Frame, heights: &HeightTex, st: &mut RenderStats) -> Result<(), String> {
+        let (v, ranges) = marker::trail_vertices(f.trails);
+        if v.is_empty() {
+            return Ok(());
+        }
+        if self.trail_buf.is_none() {
+            self.trail_buf = Some(TrailGpu::new(gl)?);
+        }
+        let tb = self.trail_buf.as_ref().expect("created above");
+        // SAFETY: the caller's contract.
+        unsafe {
+            gl.bind_vertex_array(Some(tb.vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(tb.vbo));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, super::as_bytes(&v), glow::STREAM_DRAW);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            let p = &self.trail;
+            gl.use_program(Some(p.p));
+            self.camera_uniforms(gl, p, f, heights);
+            gl.uniform_2_f32(p.u("uW"), marker::TRAIL_PT * f.s * f.ppp, BIAS_BASE + BIAS_RANK * 12.0);
+            gl.uniform_2_f32(p.u("uVp"), f.size[0] as f32, f.size[1] as f32);
+            gl.enable(glow::BLEND);
+            gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
+            gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+            gl.disable(glow::CULL_FACE);
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_mask(false);
+            for (func, strength) in [(glow::LEQUAL, 1.0), (glow::GREATER, marker::GHOST)] {
+                gl.depth_func(func);
+                gl.uniform_1_f32(p.u("uAlpha"), strength);
+                for (t, &(first, count)) in f.trails.iter().zip(&ranges) {
+                    if count == 0 {
+                        continue;
+                    }
+                    let c = t.colour;
+                    gl.uniform_3_f32(p.u("uColor"), c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
+                    gl.draw_arrays(glow::TRIANGLES, first, count);
+                    st.triangles += count as usize / 3;
+                    st.draws += 1;
+                }
+            }
+            gl.depth_func(glow::LEQUAL);
+            gl.depth_mask(true);
+            gl.bind_vertex_array(None);
+        }
+        Ok(())
+    }
+
+    /// The own-car marker (D77 / D78) into the own FBO, alone (transparent elsewhere), for a
+    /// composite of its own *after* the egui vectors over the scene (POIs, race lines), so it is on
+    /// top of them like the flat arrow was. It has a depth buffer of its own: always whole wherever
+    /// the car is (a tunnel, under a bridge) and correctly self-occluded. A dark hull (pushed out
+    /// along the smoothed normals, no depth) first gives it the flat arrow's outline. Puts the
+    /// caller's framebuffer, viewport and scissor back like [`Gl3d::render`].
+    pub fn render_marker(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, m: &Marker3d) -> Result<usize, String> {
+        let Some(h) = self.heights.as_ref().map(|h| HeightTex { tex: h.tex, size: h.size, geo: h.geo, rev: 0 }) else { return Err("no terrain uploaded".into()) };
+        let saved = Self::save(gl);
+        let r = self.render_marker_inner(gl, cam, ppp, size, s, m, &h);
+        Self::restore(gl, &saved);
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_marker_inner(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, m: &Marker3d, heights: &HeightTex) -> Result<usize, String> {
+        self.ensure_fbo(gl, size[0], size[1])?;
+        let fbo = self.fbo.as_ref().map(|b| b.fbo).ok_or("no framebuffer")?;
+        if self.models.is_none() {
+            self.models = Some([ModelGpu::upload(gl, &marker::arrow_model())?, ModelGpu::upload(gl, &marker::sedan_model())?]);
+        }
+        let models = self.models.as_ref().expect("uploaded above");
+        let g = &models[match m.kind {
+            crate::maprender::cfg::MarkerStyle::Arrow => 0,
+            crate::maprender::cfg::MarkerStyle::Sedan => 1,
+        }];
+        // Points per metre at the marker: the camera's scale times the perspective there.
+        let k_persp = cam.project3(m.pos[0], m.pos[1], m.pos[2]).map_or(1.0, |(_, cz)| (cam.focal / cz).clamp(0.05, 4.0));
+        let ppm = cam.view.scale * k_persp;
+        let k = marker::model_scale(m.kind, ppm, s);
+        let grow = marker::OUTLINE_PT * s.max(0.1) / ppm.max(1e-6);
+        let (sy, cy) = m.yaw.sin_cos();
+        let c = m.colour;
+        // SAFETY: GL state and draws on the current context with objects this struct owns.
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, size[0], size[1]);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.color_mask(true, true, true, true);
+            gl.depth_mask(true);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear_depth_f32(1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            let p = &self.marker;
+            gl.use_program(Some(p.p));
+            Self::cam_uniforms(gl, p, cam, ppp, heights);
+            gl.uniform_3_f32(p.u("uPos"), m.pos[0], m.pos[1] - marker::GROUND_BELOW_M, m.pos[2]);
+            gl.uniform_2_f32(p.u("uYaw"), sy, cy);
+            gl.uniform_3_f32(p.u("uColor"), c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
+            gl.uniform_1_f32(p.u("uAlpha"), 1.0);
+            gl.enable(glow::BLEND);
+            gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
+            gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+            gl.disable(glow::CULL_FACE);
+            gl.bind_vertex_array(Some(g.vao));
+            // The outline hull: no depth at all.
+            gl.disable(glow::DEPTH_TEST);
+            gl.uniform_2_f32(p.u("uK"), k, grow);
+            gl.uniform_1_f32(p.u("uHull"), 1.0);
+            gl.draw_arrays(glow::TRIANGLES, 0, g.count);
+            // The model over it, depth-tested against itself only.
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(glow::LESS);
+            gl.uniform_2_f32(p.u("uK"), k, 0.0);
+            gl.uniform_1_f32(p.u("uHull"), 0.0);
+            gl.draw_arrays(glow::TRIANGLES, 0, g.count);
+            gl.depth_func(glow::LEQUAL);
+            gl.bind_vertex_array(None);
+        }
+        Ok(g.count as usize / 3 * 2)
+    }
+
     /// Draw the scene FBO into the framebuffer [`Gl3d::render`] restored: the viewport and scissor
     /// are the caller's (egui's callback rect and clip rect). `size` = the callback viewport in
     /// px, `radius_px` = the rounded-corner mask (the HUD pill, 0 = square), `alpha` = the fade.
@@ -500,7 +644,7 @@ impl Gl3d {
         self.destroyed = true;
         // SAFETY: deleting objects this struct created, on their context.
         unsafe {
-            for p in [&self.terrain, &self.road, &self.comp] {
+            for p in [&self.terrain, &self.road, &self.comp, &self.marker, &self.trail] {
                 gl.delete_program(p.p);
             }
             gl.delete_vertex_array(self.empty_vao);
@@ -514,6 +658,12 @@ impl Gl3d {
             }
         }
         self.clip.destroy(gl);
+        for m in self.models.take().into_iter().flatten() {
+            m.destroy(gl);
+        }
+        if let Some(t) = self.trail_buf.take() {
+            t.destroy(gl);
+        }
         if let Some(h) = self.heights.take() {
             h.destroy(gl);
         }

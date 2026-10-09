@@ -463,6 +463,20 @@ pub struct ReliefCfg {
     pub exaggeration: f32,
     /// Strength of the hill shading over the imagery, [`ReliefCfg::SHADING_RANGE`].
     pub shading: f32,
+    /// The own-car marker in the 3D scene (D78): a 3D arrow (default, today's look) or a
+    /// low-poly sedan. Flat / Tilted always draw the flat arrow.
+    pub marker: MarkerStyle,
+}
+
+/// What the own car looks like in the 3D scene (D78). *Why a choice:* the user asked for both
+/// ("a really simple 3d sedan model ... plus a normal arrow 3d model, and let the user decide");
+/// the arrow is the default because it keeps today's look until the user picks the car.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerStyle {
+    #[default]
+    Arrow,
+    Sedan,
 }
 
 impl ReliefCfg {
@@ -486,7 +500,7 @@ impl ReliefCfg {
 
 impl Default for ReliefCfg {
     fn default() -> Self {
-        Self { on: false, road_height: RoadHeight::Nodes, deck_m: 3.0, exaggeration: 1.0, shading: 0.35 }
+        Self { on: false, road_height: RoadHeight::Nodes, deck_m: 3.0, exaggeration: 1.0, shading: 0.35, marker: MarkerStyle::Arrow }
     }
 }
 
@@ -656,7 +670,7 @@ mod tests {
         let mut b = MapLayerConfig::hud();
         b.image.opacity = 0.2;
         b.tilt.angle_deg = 33.0;
-        b.tilt.relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 7.0, exaggeration: 2.0, shading: 0.8 }; // the 3D settings travel with the view
+        b.tilt.relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 7.0, exaggeration: 2.0, shading: 0.8, marker: MarkerStyle::Sedan }; // the 3D settings travel with the view
         b.race_lines.width_px = 9.0;
         b.race_lines.focus.other_roads = OtherRoads::Hidden; // the focus travels with the race lines
         b.race_lines.focus.mute_alpha = 0.6;
@@ -713,7 +727,7 @@ mod tests {
     #[test]
     fn relief_defaults_and_the_view_mode_derivation() {
         let r = ReliefCfg::default();
-        assert_eq!((r.on, r.road_height, r.deck_m, r.exaggeration, r.shading), (false, RoadHeight::Nodes, 3.0, 1.0, 0.35));
+        assert_eq!((r.on, r.road_height, r.deck_m, r.exaggeration, r.shading, r.marker), (false, RoadHeight::Nodes, 3.0, 1.0, 0.35, MarkerStyle::Arrow));
         // Today's view modes stay: HUD tilted, Dashboard (and the Viewer) flat; 3D on neither.
         assert_eq!(MapLayerConfig::hud().tilt.view_mode(), ViewMode::Tilted);
         assert_eq!(MapLayerConfig::dashboard().tilt.view_mode(), ViewMode::Flat);
@@ -739,7 +753,9 @@ mod tests {
     #[test]
     fn relief_serde_round_trips_and_old_configs_get_the_defaults() {
         let mut c = MapLayerConfig::hud();
-        c.tilt.relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 5.0, exaggeration: 1.5, shading: 0.6 };
+        c.tilt.relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 5.0, exaggeration: 1.5, shading: 0.6, marker: MarkerStyle::Sedan };
+        let json_check = serde_json::to_string(&c.tilt.relief).unwrap();
+        assert!(json_check.contains(r#""marker":"sedan""#), "{json_check}");
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains(r#""road_height":"terrain""#), "{json}");
         assert_eq!(serde_json::from_str::<MapLayerConfig>(&json).unwrap(), c);
@@ -754,7 +770,7 @@ mod tests {
 
     #[test]
     fn relief_sane_clamps_to_the_ranges() {
-        let wild = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: -4.0, exaggeration: 99.0, shading: f32::NAN };
+        let wild = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: -4.0, exaggeration: 99.0, shading: f32::NAN, marker: MarkerStyle::Sedan };
         let s = wild.sane();
         assert_eq!((s.deck_m, s.exaggeration, s.shading), (0.0, 3.0, 0.35));
         assert!(s.on && s.road_height == RoadHeight::Terrain);

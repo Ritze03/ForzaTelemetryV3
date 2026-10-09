@@ -229,7 +229,8 @@ The Dashboard map and the HUD Minimap draw their markers with the same functions
 `a = 1`, the HUD its design scale and show/hide fade. Trail recording (`Trail`, `trail_push`) is
 shared in `src/minimap.rs`. *Why:* the user wants the HUD map to match the Dashboard's, and one
 implementation means a tweak to an arrow, label or trail lands on both. The buffers differ: the
-Dashboard's is `ForzaApp::minimap_trails` (UI thread), the HUD's is `CoopLayer` (overlay thread).
+Dashboard's is `ForzaApp::minimap_trails` (UI thread), the HUD's is `CoopLayer` (overlay thread). In 3D the own car and the trails are drawn by the GL renderer instead (`trail_3d`, `gl3d::add_marker`;
+see "3D: the own car and the trails in the scene").
 
 ## Shared renderer & layers (`src/maprender/`)
 
@@ -677,7 +678,9 @@ the settings card), so no map's behaviour changed. Module map and the call shape
 Ready, Failed(String)}`, `Scene3d` (everything one frame needs: the relief `Camera`, the newest
 `Arc<RoadMesh>`, the egui map texture + calibration, image look, fade `a`, size factor `s`, corner
 radius, `ReliefCfg`, `RoadsCfg`, the optional in-race `Focus3d`), `add_scene(&Painter, &Gl3dHandle,
-Scene3d)`, `Gl3dOptions` (requirements and test switches), `last_failure()`. The 2D-side step in
+Scene3d)`, `Gl3dOptions` (requirements and test switches), `last_failure()`. Since D77 also
+`Scene3d::trails` (`Trail3d` / `TrailSeg`) and `add_marker(&Painter, &Gl3dHandle, MarkerScene)` with
+`Marker3d` (the own car, a callback of its own; see "3D: the own car and the trails in the scene"). The 2D-side step in
 `paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (race lines + POIs,
 no roads; `draw_layers` = `Parts::ALL`), POIs and the culling boxes go through `Camera::project` /
 `k_at` / `footprint` (identical to the plane maths without a relief), `MapCanvas::to_screen`
@@ -854,6 +857,82 @@ this GPU", or the store's no-install / read error), nothing when fine (`maprende
 with roads, race line and POIs; drag and wheel; no GL error; the slow-GPU guard tripping on llvmpipe,
 the tilted fallback, the status line, and the retry on coming back to the map. Not verified: a real GPU, a
 compositor `pixels_per_point` other than 1, Windows.
+
+### 3D: the own car and the trails in the scene (D77, D78)
+
+The user: "The arrow and the following trail should also be rendered in 3d, while the 3d mode is
+enabled", "drawn according to coordinates, and the road height its driving on. i just noticed that a
+tunnel made it 'fly'", and "a really simple 3d sedan model ... plus a normal arrow 3d model, and let
+the user decide what he prefers". Before, the own arrow and the trails were flat egui shapes over the
+GL picture, and `MapCanvas::to_screen` projects onto the **terrain surface** (`Camera::project`), so in
+a tunnel they ran over the hill above it.
+
+**What changed** (`maprender/gl3d/marker.rs`, `scene.rs`, `shaders.rs`; call sites `hud/minimap.rs`,
+`ui/map_scene.rs`):
+
+- **Position = telemetry x, y, z.** The car marker stands at the packet's position and height (the
+  model's ground is `GROUND_BELOW_M` = 0.45 m under it: Forza reports roughly the centre of mass), the
+  same height the 3D camera follows (`position_y + 1`). Without a live position (paused, no race on)
+  it stands on the terrain. The trail points carry their height: `minimap::Trail` is now a deque of
+  `TrailPt { x, y, z, t }` and `trail_push` takes the y (`ForzaApp::update_minimap_trails`, the HUD's
+  `CoopLayer`); teammates' trails record their packets' heights too.
+- **Two models built in code, no assets** (`marker::arrow_model`, `sedan_model`), flat-shaded, lit
+  so the tops are exactly the car colour (white solo, the co-op colour in a session) and the sides
+  darker:
+  - **Arrow** (default, 14 triangles): the flat arrow's chevron (5 m x 3.8 m, a shallow notch at the
+    back), extruded 0.5 m, with a low four-facet gem on top so the light shows it is 3D.
+  - **Sedan** (196 triangles): lower body, dark glass greenhouse (raked windscreen, rear window), a
+    roof slab in the body colour, four octagonal wheels, head- and tail-lights; from the usual view
+    from above-behind it reads as hood / windscreen / roof / rear window / trunk with red tail-lights.
+  Both get a dark ~1 pt outline (the flat arrow's black stroke): the model pushed out along its
+  smoothed normals, drawn first without depth, the model over it.
+- **Sizing rule:** real size (sedan 4.6 m, arrow 5 m) when that is big enough, else scaled up to a
+  minimum on-screen length at the car: **20 pt** for the sedan, **16 pt** for the arrow (x the HUD's
+  size factor `s`): `k = max(1, min_pt * s / (len_m * pt_per_m_at_car))` (`marker::model_scale`;
+  `pt_per_m_at_car` = `Camera::view.scale` x the perspective at the marker). Heights are divided by the
+  exaggeration so the model is not stretched with the hills. *Why a minimum:* at HUD zoom (500 m) a
+  real car is ~2 px; the flat arrow was 14 pt and the car must stay as readable (it is ~14 px tall at
+  the HUD's 1x, seen at 40 deg). Zoomed in on the Viewer it is real size.
+- **Heading:** yaw only (telemetry yaw: forward = `(sin yaw, cos yaw)`); pitch and roll are left out
+  (scaled up 5-10x at HUD zoom a tilted car would look odd, and yaw is what the arrow showed).
+- **Tunnel visibility (the "it flies" bug):** the marker is **its own paint callback**
+  (`gl3d::add_marker(painter, handle, MarkerScene)`), queued where the flat arrow was drawn - after
+  the race lines, POIs and teammates - rendered into the renderer's FBO with a depth buffer of its
+  own and composited like the scene. So it is always whole and on top, also deep in a tunnel or
+  under a bridge (like the tunnels, which the scene draws without the depth test), and correctly
+  self-occluded. *Why not inside the scene pass:* a callback composites where it is queued; the POIs,
+  race lines and the HUD's darkening tint are egui shapes queued after the scene, so a car inside it
+  ended up under POI icons and dimmed (seen in the HUD harness, `m2_3d_coop`). *Why not
+  depth-tested against the terrain:* the own car is the one thing that must never disappear; the
+  camera follows it, so a hill hiding it would only ever be a hill between the eye and the car.
+- **Trails** are ribbons in the scene pass (`draw_trails`, after the roads), 2 pt x `s` wide at the
+  car with the flat trail's taper (0.4..1.5 x by depth), its colour and fade (`map_shared::trail_3d`
+  turns a `Trail` into `Trail3d` segments with the `TrailFade` alpha). Each vertex carries both ends
+  of its segment and is pushed sideways on screen in the vertex shader. Depth-tested twice: the
+  visible parts at full strength, then the parts **behind terrain** (through a tunnel, behind a hill)
+  with the test inverted at 45 % (`GHOST`): a trail into a tunnel stays visible, fainter, "seen
+  through" the hill, like the tunnel itself. They stay under the egui race lines / POIs (a deviation
+  from 2D, where trails were over them).
+- **Flat in 2D, Tilted and the fallback.** The flat arrow and trails are drawn whenever the scene is
+  not drawing (`wants_underlay`: Flat / Tilted, the frames before `Ready`, a failed context), so the
+  failed-3D picture is still exactly the tilted 2D map.
+- **Not moved (yet):** teammates' arrows, names, edge pointers and the shared waypoints stay egui
+  markers projected onto the terrain surface (a teammate in a tunnel still sits on the hill); their
+  trails are in 3D.
+- **GL resources:** two more programs (`marker`, `trail`) compiled with the others; the two model
+  VBOs uploaded at the first marker, the trail VBO streamed per frame (`STREAM_DRAW`, 6 vertices per
+  segment, ≤ 400 points per player); all freed by `Gl3d::destroy`. GLSL 330 core / 300 es as before.
+- **Config (D78):** `ReliefCfg::marker: MarkerStyle { Arrow (default), Sedan }` (`serde(default)`,
+  snake_case `"arrow"` / `"sedan"`), the **Car marker** row in the View mode card's 3D section, per map;
+  "Copy to…" on that card copies it (it travels with `TiltCfg`). *Why Arrow by default:* it keeps
+  today's look until the user picks the car.
+
+Tests: `marker::tests` (model sizes and triangle counts, the transform: position / yaw / scale /
+exaggeration, the sizing rule, trail vertices carry the heights and the fade), the GL suite's
+`markers` section (every flavour: both markers on a hill, on the bridge and **in the tunnel** with a
+trail going in, HUD 1x / 3x and Viewer; the marker is there, whole, outlined; the tunnel trail
+shows; the sedan is 14 px tall at HUD 1x), and the HUD harness states `hills_trail`, `hills_sedan`,
+`bridge_sedan`, `tunnel`, `tunnel_sedan` (a tunnel through the big hill was added to its world).
 
 ### Configuration
 

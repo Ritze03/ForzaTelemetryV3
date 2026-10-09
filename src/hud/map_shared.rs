@@ -148,11 +148,11 @@ pub fn draw_trail_in(cv: &MapCanvas, pts: &Trail, col: Color32, fade: TrailFade,
     if n < 2 {
         return;
     }
-    let (hx, hz, _) = pts[n - 1]; // head = the player's current position
+    let head = pts[n - 1]; // the player's current position
     for i in 1..n {
-        let (ax, az, _) = pts[i - 1];
-        let (bx, bz, bt) = pts[i];
-        let alpha = fade.alpha(now.saturating_duration_since(bt).as_secs_f32(), (ax - hx).hypot(az - hz));
+        let (ax, az) = (pts[i - 1].x, pts[i - 1].z);
+        let (bx, bz, bt) = (pts[i].x, pts[i].z, pts[i].t);
+        let alpha = fade.alpha(now.saturating_duration_since(bt).as_secs_f32(), (ax - head.x).hypot(az - head.z));
         if alpha < 4 {
             continue;
         }
@@ -168,6 +168,26 @@ pub fn draw_trail_in(cv: &MapCanvas, pts: &Trail, col: Color32, fade: TrailFade,
         let k = if cv.taper { cv.cam.depth_scale_at_row((a.y + b.y) * 0.5).clamp(0.4, 1.5) } else { 1.0 };
         cv.p.line_segment([a, b], Stroke::new(2.0 * cv.s * k, cv.c(c)));
     }
+}
+
+/// A player's trail for the 3D scene (D77): the same segments, colour and fade as
+/// [`draw_trail`], but at the recorded heights, drawn by the GL renderer as a ribbon (so one that
+/// went through a tunnel stays in it instead of running over the hill). Segments that have faded
+/// out are left out; `None` when nothing is left.
+pub fn trail_3d(pts: &Trail, col: Color32, fade: TrailFade, now: Instant) -> Option<crate::maprender::gl3d::Trail3d> {
+    let n = pts.len();
+    if n < 2 {
+        return None;
+    }
+    let head = pts[n - 1];
+    let segs: Vec<crate::maprender::gl3d::TrailSeg> = (1..n)
+        .filter_map(|i| {
+            let (a, b) = (pts[i - 1], pts[i]);
+            let alpha = fade.alpha(now.saturating_duration_since(b.t).as_secs_f32(), (a.x - head.x).hypot(a.z - head.z));
+            (alpha >= 4).then(|| crate::maprender::gl3d::TrailSeg { a: [a.x, a.y, a.z], b: [b.x, b.y, b.z], alpha: alpha as f32 / 255.0 })
+        })
+        .collect();
+    (!segs.is_empty()).then(|| crate::maprender::gl3d::Trail3d { segs, colour: col })
 }
 
 /// The part of segment `a`-`b` inside the circle (`c`, `r`), or `None` when it misses it.
@@ -361,7 +381,7 @@ mod tests {
         let tilted = Camera::new(0.0, 0.0, 0.0, 300.0, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0);
         let now = Instant::now();
         // A trail straight ahead of the car, recorded just now: head at 0 m, tail 200 m behind.
-        let trail: Trail = (0..5).map(|i| (0.0, -200.0 + 50.0 * i as f32, now)).collect();
+        let trail: Trail = (0..5).map(|i| crate::minimap::TrailPt { x: 0.0, y: 0.0, z: -200.0 + 50.0 * i as f32, t: now }).collect();
         let fade = TrailFade::new(10.0, 500.0);
         let widths = |taper| {
             let shapes = with_canvas(&tilted, rect, taper, |cv| draw_trail(cv, &trail, Color32::WHITE, fade, now));

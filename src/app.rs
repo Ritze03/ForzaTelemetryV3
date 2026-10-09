@@ -1520,15 +1520,15 @@ impl ForzaApp {
         let now = Instant::now();
         // Recording rules (spacing, teleport reset, cap) live in `minimap::trail_push`, shared
         // with the HUD Minimap's own trail buffer.
+        // The height is recorded too: the 3D map draws the trail at it (D77).
         fn push(
             trails: &mut HashMap<String, crate::minimap::Trail>,
             key: String,
-            x: f32,
-            z: f32,
+            p: &crate::packet::ForzaPacket,
             now: Instant,
             max_age: Duration,
         ) {
-            crate::minimap::trail_push(trails.entry(key).or_default(), x, z, now, max_age);
+            crate::minimap::trail_push(trails.entry(key).or_default(), p.position_x, p.position_y, p.position_z, now, max_age);
         }
 
         // Remember each player's last useful telemetry: position only from
@@ -1561,28 +1561,14 @@ impl ForzaApp {
             }
             // Skip paused games (car at origin) so we don't draw a line to (0,0).
             if pkt.is_race_on != 0 && !pkt.is_paused() {
-                push(
-                    &mut self.minimap_trails,
-                    "local".to_string(),
-                    pkt.position_x,
-                    pkt.position_z,
-                    now,
-                    max_age,
-                );
+                push(&mut self.minimap_trails, "local".to_string(), pkt, now, max_age);
             }
         }
         let remotes = if in_session { self.coop.remote_players() } else { Vec::new() };
         for (info, rp) in remotes {
             remember(&mut self.coop_last_pos, &info.id, &rp);
             if !rp.is_paused() {
-                push(
-                    &mut self.minimap_trails,
-                    info.id.clone(),
-                    rp.position_x,
-                    rp.position_z,
-                    now,
-                    max_age,
-                );
+                push(&mut self.minimap_trails, info.id.clone(), &rp, now, max_age);
             }
             present.insert(info.id);
         }

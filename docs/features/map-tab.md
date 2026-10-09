@@ -210,6 +210,14 @@ three modes, picked with a segmented control (`theme::segmented`) at the top of 
   - **Deck thickness** (`deck_m`, 0 to 20 m, step 0.5), **Height exaggeration** (`exaggeration`,
     0.5 to 3 x), **Hill shading** (`shading`, 0 to 100 %). The ranges are `ReliefCfg::*_RANGE`; the
     card applies `ReliefCfg::sane()` while the 3D rows show, so a hand-edited config can't leave them.
+  - **Car marker** (`ReliefCfg::marker`, D78): *Arrow* (default, a 3D version of the flat arrow) or
+    *Car* (a small low-poly sedan), a dropdown like Road height. Both are drawn by the GL renderer at
+    the car's telemetry position **and height** (also down in a tunnel), with the trails at their
+    recorded heights (D77); Flat and Tilted keep the flat arrow. Tooltip: "How your car is drawn in the
+    3D view: a 3D arrow or a small car model. Both sit at the car's real position and height, also in
+    tunnels." *Why a choice:* the user asked for both and to decide himself; Arrow keeps today's look.
+    Models, sizing and the tunnel rule: `docs/features/minimap.md`, "3D: the own car and the trails in
+    the scene".
 
 The control writes only `tilt.on` / `tilt.relief.on` (`TiltCfg::set_view_mode`; the mode is derived by
 `view_mode()`), so switching Flat -> 3D -> Tilted keeps every value the user set. Code:

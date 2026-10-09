@@ -501,6 +501,7 @@ impl Map3d {
         cal: crate::minimap::MapCalibration,
         data: Option<&Arc<MapLayers>>,
         sel: &RaceSel,
+        trails: Vec<crate::maprender::gl3d::Trail3d>,
     ) {
         use crate::maprender::gl3d;
         let lc = sc.layers;
@@ -529,11 +530,18 @@ impl Map3d {
                 relief: lc.tilt.relief,
                 roads: lc.roads.clone(),
                 focus,
+                trails,
             },
         );
         if self.handle.busy() {
             painter.ctx().request_repaint();
         }
+    }
+
+    /// Queue the own car over `cam.rect` (D77 / D78), after the vectors over the scene.
+    fn add_marker(&self, painter: &egui::Painter, cam: &Camera, marker: crate::maprender::gl3d::Marker3d) {
+        use crate::maprender::gl3d;
+        gl3d::add_marker(painter, &self.handle, gl3d::MarkerScene { cam: cam.clone(), marker, a: 1.0, s: 1.0, corner_radius: 0.0 });
     }
 }
 
@@ -544,7 +552,9 @@ impl Map3d {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel) {}
+    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>) {}
+
+    fn add_marker(&self, _: &egui::Painter, _: &Camera, _: crate::maprender::gl3d::Marker3d) {}
 }
 
 /// May a map go 3D on this platform? Windows only with the user's opt-in (`map_3d_windows`: its GL
@@ -841,8 +851,31 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     if underlay {
         layer_pass(&cam, false);
     }
+
+    // Breadcrumb trails: each player's recent path fades from faint (old) to solid (recent) in
+    // their identity colour; the own trail is recorded solo too and is then white, like the own
+    // arrow (which uses the player's co-op colour, colour only, no name, in a session).
+    let in_session = app.coop.role() != crate::coop::Role::Off;
+    let local_col = if in_session { crate::ui::coop::hue_color(app.config.coop_hue) } else { Color32::WHITE };
+    let remotes = app.coop.remote_players();
+    let trail_now = std::time::Instant::now();
+    let fade = crate::hud::map_shared::TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
+    let trails: Vec<(&crate::minimap::Trail, Color32)> = app
+        .minimap_trails
+        .get("local")
+        .map(|t| (t, local_col))
+        .into_iter()
+        .chain(
+            remotes
+                .iter()
+                .filter(|(_, pkt)| !pkt.is_paused()) // paused teammate: don't draw their line
+                .filter_map(|(info, _)| app.minimap_trails.get(&info.id).map(|t| (t, crate::ui::coop::hue_color(info.hue)))),
+        )
+        .collect();
     if let Some(r) = &relief {
-        app.map3d.add_scene(&painter, r, sc, lc.image.on.then_some(tex), cal, data, sel);
+        // D77: in 3D the trails are part of the scene, at their recorded heights.
+        let trails3d = trails.iter().filter_map(|(t, c)| crate::hud::map_shared::trail_3d(t, *c, fade, trail_now)).collect();
+        app.map3d.add_scene(&painter, r, sc, lc.image.on.then_some(tex), cal, data, sel, trails3d);
     }
     if !underlay {
         layer_pass(&cam, true); // the roads are in the scene; race lines and POIs over it
@@ -860,25 +893,10 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
         pause_glyph: crate::icons::PAUSE,
     };
 
-    // Breadcrumb trails (drawn behind the car arrows). Each player's recent path fades from
-    // faint (old) to solid (recent) in their identity colour; the own trail is recorded solo
-    // too and is then white, like the own arrow.
-    let in_session = app.coop.role() != crate::coop::Role::Off;
-    let local_col = if in_session { crate::ui::coop::hue_color(app.config.coop_hue) } else { Color32::WHITE };
-    let remotes = app.coop.remote_players();
-    if !app.minimap_trails.is_empty() {
-        let now = std::time::Instant::now();
-        let fade = crate::hud::map_shared::TrailFade::new(cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
-        if let Some(tr) = app.minimap_trails.get("local") {
-            crate::hud::map_shared::draw_trail(&cv, tr, local_col, fade, now);
-        }
-        for (info, pkt) in &remotes {
-            if pkt.is_paused() {
-                continue; // paused teammate — don't draw their line
-            }
-            if let Some(tr) = app.minimap_trails.get(&info.id) {
-                crate::hud::map_shared::draw_trail(&cv, tr, crate::ui::coop::hue_color(info.hue), fade, now);
-            }
+    // The flat trails (drawn behind the car arrows) unless the 3D scene has them (D77).
+    if underlay {
+        for (tr, c) in &trails {
+            crate::hud::map_shared::draw_trail(&cv, tr, *c, fade, trail_now);
         }
     }
 
@@ -910,12 +928,22 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     // Local car indicator: triangle rotated to show heading relative to map orientation.
     // Uses the player's co-op colour (colour only, no name) when in a session, else white.
     // Drawn where the car is on screen: the view centre, unless the Map tab was panned away.
-    let car_at = cv.to_screen(car_x, car_z);
-    painter.add(egui::Shape::convex_polygon(
-        crate::hud::map_shared::arrow_points(car_at, view.arrow_angle(app.minimap_cached_raw_yaw), 1.0).to_vec(),
-        local_col,
-        Stroke::new(1.5, Color32::BLACK),
-    ));
+    if underlay {
+        let car_at = cv.to_screen(car_x, car_z);
+        painter.add(egui::Shape::convex_polygon(
+            crate::hud::map_shared::arrow_points(car_at, view.arrow_angle(app.minimap_cached_raw_yaw), 1.0).to_vec(),
+            local_col,
+            Stroke::new(1.5, Color32::BLACK),
+        ));
+    } else if let Some(rel) = relief.as_ref().and_then(|r| r.relief.as_ref()) {
+        // D77 / D78: in 3D the GL car at the telemetry position and height (in a tunnel: down at
+        // its road), on top of the POIs and race lines like the flat arrow. Without a live
+        // position it stands on the terrain.
+        let live = app.telemetry.latest.as_ref().filter(|p| p.is_race_on != 0 && !p.is_paused());
+        let y = live.map_or_else(|| rel.terrain.height(car_x, car_z), |p| p.position_y);
+        let marker = crate::maprender::gl3d::Marker3d { pos: [car_x, y, car_z], yaw: app.minimap_cached_raw_yaw, kind: lc.tilt.relief.marker, colour: local_col };
+        app.map3d.add_marker(&painter, &cam, marker);
+    }
 
     let time = ui.input(|i| i.time) as f32;
     for (_pid, wx, wz, hue) in app.coop.waypoints() {

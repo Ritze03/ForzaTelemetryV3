@@ -23,7 +23,7 @@ use egui_glow::glow::{self, HasContext};
 
 use super::*;
 use crate::gamedata::roadtypes::RoadType;
-use crate::maprender::cfg::{MapLayerConfig, OtherRoads, RaceLineMode, TiltCfg};
+use crate::maprender::cfg::{MapLayerConfig, MarkerStyle, OtherRoads, RaceLineMode, TiltCfg};
 use crate::maprender::data::{Chain, MapLayers, RoadLayer};
 use crate::maprender::paint2d::{draw_base, draw_layers, BaseParams, LayerCtx};
 use crate::maprender::racesel::{RaceSel, Run};
@@ -286,14 +286,16 @@ struct View {
     clip: Option<Rect>,
     /// Skip `add_scene` altogether (the pure 2D reference).
     no_3d: bool,
+    /// The own car (D77), queued after the scene with `add_marker`.
+    marker: Option<Marker3d>,
 }
 
 impl View {
     fn hud() -> View {
-        View { site: Site::Hud, rect: Rect::from_min_size(pos2(14.0, 14.0), vec2(208.0, 136.0)), car: (-60.0, -160.0), yaw: 0.6, zoom: 500.0, angle: 40.0, car_y: None, clip: None, no_3d: false }
+        View { site: Site::Hud, rect: Rect::from_min_size(pos2(14.0, 14.0), vec2(208.0, 136.0)), car: (-60.0, -160.0), yaw: 0.6, zoom: 500.0, angle: 40.0, car_y: None, clip: None, no_3d: false, marker: None }
     }
     fn dashboard() -> View {
-        View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0)), car: (0.0, -250.0), yaw: 0.0, zoom: 800.0, angle: 50.0, car_y: None, clip: None, no_3d: false }
+        View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0)), car: (0.0, -250.0), yaw: 0.0, zoom: 800.0, angle: 50.0, car_y: None, clip: None, no_3d: false, marker: None }
     }
 }
 
@@ -328,6 +330,7 @@ fn scene(w: &World, cam: Camera, mesh: bool, tex: Option<MapTex>, site: Site) ->
         relief: tilt(40.0).relief,
         roads,
         focus: None,
+        trails: vec![],
     }
 }
 
@@ -357,16 +360,23 @@ fn map_frame(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, pp
             draw_layers(&cx, &w.layers, &cfg);
         }
         if !v.no_3d {
-            let mut sc = scene(w, cam3, mesh_on, Some(tex), v.site);
+            let mut sc = scene(w, cam3.clone(), mesh_on, Some(tex), v.site);
             tweak(&mut sc);
             let pp = match v.clip {
                 Some(c) => p.with_clip_rect(c),
                 None => p.clone(),
             };
+            let (a, s, corner_radius) = (sc.a, sc.s, sc.corner_radius);
             add_scene(&pp, h, sc);
+            // (egui vectors over the scene would go here, then the car on top of them)
+            if let Some(marker) = v.marker {
+                add_marker(&pp, h, MarkerScene { cam: cam3, marker, a, s, corner_radius });
+            }
         }
         // Over the 3D: a marker at the car and the border.
-        p.circle_filled(v.rect.center() + vec2(0.0, 36.0), 6.0, Color32::WHITE);
+        if v.marker.is_none() {
+            p.circle_filled(v.rect.center() + vec2(0.0, 36.0), 6.0, Color32::WHITE);
+        }
         let radius = if v.site == Site::Hud { 22.0 } else { 0.0 };
         p.rect_stroke(v.rect, radius, Stroke::new(2.0, Color32::from_rgb(230, 235, 240)), StrokeKind::Inside);
     })
@@ -500,7 +510,97 @@ fn suite(flavour: Flavour, device: Option<usize>, tag: &str) {
         let s = h.stats();
         eprintln!("[{tag}] PERF {name}: {} tri, {} draws, cpu {:.3} ms, gpu {:.3} ms (median of 30)", s.last.triangles, s.last.draws, median(cpu), median(gpu));
     }
+    markers(&mut rig, &w, &h, tex, tag);
     rig.finish(&h);
+}
+
+// ── the own car and the trails in the scene (D77 / D78) ─────────────────────────────────────
+
+/// A test colour nothing else in the synthetic world has.
+const CAR: Color32 = Color32::from_rgb(235, 60, 205);
+const TRAIL: Color32 = Color32::from_rgb(40, 225, 255);
+
+/// A trail of `n` points from `a` to `b` (x, z), heights from `y`, all recent and solid.
+fn trail(a: (f32, f32), b: (f32, f32), n: usize, y: &dyn Fn(f32, f32) -> f32) -> Trail3d {
+    let pts: Vec<[f32; 3]> = (0..=n)
+        .map(|i| {
+            let u = i as f32 / n as f32;
+            let (x, z) = (a.0 + (b.0 - a.0) * u, a.1 + (b.1 - a.1) * u);
+            [x, y(x, z), z]
+        })
+        .collect();
+    Trail3d { segs: pts.windows(2).map(|p| TrailSeg { a: p[0], b: p[1], alpha: 0.86 }).collect(), colour: TRAIL }
+}
+
+/// The marker on a hill, on the bridge, in the tunnel (with a trail going in), both kinds, at the
+/// HUD's size (1x and 3x) and the Viewer's; clean frames, the marker where the car is and whole
+/// in the tunnel, PNGs to look at.
+fn markers(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, tag: &str) {
+    let t = w.terrain.clone();
+    let tunnel_y = |x: f32, z: f32| t.height(x, z).min(150.0) + 0.45;
+    let ground = |x: f32, z: f32| t.height(x, z) + 0.45;
+    let east = std::f32::consts::FRAC_PI_2;
+    // (name, car (x, z), car height, yaw, the trail behind it, the view's yaw: across the bridge
+    // and the tunnel, so the deck height and the trail into the hill are seen from the side)
+    let spots: Vec<(&str, (f32, f32), f32, f32, Trail3d, f32)> = vec![
+        ("hill", (-60.0, -160.0), ground(-60.0, -160.0), 0.6, trail((-60.0 - 300.0 * 0.6f32.sin(), -160.0 - 300.0 * 0.6f32.cos()), (-60.0, -160.0), 30, &ground), 0.6),
+        ("bridge", (450.0, 330.0), t.height(450.0, 330.0) + 22.45, east, trail((150.0, 330.0), (450.0, 330.0), 30, &|x, z| t.height(x, z) + 22.45), 0.7),
+        ("tunnel", (-300.0, 210.0), tunnel_y(-300.0, 210.0), east, trail((-700.0, 210.0), (-300.0, 210.0), 40, &tunnel_y), 0.35),
+    ];
+    for (name, car, y, yaw, tr, view_yaw) in &spots {
+        assert!(*name != "tunnel" || t.height(car.0, car.1) > y + 40.0, "the tunnel spot is deep under the hill");
+        for kind in [MarkerStyle::Arrow, MarkerStyle::Sedan] {
+            let k = if kind == MarkerStyle::Arrow { "arrow" } else { "sedan" };
+            for (site, ppp, zoom) in [("hud", 1.0f32, 500.0f32), ("hud", 3.0, 500.0), ("viewer", 1.0, 120.0)] {
+                let base = if site == "hud" { View::hud() } else { View { zoom, ..View::dashboard() } };
+                let mk = Marker3d { pos: [car.0, *y, car.1], yaw: *yaw, kind, colour: CAR };
+                let v = View { marker: Some(mk), car: *car, yaw: *view_yaw, zoom, angle: if site == "hud" { 40.0 } else { 50.0 }, car_y: Some(y + 1.0), ..base };
+                let with = |s: &mut Scene3d| s.trails = vec![tr.clone()];
+                warm_up(rig, w, h, tex, &v, ppp);
+                let o = map_frame(rig, w, h, tex, &v, ppp, &with);
+                assert_eq!(o.gl_error, 0, "[{tag}] {name} {k}: GL error 0x{:X}", o.gl_error);
+                assert!(o.fbo_restored);
+                o.save(&format!("{tag}_marker_{name}_{k}_{site}_x{ppp}.png"));
+                // The marker is where the car is (the camera's car point) and whole: enough pixels of
+                // the car colour (the tops are lit at full colour) in a box around it.
+                let cam = camera(w, &v);
+                let (at, _) = cam.project3(car.0, *y, car.1).expect("in front");
+                let r = 26.0;
+                let b = [((at.x - r) * ppp) as usize, ((at.y - r) * ppp) as usize, ((at.x + r) * ppp) as usize, ((at.y + r) * ppp) as usize];
+                let n = o.count_near(b, [CAR.r(), CAR.g(), CAR.b()], 70);
+                let min = (18.0 * ppp * ppp) as usize;
+                eprintln!("[{tag}] {name} {k} {site} x{ppp}: {n} car-coloured px near {at:?}");
+                assert!(n >= min, "[{tag}] {name} {k} {site} x{ppp}: only {n} car-coloured px (want >= {min}) - is the marker hidden?");
+                // The outline: dark pixels around the model.
+                let dark = o.count_near(b, [5, 6, 9], 40);
+                assert!(dark > 0, "[{tag}] {name} {k} {site} x{ppp}: no outline");
+                if *name == "tunnel" && site == "hud" && ppp == 1.0 {
+                    // The trail into the tunnel shows (seen through the hill): its colour over the
+                    // hill, west of the car, compared with the same frame without trails.
+                    let without = map_frame(rig, w, h, tex, &v, ppp, &|_| {});
+                    let diff = o.px.chunks(4).zip(without.px.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 12)).count();
+                    eprintln!("[{tag}] tunnel trail changes {diff} px");
+                    assert!(diff > 60, "[{tag}] the trail into the tunnel is not visible ({diff} px)");
+                }
+            }
+        }
+    }
+    // The model on screen at HUD size: about the minimum length (20 pt for the sedan at x1).
+    let mk = Marker3d { pos: [-60.0, ground(-60.0, -160.0), -160.0], yaw: 0.0, kind: MarkerStyle::Sedan, colour: CAR };
+    let v = View { car: (-60.0, -160.0), yaw: 0.0, car_y: Some(ground(-60.0, -160.0) + 1.0), marker: Some(mk), ..View::hud() };
+    let o = map_frame(rig, w, h, tex, &v, 1.0, &|_| {});
+    let (mut y0, mut y1) = (usize::MAX, 0);
+    for y in 0..o.h {
+        for x in 0..o.w {
+            let p = o.at(x, y);
+            if (0..3).map(|k| (p[k] as i32 - [CAR.r(), CAR.g(), CAR.b()][k] as i32).abs()).sum::<i32>() <= 120 {
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    eprintln!("[{tag}] sedan at HUD x1 heading up the screen: {} px tall on screen", y1.saturating_sub(y0));
+    assert!(y1 > y0 && (6..=30).contains(&(y1 - y0)), "[{tag}] sedan screen size {}..{}", y0, y1);
 }
 
 #[test]
@@ -906,7 +1006,7 @@ fn gl3d_real_install_scenes() {
 
     let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
     let hud = |car: (f32, f32), zoom: f32, yaw: f32| View { car, zoom, yaw, car_y: Some(t.height(car.0, car.1) + 1.0), ..View::hud() };
-    let big = |car: (f32, f32), zoom: f32, angle: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false };
+    let big = |car: (f32, f32), zoom: f32, angle: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None };
     let scenes: Vec<(&str, View, f32)> = vec![
         ("hud_bridge_150_x3", hud((bridge.0, bridge.1), 150.0, 0.4), 3.0),
         ("hud_mountain_500_x3", hud((peak.0, peak.1), 500.0, 0.0), 3.0),
