@@ -426,6 +426,8 @@ pub enum ProfileDialog {
 #[derive(Clone, Copy)]
 pub struct CoopSeen {
     pub x: f32,
+    /// Height (telemetry y) at that spot: the 3D map draws a paused teammate there.
+    pub y: f32,
     pub z: f32,
     pub yaw: f32,
     /// Last non-empty car class/PI (a paused game transmits zeros — keep the
@@ -1542,6 +1544,7 @@ impl ForzaApp {
         fn remember(seen: &mut HashMap<String, CoopSeen>, key: &str, p: &crate::packet::ForzaPacket) {
             let e = seen.entry(key.to_string()).or_insert(CoopSeen {
                 x: p.position_x,
+                y: p.position_y,
                 z: p.position_z,
                 yaw: p.yaw,
                 car_class: p.car_class,
@@ -1549,6 +1552,7 @@ impl ForzaApp {
             });
             if !p.is_paused() {
                 e.x = p.position_x;
+                e.y = p.position_y;
                 e.z = p.position_z;
                 e.yaw = p.yaw;
             }

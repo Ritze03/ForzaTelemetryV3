@@ -346,7 +346,7 @@ pub struct CoopLayer {
     /// Trails by player: `"local"` or the co-op player id.
     pub trails: HashMap<String, Trail>,
     /// Last position/heading from an unpaused packet, per player id.
-    last_pos: HashMap<String, (f32, f32, f32)>,
+    last_pos: HashMap<String, (f32, f32, f32, f32)>, // x, y, z, yaw
     /// When `update` last ran (the trail fade's "now").
     now: Option<Instant>,
 }
@@ -390,7 +390,7 @@ impl CoopLayer {
             for (info, rp) in &input.remotes {
                 let paused = rp.is_paused();
                 if !paused {
-                    self.last_pos.insert(info.id.clone(), (rp.position_x, rp.position_z, rp.yaw));
+                    self.last_pos.insert(info.id.clone(), (rp.position_x, rp.position_y, rp.position_z, rp.yaw));
                     if cfg.coop_trails {
                         mm::trail_push(self.trails.entry(info.id.clone()).or_default(), rp.position_x, rp.position_y, rp.position_z, now, max_age);
                     }
@@ -400,13 +400,14 @@ impl CoopLayer {
                 }
                 // A paused packet sits at the world origin; draw their last known spot, or
                 // nothing if they were never seen at a valid one.
-                let pos = if paused { self.last_pos.get(&info.id).copied() } else { Some((rp.position_x, rp.position_z, rp.yaw)) };
-                if let Some((x, z, yaw)) = pos {
+                let pos = if paused { self.last_pos.get(&info.id).copied() } else { Some((rp.position_x, rp.position_y, rp.position_z, rp.yaw)) };
+                if let Some((x, y, z, yaw)) = pos {
                     self.teammates.push(Remote {
                         id: info.id.clone(),
                         name: info.name.clone(),
                         x,
                         z,
+                        y: Some(y),
                         yaw,
                         colour: crate::ui::coop::hue_color(info.hue),
                         paused,
@@ -607,7 +608,8 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
             map_shared::draw_trail_in(&cv, tr, *c, fade, at, round);
         }
     }
-    // Teammates and waypoints stay flat markers over the scene (projected onto the terrain).
+    // Teammates stay flat markers over the scene, but in 3D at their telemetry height (a tunnel:
+    // down at its road, `to_screen_at`); waypoints have no height on the wire: the terrain surface.
     map_shared::draw_remotes_in(&cv, &coop.teammates, car, view.yaw, round);
 
     if flat_own {

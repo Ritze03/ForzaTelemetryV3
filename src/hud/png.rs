@@ -132,6 +132,7 @@ fn coop_mates_on(snap: &HudSnapshot, height: &dyn Fn(f32, f32) -> f32) -> CoopLa
         id: id.into(),
         x,
         z,
+        y: Some(height(x, z)),
         yaw: yaw + dyaw,
         name: name.into(),
         colour: crate::ui::coop::hue_color(hue),
@@ -1163,6 +1164,14 @@ fn render_3d_states() -> Result<(), String> {
     let mut tunnel_sedan = tunnel.clone();
     tunnel_sedan.cfg = Arc::new(cfg_3d(sedan));
     let tunnel_trail = own_trail(&tunnel, (-700.0, 210.0), 40, &|x, z| tunnel_y(&terrain, x, z) + 0.45);
+    // A teammate in the tunnel under the big hill (3D: drawn down at the road, not on the hill) and
+    // one on the hill's slope.
+    let mut mates_tunnel = CoopLayer::default();
+    mates_tunnel.in_session = true;
+    mates_tunnel.teammates = vec![
+        Remote { id: "kai".into(), name: "Kai".into(), x: -300.0, z: 210.0, y: Some(tunnel_y(&terrain, -300.0, 210.0) + 0.45), yaw: std::f32::consts::FRAC_PI_2, colour: crate::ui::coop::hue_color(36.0), paused: false },
+        Remote { id: "mo".into(), name: "Mo".into(), x: -300.0, z: 330.0, y: Some(terrain.height(-300.0, 330.0)), yaw: 0.0, colour: crate::ui::coop::hue_color(200.0), paused: false },
+    ];
     let hills_trail = own_trail(&hills, (-120.0 - 300.0 * hill_yaw.sin(), -40.0 - 300.0 * hill_yaw.cos()), 30, &|x, z| terrain.height(x, z));
 
     let states: Vec<(&str, &HudSnapshot, &CoopLayer)> = vec![
@@ -1176,6 +1185,7 @@ fn render_3d_states() -> Result<(), String> {
         ("no_roads", &no_roads, &none),
         ("no_image", &no_image, &none),
         ("coop", &hills, &mates),
+        ("coop_tunnel", &hills, &mates_tunnel),
         ("hills_trail", &hills, &hills_trail),
         ("hills_sedan", &hills_sedan, &hills_trail),
         ("bridge_sedan", &bridge_sedan, &none),
@@ -1199,7 +1209,7 @@ fn render_3d_states() -> Result<(), String> {
                     check(&mut failures, &img, &id, (cx, cy), bgc, "rounded corner stays clear");
                 }
                 // The own arrow above the scene, at the car's row (85 % down); the co-op colour in a session.
-                let own = if *name == "coop" {
+                let own = if matches!(*name, "coop" | "coop_tunnel") {
                     let [r, g, b, _] = crate::ui::coop::hue_color(hills.coop_hue).to_array();
                     [r, g, b]
                 } else {

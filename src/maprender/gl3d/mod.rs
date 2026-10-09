@@ -81,7 +81,7 @@ use super::MapTex;
 use crate::minimap::MapCalibration;
 use scene::{Frame, Gl3d};
 
-pub use marker::{Marker3d, Trail3d, TrailSeg};
+pub use marker::{Marker3d, Trail3d, TrailSeg, GROUND_BELOW_M};
 pub use probe::Caps;
 pub use scene::RenderStats;
 

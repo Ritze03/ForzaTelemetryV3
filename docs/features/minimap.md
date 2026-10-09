@@ -484,7 +484,7 @@ crossing and T, a highway junction, an L-corner, a type change, a shallow Y of t
 
 Modes: `off`, `current` (default), `nearest`, `near` (within `radius_m`, default 1 500 m), `all`
 (40 000-vertex budget). Drawn as a **race road** by default (D80, below); with
-`race_lines.route = "line"` as the thin line of before: 4 px, alpha .85. Circuit `#38bdf8`, sprint
+`race_lines.route = "line"` as the thin line of before: 4 px, alpha .85. Circuit `#f97316` (orange), sprint
 `#fb7185`, with start / finish marks (green dot + chequered flag for sprints, chequered flag for circuits).
 
 The telemetry has **no race id**, so "current" is a **best-effort inference**, not verified against
@@ -862,8 +862,8 @@ Scene3d)`, `Gl3dOptions` (requirements and test switches), `last_failure()`. Sin
 `paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (race lines + POIs,
 no roads; `draw_layers` = `Parts::ALL`), POIs and the culling boxes go through `Camera::project` /
 `k_at` / `footprint` (identical to the plane maths without a relief), `MapCanvas::to_screen`
-(`hud/map_shared.rs`) goes through `Camera::project`, so teammates, trails and waypoints sit on the
-terrain. In 3D the egui lines of `draw_layers` keep a constant width (`tapered` returns factor 1 for a
+(`hud/map_shared.rs`) goes through `Camera::project`, so waypoints (and teammates without a height) sit on the
+terrain (teammates with a telemetry height: `to_screen_at`, see "Teammates at their real height"). In 3D the egui lines of `draw_layers` keep a constant width (`tapered` returns factor 1 for a
 relief camera: its row-based depth scale is a flat-plane formula); the GL roads taper per vertex.
 
 **Architecture and the whys**
@@ -1118,9 +1118,21 @@ a tunnel they ran over the hill above it.
 - **Flat in 2D, Tilted and the fallback.** The flat arrow and trails are drawn whenever the scene is
   not drawing (`wants_underlay`: Flat / Tilted, the frames before `Ready`, a failed context), so the
   failed-3D picture is still exactly the tilted 2D map.
-- **Not moved (yet):** teammates' arrows, names, edge pointers and the shared waypoints stay egui
-  markers projected onto the terrain surface (a teammate in a tunnel still sits on the hill); their
-  trails are in 3D.
+- **Teammates at their real height (D87):** a teammate's arrow, name and edge pointer are still egui
+  markers over the scene (upright, like the flat ones), but in 3D they are projected at the
+  teammate's telemetry height (`Remote::y`, `MapCanvas::to_screen_at`: `Camera::project3` at
+  `y - GROUND_BELOW_M`, road level like the own car) instead of the terrain surface point
+  (`Camera::project`). A teammate in a tunnel is therefore shown down at the tunnel, and like the
+  tunnel ribbons it stays visible (egui shapes have no depth test). A paused teammate uses the
+  height of its last known spot (`CoopSeen::y`, the HUD's `last_pos`). Flat / Tilted, and a
+  `None` height, are unchanged (`to_screen_at` falls back to `to_screen`). Teammates' trails were
+  already in the scene at their recorded heights. *Why:* the user: a teammate in a tunnel must not
+  show on the hill. *Why not GL models for teammates:* they would need a callback (3 draws + a
+  composite) per teammate, and the names and edge pointers stay egui anyway; the arrow stays the
+  flat one teammates always had, only its position gets the height.
+- **Waypoints stay on the terrain surface.** The co-op waypoint is one (x, z) per player on the wire
+  (`coop.rs`) and a click in 3D picks the terrain under the pointer, so the terrain is where it
+  was placed; there is no height to use, and the wire format is not changed for it.
 - **GL resources:** two more programs (`marker`, `trail`) compiled with the others; the two model
   VBOs uploaded at the first marker, the trail VBO streamed per frame (`STREAM_DRAW`, 6 vertices per
   segment, ≤ 400 points per player); all freed by `Gl3d::destroy`. GLSL 330 core / 300 es as before.
