@@ -117,6 +117,35 @@ specific to a computer, so it is excluded from profile export/import (like
 
 The **Map data** card moved to the **Map tab** in D67 (Settings → Map data; Setup was bloated, the user wanted the map editor with the maps), see [[map-tab]]. It opens the road-type map editor in the browser, built from the install above, and shows which road types the app uses (project data or the user's saved file), the editor's state and its last Save. Buttons: **Open map editor** with a *Start from* Current / Raw choice, **Open data folder**, **Reset road types to project data**, **Rebuild map data** and **Contribute**. It adds no config keys. Full detail and the rules (override replaces the project file, Rebuild never deletes the override): [[map-editor]].
 
+## Loading and recovery (config.json, profiles)
+
+`AppConfig::load` never throws the whole config away over one bad value. Order: read the file →
+fill keys missing from it with code defaults → migrations → `from_value_lenient`.
+
+- **Per-key fallback:** if the config does not deserialize as a whole, every top-level key is
+  probed on its own (defaults + that one key). A failing key is reset to its default. If the
+  failing key is an object (`overlay`, `minimap_layers`, `hotkeys`…) its direct fields are probed
+  the same way, so only the bad field resets (e.g. `minimap_layers.race_lines` when its `mode`
+  is `"Off"` instead of `"off"`), not the whole group. Granularity: top-level key, or its direct
+  field. Unknown keys are ignored as before.
+- **Backup before overwrite:** if the file is not valid JSON, can't be read, or any key was
+  reset, the original is copied to `config.json.bad-<unix seconds>` (`-2`, `-3`… on a clash)
+  **before** the autosave or profile seeding can write. The reset keys are logged with
+  `eprintln!`. The app never deletes these backups. Invalid JSON still gives all defaults, but
+  the file is kept.
+- **Profiles** (`profiles/<name>.json`) load through the same lenient path
+  (`apply_profile_file`): bad values keep the live config's value, an unparsable file is skipped,
+  and the file is backed up as `<name>.json.bad-<ts>` first (the `.bad-` suffix keeps it out of
+  the profile list, which lists `*.json`). Preset / import overlays use the same lenient merge.
+- **Gearbox calibrations** (`automatic-gearbox-saved-calibrations.json`) parse per car entry; a
+  broken entry loses only itself and the file is backed up.
+
+*Why:* a single value serde could not read (a renamed or differently cased enum, a number where
+a bool is expected, a file written by another version) made `load()` fall back to defaults for
+**everything**, and the ~1 s autosave then overwrote `config.json` with them: all settings lost
+silently. There is no in-app notice yet (the app has no toast mechanism); the stderr log and the
+`.bad-` file are the only trace.
+
 ## Save
 
 Settings save automatically — there is no Save button. A change is written within ~1 s

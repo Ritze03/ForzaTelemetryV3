@@ -9,6 +9,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 ### Added
 - **3D map view**: the HUD minimap, the Dashboard map and the Map-tab viewer can show the island in 3D (Map tab → Minimap / Dashboard map / Viewer → View mode → 3D): terrain relief from your game install with the satellite image draped on it and the roads as ribbons with decks at their real heights, with your arrow, trail, teammates, race lines and points of interest on top. The HUD minimap keeps its rounded pill. Drag and scroll work as before (they move over the ground plane), a click for a shared waypoint lands on the hill you point at. While the terrain loads, or if your graphics card can't do it (too old, or too slow), the map draws Tilted by itself and the View mode card says why. Tilted stays the default; 3D is opt-in per map. Experimental on Windows: there it is "3D (experimental)" and needs **Allow 3D on Windows** on the View mode card first.
 
+### Fixed
+- **Settings no longer reset completely** when one saved value can't be read (e.g. after switching versions): only that setting goes back to its default, and the old file is kept as `config.json.bad-…`. The same goes for profiles and the saved gearbox calibrations (kept as `….bad-…` next to the file).
+
 ## [0.6.0] – 2026-10-08
 
 ### Added
