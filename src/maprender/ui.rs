@@ -50,6 +50,70 @@ pub fn status_ui(ui: &mut Ui, l: &Layers) {
     }
 }
 
+// ── 3D status ────────────────────────────────────────────────────────────────────────────────
+
+/// What the View mode card says while 3D is selected (K4); nothing when all is well.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Status3d {
+    /// The terrain is being read / built.
+    Loading,
+    /// The map draws as Tilted instead; the reason (a GL message is English, as `gl3d` words it).
+    Unavailable(String),
+}
+
+/// The line for the 3D state, from the terrain store and the most recent GL failure
+/// ([`gl3d::last_failure`](super::gl3d::last_failure)). *Why the GL failure comes first:* the
+/// terrain is of no use when the context cannot draw it, and the reason is the one the user can
+/// act on (update the driver, ...).
+pub fn status_3d(failure: Option<&str>, terrain: &super::store::TerrainStatus) -> Option<Status3d> {
+    use super::store::TerrainStatus as T;
+    if let Some(why) = failure {
+        return Some(Status3d::Unavailable(why.to_string()));
+    }
+    match terrain {
+        T::Ready(_) => None,
+        T::Loading => Some(Status3d::Loading),
+        T::NoInstall => Some(Status3d::Unavailable(tr("no Forza Horizon 6 install found (the terrain comes from the game files)").to_string())),
+        T::Error(e) => Some(Status3d::Unavailable(e.clone())),
+    }
+}
+
+/// [`status_3d`] of the live process. Polling the terrain store starts its lazy load, which is
+/// wanted: the card shows this only while 3D is selected.
+#[cfg(not(test))]
+fn live_status_3d() -> Option<Status3d> {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        status_3d(super::gl3d::last_failure().as_deref(), &super::store::terrain())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Some(Status3d::Unavailable(tr("this system has no 3D map renderer").to_string()))
+    }
+}
+
+/// Tests must not start the terrain loader (it reads the real install); they set the state.
+#[cfg(test)]
+thread_local! {
+    static TEST_STATUS_3D: std::cell::RefCell<Option<Status3d>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn live_status_3d() -> Option<Status3d> {
+    TEST_STATUS_3D.with(|s| s.borrow().clone())
+}
+
+fn status_3d_row(ui: &mut Ui, s: &Option<Status3d>) {
+    match s {
+        None => {}
+        Some(Status3d::Loading) => {
+            status_line(ui, theme::FAINT, tr("Loading terrain…"));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        Some(Status3d::Unavailable(why)) => status_line(ui, theme::WARN, &format!("{} {why}", tr("3D not available:"))),
+    }
+}
+
 // ── view options (zoom, orientation) ─────────────────────────────────────────────────────────
 
 /// The view options both maps have, copied out of whichever config holds them (`AppConfig`'s
@@ -457,6 +521,10 @@ fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx) {
         ui.add_enabled_ui(enabled, |ui| {
             view_mode_picker(ui, c);
             let mode = c.view_mode();
+            if mode == ViewMode::Relief {
+                ui.add_space(4.0);
+                status_3d_row(ui, &live_status_3d());
+            }
             ui.add_space(4.0);
             ui.add_enabled_ui(mode != ViewMode::Flat, |ui| {
                 theme::slider_row(ui, tr("Angle"), &mut c.angle_deg, 5.0..=80.0, 1.0, 0, "°");
@@ -1320,5 +1388,56 @@ mod tests {
         let mut d = before.clone();
         apply_copy(&mut d, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Roads), &[MapId::Dashboard]));
         assert_eq!(d.minimap_layers.tilt, before.minimap_layers.tilt);
+    }
+
+    // ── the 3D status line (K4) ──────────────────────────────────────────────────────────────
+
+    /// The state -> line mapping: a GL failure outranks the terrain's state, a loaded terrain
+    /// and no failure say nothing.
+    #[test]
+    fn the_3d_status_follows_the_gl_failure_then_the_terrain() {
+        use crate::maprender::store::TerrainStatus as T;
+        use crate::maprender::terrain::Terrain;
+        let ready = T::Ready(std::sync::Arc::new(Terrain::flat(1.0)));
+        assert_eq!(status_3d(None, &ready), None);
+        assert_eq!(status_3d(None, &T::Loading), Some(Status3d::Loading));
+        assert_eq!(status_3d(Some("OpenGL 3.1 is too old"), &T::Loading), Some(Status3d::Unavailable("OpenGL 3.1 is too old".into())));
+        assert_eq!(status_3d(Some("3D is too slow on this GPU"), &ready), Some(Status3d::Unavailable("3D is too slow on this GPU".into())));
+        assert_eq!(status_3d(None, &T::Error("raster unreadable".into())), Some(Status3d::Unavailable("raster unreadable".into())));
+        let Some(Status3d::Unavailable(no_install)) = status_3d(None, &T::NoInstall) else { panic!("NoInstall must be reported") };
+        assert!(no_install.contains("Forza Horizon 6"), "{no_install}");
+    }
+
+    /// The View mode card shows the line in 3D only, in both languages, and nothing when fine.
+    #[test]
+    fn the_card_shows_the_3d_status_in_3d_mode_only() {
+        use crate::i18n::{with_language, Language};
+        let ctx = crate::ui::test_render::context();
+        let set = |s: Option<Status3d>| TEST_STATUS_3D.with(|t| *t.borrow_mut() = s);
+        for (lang, loading, unavailable) in [
+            (Language::English, "Loading terrain…", "3D not available: OpenGL 3.1 is too old"),
+            (Language::German, "Gelände wird geladen…", "3D nicht verfügbar: OpenGL 3.1 is too old"),
+        ] {
+            with_language(lang, || {
+                let mut time = 0.0;
+                for (mode, state, shown) in [
+                    (ViewMode::Relief, Some(Status3d::Loading), Some(loading)),
+                    (ViewMode::Relief, Some(Status3d::Unavailable("OpenGL 3.1 is too old".into())), Some(unavailable)),
+                    (ViewMode::Relief, None, None),
+                    (ViewMode::Tilted, Some(Status3d::Loading), None),
+                    (ViewMode::Flat, Some(Status3d::Unavailable("x".into())), None),
+                ] {
+                    set(state);
+                    let mut t = odd_tilt();
+                    t.set_view_mode(mode);
+                    let out = settle(&ctx, &mut t, &mut time);
+                    let all: Vec<String> = texts(&out).into_iter().map(|(s, _)| s).collect();
+                    for l in [loading, unavailable] {
+                        assert_eq!(all.iter().any(|s| s == l), shown == Some(l), "{lang:?} {mode:?}: {l:?} in {all:?}");
+                    }
+                }
+            });
+        }
+        set(None);
     }
 }

@@ -93,7 +93,7 @@ fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
         // Same as the Dashboard map: a click drops a shared waypoint, a right-click clears it.
         if app.coop.role() != crate::coop::Role::Off {
             if resp.clicked() {
-                if let Some([wx, wz]) = resp.interact_pointer_pos().and_then(|m| cam.unproject(m)) {
+                if let Some([wx, wz]) = resp.interact_pointer_pos().and_then(|m| map_scene::pick(&cam, m)) {
                     app.coop.set_waypoint(Some((wx, wz)), cfg.coop_hue);
                 }
             }

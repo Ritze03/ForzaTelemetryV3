@@ -124,6 +124,16 @@ pub fn last_failure() -> Option<String> {
     LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// Forget [`last_failure`] if it is still `reason`: a call site that retries a failed context
+/// (K4: the user toggled the map into 3D again) clears its own old failure so the status line
+/// does not show a stale one; another context's newer failure stays.
+pub fn clear_failure_if(reason: &str) {
+    let mut g = LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.as_deref() == Some(reason) {
+        *g = None;
+    }
+}
+
 // ── options ──────────────────────────────────────────────────────────────────────────────────
 
 /// Requirements and switches of one renderer. [`Gl3dOptions::default`] is production; tests turn
