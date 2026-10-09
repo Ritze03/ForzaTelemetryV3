@@ -18,15 +18,18 @@ use super::super::gl::Headless;
 use super::{paint, Renderer};
 use crate::config::{ClusterStyle, DriftStyle, OverlayConfig};
 use crate::hud::map_shared::Remote;
-use crate::hud::minimap::{CoopLayer, MapAnim, MapTex};
+use crate::hud::minimap::{CoopLayer, MapAnim, MapTex, Scene3dIn};
 use crate::hud::prims::Xf;
 use crate::gamedata::poi::{week_index_now, treasure_chest_number, Poi, PoiKind};
 use crate::hud::{cluster, drift, minimap, race};
-use crate::maprender::cfg::MapLayerConfig;
-use crate::maprender::data::{MapLayers, PoiLayer};
+use crate::maprender::cfg::{MapLayerConfig, ViewMode};
+use crate::maprender::data::{Chain, MapLayers, PoiLayer};
+use crate::maprender::gl3d::{Gl3dHandle, Gl3dOptions, Gl3dStatus};
+use crate::maprender::mesh3d::RoadMesh;
+use crate::maprender::terrain::Terrain;
 use crate::maprender::icontex::{synthetic_icons, IconTex};
 use crate::maprender::paint2d::IconAtlas;
-use crate::maprender::store::{LayerStatus, Layers};
+use crate::maprender::store::{LayerStatus, Layers, TerrainStatus};
 use crate::minimap::{MapCalibration, Season, OVERLAY_MAP_TEXTURE_OPTIONS};
 use crate::overlay::snapshot::{DriftChip, DriftInfo, DriveMode, HudMode, HudSnapshot, PlaceChange};
 
@@ -320,13 +323,10 @@ fn over(c: [u8; 3], a: f32, bg: [u8; 3]) -> [u8; 3] {
     [0, 1, 2].map(|i| (c[i] as f32 * a + bg[i] as f32 * (1.0 - a)).round() as u8)
 }
 
-#[test]
-#[ignore = "needs a GPU / EGL device; writes target/hud_png/*.png"]
-fn render_spec_states() -> Result<(), String> {
-    let headless = Headless::new().map_err(|e| format!("headless EGL unavailable: {e}"))?;
-    let gl = headless.glow.clone();
+/// A 1920 x 1080 RGBA8 render target on the current (surfaceless) context, bound.
+fn target_fbo(gl: &glow::Context) -> Result<(glow::Framebuffer, glow::Renderbuffer), String> {
     // SAFETY: plain GL object setup on the current (surfaceless) context.
-    let fbo = unsafe {
+    unsafe {
         let fbo = gl.create_framebuffer()?;
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         let rb = gl.create_renderbuffer()?;
@@ -336,8 +336,16 @@ fn render_spec_states() -> Result<(), String> {
         if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
             return Err("FBO incomplete".into());
         }
-        (fbo, rb)
-    };
+        Ok((fbo, rb))
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU / EGL device; writes target/hud_png/*.png"]
+fn render_spec_states() -> Result<(), String> {
+    let headless = Headless::new().map_err(|e| format!("headless EGL unavailable: {e}"))?;
+    let gl = headless.glow.clone();
+    let fbo = target_fbo(&gl)?;
     // Declared after `headless`, so it drops first (the painter needs the context).
     let mut r = Renderer::new(gl.clone(), None)?;
     r.layers_fn = synthetic_store_layers;
@@ -756,6 +764,458 @@ fn render_spec_states() -> Result<(), String> {
         }
     }
 
+    drop(r);
+    // SAFETY: the painter is gone; delete our FBO objects on the still-current context.
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.delete_framebuffer(fbo.0);
+        gl.delete_renderbuffer(fbo.1);
+    }
+    drop(headless);
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("pixel checks failed:\n{}", failures.join("\n")))
+    }
+}
+
+// ── the Minimap in 3D (phase K, K3) ──────────────────────────────────────────────────────────
+//
+// The same tiles as above, but through the shared GL renderer (`maprender::gl3d`) on the headless
+// context, with the synthetic terrain (three hills on a flat 2 km square) or, when there is an
+// install, the real terrain, roads and satellite image.
+// Run: `cargo test render_3d_states -- --ignored --nocapture`.
+
+/// The calibration of [`world_map`]: 512 px over the synthetic terrain's 2048 m square.
+const WORLD_CAL: MapCalibration = MapCalibration { px_per_m: 0.25, origin_x: -1024.0, origin_z: 1024.0 };
+
+fn synth_terrain() -> Arc<Terrain> {
+    static T: OnceLock<Arc<Terrain>> = OnceLock::new();
+    T.get_or_init(|| Arc::new(Terrain::synthetic())).clone()
+}
+
+fn synth_terrain_status() -> TerrainStatus {
+    TerrainStatus::Ready(synth_terrain())
+}
+
+fn loading_terrain_status() -> TerrainStatus {
+    TerrainStatus::Loading
+}
+
+/// The synthetic roads' mesh, built once (the store would build it on its own thread).
+fn synth_mesh(l: &Arc<MapLayers>, t: &Arc<Terrain>) -> Option<Arc<RoadMesh>> {
+    static M: OnceLock<Arc<RoadMesh>> = OnceLock::new();
+    Some(M.get_or_init(|| Arc::new(RoadMesh::build(&l.roads, t, l.rev))).clone())
+}
+
+/// The harness layers plus an elevated highway: 22 m above the flat ground in the south, a bridge.
+fn layers_3d(terrain: &Terrain) -> Arc<MapLayers> {
+    let mut m = (*harness_layers(true)).clone();
+    let pts: Vec<[f32; 2]> = (0..=35).map(|i| [-700.0 + i as f32 * 40.0, -500.0]).collect();
+    let ys: Vec<f32> = pts.iter().map(|p| terrain.height(p[0], p[1]) + 22.0).collect();
+    let mut roads = (*m.roads).clone();
+    roads.by_type[crate::gamedata::roadtypes::RoadType::Highway.index() as usize].push(Chain::new(pts, ys));
+    m.roads = Arc::new(roads);
+    Arc::new(m)
+}
+
+/// A satellite stand-in calibrated to the synthetic terrain ([`WORLD_CAL`]): hill-shaded greens, a
+/// 200 m grid to judge the draping by, a red patch at the origin.
+fn world_map(terrain: &Terrain) -> ColorImage {
+    let n = 512usize;
+    let mut px = Vec::with_capacity(n * n);
+    for r in 0..n {
+        for c in 0..n {
+            let (x, z) = (-1024.0 + (c as f32 + 0.5) * 4.0, 1024.0 - (r as f32 + 0.5) * 4.0);
+            let hill = ((terrain.height(x, z) - 100.0) / 220.0).clamp(0.0, 1.0);
+            let mut col = [60.0 + 120.0 * hill, 105.0 + 40.0 * hill, 55.0 + 60.0 * hill];
+            if x.rem_euclid(200.0) < 6.0 || z.rem_euclid(200.0) < 6.0 {
+                col = col.map(|v| v * 0.55);
+            }
+            if x.abs() < 14.0 && z.abs() < 14.0 {
+                col = [220.0, 40.0, 40.0];
+            }
+            px.push(Color32::from_rgb(col[0] as u8, col[1] as u8, col[2] as u8));
+        }
+    }
+    ColorImage::new([n, n], px)
+}
+
+/// The default HUD map config in the *3D* view mode, then `f`.
+fn cfg_3d(f: impl FnOnce(&mut OverlayConfig)) -> OverlayConfig {
+    let mut c = OverlayConfig::default();
+    c.map_layers.tilt.set_view_mode(ViewMode::Relief);
+    f(&mut c);
+    c
+}
+
+/// A driving snapshot at (`x`, `z`) heading `yaw`, with the car on the `terrain` and the map
+/// calibrated to `cal`.
+fn snap_3d(cfg: OverlayConfig, terrain: &Terrain, (x, z): (f32, f32), yaw: f32, cal: MapCalibration) -> HudSnapshot {
+    let mut s = base(cfg);
+    s.pkt.position_x = x;
+    s.pkt.position_z = z;
+    s.pkt.position_y = terrain.height(x, z);
+    s.pkt.yaw = yaw;
+    s.pkt.speed = 25.0;
+    s.minimap = crate::overlay::snapshot::MinimapCalib { px_per_m: cal.px_per_m, origin_x: cal.origin_x, origin_z: cal.origin_z };
+    s
+}
+
+/// One world of 3D tiles: the data, the map, and the GL handle that draws them.
+struct Rig3d<'a> {
+    r: &'a mut Renderer,
+    gl: Arc<glow::Context>,
+    h: Gl3dHandle,
+    terrain: Arc<Terrain>,
+    mesh: Arc<RoadMesh>,
+    layers: Arc<MapLayers>,
+    atlas: Option<Arc<IconAtlas>>,
+    map: MapTex,
+}
+
+impl Rig3d<'_> {
+    /// One frame of the Minimap on a `GAME_BG` tile at scale `s` and fade `a`; `scene` = through the
+    /// 3D renderer, else the 2D map.
+    fn frame(&mut self, snap: &HudSnapshot, mates: &CoopLayer, s: f32, a: f32, scene: bool) -> ColorImage {
+        let (h, terrain, mesh, layers, atlas, map) = (self.h.clone(), self.terrain.clone(), self.mesh.clone(), self.layers.clone(), self.atlas.clone(), self.map);
+        let px = [((minimap::SIZE.x + 20.0) * s).round() as u32, ((minimap::SIZE.y + 20.0) * s).round() as u32];
+        let r = &mut *self.r;
+        paint(&r.ctx, &mut r.painter, r.start, px, GAME_BG.to_normalized_gamma_f32(), |_, p| {
+            let mut anim = MapAnim::default();
+            anim.set_layers(Some(layers.clone()));
+            anim.set_icons(atlas.clone());
+            anim.set_scene3d(scene.then(|| Scene3dIn { gl3d: h.clone(), terrain: terrain.clone(), mesh: Some(mesh.clone()) }));
+            minimap::draw(p, &Xf { o: pos2(10.0 * s, 10.0 * s), s, a }, snap, NOW, &mut anim, Some(map), mates);
+        });
+        r.painter.read_screen_rgba(px)
+    }
+
+    /// [`Self::frame`] once the staged init has finished (or the renderer gave up): the 3D scene
+    /// needs a few frames (programs, heights, roads), and the frame that flips it to `Ready` still
+    /// has the 2D markers, so one more is drawn after.
+    fn tile(&mut self, snap: &HudSnapshot, mates: &CoopLayer, s: f32, a: f32) -> Result<ColorImage, String> {
+        for _ in 0..24 {
+            self.frame(snap, mates, s, a, true);
+            let done = match self.h.status() {
+                Gl3dStatus::Ready => !self.h.busy(),
+                Gl3dStatus::Failed(_) => true,
+                Gl3dStatus::Untried => false,
+            };
+            if done {
+                return Ok(self.frame(snap, mates, s, a, true));
+            }
+        }
+        Err(format!("the 3D scene did not settle: {:?}", self.h.status()))
+    }
+
+    fn gl_error(&self) -> u32 {
+        // SAFETY: plain error query on the current context.
+        unsafe { self.gl.get_error() }
+    }
+}
+
+/// Design-px sample points inside the pill (3 px border and corners excluded) whose colour
+/// differs from the game backdrop: how much of the pill the map paints.
+fn pill_coverage(img: &ColorImage, skip_arrow: bool) -> (usize, usize) {
+    let bgc = [GAME_BG.r(), GAME_BG.g(), GAME_BG.b()];
+    let (mut painted, mut total) = (0, 0);
+    for y in (6..=130).step_by(4) {
+        for x in (6..=202).step_by(4) {
+            let (cx, cy) = ((x as f32).clamp(22.0, 186.0), (y as f32).clamp(22.0, 114.0));
+            if (x as f32 - cx).hypot(y as f32 - cy) > 17.0 || (skip_arrow && (x as i32 - 104).abs() < 14 && (y as i32 - 114).abs() < 14) {
+                continue;
+            }
+            total += 1;
+            if px(img, x + 10, y + 10).iter().zip(bgc).any(|(a, b)| a.abs_diff(b) >= 8) {
+                painted += 1;
+            }
+        }
+    }
+    (painted, total)
+}
+
+/// Sum of per-channel differences from the backdrop, over the whole tile.
+fn ink_from_bg(img: &ColorImage) -> u64 {
+    let bg = [GAME_BG.r(), GAME_BG.g(), GAME_BG.b()];
+    img.pixels.iter().map(|c| [c.r(), c.g(), c.b()].iter().zip(bg).map(|(a, b)| a.abs_diff(b) as u64).sum::<u64>()).sum()
+}
+
+fn differing(a: &ColorImage, b: &ColorImage) -> usize {
+    a.pixels.iter().zip(&b.pixels).filter(|(p, q)| p != q).count()
+}
+
+#[test]
+#[ignore = "needs a GPU / EGL device; writes target/hud_png/*.png"]
+fn render_3d_states() -> Result<(), String> {
+    let headless = Headless::new().map_err(|e| format!("headless EGL unavailable: {e}"))?;
+    let gl = headless.glow.clone();
+    let fbo = target_fbo(&gl)?;
+    let mut r = Renderer::new(gl.clone(), None)?;
+    std::fs::create_dir_all(out_dir()).map_err(|e| format!("{}: {e}", out_dir().display()))?;
+    let guardless = || Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Gl3dOptions::default() });
+
+    let terrain = synth_terrain();
+    let layers = layers_3d(&terrain);
+    let mesh = Arc::new(RoadMesh::build(&layers.roads, &terrain, layers.rev));
+    let tex = r.ctx.load_texture("test-world-map", world_map(&terrain), OVERLAY_MAP_TEXTURE_OPTIONS);
+    let map = MapTex { id: tex.id(), orig_size: [512, 512], winter: false };
+    let mut icon_tex = IconTex::default();
+    let atlas = icon_tex.ensure(&r.ctx, Some(&Arc::new(synthetic_icons())));
+    let none = CoopLayer::default();
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut written = Vec::new();
+    let bgc = [GAME_BG.r(), GAME_BG.g(), GAME_BG.b()];
+    let h3 = guardless();
+    let mut rig = Rig3d { r: &mut r, gl: gl.clone(), h: h3.clone(), terrain: terrain.clone(), mesh, layers, atlas, map };
+
+    // The car approaching the big hill; on the elevated highway; on the race ring.
+    let hill_yaw = (-180.0f32).atan2(240.0);
+    let on_hills = |cfg: OverlayConfig| snap_3d(cfg, &terrain, (-120.0, -40.0), hill_yaw, WORLD_CAL);
+    let mut bridge = snap_3d(cfg_3d(|_| {}), &terrain, (-100.0, -500.0), std::f32::consts::FRAC_PI_2, WORLD_CAL);
+    bridge.pkt.position_y = terrain.height(-100.0, -500.0) + 22.0;
+    let mut race = snap_3d(cfg_3d(|_| {}), &terrain, (398.0, 20.0), 0.0, WORLD_CAL);
+    race.pkt.race_position = 2;
+    let hills = on_hills(cfg_3d(|_| {}));
+    let horizon = on_hills(cfg_3d(|c| c.map_layers.tilt.angle_deg = 72.0));
+    let steep = on_hills(cfg_3d(|c| c.map_layers.tilt.relief.exaggeration = 2.5));
+    let no_roads = on_hills(cfg_3d(|c| c.map_layers.roads.on = false));
+    let no_image = on_hills(cfg_3d(|c| c.map_layers.image.on = false));
+    let mates = coop_mates(&hills);
+
+    let states: Vec<(&str, &HudSnapshot, &CoopLayer)> = vec![
+        ("hills", &hills, &none),
+        ("bridge", &bridge, &none),
+        ("race", &race, &none),
+        ("horizon", &horizon, &none),
+        ("exaggerated", &steep, &none),
+        ("no_roads", &no_roads, &none),
+        ("no_image", &no_image, &none),
+        ("coop", &hills, &mates),
+    ];
+    let mut imgs: std::collections::HashMap<&str, ColorImage> = Default::default();
+    for s in [1.0, 3.0] {
+        let sfx = if s == 1.0 { "1x" } else { "3x" };
+        for (name, snap, mt) in &states {
+            let img = rig.tile(snap, mt, s, 1.0)?;
+            let id = format!("m2_3d_{name}_{sfx}");
+            if s == 1.0 {
+                let err = rig.gl_error();
+                println!("  {id}: GL error {err:#x}, status {:?}", rig.h.status());
+                if err != 0 || rig.h.status() != Gl3dStatus::Ready {
+                    failures.push(format!("{id}: GL error {err:#x}, status {:?}", rig.h.status()));
+                }
+                // The pill's rounded corners stay clear of the 3D scene (the composite's mask).
+                for (cx, cy) in [(2, 2), (205, 2), (2, 133), (205, 133)] {
+                    check(&mut failures, &img, &id, (cx, cy), bgc, "rounded corner stays clear");
+                }
+                // The own arrow above the scene, at the car's row (85 % down); the co-op colour in a session.
+                let own = if *name == "coop" {
+                    let [r, g, b, _] = crate::ui::coop::hue_color(hills.coop_hue).to_array();
+                    [r, g, b]
+                } else {
+                    [255, 255, 255]
+                };
+                check(&mut failures, &img, &id, (104, 114), own, "car marker over the scene");
+                let (painted, total) = pill_coverage(&img, true);
+                println!("  {id}: map paints {painted}/{total} samples");
+                // (no image = backing colour only; the horizon view fades out above the far edge on purpose)
+                if !matches!(*name, "no_image" | "horizon") && painted * 100 < total * 85 {
+                    failures.push(format!("{id}: the map paints only {painted}/{total} samples of the pill"));
+                }
+                imgs.insert(name, img.clone());
+            }
+            written.push(save(&img, &id)?);
+        }
+    }
+    println!("device {} ({})", headless.device, rig.h.caps().map_or("?".to_string(), |c| c.renderer));
+
+    // Against the same view in Tilted: relief changed the picture; the roads are GL ones.
+    let tilted_cfg = {
+        let mut c = cfg_3d(|_| {});
+        c.map_layers.tilt.set_view_mode(ViewMode::Tilted);
+        c
+    };
+    let tilted = rig.frame(&on_hills(tilted_cfg), &none, 1.0, 1.0, false);
+    written.push(save(&tilted, "m2_3d_ref_tilted_1x")?);
+    let d_relief = differing(&imgs["hills"], &tilted);
+    let d_roads = differing(&imgs["hills"], &imgs["no_roads"]);
+    let d_image = differing(&imgs["hills"], &imgs["no_image"]);
+    println!("  hills vs tilted: {d_relief} px; vs no roads: {d_roads} px; vs no image: {d_image} px");
+    for (what, d, min) in [("relief vs the tilted 2D map", d_relief, 3000), ("GL roads", d_roads, 300), ("the satellite image", d_image, 3000)] {
+        if d < min {
+            failures.push(format!("3D hills: {what} barely changed the picture ({d} px < {min})"));
+        }
+    }
+    // A steeper pitch brings the horizon into view: the far edge fades into the game.
+    let (hp, ht) = pill_coverage(&imgs["horizon"], true);
+    let (sp, st) = pill_coverage(&imgs["hills"], true);
+    println!("  horizon view paints {hp}/{ht}, default {sp}/{st}");
+    if hp >= ht {
+        failures.push("3D horizon: the far edge did not fade out at 72 deg".into());
+    }
+
+    // The show/hide fade: a = 0.5 brings everything (terrain, roads, markers) about halfway to the backdrop.
+    let half = rig.tile(&hills, &none, 1.0, 0.5)?;
+    written.push(save(&half, "m2_3d_fade_half_1x")?);
+    let ratio = ink_from_bg(&half) as f64 / ink_from_bg(&imgs["hills"]) as f64;
+    println!("  fade 0.5: {ratio:.3} of the full ink");
+    if !(0.35..0.65).contains(&ratio) {
+        failures.push(format!("3D fade 0.5: ink ratio {ratio:.3} not near 0.5"));
+    }
+
+    // Fallback: a renderer that cannot start shows today's tilted 2D map, pixel for pixel.
+    let broken = Gl3dHandle::with_options(Gl3dOptions { break_shader: true, guard: None, ..Gl3dOptions::default() });
+    rig.h = broken.clone();
+    let fallback = rig.tile(&hills, &none, 1.0, 1.0)?;
+    let reason = broken.status();
+    println!("  broken shader: {reason:?}");
+    if !matches!(reason, Gl3dStatus::Failed(_)) {
+        failures.push(format!("fallback: expected Failed, got {reason:?}"));
+    }
+    let fb = differing(&fallback, &tilted);
+    println!("  fallback vs tilted: {fb} px differ");
+    if fb != 0 {
+        failures.push(format!("fallback: the failed 3D HUD differs from the tilted 2D map in {fb} px"));
+    }
+    written.push(save(&fallback, "m2_3d_fallback_1x")?);
+    broken.destroy(&gl);
+    rig.h = h3.clone();
+
+    // Through the real `Renderer::frame_at` path: terrain / mesh from the (injected) store,
+    // the staged init reported as "animating", destroyed when the Minimap leaves 3D.
+    drop(rig);
+    r.layers_fn = synthetic_store_layers;
+    r.terrain_fn = synth_terrain_status;
+    r.mesh_fn = synth_mesh;
+    r.gl3d.destroy(&gl);
+    r.gl3d = guardless();
+    r.map.set(tex.clone(), [512, 512], Season::Summer);
+    let sbg = SCREEN_BG.to_normalized_gamma_f32();
+    let mut comp = snap_3d(cfg_3d(|c| c.fade = false), &terrain, (-120.0, -40.0), hill_yaw, WORLD_CAL);
+    comp.pkt.race_position = 3;
+    comp.pkt.current_engine_rpm = 0.52 * 8000.0;
+    comp.pkt.gear = 4;
+    r.hud = crate::hud::Hud::default();
+    let mut frames = 0;
+    while r.frame_at([1920, 1080], Some(&comp), false, NOW, sbg) {
+        frames += 1;
+        if frames > 30 {
+            failures.push("frame_at: still animating after 30 frames in 3D".into());
+            break;
+        }
+    }
+    println!("  frame_at: settled after {} frames, status {:?}, stats {:?}", frames + 1, r.gl3d.status(), r.gl3d.stats());
+    if r.gl3d.status() != Gl3dStatus::Ready || frames < 2 {
+        failures.push(format!("frame_at: 3D {:?} after {frames} animating frames (the staged init needs >= 2)", r.gl3d.status()));
+    }
+    let img = r.painter.read_screen_rgba([1920, 1080]);
+    // The map sits bottom-left at margin 4: its car marker at (4 + 104, 940 + 114).
+    if px(&img, 108, 1054) != [255, 255, 255] {
+        failures.push(format!("composite_3d: car marker is {:?}", px(&img, 108, 1054)));
+    }
+    written.push(save(&img, "composite_3d_1080p")?);
+    // Tilted again: the 3D objects are freed (and a later 3D switch starts afresh).
+    let tilted_comp = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, ..Default::default() }), ..comp.clone() };
+    r.frame_at([1920, 1080], Some(&tilted_comp), false, NOW, sbg);
+    if r.gl3d.status() != Gl3dStatus::Untried {
+        failures.push(format!("frame_at: leaving 3D left the renderer {:?}", r.gl3d.status()));
+    }
+    // Terrain still loading: the 2D map, and frames keep coming until it is there.
+    r.terrain_fn = loading_terrain_status;
+    if !r.frame_at([1920, 1080], Some(&comp), false, NOW, sbg) || r.gl3d.status() != Gl3dStatus::Untried {
+        failures.push("frame_at: a loading terrain should ask for more frames and not touch GL".into());
+    }
+    // A hidden HUD never pins the frame loop, whatever the 3D inputs are doing.
+    r.terrain_fn = synth_terrain_status;
+    r.hud = crate::hud::Hud::default();
+    let hidden = HudSnapshot { visible: false, ..comp.clone() };
+    if r.frame_at([1920, 1080], Some(&hidden), false, NOW, sbg) {
+        failures.push("frame_at: a hidden HUD keeps asking for frames".into());
+    }
+    // SAFETY: plain error query on the current context.
+    let err = unsafe { gl.get_error() };
+    if err != 0 {
+        failures.push(format!("frame_at: GL error {err:#x}"));
+    }
+
+    // The real install, if there is one: the real satellite image, terrain and roads.
+    if let (Some(media), Some(real)) = (crate::gamedata::install::find_media(None), real_layers()) {
+        match (Terrain::load(&media, &|_| {}), crate::minimap::overlay_map_image(Season::Summer)) {
+            (Ok(rt), Ok((img, orig))) => {
+                let rt = Arc::new(rt);
+                let rtex = r.ctx.load_texture("real-map", img, OVERLAY_MAP_TEXTURE_OPTIONS);
+                let rmesh = Arc::new(RoadMesh::build(&real.roads, &rt, real.rev));
+                let mut real_tex = IconTex::default();
+                let ratlas = real_tex.ensure(&r.ctx, real.icons.as_ref());
+                let h = guardless();
+                let mut rig = Rig3d { r: &mut r, gl: gl.clone(), h: h.clone(), terrain: rt.clone(), mesh: rmesh, layers: real.clone(), atlas: ratlas, map: MapTex { id: rtex.id(), orig_size: orig, winter: false } };
+                let c = MapCalibration::DEFAULT;
+                let mut timing_snap = None;
+                for (name, x, z, yaw, in_race) in real_spots(&real) {
+                    let mut snap = snap_3d(cfg_3d(|_| {}), &rt, (x, z), yaw, c);
+                    snap.pkt.race_position = u8::from(in_race) * 3;
+                    for s in [1.0, 3.0] {
+                        let sfx = if s == 1.0 { "1x" } else { "3x" };
+                        let img = rig.tile(&snap, &none, s, 1.0)?;
+                        let id = format!("m2_real_{name}_3d_{sfx}");
+                        if s == 1.0 {
+                            let err = rig.gl_error();
+                            println!("  {id}: GL error {err:#x}, status {:?}, car ({x:.0}, {z:.0}) yaw {yaw:.2} height {:.1} m", rig.h.status(), snap.pkt.position_y);
+                            if err != 0 || rig.h.status() != Gl3dStatus::Ready {
+                                failures.push(format!("{id}: GL error {err:#x}, status {:?}", rig.h.status()));
+                            }
+                            for (cx, cy) in [(2, 2), (205, 2), (2, 133), (205, 133)] {
+                                check(&mut failures, &img, &id, (cx, cy), bgc, "rounded corner stays clear");
+                            }
+                            let (painted, total) = pill_coverage(&img, true);
+                            println!("  {id}: map paints {painted}/{total} samples");
+                        }
+                        written.push(save(&img, &id)?);
+                    }
+                    timing_snap.get_or_insert(snap);
+                }
+                // Frame cost of the HUD map in 3D: 240 frames without read-back, then a finish.
+                if let Some(snap) = timing_snap {
+                    let n = 240;
+                    let t0 = std::time::Instant::now();
+                    for _ in 0..n {
+                        rig.frame(&snap, &none, 1.0, 1.0, true);
+                    }
+                    // SAFETY: plain GL sync on the current context.
+                    unsafe { gl.finish() };
+                    let wall = t0.elapsed().as_secs_f64() * 1e3 / n as f64;
+                    let t1 = std::time::Instant::now();
+                    for _ in 0..n {
+                        rig.frame(&snap, &none, 1.0, 1.0, false);
+                    }
+                    // SAFETY: as above.
+                    unsafe { gl.finish() };
+                    let wall2d = t1.elapsed().as_secs_f64() * 1e3 / n as f64;
+                    let st = h.stats();
+                    println!(
+                        "  TIMING real HUD map on {} ({}): 3D {wall:.2} ms/frame total (incl. egui and the read-back), tilted 2D {wall2d:.2} ms; gl3d callback {:.2} ms, ema {:.2} ms, gpu {:?}, {} tri, {} draws, {} frames",
+                        headless.device,
+                        h.caps().map_or("?".to_string(), |c| c.renderer),
+                        st.callback_ms,
+                        st.ema_ms,
+                        st.last.gpu_ms,
+                        st.last.triangles,
+                        st.last.draws,
+                        st.frames
+                    );
+                }
+                h.destroy(&gl);
+            }
+            (a, b) => println!("  real 3D states skipped: terrain {:?}, image {:?}", a.err(), b.err().map(|e| e.to_string())),
+        }
+    } else {
+        println!("  real 3D states skipped: no install");
+    }
+
+    println!("wrote {} PNGs to {}", written.len(), out_dir().display());
+    h3.destroy(&gl);
     drop(r);
     // SAFETY: the painter is gone; delete our FBO objects on the still-current context.
     unsafe {
