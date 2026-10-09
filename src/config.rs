@@ -1314,8 +1314,28 @@ fn from_value_lenient(val: serde_json::Value, fallback: &AppConfig) -> (AppConfi
         if v == def || probe(k, v) {
             continue;
         }
+        // A list with a few unreadable elements (typically a removed `WidgetKind` in
+        // `dashboard_widgets`): drop only those elements. An element is judged on its own
+        // (`[elem]` must deserialize). Fixed-size arrays/tuples fail every such probe, drop
+        // everything, then fail the final probe below and reset as a whole key, as before.
+        if let Value::Array(items) = v {
+            let kept: Vec<Value> = items.iter().filter(|e| probe(k, &Value::Array(vec![(*e).clone()]))).cloned().collect();
+            if kept.len() < items.len() && probe(k, &Value::Array(kept.clone())) {
+                for (i, e) in items.iter().enumerate() {
+                    if !kept.contains(e) {
+                        reset.push(format!("{k}[{i}]"));
+                    }
+                }
+                fixed.insert(k.clone(), Value::Array(kept));
+                continue;
+            }
+        }
         if let (Value::Object(vo), Value::Object(dobj)) = (v, def) {
-            let mut inner = vo.clone();
+            // Fields missing from the saved object (a struct without `serde(default)`, e.g.
+            // `GearboxTuning` after a field was added) are filled from `fallback` quietly:
+            // not unreadable data, so they are not reported and cause no backup.
+            let mut inner = dobj.clone();
+            inner.extend(vo.clone());
             let mut inner_reset = Vec::new();
             for (ik, iv) in vo {
                 let idef = dobj.get(ik);
@@ -1332,7 +1352,7 @@ fn from_value_lenient(val: serde_json::Value, fallback: &AppConfig) -> (AppConfi
                     inner_reset.push(format!("{k}.{ik}"));
                 }
             }
-            if !inner_reset.is_empty() && probe(k, &Value::Object(inner.clone())) {
+            if probe(k, &Value::Object(inner.clone())) {
                 fixed.insert(k.clone(), Value::Object(inner));
                 reset.extend(inner_reset);
                 continue;
@@ -1645,42 +1665,84 @@ impl AppConfig {
         // code default. Personal Co-Op fields (name/colour/last code) were reset
         // in the snapshot, so they use their neutral defaults. See DEFAULT_CONFIG_JSON.
         let path = Self::path();
-        let data = match std::fs::read_to_string(&path) {
-            Ok(d) => d,
-            Err(_) => {
-                // A file that exists but can't be read as text (e.g. invalid UTF-8) must not
-                // be silently replaced by the autosave: keep a copy first.
-                if path.exists() {
-                    backup_bad_file(&path);
+        let mut recovered = false; // the file needed any kind of repair
+        let data = match std::fs::read(&path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Not valid UTF-8: salvage everything readable (the replacement characters
+                    // only damage the strings they sit in); the file is backed up below.
+                    eprintln!("config.json is not valid UTF-8; reading it leniently");
+                    recovered = true;
+                    String::from_utf8_lossy(e.as_bytes()).into_owned()
                 }
-                DEFAULT_CONFIG_JSON.to_string()
+            },
+            Err(_) => {
+                // Exists but can't be read at all → recover from the profile mirror below.
+                recovered = path.exists();
+                if recovered { String::new() } else { DEFAULT_CONFIG_JSON.to_string() }
             }
         };
         let (mut cfg, recovery) = Self::parse(&data);
-        // Back the original up BEFORE anything below (or the autosave) can overwrite it.
-        if recovery.json_invalid || !recovery.reset_keys.is_empty() {
-            if recovery.json_invalid {
-                eprintln!("config.json is not valid JSON; using defaults");
-            } else {
-                eprintln!("config.json: reset unreadable settings to defaults: {}", recovery.reset_keys.join(", "));
-            }
-            if path.exists() {
-                backup_bad_file(&path);
+        let unusable = recovery.json_invalid || recovery.reset_keys.iter().any(|k| k == "<all>");
+        if unusable {
+            eprintln!("config.json is not usable as a whole; recovering from the profile mirror");
+        } else if !recovery.reset_keys.is_empty() {
+            eprintln!("config.json: reset unreadable settings to defaults: {}", recovery.reset_keys.join(", "));
+        }
+        recovered |= unusable || !recovery.reset_keys.is_empty();
+        // `save()` mirrors the live config into profiles/<active>.json, so when config.json is
+        // unusable the last good state is still in the active profile's file. Prefer it over
+        // defaults. The previous active profile's name comes from the broken text, else the
+        // most recently written profile. (A lone unreadable `active_profile` value only needs
+        // the name, the rest of the config is fine.)
+        if unusable || recovery.reset_keys.iter().any(|k| k == "active_profile") {
+            if let Some(name) = guess_active_profile(&data) {
+                if unusable {
+                    if let Some(c) = Self::from_profile_mirror(&name) {
+                        cfg = c;
+                    }
+                }
+                cfg.active_profile = name;
             }
         }
-        if recovery.json_invalid {
-            return cfg; // defaults, as before: no profile seeding on top of a broken file
+        if cfg.active_profile.trim().is_empty() {
+            cfg.active_profile = default_profile_name();
+        }
+        // Back the originals up BEFORE anything below (or the autosave) can overwrite them:
+        // config.json, and the active profile's file, which the first `save()` rewrites from
+        // the recovered config. Saving right after (below) keeps the next start from finding
+        // the same broken file again and piling up another `.bad-` copy.
+        let mut safe_to_save = true;
+        if recovered {
+            if path.exists() {
+                safe_to_save &= backup_bad_file(&path).is_some();
+            }
+            let pp = profile_path(&cfg.active_profile);
+            if pp.exists() {
+                safe_to_save &= backup_bad_file(&pp).is_some();
+            }
         }
         // Seed the Profile Manager: an existing install (or fresh default) that has
         // no snapshot for its active profile gets one written from the live config,
         // so `profiles/` is never empty and the active profile always has a file.
-        if cfg.active_profile.trim().is_empty() {
-            cfg.active_profile = default_profile_name();
-        }
-        if !profile_path(&cfg.active_profile).exists() {
+        // If a backup failed, don't write: the broken originals are all that's left.
+        if recovered {
+            if safe_to_save {
+                cfg.save();
+            }
+        } else if !profile_path(&cfg.active_profile).exists() {
             cfg.save();
         }
         cfg
+    }
+
+    /// The config stored in profile `name`'s file (the mirror `save()` writes), read leniently
+    /// from possibly non-UTF-8 text. `None` if the file is missing or itself not a usable config.
+    fn from_profile_mirror(name: &str) -> Option<Self> {
+        let bytes = std::fs::read(profile_path(name)).ok()?;
+        let (cfg, rec) = Self::parse(&String::from_utf8_lossy(&bytes));
+        (!rec.json_invalid && !rec.reset_keys.iter().any(|k| k == "<all>")).then_some(cfg)
     }
 
     /// Pure core of [`load`](Self::load) (no IO, unit-testable): config text → config. Fills
@@ -1768,7 +1830,26 @@ impl AppConfig {
     /// because the `save()` that follows `load_profile` rewrites it from the live config.
     /// *Why:* a profile with one bad value used to be ignored whole and then overwritten.
     fn apply_profile_file(&mut self, path: &Path) {
-        let Ok(data) = std::fs::read_to_string(path) else { return };
+        // A profile we can't read as text must not be silently rewritten by the `save()` that
+        // follows `load_profile`: keep a copy. Invalid UTF-8 is salvaged (lossy), not skipped.
+        let mut backed_up = false;
+        let data = match std::fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("profile {}: not valid UTF-8; reading it leniently", path.display());
+                    backup_bad_file(path);
+                    backed_up = true;
+                    String::from_utf8_lossy(e.as_bytes()).into_owned()
+                }
+            },
+            Err(_) => {
+                if path.exists() {
+                    backup_bad_file(path);
+                }
+                return;
+            }
+        };
         // UI memory, not part of a profile
         let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
         let reset = match serde_json::from_str::<serde_json::Value>(&data) {
@@ -1779,7 +1860,9 @@ impl AppConfig {
         (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
         if !reset.is_empty() {
             eprintln!("profile {}: could not read: {}", path.display(), reset.join(", "));
-            backup_bad_file(path);
+            if !backed_up {
+                backup_bad_file(path);
+            }
         }
     }
 
@@ -1836,6 +1919,42 @@ impl AppConfig {
     }
 }
 
+/// Best guess at the active profile of a config.json we can't parse: the first
+/// `"active_profile": "<name>"` found by a plain text scan (so it works on invalid JSON), if
+/// that profile's file exists; otherwise the most recently modified profile file.
+fn guess_active_profile(broken: &str) -> Option<String> {
+    const KEY: &str = "\"active_profile\"";
+    let mut rest = broken;
+    while let Some(i) = rest.find(KEY) {
+        rest = &rest[i + KEY.len()..];
+        let Some(after) = rest.trim_start().strip_prefix(':') else { continue };
+        let Some(lit) = after.trim_start().strip_prefix('"') else { continue };
+        // Cut at the closing quote (skipping escaped ones) and decode the literal.
+        let mut end = None;
+        let mut esc = false;
+        for (j, c) in lit.char_indices() {
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => { end = Some(j); break; }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { continue };
+        if let Ok(name) = serde_json::from_str::<String>(&format!("\"{}\"", &lit[..end])) {
+            if !name.trim().is_empty() && profile_path(&name).exists() {
+                return Some(name);
+            }
+        }
+    }
+    let mut files: Vec<_> = std::fs::read_dir(profiles_dir()).ok()?.flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    files.sort();
+    files.pop()?.1.file_stem().map(|s| s.to_string_lossy().into_owned())
+}
+
 /// Directory holding one JSON snapshot per profile.
 pub fn profiles_dir() -> PathBuf {
     app_data_dir().join("profiles")
@@ -1883,7 +2002,18 @@ fn unique_profile_name(base: &str) -> String {
 }
 
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test-thread data dir, so tests can run `load()` / `save()` / profile switching
+    /// against a temp dir in parallel without touching the real one (or each other).
+    static TEST_DATA_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 pub fn app_data_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(d) = TEST_DATA_DIR.with(|d| d.borrow().clone()) {
+        return d;
+    }
     // Test/dev override: point the whole app (config, calibrations, map cache, cloudflared)
     // at an alternate dir so a throwaway config can't clobber the real one.
     if let Some(dir) = std::env::var_os("FORZA_DATA_DIR") {
@@ -2706,5 +2836,198 @@ mod recovery_tests {
         assert!(!lossy && map.len() == 1);
         let (map, lossy) = parse_car_calibrations("garbage");
         assert!(lossy && map.is_empty());
+    }
+
+    // ── load() against a temp data dir (thread-local override of `app_data_dir`) ──────────
+
+    /// Point `app_data_dir()` at a fresh temp dir for this test thread.
+    fn use_data_dir(tag: &str) -> PathBuf {
+        let d = temp_dir(tag);
+        TEST_DATA_DIR.with(|c| *c.borrow_mut() = Some(d.clone()));
+        std::fs::create_dir_all(profiles_dir()).unwrap();
+        d
+    }
+
+    /// A full config text for profile `name` with a recognisable `grid_cols`.
+    fn profile_text(name: &str, cols: usize) -> String {
+        let mut cfg = AppConfig::default();
+        cfg.active_profile = name.to_string();
+        cfg.grid_cols = cols;
+        serde_json::to_string_pretty(&cfg).unwrap()
+    }
+
+    /// Number of `.bad-` files in the data dir and its `profiles/` folder.
+    fn count_bad(dir: &Path) -> usize {
+        let n = |d: &Path| {
+            std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".bad-")).count()
+        };
+        n(dir) + n(&dir.join("profiles"))
+    }
+
+    /// Replace the middle byte of `needle` in `bytes` by 0xff (invalid UTF-8).
+    fn corrupt_utf8(bytes: &mut [u8], needle: &[u8]) {
+        let i = bytes.windows(needle.len()).position(|w| w == needle).unwrap();
+        bytes[i + 1] = 0xff;
+    }
+
+    #[test]
+    fn invalid_config_recovers_the_active_profile_and_loses_no_profile() {
+        let dir = use_data_dir("recover");
+        let racing = profile_text("Racing", 17);
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::fs::write(profile_path("Racing"), &racing).unwrap();
+        // Broken JSON that still names the active profile.
+        std::fs::write(AppConfig::path(), "{ \"active_profile\": \"Racing\", \"grid_cols\": ").unwrap();
+
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.active_profile, "Racing");
+        assert_eq!(cfg.grid_cols, 17, "settings recovered from the profile mirror, not defaults");
+        cfg.save(); // what the first autosave / exit does
+        assert_eq!(AppConfig::load().grid_cols, 17);
+        let default_json: Value = serde_json::from_str(&std::fs::read_to_string(profile_path("Default")).unwrap()).unwrap();
+        assert_eq!(default_json["grid_cols"], 23, "the other profile is untouched");
+        assert_eq!(bad_files(&dir, "config.json").len(), 1);
+        let racing_backups = bad_files(&dir.join("profiles"), "Racing.json");
+        assert_eq!(racing_backups.len(), 1, "active profile's file backed up before the save");
+        assert_eq!(std::fs::read_to_string(&racing_backups[0]).unwrap(), racing);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_config_without_a_name_uses_the_newest_profile_and_backs_up_whatever_it_overwrites() {
+        let dir = use_data_dir("recover-newest");
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(profile_path("Racing"), profile_text("Racing", 17)).unwrap();
+        std::fs::write(AppConfig::path(), "[1, 2]").unwrap(); // valid JSON, not an object
+
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.active_profile, "Racing");
+        assert_eq!(cfg.grid_cols, 17);
+        // Whatever the guess, nothing may be overwritten without a .bad- copy.
+        for (name, cols) in [("Default", 23), ("Racing", 17)] {
+            let live: Value = serde_json::from_str(&std::fs::read_to_string(profile_path(name)).unwrap()).unwrap();
+            let kept = live["grid_cols"] == cols
+                || !bad_files(&dir.join("profiles"), &format!("{name}.json")).is_empty();
+            assert!(kept, "{name} lost without a backup");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_config_with_no_profiles_seeds_defaults_and_backs_up_config() {
+        let dir = use_data_dir("recover-none");
+        std::fs::write(AppConfig::path(), "garbage").unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, AppConfig::default().grid_cols);
+        assert_eq!(bad_files(&dir, "config.json").len(), 1);
+        assert!(profile_path(&cfg.active_profile).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wrong_typed_active_profile_keeps_the_rest_and_backs_up_the_profile() {
+        let dir = use_data_dir("active-type");
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::fs::write(profile_path("Racing"), profile_text("Racing", 17)).unwrap();
+        let mut m = saved_json();
+        m.insert("active_profile".into(), json!(5));
+        std::fs::write(AppConfig::path(), Value::Object(m).to_string()).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, 33, "the rest of config.json is kept");
+        // Active profile guessed (newest file); its previous content is backed up before the save.
+        let backups = bad_files(&dir.join("profiles"), &format!("{}.json", cfg.active_profile));
+        assert_eq!(backups.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_that_is_not_utf8_is_backed_up_on_switch() {
+        let dir = use_data_dir("utf8-profile");
+        let mut live = AppConfig::default();
+        live.coop_name = "Rider".into();
+        let mut bytes = serde_json::to_string(&live).unwrap().into_bytes();
+        corrupt_utf8(&mut bytes, b"Rider");
+        std::fs::write(profile_path("Racing"), &bytes).unwrap();
+        let mut cfg = AppConfig::default();
+        cfg.grid_cols = 5;
+        cfg.switch_profile("Racing");
+        let backups = bad_files(&dir.join("profiles"), "Racing.json");
+        assert_eq!(backups.len(), 1, "exactly one backup");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), bytes, "backup is byte-identical");
+        assert_eq!(cfg.grid_cols, AppConfig::default().grid_cols, "rest of the profile was salvaged and applied");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn repeated_loads_after_one_recovery_make_one_backup() {
+        let dir = use_data_dir("spam");
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::fs::write(AppConfig::path(), "{ broken").unwrap();
+        AppConfig::load();
+        AppConfig::load();
+        AppConfig::load();
+        assert_eq!(bad_files(&dir, "config.json").len(), 1);
+        assert_eq!(count_bad(&dir), 2, "one config.json copy + one profile copy, no more");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clean_load_makes_no_backup() {
+        let dir = use_data_dir("clean");
+        std::fs::write(AppConfig::path(), Value::Object(saved_json()).to_string()).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, 33);
+        assert_eq!(count_bad(&dir), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_with_invalid_utf8_is_salvaged_and_backed_up() {
+        let dir = use_data_dir("utf8-config");
+        let mut m = saved_json();
+        m.insert("coop_name".into(), json!("Rider"));
+        let mut bytes = Value::Object(m).to_string().into_bytes();
+        corrupt_utf8(&mut bytes, b"Rider");
+        std::fs::write(AppConfig::path(), &bytes).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, 33, "settings salvaged, not replaced by the embedded defaults");
+        assert_eq!(cfg.listen_port, 4242);
+        let backups = bad_files(&dir, "config.json");
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bad_widget_entries_drop_only_themselves() {
+        let mut m = saved_json();
+        let Some(Value::Array(ws)) = m.get_mut("dashboard_widgets") else { panic!() };
+        ws[1]["kind"] = json!("RemovedWidget");
+        ws[2] = json!({ "kind": "Speed", "col": "x" }); // wrong type + missing fields
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys, vec!["dashboard_widgets[1]".to_string(), "dashboard_widgets[2]".to_string()]);
+        assert_eq!(cfg.grid_cols, 33);
+        // The other widgets keep their saved place; dropped kinds are re-added (parked) by
+        // inject_missing_widget_kinds, so every kind still exists.
+        let def = AppConfig::default().dashboard_widgets;
+        assert_eq!(cfg.dashboard_widgets[0].col, def[0].col);
+        assert_eq!(cfg.dashboard_widgets[1].col, def[3].col, "later widgets keep their saved layout");
+        for w in &def {
+            assert!(cfg.dashboard_widgets.iter().any(|c| c.kind == w.kind), "kind re-added");
+        }
+    }
+
+    #[test]
+    fn missing_nested_field_defaults_only_that_field_silently() {
+        let mut m = saved_json();
+        let Some(Value::Object(t)) = m.get_mut("dsg_tuning_race") else { panic!() };
+        t.insert("cruise_rpm_pct".into(), json!(77.0));
+        t.remove("accel_gamma");
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert!(rec.reset_keys.is_empty(), "a missing field is not an unreadable one: {:?}", rec.reset_keys);
+        assert_eq!(cfg.dsg_tuning_race.cruise_rpm_pct, 77.0, "the saved sibling field is kept");
+        assert_eq!(cfg.dsg_tuning_race.accel_gamma, AppConfig::default().dsg_tuning_race.accel_gamma);
+        assert_eq!(cfg.grid_cols, 33);
     }
 }
