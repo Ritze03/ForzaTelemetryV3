@@ -24,6 +24,7 @@ use crate::i18n::tr;
 use crate::maprender::cfg::MapLayerConfig;
 use crate::maprender::data::MapLayers;
 use crate::maprender::paint2d::Parts;
+use crate::maprender::terrain::Terrain;
 use crate::maprender::{Camera, MapTex, RaceSel};
 
 /// What one map draws with.
@@ -160,6 +161,86 @@ pub fn zoom_factor(scroll_y: f32, pinch: f32) -> f32 {
     (-scroll_y * 0.002).exp() / pinch.max(0.05)
 }
 
+/// How a map looked on its last frame when that frame was drawn in **3D** (`draw` leaves it in the
+/// egui context, keyed by the map's `Ui`; [`ManualView::interact`] reads it). Pan and zoom need it
+/// because the relief camera is not the flat one: the picture shows the terrain *surface*, up to
+/// hundreds of metres above or below the plane through the car that `Camera::unproject` stops at,
+/// so a gesture worked out on that plane slides the map against the pointer (and grabbing a
+/// mountain top above the plane's horizon grabs nothing at all).
+#[derive(Clone)]
+struct Ground {
+    terrain: Arc<Terrain>,
+    /// The drawn camera's `Relief::car_y` (telemetry height while following, else the terrain's).
+    car_y: f32,
+    /// `Context::cumulative_pass_nr` of that frame: older than a few passes = the map is not
+    /// being drawn (another tab, still loading), so what it showed no longer counts.
+    pass: u64,
+}
+
+impl Ground {
+    fn id(ui: &Ui) -> egui::Id {
+        ui.id().with("map_scene_ground")
+    }
+
+    /// What `ui`'s map showed last frame, if that was a 3D scene.
+    fn of(ui: &Ui) -> Option<Ground> {
+        let now = ui.ctx().cumulative_pass_nr();
+        let g: Option<Ground> = ui.ctx().data(|d| d.get_temp::<Option<Ground>>(Self::id(ui))).flatten();
+        g.filter(|g| g.pass + 4 >= now)
+    }
+
+    /// `draw`: leave this frame's look (`None` = not drawn in 3D) for the next frame's input.
+    fn publish(ui: &Ui, cam: Option<&Camera>) {
+        let g = cam.and_then(|c| c.relief.as_ref()).map(|r| Ground {
+            terrain: r.terrain.clone(),
+            car_y: r.car_y,
+            pass: ui.ctx().cumulative_pass_nr(),
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(Self::id(ui), g));
+    }
+
+    /// The camera `draw` builds for a view over this ground. `car_y` `None` = the terrain height
+    /// under `centre` (a panned view); `Some` = the telemetry-based height of a following one.
+    fn camera(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, car_y: Option<f32>) -> Camera {
+        Camera::from_cfg_relief(&layers.tilt, centre, yaw, zoom_m, rect, Some(&self.terrain), car_y)
+    }
+
+    /// The view centre that puts the world point `anchor` under screen point `at` for this
+    /// yaw / zoom, with the camera built the way a panned view's is (its height follows the
+    /// terrain under the centre, so the camera moves while the centre does: no closed form).
+    /// Each round re-casts the pointer and moves the centre by the miss; the camera is a pure
+    /// translation of the view over the ground, so the miss shrinks fast on any slope the view
+    /// ray can see. `None` = the pointer is over no ground (above the horizon).
+    fn centre_over(&self, layers: &MapLayerConfig, start: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, at: Pos2, anchor: [f32; 2]) -> Option<(f32, f32)> {
+        let mut c = start;
+        for _ in 0..16 {
+            let p = pick(&self.camera(layers, c, yaw, zoom_m, rect, None), at)?;
+            let (dx, dz) = (anchor[0] - p[0], anchor[1] - p[1]);
+            c = (c.0 + dx, c.1 + dz);
+            if dx.abs().max(dz.abs()) < 0.02 {
+                break;
+            }
+        }
+        (c.0.is_finite() && c.1.is_finite()).then_some(c)
+    }
+
+    /// 3D [`panned`]: the *terrain point* grabbed at `prev` ends up under `now`.
+    fn panned(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, prev: Pos2, now: Pos2) -> (f32, f32) {
+        let drawn = self.camera(layers, centre, yaw, zoom_m, rect, Some(self.car_y));
+        pick(&drawn, prev)
+            .and_then(|anchor| self.centre_over(layers, centre, yaw, zoom_m, rect, now, anchor))
+            .unwrap_or(centre)
+    }
+
+    /// 3D [`zoomed_at`]: the terrain point under `at` stays under it.
+    fn zoomed_at(&self, layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom_m: f32, rect: Rect, at: Pos2, factor: f32) -> ((f32, f32), f32) {
+        let new = (zoom_m * factor).clamp(ZOOM_MIN_M, ZOOM_MAX_M);
+        let drawn = self.camera(layers, centre, yaw, zoom_m, rect, Some(self.car_y));
+        let c = pick(&drawn, at).and_then(|anchor| self.centre_over(layers, centre, yaw, new, rect, at, anchor));
+        (c.unwrap_or(centre), new)
+    }
+}
+
 impl ManualView {
     /// Is any part of the view manual?
     pub fn is_manual(&self) -> bool {
@@ -206,13 +287,18 @@ impl ManualView {
 
     /// One frame of input on the map's response: a drag pans, the wheel (or a pinch) zooms, then
     /// the reset gate runs. While the view follows the car the wheel zooms around the car (the
-    /// car stays put, nothing to anchor to); once panned it zooms around the cursor.
+    /// car stays put, nothing to anchor to); once panned it zooms around the cursor. On a map
+    /// drawn in 3D both anchor on the terrain surface under the pointer ([`Ground`]).
     pub fn interact(&mut self, ui: &Ui, resp: &egui::Response, v: &ViewIn) {
+        let ground = Ground::of(ui);
         let (centre, zoom) = self.view(v.car, v.base_zoom_m);
         if resp.dragged_by(egui::PointerButton::Primary) && resp.drag_delta() != Vec2::ZERO {
             if let Some(now) = resp.interact_pointer_pos() {
-                let cam = camera(v.layers, centre, v.yaw, zoom, v.rect);
-                let new = panned(&cam, centre, now - resp.drag_delta(), now);
+                let prev = now - resp.drag_delta();
+                let new = match &ground {
+                    Some(g) => g.panned(v.layers, centre, v.yaw, zoom, v.rect, prev, now),
+                    None => panned(&camera(v.layers, centre, v.yaw, zoom, v.rect), centre, prev, now),
+                };
                 self.touch(v.speed);
                 self.centre = Some(new);
             }
@@ -225,7 +311,10 @@ impl ManualView {
                 let anchor = resp.hover_pos().filter(|_| self.centre.is_some());
                 let (new_centre, new_zoom) = match anchor {
                     Some(at) => {
-                        let (c, z) = zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, at, factor);
+                        let (c, z) = match &ground {
+                            Some(g) => g.zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, at, factor),
+                            None => zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, at, factor),
+                        };
                         (Some(c), z)
                     }
                     None => (self.centre, (zoom * factor).clamp(ZOOM_MIN_M, ZOOM_MAX_M)),
@@ -564,6 +653,8 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
         _ => flat_cam,
     };
     let view = cam.view;
+    // What the next frame's pan / zoom needs to know about this one (see `Ground`).
+    Ground::publish(ui, relief.as_ref().filter(|_| !underlay));
 
     let painter = ui.painter_at(rect);
     let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
