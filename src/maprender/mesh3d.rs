@@ -1009,6 +1009,23 @@ mod tests {
         assert_eq!(rel[later * VERTS_PER_SAMPLE], 1);
     }
 
+    /// The 3D flags use the same relevance: an overpass above the route is muted / hidden.
+    #[test]
+    fn rel_flags_drop_an_overpass_above_the_route() {
+        let t = Terrain::synthetic();
+        let mut roads = RoadLayer::default();
+        roads.by_type[1].push(Chain::new((0..=20).map(|i| [3.0, i as f32 * 50.0]).collect(), vec![50.0; 21]));
+        roads.by_type[1].push(Chain::new((0..=20).map(|i| [3.0, i as f32 * 50.0]).collect(), vec![60.0; 21]));
+        let mut l = test_line(1, 0.0, false);
+        l.y = vec![50.0; l.pts.len()];
+        let focus = RoadFocus::build(&roads, &l);
+        let m = RoadMesh::build(&roads, &t, 1);
+        let rel = m.build_rel(&focus);
+        for (i, src) in m.src.iter().enumerate() {
+            assert_eq!(rel[i * VERTS_PER_SAMPLE] == 1, src.chain == 0, "sample {i} (chain {})", src.chain);
+        }
+    }
+
     /// The same, with the real focus builder: roads along a race line are relevant, a crossing
     /// road far away is not.
     #[test]

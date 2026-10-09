@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use super::cfg::{RaceCfg, RaceLineMode};
 use super::data::{MapLayers, RaceLayer, RoadLayer, N_TYPES};
+use super::mesh3d::known_y;
 use super::view::bbox_hits;
 use crate::gamedata::racelines::RaceLine;
 use crate::gamedata::roadtypes::RoadType;
@@ -141,6 +142,7 @@ fn half_at(half: &[[f32; 2]], s: usize) -> f32 {
 pub struct Poly<'a> {
     pts: &'a [[f32; 2]],
     half: &'a [[f32; 2]],
+    y: &'a [f32],
     cum: &'a [f32],
     closed: bool,
     /// Vertices of the loop / line (a closed line whose last point repeats the first drops it).
@@ -163,7 +165,7 @@ impl<'a> Poly<'a> {
         } else {
             cum[n - 1]
         };
-        Poly { pts: &l.pts, half: &l.half, cum, closed, m, total }
+        Poly { pts: &l.pts, half: &l.half, y: &l.y, cum, closed, m, total }
     }
 
     fn norm(&self, s: f32) -> f32 {
@@ -172,6 +174,20 @@ impl<'a> Poly<'a> {
         } else {
             s.clamp(0.0, self.total)
         }
+    }
+
+    /// Height at arc length `s` (`0` when the line has none).
+    fn y_at(&self, s: f32) -> f32 {
+        let s = self.norm(s);
+        let j = self.cum[..self.m].partition_point(|&c| c <= s).saturating_sub(1).min(self.m - 1);
+        let yv = |i: usize| self.y.get(i % self.m).copied().unwrap_or(0.0);
+        let end = if j + 1 < self.m { self.cum[j + 1] } else { self.total };
+        let len = end - self.cum[j];
+        let t = if len > 1e-6 { ((s - self.cum[j]) / len).clamp(0.0, 1.0) } else { 0.0 };
+        if !self.closed && j + 1 >= self.m {
+            return yv(j);
+        }
+        yv(j) + (yv(j + 1) - yv(j)) * t
     }
 
     /// Position and half-width vector at arc length `s`.
@@ -236,20 +252,21 @@ impl<'a> Poly<'a> {
 
     /// The part `s0..s1` of the line as points and half-width vectors (ends interpolated). A
     /// closed circuit wraps past either end, at most one lap.
-    pub fn slice(&self, s0: f32, s1: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
-        let (mut pts, mut half) = (Vec::new(), Vec::new());
+    pub fn slice(&self, s0: f32, s1: f32) -> (Vec<[f32; 2]>, Vec<[f32; 2]>, Vec<f32>) {
+        let (mut pts, mut half, mut ys) = (Vec::new(), Vec::new(), Vec::new());
         if self.m < 2 {
-            return (pts, half);
+            return (pts, half, ys);
         }
         let (s0, s1) = if self.closed { (s0, s1.min(s0 + self.total)) } else { (s0.clamp(0.0, self.total), s1.clamp(0.0, self.total)) };
         if s1 < s0 {
-            return (pts, half);
+            return (pts, half, ys);
         }
-        let mut push = |(p, h): ([f32; 2], [f32; 2])| {
+        let mut push = |(p, h): ([f32; 2], [f32; 2]), y: f32| {
             pts.push(p);
             half.push(h);
+            ys.push(y);
         };
-        push(self.at(s0));
+        push(self.at(s0), self.y_at(s0));
         let m = self.m as i64;
         let (w0, lo_in) = if self.closed {
             let w = (s0 / self.total).floor();
@@ -267,11 +284,11 @@ impl<'a> Poly<'a> {
             if arc >= s1 {
                 break;
             }
-            push((self.pts[j], self.half.get(j).copied().unwrap_or_default()));
+            push((self.pts[j], self.half.get(j).copied().unwrap_or_default()), self.y.get(j).copied().unwrap_or(0.0));
             k += 1;
         }
-        push(self.at(s1));
-        (pts, half)
+        push(self.at(s1), self.y_at(s1));
+        (pts, half, ys)
     }
 }
 
@@ -409,8 +426,8 @@ impl RaceSel {
         }
         let f = Arc::new(match self.span(li) {
             Some(sp) if li < layers.races.cum.len() => {
-                let (pts, half) = Poly::new(&layers.races, li).slice(sp.s0, sp.s1);
-                RoadFocus::build_pts(&layers.roads, &pts, &half, false)
+                let (pts, half, y) = Poly::new(&layers.races, li).slice(sp.s0, sp.s1);
+                RoadFocus::build_pts(&layers.roads, &pts, &half, &y, false)
             }
             _ => RoadFocus::build(&layers.roads, line),
         });
@@ -578,6 +595,9 @@ const FOCUS_SAMPLE_M: f32 = 10.0;
 /// A road counts as running along the race line when its heading is within this cosine of the
 /// line's (about 20 degrees, either sense): side roads at 30 degrees or more do not.
 pub const ALIGN_COS: f32 = 0.94;
+/// A road only belongs to the race when its height is within this of the race line's (m): an
+/// overpass or underpass crossing the route lies in the corridor horizontally but is another road.
+pub const HEIGHT_TOL_M: f32 = 6.0;
 /// Cell size of the corridor lookup, metres.
 const CORRIDOR_CELL_M: f32 = 32.0;
 
@@ -587,14 +607,15 @@ const CORRIDOR_CELL_M: f32 = 32.0;
 /// others); a segment is registered in every cell its widened box touches, so a point only has to
 /// look into its own cell.
 struct Corridor {
-    segs: Vec<([f32; 2], [f32; 2], f32)>,
+    /// Per segment: its ends, its tolerance, and the line's heights at its ends (`NaN` = unknown).
+    segs: Vec<([f32; 2], [f32; 2], f32, [f32; 2])>,
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// Widest tolerance, to reject far chains by their box.
     max_tol: f32,
 }
 
 impl Corridor {
-    fn new(pts: &[[f32; 2]], half: &[[f32; 2]], closed: bool) -> Corridor {
+    fn new(pts: &[[f32; 2]], half: &[[f32; 2]], y: &[f32], closed: bool) -> Corridor {
         let n = pts.len();
         let mut c = Corridor { segs: Vec::new(), cells: HashMap::new(), max_tol: 0.0 };
         if n < 2 {
@@ -609,7 +630,8 @@ impl Corridor {
             c.max_tol = c.max_tol.max(tol);
             let (k0, k1) = (key(a[0].min(b[0]) - tol, a[1].min(b[1]) - tol), key(a[0].max(b[0]) + tol, a[1].max(b[1]) + tol));
             let id = c.segs.len() as u32;
-            c.segs.push((a, b, tol));
+            let h = |i: usize| y.get(i).copied().and_then(known_y).unwrap_or(f32::NAN);
+            c.segs.push((a, b, tol, [h(s), h((s + 1) % n)]));
             for cx in k0.0..=k1.0 {
                 for cz in k0.1..=k1.1 {
                     c.cells.entry((cx, cz)).or_default().push(id);
@@ -620,14 +642,18 @@ impl Corridor {
     }
 
     /// Is `p` inside the corridor, on a stretch that runs the way `dir` (unit; either sense) does
-    /// (`|cos| >= `[`ALIGN_COS`]), or any way when `dir` is `None`?
-    fn hit(&self, p: [f32; 2], dir: Option<[f32; 2]>) -> bool {
+    /// (`|cos| >= `[`ALIGN_COS`]), or any way when `dir` is `None`, and (when `y`, the height of
+    /// the point, and the line's are both known) at the line's height, within [`HEIGHT_TOL_M`]?
+    fn hit(&self, p: [f32; 2], dir: Option<[f32; 2]>, y: Option<f32>) -> bool {
         let k = ((p[0] / CORRIDOR_CELL_M).floor() as i32, (p[1] / CORRIDOR_CELL_M).floor() as i32);
         self.cells.get(&k).is_some_and(|v| {
             v.iter().any(|&i| {
-                let (a, b, tol) = self.segs[i as usize];
-                let (d, sd, _) = seg_dist(p, a, b);
-                d <= tol && dir.is_none_or(|u| (sd[0] * u[0] + sd[1] * u[1]).abs() >= ALIGN_COS)
+                let (a, b, tol, ys) = self.segs[i as usize];
+                let (d, sd, t) = seg_dist(p, a, b);
+                let ly = ys[0] + (ys[1] - ys[0]) * t; // NaN when either end is unknown
+                d <= tol
+                    && dir.is_none_or(|u| (sd[0] * u[0] + sd[1] * u[1]).abs() >= ALIGN_COS)
+                    && y.is_none_or(|y| ly.is_nan() || (y - ly).abs() <= HEIGHT_TOL_M)
             })
         })
     }
@@ -638,7 +664,7 @@ impl Corridor {
     /// crosses it or joins it from the side (the first segment out of a junction lies within the
     /// corridor too, but at an angle) is not, not even for its short piece at the junction (the
     /// race line covers that anyway).
-    fn segment(&self, a: [f32; 2], b: [f32; 2]) -> bool {
+    fn segment(&self, a: [f32; 2], b: [f32; 2], ys: Option<[f32; 2]>) -> bool {
         let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
         let len = dx.hypot(dz);
         let dir = (len > 1e-3).then(|| [dx / len, dz / len]);
@@ -646,7 +672,7 @@ impl Corridor {
         let hits = (0..=n)
             .filter(|&i| {
                 let t = i as f32 / n as f32;
-                self.hit([a[0] + dx * t, a[1] + dz * t], dir)
+                self.hit([a[0] + dx * t, a[1] + dz * t], dir, ys.map(|y| y[0] + (y[1] - y[0]) * t))
             })
             .count();
         hits * 2 > n + 1
@@ -682,13 +708,13 @@ pub struct RoadFocus {
 impl RoadFocus {
     /// The roads along the whole of `line`.
     pub fn build(roads: &RoadLayer, line: &RaceLine) -> RoadFocus {
-        Self::build_pts(roads, &line.pts, &line.half, line.closed)
+        Self::build_pts(roads, &line.pts, &line.half, &line.y, line.closed)
     }
 
     /// The roads along a polyline with a half-width vector per point (a whole line, or the part of
     /// it that is drawn while the route is still uncertain, `Poly::slice`).
-    pub fn build_pts(roads: &RoadLayer, pts: &[[f32; 2]], half: &[[f32; 2]], closed: bool) -> RoadFocus {
-        let cor = Corridor::new(pts, half, closed);
+    pub fn build_pts(roads: &RoadLayer, pts: &[[f32; 2]], half: &[[f32; 2]], y: &[f32], closed: bool) -> RoadFocus {
+        let cor = Corridor::new(pts, half, y, closed);
         let mut f = RoadFocus::default();
         let t = cor.max_tol;
         let bb = pts.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]);
@@ -718,9 +744,14 @@ impl RoadFocus {
                         f.relevant_segments += to - from;
                     }
                 };
-                let (mut start, mut cur) = (0usize, cor.segment(ch.pts[0], ch.pts[1]));
+                // Node heights of the road (0 = unknown, the 3D mesh then takes the terrain: no judgement).
+                let ys = |s: usize| match (ch.y.get(s).copied().and_then(known_y), ch.y.get(s + 1).copied().and_then(known_y)) {
+                    (Some(a), Some(b)) => Some([a, b]),
+                    _ => None,
+                };
+                let (mut start, mut cur) = (0usize, cor.segment(ch.pts[0], ch.pts[1], ys(0)));
                 for s in 1..nseg {
-                    let r = cor.segment(ch.pts[s], ch.pts[s + 1]);
+                    let r = cor.segment(ch.pts[s], ch.pts[s + 1], ys(s));
                     if r != cur {
                         flush(&mut f, start, s, cur);
                         (start, cur) = (s, r);
@@ -729,7 +760,7 @@ impl RoadFocus {
                 flush(&mut f, start, nseg, cur);
             }
         }
-        f.jumps = roads.jumps.iter().map(|j| cor.hit([j[0], j[1]], None) && cor.hit([j[3], j[4]], None)).collect();
+        f.jumps = roads.jumps.iter().map(|j| cor.hit([j[0], j[1]], None, known_y(j[2])) && cor.hit([j[3], j[4]], None, known_y(j[5]))).collect();
         f
     }
 }
@@ -878,6 +909,40 @@ mod tests {
         assert_eq!(relevance(&f, t, 2), vec![(0, 6, false)], "30 degree side road: no stub");
         assert_eq!(relevance(&f, t, 3), vec![(0, 2, true)], "a frontage road 10 m beside the route is along it: kept");
         assert!(relevance(&f, t, 4).iter().any(|r| r.2), "a 15 degree merging road counts as along the route");
+    }
+
+    /// An overpass above the route lies in its corridor horizontally but is another road: the
+    /// relevance test is 3D (the user's screenshot: short highway pieces floating over the race).
+    #[test]
+    fn a_road_far_above_or_below_the_route_is_not_along_it() {
+        let mut l = line(1, 0.0, false);
+        l.y = vec![50.0; l.pts.len()];
+        let mut r = RoadLayer::default();
+        let slot = RoadType::Road.index() as usize;
+        let chain = |pts: &[[f32; 2]], y: f32| Chain::new(pts.to_vec(), vec![y; pts.len()]);
+        // 0: on the route at its height. 1: the same line 8 m higher (an overpass that runs with the
+        // route for a stretch, so heading and distance alone would keep it). 2: a shallow crossing
+        // 8 m above (10 degrees). 3: 5 m higher (a ramp / a hill: within the tolerance). 4: 8 m
+        // lower (an underpass). 5: height unknown (0), judged by the corridor alone.
+        let along: Vec<[f32; 2]> = (0..=10).map(|i| [3.0, 100.0 + i as f32 * 20.0]).collect();
+        r.by_type[slot].push(chain(&along, 50.0));
+        r.by_type[slot].push(chain(&along, 58.0));
+        r.by_type[slot].push(chain(&(0..=10).map(|i| [-20.0 + i as f32 * 4.0, 400.0 + i as f32 * 22.7]).collect::<Vec<_>>(), 58.0));
+        r.by_type[slot].push(chain(&along, 55.0));
+        r.by_type[slot].push(chain(&along, 42.0));
+        r.by_type[slot].push(chain(&along, 0.0));
+        let f = RoadFocus::build(&r, &l);
+        let t = RoadType::Road;
+        assert_eq!(relevance(&f, t, 0), vec![(0, 10, true)], "same height");
+        assert_eq!(relevance(&f, t, 1), vec![(0, 10, false)], "8 m above");
+        assert_eq!(relevance(&f, t, 2), vec![(0, 10, false)], "shallow crossing 8 m above");
+        assert_eq!(relevance(&f, t, 3), vec![(0, 10, true)], "5 m above is within the tolerance");
+        assert_eq!(relevance(&f, t, 4), vec![(0, 10, false)], "8 m below");
+        assert_eq!(relevance(&f, t, 5), vec![(0, 10, true)], "no height: corridor only");
+        // The overpass crossing at 10 degrees at the route's own height would count as along it.
+        let mut r2 = RoadLayer::default();
+        r2.by_type[slot].push(chain(&(0..=10).map(|i| [-20.0 + i as f32 * 4.0, 400.0 + i as f32 * 22.7]).collect::<Vec<_>>(), 50.0));
+        assert!(relevance(&RoadFocus::build(&r2, &l), t, 0).iter().any(|r| r.2));
     }
 
     #[test]
