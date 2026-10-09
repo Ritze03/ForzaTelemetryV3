@@ -1303,6 +1303,22 @@ fn migrate_tire_display_style(map: &mut serde_json::Map<String, serde_json::Valu
     }
 }
 
+/// The circuit race colour used to default to the road blue (#38bdf8), so a circuit did not stand
+/// out; the default is now orange. Saved configs carry the old default, so rewrite exactly that
+/// value (a colour the user picked stays) in both map layer configs.
+fn migrate_circuit_color(map: &mut serde_json::Map<String, serde_json::Value>) {
+    fn fix(layers: Option<&mut serde_json::Value>) {
+        let c = layers.and_then(|l| l.get_mut("race_lines")).and_then(|r| r.get_mut("circuit_color"));
+        if let Some(c) = c {
+            if c.as_str().is_some_and(|s| s.eq_ignore_ascii_case("#38bdf8")) {
+                *c = serde_json::json!("#f97316");
+            }
+        }
+    }
+    fix(map.get_mut("minimap_layers"));
+    fix(map.get_mut("overlay").and_then(|o| o.get_mut("map_layers")));
+}
+
 /// What [`AppConfig::parse`] had to do to read a config: `json_invalid` (not JSON at all →
 /// all defaults) and/or the settings that were reset (`key` or `key.inner`).
 struct ConfigRecovery {
@@ -1803,6 +1819,7 @@ impl AppConfig {
                 );
             }
             migrate_tire_display_style(map);
+            migrate_circuit_color(map);
         }
         let (mut cfg, reset_keys) = from_value_lenient(val, &default);
         // Ensure every widget kind has at least one entry in the layout.
@@ -2096,6 +2113,13 @@ impl AutoSave {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn circuit_color_migrates_old_default_only() {
+        let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"circuit_color":"#38bdf8"}},"overlay":{"map_layers":{"race_lines":{"circuit_color":"#123456"}}}}"##);
+        assert_eq!(c.minimap_layers.race_lines.circuit_color, crate::maprender::cfg::Rgb::hex(0xf97316));
+        assert_eq!(c.overlay.map_layers.race_lines.circuit_color, crate::maprender::cfg::Rgb::hex(0x123456));
+    }
+
     #[test]
     fn dsg_resolved_mode_manual_race_and_drift() {
         use super::GearboxMode::*;
