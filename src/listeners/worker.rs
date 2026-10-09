@@ -104,6 +104,51 @@ pub struct ListenerView {
     /// Race-vs-drift mode from the DSG listener's classifier (always running, unlike the
     /// HUD's own copy which only runs while the overlay is on). Shown in the Debug tab.
     pub hud_mode: crate::overlay::snapshot::HudMode,
+    /// Packets per second as the listener thread measures it on receipt (1 s windows; `0.0`
+    /// once no packet arrived for [`PpsMeter::STALE`]). The status bar shows this: the UI
+    /// thread's own count depends on when frames drain the queue, so any UI stall made it swing.
+    pub pps: f32,
+}
+
+/// Packets-per-second over 1 s windows, counted when each packet is received.
+struct PpsMeter {
+    /// Last finished window's rate.
+    rate: f32,
+    count: u32,
+    since: Instant,
+    last: Option<Instant>,
+}
+
+impl PpsMeter {
+    /// No packet for this long and [`Self::published`] reads 0: `rate` only moves on a packet,
+    /// so it would otherwise stay frozen at the last value after the game stops sending.
+    const STALE: Duration = Duration::from_secs(2);
+
+    fn new(now: Instant) -> Self {
+        Self { rate: 0.0, count: 0, since: now, last: None }
+    }
+
+    fn on_packet(&mut self, now: Instant) {
+        // After a silence (game paused / closed) the open window would make the first packet
+        // back report 1 / gap; start a fresh one instead.
+        if self.last.is_some_and(|t| now.duration_since(t) > Duration::from_secs(1)) {
+            self.count = 0;
+            self.since = now;
+        }
+        self.last = Some(now);
+        self.count += 1;
+        let elapsed = now.duration_since(self.since).as_secs_f32();
+        if elapsed >= 1.0 {
+            self.rate = self.count as f32 / elapsed;
+            self.count = 0;
+            self.since = now;
+        }
+    }
+
+    /// The value for the UI: `rate`, or 0 when the stream stopped.
+    fn published(&self, now: Instant) -> f32 {
+        if self.last.is_some_and(|t| now.duration_since(t) < Self::STALE) { self.rate } else { 0.0 }
+    }
 }
 
 /// What the UI hands the thread each frame.
@@ -300,11 +345,10 @@ fn run(ctx: Ctx) {
     let mut wants_text = false;
     // When the UI last pushed; None = never. Ages out via FOCUS_FACTS_TTL.
     let mut last_push: Option<Instant> = None;
-    // Own packet-rate measurement (Backfire's dynamic press length needs it). The UI's
-    // `TelemetryState::packets_per_sec` is computed per frame and stops when frames do.
-    let mut pps = 0.0_f32;
-    let mut pps_count = 0_u32;
-    let mut pps_since = Instant::now();
+    // Own packet-rate measurement (Backfire's dynamic press length needs it; the status bar
+    // shows it too, via `ListenerView::pps`). It lives here, not on the UI thread, because the
+    // UI drains in batches whenever a frame stalls, which made a UI-side count swing.
+    let mut pps = PpsMeter::new(Instant::now());
     let mut last_packet: Option<Instant> = None;
     // HUD overlay: per-packet derived state, the attached mailbox, the Hide HUD toggle, and
     // the last published visibility (a change without a packet still has to be published).
@@ -441,13 +485,7 @@ fn run(ctx: Ctx) {
                     hud.on_packet(&pkt, &cfg.overlay, cfg.experimental_pause_detection, hud_clock());
                 }
                 last_packet = Some(Instant::now());
-                pps_count += 1;
-                let elapsed = pps_since.elapsed().as_secs_f32();
-                if elapsed >= 1.0 {
-                    pps = pps_count as f32 / elapsed;
-                    pps_count = 0;
-                    pps_since = Instant::now();
-                }
+                pps.on_packet(Instant::now());
 
                 if pkt.is_race_on != 0 {
                     in_race = pkt.race_position != 0;
@@ -483,7 +521,7 @@ fn run(ctx: Ctx) {
                 // change or a restored profile changes it. See `MaxRpmChecks::unlocked`.
                 dynamic_max_rpm = next_max_rpm(dynamic_max_rpm, &pkt, dsg.engaged);
 
-                backfire.update(&pkt, &cfg, &input, pps);
+                backfire.update(&pkt, &cfg, &input, pps.rate);
                 // No grace here: `echo_grace` exists for consumers that read the window a
                 // frame late behind an FPS limit, and this thread reads it the instant the
                 // packet lands. See `backfire::echo_grace`.
@@ -564,6 +602,7 @@ fn run(ctx: Ctx) {
                 toggle_gen,
                 hud_hidden,
                 hud_mode: dsg.hud_mode,
+                pps: pps.published(Instant::now()),
             };
         }
     }
@@ -606,6 +645,36 @@ fn persist_calibration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pps_meter_measures_the_stream_and_reads_zero_when_it_stops() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut m = PpsMeter::new(t0);
+        assert_eq!(m.published(t0), 0.0, "no packet yet");
+        // 70 Hz-ish (every 14 ms) for 2.5 s.
+        for i in 1..=178 {
+            m.on_packet(ms(i * 14));
+        }
+        let r = m.published(ms(178 * 14));
+        assert!((r - 71.0).abs() < 2.0, "got {r}");
+        // Stream stops: still the old rate for a moment, then 0.
+        assert!(m.published(ms(178 * 14 + 1_000)) > 0.0);
+        assert_eq!(m.published(ms(178 * 14 + 2_500)), 0.0);
+    }
+
+    #[test]
+    fn pps_meter_restarts_its_window_after_a_gap() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut m = PpsMeter::new(t0);
+        m.on_packet(ms(10));
+        // Silent for 30 s, then a steady 100 Hz: must not report ~1/30 for the first window.
+        for i in 0..=200 {
+            m.on_packet(ms(30_000 + i * 10));
+        }
+        assert!((m.rate - 100.0).abs() < 2.0, "got {}", m.rate);
+    }
 
     #[test]
     fn clearing_rpm_calibration_keeps_the_gear_map() {

@@ -646,9 +646,177 @@ pub fn probe(active_keyboards: usize, uinput_ready: Option<bool>) -> InputProbe 
     { InputProbe::default() }
 }
 
+/// Runs [`probe`] off the UI thread, at most one at a time, and hands the result back by
+/// channel. *Why:* the probe `open()`s every `/dev/input/event*` node (`hotkeys::inventory`);
+/// with ~32 nodes that is ~155 ms (a single RGB-controller node takes ~57 ms), and run on the UI
+/// thread every 2 s it froze the window for that long each time. Besides the visible stutter it
+/// made UI-side timing (packets-per-second, perf-test stopwatches) swing.
+///
+/// State machine: *idle* -> ([`Self::due`]) -> [`Self::spawn`] -> *in flight* (no second probe
+/// starts) -> [`Self::poll`] returns the result and goes back to *idle* with the 2 s throttle
+/// restarting from that moment.
+#[derive(Default)]
+pub struct ProbeTask {
+    rx: Option<std::sync::mpsc::Receiver<InputProbe>>,
+    /// When the last result was taken (or the task cancelled); `None` = never ran.
+    last: Option<std::time::Instant>,
+}
+
+impl ProbeTask {
+    /// Minimum gap between a result and the next probe.
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    pub fn in_flight(&self) -> bool {
+        self.rx.is_some()
+    }
+
+    /// Time for another probe: none in flight and the throttle has run out (or it never ran).
+    pub fn due(&self, now: std::time::Instant) -> bool {
+        !self.in_flight() && self.last.map_or(true, |t| now.duration_since(t) >= Self::EVERY)
+    }
+
+    /// Run `f` (normally `|| probe(..)`) on a fresh `input-probe` thread. No-op while one is
+    /// already in flight.
+    pub fn spawn(&mut self, f: impl FnOnce() -> InputProbe + Send + 'static) {
+        if self.in_flight() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new().name("input-probe".into()).spawn(move || {
+            let _ = tx.send(f());
+        });
+        if spawned.is_ok() {
+            self.rx = Some(rx);
+        }
+    }
+
+    /// The finished probe, if there is one (never blocks). A thread that died without a result
+    /// just ends the flight; the next [`Self::due`] retries.
+    pub fn poll(&mut self, now: std::time::Instant) -> Option<InputProbe> {
+        use std::sync::mpsc::TryRecvError;
+        match self.rx.as_ref()?.try_recv() {
+            Ok(p) => {
+                self.rx = None;
+                self.last = Some(now);
+                Some(p)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.rx = None;
+                self.last = Some(now);
+                None
+            }
+        }
+    }
+
+    /// Forget the one in flight (its result is dropped) and restart the throttle - used when
+    /// the caller just probed synchronously (Re-check), so the older, staler result can't land
+    /// on top of the fresh one.
+    pub fn cancel(&mut self, now: std::time::Instant) {
+        self.rx = None;
+        self.last = Some(now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_task_runs_one_probe_at_a_time_and_applies_the_result_later() {
+        use std::sync::mpsc::channel;
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        assert!(task.due(t0), "never ran: due at once (startup)");
+
+        // The probe blocks until released, like a slow /dev/input scan.
+        let (release, gate) = channel::<()>();
+        let slow = InputProbe { hotkeys_ok: false, ..Default::default() };
+        task.spawn(move || {
+            let _ = gate.recv();
+            slow
+        });
+        assert!(task.in_flight());
+        assert!(!task.due(t0 + Duration::from_secs(60)), "no second probe while one is in flight");
+        assert_eq!(task.poll(t0), None, "UI never blocks on the probe: no result yet");
+        task.spawn(|| panic!("a second probe must not start while one is in flight"));
+
+        release.send(()).unwrap();
+        let got = loop {
+            if let Some(p) = task.poll(t0 + Duration::from_secs(10)) {
+                break p;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(got, slow);
+        assert!(!task.in_flight());
+        // Throttle restarts from when the result was taken.
+        assert!(!task.due(t0 + Duration::from_secs(11)));
+        assert!(task.due(t0 + Duration::from_secs(12)));
+    }
+
+    #[test]
+    fn probe_task_result_feeds_the_modal_rule_once() {
+        use std::time::{Duration, Instant};
+        // tick -> in flight -> result -> modal rule, as `refresh_input_facts` drives it.
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        let mut prev_missing = false;
+        let mut opened = 0;
+        for round in 0..3 {
+            let now = t0 + Duration::from_secs(5 * round);
+            assert!(task.due(now));
+            task.spawn(|| InputProbe { in_input_group: false, ..Default::default() });
+            let p = loop {
+                if let Some(p) = task.poll(now) {
+                    break p;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let missing = evaluate(&p).any_missing();
+            if modal_should_open(prev_missing, missing, true) {
+                opened += 1;
+            }
+            prev_missing = missing;
+        }
+        assert_eq!(opened, 1, "stays missing: the modal opens on the transition only");
+    }
+
+    #[test]
+    fn probe_task_cancel_drops_the_stale_result() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        task.spawn(move || {
+            let _ = gate.recv();
+            InputProbe::default()
+        });
+        task.cancel(t0);
+        assert!(!task.in_flight());
+        let _ = release.send(());
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(task.poll(t0), None);
+        assert!(!task.due(t0 + Duration::from_secs(1)));
+        assert!(task.due(t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn probe_task_survives_a_dead_thread() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        task.spawn(|| panic!("probe thread died"));
+        let mut tries = 0;
+        while task.in_flight() && tries < 1000 {
+            assert_eq!(task.poll(t0), None);
+            std::thread::sleep(Duration::from_millis(1));
+            tries += 1;
+        }
+        assert!(!task.in_flight(), "flight ended without a result");
+        assert!(task.due(t0 + Duration::from_secs(2)), "retries after the throttle");
+    }
 
     #[test]
     fn evaluate_all_ok_is_empty() {

@@ -547,7 +547,7 @@ pub struct ForzaApp {
     pub input_perm_modal_open: bool,         // D13: permissions modal currently showing
     pub input_prev_missing: bool,            // anything was missing at the previous refresh (modal re-shows on a transition into missing)
     pub input_perm_copied: Option<(usize, Instant)>, // D13: which fix command was just copied
-    pub input_probe_at: Option<Instant>,     // when `input_probe` was last refreshed (2 s throttle)
+    pub input_probe_task: crate::input::ProbeTask, // runs the input probe on a thread (it open()s every /dev/input node, ~150 ms); 2 s throttle
     pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
     pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
@@ -809,9 +809,18 @@ impl ForzaApp {
         // probe below sees "created / failed" instead of guessing from an open() test.
         let mut input = InputSender::new();
         input.set_focus_gate(input_allowed.clone());
-        let input_probe = crate::input::probe(hotkeys.active_keyboards(), input.uinput_ready());
-        let input_prev_missing = crate::input::evaluate(&input_probe).any_missing();
-        let input_perm_modal_open = cfg!(target_os = "linux") && !config.input_perm_dont_remind && input_prev_missing;
+        // The probe runs on a thread (it open()s every /dev/input node: ~150 ms with many
+        // devices, which would stall startup). Until its first result arrives (a few frames)
+        // everything reads "fine" and no modal is up; the result then goes through the same
+        // transition rule as every later one, so a missing permission still opens the modal.
+        let input_probe = crate::input::InputProbe::default();
+        let input_prev_missing = false;
+        let input_perm_modal_open = false;
+        let mut input_probe_task = crate::input::ProbeTask::default();
+        {
+            let (kbs, ready) = (hotkeys.active_keyboards(), input.uinput_ready());
+            input_probe_task.spawn(move || crate::input::probe(kbs, ready));
+        }
 
         // The listener thread owns Backfire, the gearbox, the per-car calibrations and the
         // global hotkeys, so they all keep running when the window stops being drawn.
@@ -903,7 +912,7 @@ impl ForzaApp {
             input_perm_modal_open,
             input_prev_missing,
             input_perm_copied: None,
-            input_probe_at: None,
+            input_probe_task,
             profile_dialog_focus: false,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
@@ -1322,6 +1331,7 @@ impl ForzaApp {
         self.dynamic_max_rpm = view.dynamic_max_rpm;
         self.hud_hidden = view.hud_hidden;
         self.hud_mode = view.hud_mode;
+        self.telemetry.packets_per_sec = view.pps;
         if view.toggle_gen != self.last_toggle_gen {
             self.last_toggle_gen = view.toggle_gen;
             self.config.dsg_enabled = view.dsg_enabled;
@@ -1611,6 +1621,10 @@ impl eframe::App for ForzaApp {
         self.update_minimap_trails();
         // Live input status (every ~2 s): Setup lights, the modal's self-close and re-show.
         crate::ui::settings::refresh_input_facts(self, false);
+        if self.input_probe_task.in_flight() {
+            // Nothing else may be repainting (idle window): come back for the result.
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
 
         self.poll_map_editor(ctx);
 

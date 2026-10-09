@@ -251,8 +251,16 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   "Forza") drops them silently.
   **Live status (v0.4.2 follow-up).** `ui::settings::refresh_input_facts()` runs from
   `ForzaApp::update` every frame, throttled to once per ~2 s (plus at once on **Re-check**): it
-  re-reads `input_probe` (sysfs reads, `open()` of the event nodes, the
-  uinput open and the sender's readiness: sub-millisecond). So the Setup lights, the Controller
+  re-reads `input_probe` (sysfs reads, `open()` of **every** event node, the
+  uinput open and the sender's readiness). **That is not cheap:** ~155 ms with 32 `/dev/input`
+  nodes (one RGB-controller node alone ~57 ms). *Why it runs off the UI thread:* inline it froze
+  the window ~160 ms every 2 s (and at startup), visible as a stutter and as a swinging
+  packets-per-second readout. So the periodic probe runs on an `input-probe` thread
+  (`input::ProbeTask`, one in flight at a time, throttle restarts when a result is taken); the
+  frame loop only `try_recv`s a finished result and then applies the modal rule. The first probe
+  is also started on that thread, so until it answers (a few frames) the lights read fine and no
+  modal is up. **Re-check** stays synchronous (a deliberate click may stall once, and the user
+  wants the answer now) and discards any probe still in flight. So the Setup lights, the Controller
   card's "can't read /dev/input" line and the modal's self-close always show fresh data, whether or
   not the Setup tab is open. *Why:* the probe used to run only at startup (and while Setup was
   drawn), so a fix or a later breakage never reached the lights or the modal.
