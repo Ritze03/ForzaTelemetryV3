@@ -128,15 +128,43 @@ fill keys missing from it with code defaults → migrations → `from_value_leni
   the same way, so only the bad field resets (e.g. `minimap_layers.race_lines` when its `mode`
   is `"Off"` instead of `"off"`), not the whole group. Granularity: top-level key, or its direct
   field. Unknown keys are ignored as before.
-- **Backup before overwrite:** if the file is not valid JSON, can't be read, or any key was
-  reset, the original is copied to `config.json.bad-<unix seconds>` (`-2`, `-3`… on a clash)
-  **before** the autosave or profile seeding can write. The reset keys are logged with
-  `eprintln!`. The app never deletes these backups. Invalid JSON still gives all defaults, but
-  the file is kept.
+- **Element-level recovery for lists:** if a top-level list has unreadable elements (typically a
+  removed `WidgetKind` in `dashboard_widgets`), each element is probed alone (`[elem]` must
+  deserialize) and only the bad ones are dropped (`dashboard_widgets[3]` in the log);
+  `inject_missing_widget_kinds` then re-adds any kind that is now missing, so the rest of the
+  dashboard layout survives. Fixed-size arrays fail every single-element probe and reset as a
+  whole key, as before. *Missing* fields of a nested object (e.g. `accel_gamma` in a saved
+  `dsg_tuning_*`) are filled from the code default silently — not reported, no backup — and the
+  saved sibling fields are kept. *Why not struct-level `serde(default)` on `GearboxTuning`:* its
+  `Default` would be one value for all three modes, but their defaults differ; filling from the
+  `AppConfig` default per key gives the right one.
+- **Backup before overwrite, save after:** if the file is not valid JSON / UTF-8, can't be read,
+  or any key was reset, the original is copied to `config.json.bad-<unix seconds>` (`-2`, `-3`…
+  on a clash) **before** anything can write, and the repaired config is then saved right away,
+  so killing the app before the first change doesn't pile up another `.bad-` copy on every start
+  (if a backup could not be written, nothing is saved). The reset keys are logged with
+  `eprintln!`. The app never deletes these backups.
+- **Invalid UTF-8:** `config.json` and profiles are read as bytes and decoded lossily; the
+  replacement characters only damage the strings they sit in, everything else is salvaged. The
+  file is backed up either way.
+- **Active-profile rule (config.json unusable as a whole):** `save()` mirrors the live config
+  into `profiles/<active>.json`, so that file still holds the last good state. If `config.json`
+  isn't valid JSON, isn't an object, or can't be read, `load()` takes the previous active
+  profile's name from a plain text scan of the broken file (`"active_profile": "…"`, works on
+  invalid JSON) or else the most recently modified `profiles/*.json`, and loads that file through
+  the same lenient path instead of defaults. If `active_profile` alone is unreadable the rest of
+  `config.json` is kept and only the name is guessed this way. *Why:* previously the broken file
+  gave defaults with `active_profile = "Default"`, and the first save overwrote the user's real
+  `profiles/Default.json` with defaults — and only `config.json` had been backed up.
+  **In any recovery** (including a mere reset key) the active profile's file is also copied to
+  `<name>.json.bad-<ts>` before the first `save()` rewrites it, so no profile content is ever
+  overwritten without a copy.
 - **Profiles** (`profiles/<name>.json`) load through the same lenient path
   (`apply_profile_file`): bad values keep the live config's value, an unparsable file is skipped,
   and the file is backed up as `<name>.json.bad-<ts>` first (the `.bad-` suffix keeps it out of
-  the profile list, which lists `*.json`). Preset / import overlays use the same lenient merge.
+  the profile list, which lists `*.json`). A profile that can't be read as text at all (read
+  error) is backed up and skipped; invalid UTF-8 is salvaged and backed up. Preset / import
+  overlays use the same lenient merge.
 - **Gearbox calibrations** (`automatic-gearbox-saved-calibrations.json`) parse per car entry; a
   broken entry loses only itself and the file is backed up.
 
