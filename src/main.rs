@@ -20,6 +20,7 @@ mod listeners;
 mod mapedit;
 mod maprender;
 mod minimap;
+mod nav;
 mod network;
 #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay runtime is Linux + Windows
 mod overlay;
