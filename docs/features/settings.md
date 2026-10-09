@@ -5,7 +5,7 @@ options that aren't tied to a single dashboard widget. Rendered from `src/ui/set
 bordered category cards laid out per the [styling guide](../ui/STYLING-GUIDE.md)
 (label-left / control-right rows); values persist in `config.json` (see
 [[state-and-config]]). Per-widget tuning lives in the cog **Mini-Settings** popup instead —
-see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]] (module tabs). Both maps' settings (layers, view options, co-op, FPS limit, image quality / cache) and the map editor live on the **Map** tab — see [[map-tab]]; **Mini-Settings has no map settings** (D79: the user wanted them all in one place), only the per-widget and per-tab options of the other tabs.
+see [[presets]]. The in-game HUD overlay has its own **Overlay** tab — see [[overlay]] (module tabs). Both maps' settings (layers, view options, co-op, FPS limit, image quality / cache) and the map editor live on the **Map** tab — see [[map-tab]]; **Mini-Settings has no map settings** (D79/D90: the user wanted them all in one place; even the Dashboard's *Map* module switch is on the Map tab now), only the per-widget and per-tab options of the other tabs.
 
 Cards: **Profiles**, **Hotkey**, **Controller** (see [[gamepad]]), **Display** (left column); **Repository / Credits**,
 **Network**, **Game Install**, **Input Permissions** (Linux only), **Window Detection** (right column). Hotkeys and window detection get

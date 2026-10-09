@@ -179,7 +179,7 @@ Code: `src/coop.rs` (`start_trystero`, `generate_room_id`), `src/coop/{nostr,rtc
 The HUD overlay's minimap ([[overlay]]) draws the co-op layer with the Dashboard map's own drawing
 code: teammate arrows with names, edge pointers with distance, grey + pause glyph when paused, each
 player's fading trail (the own one in your colour too) and the shared waypoints. Show/hide them and
-set the trail fade in Mini-Settings -> Overlay -> Co-Op, or tick **Use Dashboard co-op settings** to
+set the trail fade in the Co-Op block of the Map tab's Minimap page, or tick **Use Dashboard co-op settings** to
 take the Dashboard's. Placing a waypoint needs the Dashboard map (the HUD isn't clickable). No
 player list on the HUD.
 

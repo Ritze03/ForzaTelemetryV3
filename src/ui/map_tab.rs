@@ -21,7 +21,7 @@ use std::sync::Arc;
 use egui::{pos2, vec2, Align, Layout, Rect, RichText, Sense, Ui, UiBuilder};
 
 use crate::app::ForzaApp;
-use crate::config::{AppConfig, MapPage};
+use crate::config::{AppConfig, MapPage, WidgetKind};
 use crate::i18n::tr;
 use crate::icons;
 use crate::maprender::cfg::MapLayerConfig;
@@ -169,7 +169,11 @@ fn settings(ui: &mut Ui, app: &mut ForzaApp) {
         }
         MapPage::DashboardMap => {
             let (l, atlas) = layers_and_icons(ui, app);
+            let was_shown = dashboard_map_shown(&app.config);
             dashboard_page(ui, &mut app.config, &l, atlas.as_deref());
+            if dashboard_map_shown(&app.config) != was_shown {
+                app.dashboard_map_toggled();
+            }
         }
         MapPage::MapData => crate::ui::map_data::page(ui, app),
     });
@@ -246,8 +250,8 @@ fn apply_requests(cfg: &mut AppConfig, reqs: [Option<CopyRequest>; 2]) {
 }
 
 /// Dashboard map & Viewer page: the view options and all layer settings of `minimap_layers`,
-/// which the Dashboard's Map widget and the Map tab viewer both draw with (D73). (Mini-Settings
-/// → Dashboard → Map keeps its quick options; both edit the same keys.)
+/// which the Dashboard's Map widget and the Map tab viewer both draw with (D73). (Mini-Settings has
+/// no map settings, D79.)
 fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&IconAtlas>) {
     status_ui(ui, l);
     ui.add_space(4.0);
@@ -260,8 +264,12 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     let follows = cfg.overlay.map_use_dashboard;
     let (mut fps_on, mut fps) = (cfg.minimap_fps_limit_enabled, cfg.minimap_fps_limit);
     let mut coop = DashCoop::of(cfg);
+    let mut shown = dashboard_map_shown(cfg);
     let mut lead = |ui: &mut Ui| {
         theme::card(ui, tr("Dashboard map & Viewer"), |ui| {
+            theme::checkbox_row(ui, &mut shown, tr("Show Dashboard map")).on_hover_text(tr(
+                "Whether the Dashboard has its Map module. The Viewer on this tab is always there.",
+            ));
             view_rows(ui, &mut view);
             theme::checkbox_row(ui, &mut allow, tr("Allow pan and zoom")).on_hover_text(tr(PAN_ZOOM_TIP));
             theme::checkbox_row(ui, &mut fps_on, tr("Render FPS limit")).on_hover_text(tr(
@@ -288,8 +296,23 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     cfg.minimap_allow_pan_zoom = allow;
     cfg.minimap_fps_limit_enabled = fps_on;
     cfg.minimap_fps_limit = fps;
+    set_dashboard_map_shown(cfg, shown);
     coop.apply(cfg);
     apply_requests(cfg, [layer_req, view_req]);
+}
+
+/// Whether the Dashboard has its Map module (`disabled_modules`; it was Mini-Settings → Dashboard →
+/// Modules → Map until D90).
+fn dashboard_map_shown(c: &AppConfig) -> bool {
+    !c.disabled_modules.contains(&WidgetKind::MiniMap)
+}
+
+fn set_dashboard_map_shown(c: &mut AppConfig, shown: bool) {
+    if shown {
+        c.disabled_modules.retain(|k| k != &WidgetKind::MiniMap);
+    } else if dashboard_map_shown(c) {
+        c.disabled_modules.push(WidgetKind::MiniMap);
+    }
 }
 
 /// The Dashboard map's co-op options (the keys the Dashboard map and the Viewer draw with, and
@@ -628,7 +651,7 @@ mod tests {
                 for w in WIDTHS {
                     let mut cfg = AppConfig::default();
                     let out = render("map_dash_extras", w, 3600.0, |ui, atlas| dashboard_page(ui, &mut cfg, &l, Some(atlas)));
-                    for t in ["Render FPS limit", "Co-Op", "Tracer fade", "Show player list on map", "Allow pan and zoom", "Rotate with right stick"] {
+                    for t in ["Show Dashboard map", "Render FPS limit", "Co-Op", "Tracer fade", "Show player list on map", "Allow pan and zoom", "Rotate with right stick"] {
                         assert!(has_text(&out, tr(t)), "{lang:?} {w}: Dashboard page lacks {t}");
                     }
                     cfg.overlay.map_use_dashboard = false;
@@ -648,6 +671,23 @@ mod tests {
                 }
             });
         }
+    }
+
+    /// D90: the Dashboard's Map module switch is `disabled_modules` and nothing else; the helpers
+    /// add / remove exactly `WidgetKind::MiniMap` and keep the other modules.
+    #[test]
+    fn show_dashboard_map_toggles_only_the_map_module() {
+        let mut c = AppConfig::default();
+        set_dashboard_map_shown(&mut c, true);
+        assert!(dashboard_map_shown(&c));
+        c.disabled_modules.push(WidgetKind::Trace);
+        set_dashboard_map_shown(&mut c, false);
+        set_dashboard_map_shown(&mut c, false);
+        assert!(!dashboard_map_shown(&c));
+        assert_eq!(c.disabled_modules.iter().filter(|k| **k == WidgetKind::MiniMap).count(), 1);
+        assert!(c.disabled_modules.contains(&WidgetKind::Trace));
+        set_dashboard_map_shown(&mut c, true);
+        assert!(dashboard_map_shown(&c) && c.disabled_modules.contains(&WidgetKind::Trace));
     }
 
     /// The module selector: one row where the labels fit, two where they don't (the long German

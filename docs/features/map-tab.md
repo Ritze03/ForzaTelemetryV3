@@ -113,7 +113,7 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
 | Page | Content | Config |
 |---|---|---|
 | **Minimap** | the HUD minimap: Minimap card (Enabled, *Use Dashboard map settings*, view options, a **Co-Op** block: *Use Dashboard co-op settings*, teammates, shared waypoints, trails + fade time / distance, then *Reset map layers*) + the layer cards | `overlay.map_*`, `overlay.coop_*`, `overlay.map_layers`, `overlay.map_plate_opacity` |
-| **Dashboard map & Viewer** (DE *Dashboard-Karte & Viewer*) | "Dashboard map & Viewer" card (view options, **Allow pan and zoom**, **Render FPS limit**, *Reset map layers*), a **Co-Op** card (tracer fade time / distance, player list and its columns) + the layer cards; edits what both the Dashboard's Map widget and the Map tab viewer draw (D73) | `minimap_*`, `minimap_layers`, `minimap_allow_pan_zoom`, `minimap_fps_limit*`, `coop_trail_fade_*`, `coop_map_playerlist`, `coop_list_*` |
+| **Dashboard map & Viewer** (DE *Dashboard-Karte & Viewer*) | "Dashboard map & Viewer" card (**Show Dashboard map**, view options, **Allow pan and zoom**, **Render FPS limit**, *Reset map layers*), a **Co-Op** card (tracer fade time / distance, player list and its columns) + the layer cards; edits what both the Dashboard's Map widget and the Map tab viewer draw (D73) | `disabled_modules` (Map), `minimap_*`, `minimap_layers`, `minimap_allow_pan_zoom`, `minimap_fps_limit*`, `coop_trail_fade_*`, `coop_map_playerlist`, `coop_list_*` |
 | **Map data** | the road-type map editor card, [map-editor.md](map-editor.md), and the **Map image** card (image quality, *Reload Map*, *Rebuild Map Cache*, the advanced calibration) | `minimap_quality`, `minimap_px_per_m`, `minimap_world_origin_x/z` |
 
 - **Moved, not copied:** the Minimap and Dashboard map pages came from the Overlay tab
@@ -158,6 +158,20 @@ sections of its Overlay tab are gone (the Overlay tab keeps Notifications; `Mini
 | Co-Op: tracer fade time / distance, player list + columns | **moved**: Dashboard map & Viewer page, Co-Op card |
 | Overlay -> Minimap: use Dashboard map settings, view options, zoom | already on the Minimap card |
 | Overlay -> Co-Op: use Dashboard co-op settings, teammates, waypoints, trails, fade | **moved**: Co-Op block of the Minimap card (while "use Dashboard" is on the rows show what the HUD uses, greyed) |
+
+**D90 (the user, 2026-10-10):** "Co-Op map settings should also be in the map tab. The mini-settings
+\> Dashboard > Map settings should all be moved to the map tab, so there are no settings left
+there!!!" An audit of the whole Mini-Settings window and the Co-Op tab found one map control left:
+**Dashboard -> Modules -> Map** (the checkbox that adds / removes the Dashboard's Map module,
+`disabled_modules` holding `WidgetKind::MiniMap`). It is now **Show Dashboard map** at the top of
+the Dashboard map & Viewer card (`map_tab::dashboard_map_shown`); switching it runs
+`ForzaApp::dashboard_map_toggled` (loads the map image when it came on, drops the texture when it
+went off), the code that used to sit in the Modules list. The other Modules (including
+**Co-Op Players**, a roster widget, not a map layer) stay. The Co-Op tab holds no map settings
+(identity, pacing, session, roster), and its **Player color** is the player's identity, not a map
+setting. Test: `app::tests::mini_settings_window_touches_no_map_config` (the Mini-Settings window
+body references no `minimap_*`, `map_layers`, `WidgetKind::MiniMap`, `overlay.map_*` or co-op map
+key).
 
 There is no "Map settings..." link in Mini-Settings (considered, left out: the Map tab is in the tab
 bar with its own cog, and a link for settings that moved once is clutter). Test:

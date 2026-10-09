@@ -6,7 +6,7 @@ Project-specific vocabulary. When the user uses a term defined here, use the sam
 
 ## Terms
 
-- **Mini-Settings** — the settings accessible through the cog wheel on the status bar.
+- **Mini-Settings** — the settings accessible through the cog wheel on the status bar. It has **no map settings** (D79/D90): every map option, including the co-op ones and whether the Dashboard shows its Map module, is on the Map tab.
 - **Widget / Module** — an individual module on the Dashboard.
 - **WSL overlay / WLR overlay** — the user's name for the **in-game HUD overlay**. "WSL" here means **wlr-layer-shell** (the Wayland protocol it's built on), **not** Windows Subsystem for Linux. It's the `src/overlay/` + `src/hud/` feature, configured in the Overlay tab. See `docs/features/overlay.md`.
 - **HUD** — the in-game overlay's content drawn over the game (not the Dashboard). "Hide HUD" is its hotkey (default J). Not to be confused with a *config overlay* (preset/profile JSON merged onto the config).
