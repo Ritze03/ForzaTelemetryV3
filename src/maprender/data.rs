@@ -15,6 +15,7 @@ use crate::gamedata::nav::Nav;
 use crate::gamedata::poi::{Poi, PoiKind, Pois};
 use crate::gamedata::racelines::{self, RaceLine};
 use crate::gamedata::roadtypes::{Current, EdgeKey, RoadType, RoadTypes};
+use crate::nav::RouteGraph;
 
 /// Number of road type slots: 0 = edge without a type, 1..=9 = [`RoadType::index`].
 pub const N_TYPES: usize = 10;
@@ -303,8 +304,16 @@ impl Joins {
 ///
 /// Why not `mapedit::data::road_graph`: it rounds to 0.1 m, drops the polyline order (so no
 /// chains) and has no `jump_from`.
+#[cfg_attr(not(test), allow(dead_code))] // `GameData::layers` shares the position table with the route graph and calls `build_roads_at`
 pub fn build_roads(nav: &Nav, rt: &RoadTypes) -> RoadLayer {
-    // id → x, z, height
+    build_roads_at(nav, rt, &node_positions(nav, rt))
+}
+
+/// Node id → `[x, z, height]` for the roads and the route graph (`nav::RouteGraph`): nav polyline
+/// vertices, then orphans (height 0 = unknown), then the road-type file's user `points`, then its
+/// `moved` overrides (so a moved node wins). One function for both so that what is drawn and what
+/// is routable cannot drift apart.
+pub(crate) fn node_positions(nav: &Nav, rt: &RoadTypes) -> HashMap<u32, [f32; 3]> {
     let mut pos: HashMap<u32, [f32; 3]> = HashMap::new();
     for pl in &nav.polys {
         for v in pl {
@@ -319,6 +328,11 @@ pub fn build_roads(nav: &Nav, rt: &RoadTypes) -> RoadLayer {
             pos.insert(id, [p[0] as f32, p[1] as f32, p[2] as f32]);
         }
     }
+    pos
+}
+
+/// [`build_roads`] with the node positions already computed ([`node_positions`]).
+pub fn build_roads_at(nav: &Nav, rt: &RoadTypes, pos: &HashMap<u32, [f32; 3]>) -> RoadLayer {
     let removed: HashSet<EdgeKey> = rt.removed.iter().copied().collect();
     let jump_from: HashMap<EdgeKey, u32> = rt.jump_from.iter().copied().collect();
     let jump_slot = RoadType::Jump.index() as usize;
@@ -551,12 +565,16 @@ impl RaceLayer {
 
 // ── everything ───────────────────────────────────────────────────────────────────────────────
 
-/// What the maps share. Cheap to clone (three `Arc`s).
+/// What the maps share. Cheap to clone (a handful of `Arc`s).
 #[derive(Clone, Debug, Default)]
 pub struct MapLayers {
     /// Increments on every rebuild (compare to know when to drop caches).
     pub rev: u64,
     pub roads: Arc<RoadLayer>,
+    /// The same roads as a routable graph (navigation, `nav`): rebuilt with `roads`, so an
+    /// editor Save changes both.
+    #[allow(dead_code)] // read by the navigator (task L2)
+    pub route_graph: Arc<RouteGraph>,
     pub pois: Arc<PoiLayer>,
     pub races: Arc<RaceLayer>,
     /// The game's POI icons (CPU pixels, read once on the loader thread so both maps get the same
@@ -675,9 +693,12 @@ impl GameData {
 
     /// Roads for the road-type data `cur` (the user's saved file or the project's).
     pub fn layers(&self, cur: &Current, rev: u64) -> MapLayers {
+        // One position table for the drawn roads and the route graph.
+        let pos = node_positions(&self.nav, &cur.types);
         MapLayers {
             rev,
-            roads: Arc::new(build_roads(&self.nav, &cur.types)),
+            roads: Arc::new(build_roads_at(&self.nav, &cur.types, &pos)),
+            route_graph: Arc::new(RouteGraph::build(&self.nav, &cur.types, &pos)),
             pois: self.pois.clone(),
             races: self.races.clone(),
             icons: self.icons.clone(),
