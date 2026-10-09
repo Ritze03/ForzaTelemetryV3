@@ -595,6 +595,9 @@ pub struct ForzaApp {
     pub map_tab: crate::ui::map_tab::MapTabState,
     /// The Dashboard map's temporary pan / zoom (D72). A `RefCell`: the widget draws from `&ForzaApp`.
     pub minimap_pan: std::cell::RefCell<crate::ui::map_scene::ManualView>,
+    /// The 3D map renderer's state on this window's GL context (K4): the one `Gl3dHandle` the
+    /// Dashboard map and the Map-tab viewer share, destroyed in `on_exit`.
+    pub map3d: crate::ui::map_scene::Map3d,
     /// Events of `map_editor` (polled once a frame in `poll_map_editor`).
     map_editor_rx: Option<Receiver<crate::mapedit::MapEvent>>,
     /// The last `Saved` / `Error` event of the map editor, for the Setup card (I27) to show.
@@ -936,6 +939,7 @@ impl ForzaApp {
             map_data: Default::default(),
             map_tab: Default::default(),
             minimap_pan: Default::default(),
+            map3d: Default::default(),
             map_editor_rx: None,
             map_editor_last: None,
             debug_cars: Default::default(),
@@ -1578,8 +1582,14 @@ impl ForzaApp {
 }
 
 impl eframe::App for ForzaApp {
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.config.language);
+        // 3D maps (K4): a failed 3D context is retried when a 3D map comes back on screen. The GL
+        // context is current during `update`.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.map3d.begin_frame(frame.gl().map(|g| &**g));
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        let _ = frame;
         // Persist any setting changed since the last write (within ~1 s). Edit sites like the
         // Window Detection text box never call `save()` themselves, and `on_exit` only runs on
         // a graceful close, so without this a kill / crash / compositor close lost the edit.
@@ -2942,7 +2952,15 @@ impl eframe::App for ForzaApp {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        // The 3D renderer's GL objects go first, while the context is still alive and current
+        // (eframe destroys its painter right after this returns).
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let Some(gl) = gl {
+            self.map3d.destroy(gl);
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        let _ = gl;
         // Pick up a hotkey toggle we may never have been drawn to see (quitting from a
         // minimized window), so the saved config matches what the user last pressed. Unlike
         // the per-frame sync this one blocks: there is no next frame to retry on, and the

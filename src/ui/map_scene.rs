@@ -5,16 +5,26 @@
 //! `draw_layers`, D61) and the markers (`hud::map_shared`) over `rect`. What differs per caller is
 //! [`Scene`]: the layer config, where the view is centred, its rotation and zoom. The Dashboard
 //! centres on the car; the viewer may be panned away from it.
+//!
+//! **3D (phase K, K4).** A map whose view mode is 3D (`TiltCfg::view_mode`) draws through the shared
+//! GL renderer (`maprender::gl3d`) instead of the 2D base and roads: [`Map3d`] is the eframe-side
+//! owner of its one `Gl3dHandle` (the Dashboard map and the viewer share it: they are never on
+//! screen together and the renderer's FBO is transient), [`draw`] follows the renderer's call shape
+//! and falls back to the tilted 2D map (the relief-less camera) until the scene is `Ready` and for
+//! good when the context cannot do 3D.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 use std::time::Duration;
 
-use egui::{pos2, vec2, Color32, Rect, Stroke, Ui, Vec2};
+use egui::{pos2, vec2, Color32, Pos2, Rect, Stroke, Ui, Vec2};
 
 use crate::app::ForzaApp;
 use crate::i18n::tr;
 use crate::maprender::cfg::MapLayerConfig;
-use crate::maprender::{Camera, RaceSel};
+use crate::maprender::data::MapLayers;
+use crate::maprender::paint2d::Parts;
+use crate::maprender::{Camera, MapTex, RaceSel};
 
 /// What one map draws with.
 pub struct Scene<'a> {
@@ -245,6 +255,212 @@ pub fn follow_button(ui: &mut Ui, rect: Rect) -> bool {
     hit
 }
 
+// ── 3D (phase K, K4) ─────────────────────────────────────────────────────────────────────────
+
+/// "Retry a failed 3D context when the user brings a 3D map back up": true on the frame a 3D map
+/// appears (the previous frame drew none) while the context is failed. *Why edge-triggered:* the
+/// failure is sticky per context, so a retry costs a fresh probe (and, for "too slow", two more
+/// seconds of slow frames); doing it every frame would never settle. A toggle in the settings
+/// page takes the map off the screen for the frames in between, so toggling Flat -> 3D, or just
+/// coming back to the map, is the edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct RetryGate {
+    was_3d: bool,
+}
+
+impl RetryGate {
+    /// One frame: did a map draw in 3D mode last frame, is the context failed? True = destroy the
+    /// context's state now so the next callback starts afresh.
+    fn step(&mut self, wants_3d: bool, failed: bool) -> bool {
+        let edge = wants_3d && !self.was_3d;
+        self.was_3d = wants_3d;
+        edge && failed
+    }
+}
+
+/// The eframe side's 3D state, a field of `ForzaApp`: the **one** `Gl3dHandle` of the window's GL
+/// context (Dashboard map and Map-tab viewer share it) and the bookkeeping around it. Where the
+/// platform has no GL 3D (`gl3d` is Linux + Windows) it is an empty shell and 3D maps draw as
+/// Tilted.
+#[derive(Default)]
+pub struct Map3d {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    handle: crate::maprender::gl3d::Gl3dHandle,
+    /// A map drew in 3D mode this frame (set by [`draw`], read at the next frame's start).
+    drew: Cell<bool>,
+    gate: RetryGate,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Map3d {
+    /// Start of an `update`, GL context current: retry a failed context when a 3D map has just
+    /// come back (see [`RetryGate`]). `gl` is `None` without a glow backend.
+    pub fn begin_frame(&mut self, gl: Option<&eframe::glow::Context>) {
+        let failed = self.handle.status().failure().is_some();
+        if self.gate.step(self.drew.take(), failed) {
+            if let Some(gl) = gl {
+                self.retry(gl);
+            }
+        }
+    }
+
+    /// Forget the old failure (its status line too) and free the GL objects: the next callback
+    /// probes again.
+    fn retry(&self, gl: &eframe::glow::Context) {
+        if let Some(why) = self.handle.status().failure() {
+            crate::maprender::gl3d::clear_failure_if(why);
+        }
+        self.handle.destroy(gl);
+    }
+
+    /// `ForzaApp::on_exit(Some(gl))`: free the renderer's GL objects with the context current
+    /// (idempotent; dropping a `Gl3d` without it only warns).
+    pub fn destroy(&self, gl: &eframe::glow::Context) {
+        self.handle.destroy(gl);
+    }
+
+    /// The tilted 2D map is still wanted under the scene (not `Ready`, or failed for good).
+    fn wants_underlay(&self) -> bool {
+        self.handle.wants_underlay()
+    }
+
+    /// Queue the 3D scene over `cam.rect` (which must carry a relief) and keep frames coming
+    /// while the staged init runs.
+    #[allow(clippy::too_many_arguments)]
+    fn add_scene(
+        &self,
+        painter: &egui::Painter,
+        cam: &Camera,
+        sc: &Scene,
+        map: Option<MapTex>,
+        cal: crate::minimap::MapCalibration,
+        data: Option<&Arc<MapLayers>>,
+        sel: &RaceSel,
+    ) {
+        use crate::maprender::gl3d;
+        let lc = sc.layers;
+        let Some(relief) = &cam.relief else { return };
+        // The road mesh only exists for roads that are drawn; it builds on its own thread.
+        let mesh = data.filter(|_| lc.roads.on).and_then(|d| crate::maprender::store::road_mesh(d, &relief.terrain));
+        // The in-race focus (D66), exactly when the 2D path would apply it (`draw_layers_parts`).
+        let focusing = data.is_some_and(|d| sel.focus_line().is_some_and(|l| l < d.races.lines.len()));
+        let focus = data
+            .filter(|_| focusing && lc.race_lines.focus.other_roads != crate::maprender::cfg::OtherRoads::Normal)
+            .and_then(|d| sel.road_focus(d))
+            .map(|focus| gl3d::Focus3d { focus, cfg: lc.race_lines.focus });
+        gl3d::add_scene(
+            painter,
+            &self.handle,
+            gl3d::Scene3d {
+                cam: cam.clone(),
+                mesh,
+                map,
+                cal,
+                look: (&lc.image).into(),
+                mirror: sc.mirror,
+                a: 1.0,
+                s: 1.0,
+                corner_radius: 0.0,
+                relief: lc.tilt.relief,
+                roads: lc.roads.clone(),
+                focus,
+            },
+        );
+        if self.handle.busy() {
+            painter.ctx().request_repaint();
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+impl Map3d {
+    fn wants_underlay(&self) -> bool {
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel) {}
+}
+
+/// May a map go 3D on this platform? Windows only with the user's opt-in (`map_3d_windows`: its GL
+/// path is untested by the developers); everywhere else yes.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn allowed_3d(windows_flag: bool) -> bool {
+    !cfg!(windows) || windows_flag
+}
+
+/// The 3D camera for this scene, when the map is in 3D mode and the terrain is loaded; `None`
+/// draws the plain camera (Flat / Tilted, a terrain still loading or missing, or a platform
+/// without GL 3D). Polls the terrain store, which starts its lazy load: this is the only place
+/// the eframe side asks for it, so it loads only while a map is *in 3D and on screen*.
+///
+/// `car_y`: while the view follows the car, the telemetry height + 1 m (the camera sits above the
+/// car, not above the terrain mesh under it); a panned view, or no race on, uses the terrain
+/// height under the view centre (`Camera::from_cfg_relief` with `None`).
+fn relief_camera(app: &ForzaApp, sc: &Scene, rect: Rect) -> Option<Camera> {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        use crate::maprender::cfg::ViewMode;
+        use crate::maprender::store::{self, TerrainStatus};
+        if sc.layers.tilt.view_mode() != ViewMode::Relief || !allowed_3d(app.config.overlay.map_3d_windows) {
+            return None;
+        }
+        app.map3d.drew.set(true);
+        let TerrainStatus::Ready(terrain) = store::terrain() else {
+            return None; // the status line in the View mode card says why
+        };
+        let following = sc.centre == (app.minimap_cached_car_x, app.minimap_cached_car_z);
+        let car_y = following
+            .then(|| app.telemetry.latest.as_ref().filter(|p| p.is_race_on != 0).map(|p| p.position_y + 1.0))
+            .flatten();
+        Some(Camera::from_cfg_relief(&sc.layers.tilt, sc.centre, sc.yaw, sc.zoom_m, rect, Some(&terrain), car_y))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = (app, sc, rect);
+        None
+    }
+}
+
+/// Where the ray through screen point `p` meets the horizontal plane `h` px (scene px: metres x
+/// `scale` x exaggeration) above the camera's ground plane, as world (x, z). The inverse of
+/// `Camera::project3` for a fixed height: `h = 0` is `Camera::unproject`.
+fn unproject_at_height(cam: &Camera, p: Pos2, h: f32) -> Option<[f32; 2]> {
+    let (s, c) = cam.pitch.sin_cos();
+    let f = cam.focal;
+    let (dx, dy) = ((p.x - cam.centre.x) / f, (p.y - cam.centre.y) / f);
+    let den = c + dy * s;
+    if den < 1e-4 {
+        return None; // at or above the horizon
+    }
+    let oy = (dy * (f - h * c) + h * s) / den;
+    let cz = f - oy * s - h * c;
+    if cz < 1e-3 {
+        return None; // behind the eye
+    }
+    Some(cam.view.offset_to_world(dx * cz, oy))
+}
+
+/// The world point (x, z) under screen point `p` for a click: on the flat plane for a flat or
+/// tilted camera; in 3D the point of the *terrain surface* the pointer is over (found by
+/// re-casting the ray onto the plane at the height found, a few rounds: converges for any slope
+/// gentler than the view ray). `Camera::unproject` alone would land on the plane at the car's
+/// height, up to hundreds of metres off on a hillside.
+pub fn pick(cam: &Camera, p: Pos2) -> Option<[f32; 2]> {
+    let mut at = cam.unproject(p)?;
+    if let Some(r) = &cam.relief {
+        let k = cam.view.scale * r.exag;
+        for _ in 0..6 {
+            let h = (r.terrain.height(at[0], at[1]) - r.car_y) * k;
+            match unproject_at_height(cam, p, h) {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+    }
+    Some(at)
+}
+
 /// The map image's texture, or (painting a status into `rect` and returning `None`) why there is
 /// none yet: a failed load (no install, unreadable, undecodable) or the loading spinner.
 pub fn texture_or_status<'a>(ui: &mut Ui, app: &'a ForzaApp, rect: Rect) -> Option<&'a egui::TextureHandle> {
@@ -335,7 +551,18 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     // lower in the widget and the map is seen in perspective; the perspective distance scales
     // with the widget's height (`Camera::focal_for`), so it looks like the HUD's at any size.
     let tilted = lc.tilt.on;
-    let cam = crate::maprender::Camera::from_cfg(&lc.tilt, sc.centre, yaw, sc.zoom_m, rect);
+    let flat_cam = crate::maprender::Camera::from_cfg(&lc.tilt, sc.centre, yaw, sc.zoom_m, rect);
+
+    // 3D (K4): `relief` = the 3D camera once the terrain is loaded. The scene is drawn by the GL
+    // renderer (`add_scene`); until it is `Ready`, and for good when the context failed, the tilted
+    // 2D map (`flat_cam`) is drawn under it AND over it (POIs, markers): everything on screen then
+    // agrees with the 2D picture. `cam` is the one the markers and the caller use.
+    let relief = relief_camera(app, sc, rect);
+    let underlay = relief.is_none() || app.map3d.wants_underlay();
+    let cam = match &relief {
+        Some(r) if !underlay => r.clone(),
+        _ => flat_cam,
+    };
     let view = cam.view;
 
     let painter = ui.painter_at(rect);
@@ -344,8 +571,8 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
         // Vectors-only look, or the sky above a tilted map's far edge.
         painter.rect_filled(rect, 0.0, crate::maprender::style::MAP_BACKING);
     }
-    if lc.image.on {
-        let tex = crate::maprender::MapTex { id: texture.id(), orig_size: app.minimap_orig_size, winter: false };
+    let tex = crate::maprender::MapTex { id: texture.id(), orig_size: app.minimap_orig_size, winter: false };
+    if lc.image.on && underlay {
         crate::maprender::draw_base(&painter, &crate::maprender::BaseParams {
             cam: &cam,
             cal,
@@ -361,32 +588,46 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     // Roads, jump lines, race lines and POIs from the shared store (loaded on its own thread;
     // nothing is requested while every layer is off, and without an install the map is the
     // image alone, as before).
-    if lc.wants_layers() {
-        let l = crate::maprender::layers();
-        if l.status == crate::maprender::LayerStatus::Loading {
-            ui.ctx().request_repaint_after(Duration::from_millis(250));
+    let layers = lc.wants_layers().then(crate::maprender::layers);
+    if layers.as_ref().is_some_and(|l| l.status == crate::maprender::LayerStatus::Loading) {
+        ui.ctx().request_repaint_after(Duration::from_millis(250));
+    }
+    let data = layers.as_ref().and_then(|l| l.data.as_ref());
+    let mut sel = sc.race_sel.borrow_mut();
+    if let Some(d) = data {
+        let in_race = app.telemetry.latest.as_ref().is_some_and(|p| p.race_position != 0);
+        sel.update(&d.races, &lc.race_lines, (car_x, car_z), app.minimap_cached_raw_yaw, in_race);
+    }
+    let sel: &RaceSel = &sel;
+    let icons = data.and_then(|d| app.minimap_icons.borrow_mut().ensure(ui.ctx(), d.icons.as_ref()));
+    let layer_pass = |cam: &Camera, over_3d: bool| {
+        if let Some(data) = data {
+            let cx = crate::maprender::LayerCtx {
+                p: &painter,
+                cam,
+                s: 1.0,
+                a: 1.0,
+                car: (car_x, car_z),
+                corner_clip: None,
+                icons: icons.as_deref(),
+                race_sel: sel,
+                week: None,
+            };
+            if over_3d {
+                crate::maprender::paint2d::draw_layers_parts(&cx, data, lc, Parts::OVER_3D);
+            } else {
+                crate::maprender::draw_layers(&cx, data, lc);
+            }
         }
-        if let Some(data) = &l.data {
-            let icons = app.minimap_icons.borrow_mut().ensure(ui.ctx(), data.icons.as_ref());
-            let in_race = app.telemetry.latest.as_ref().is_some_and(|p| p.race_position != 0);
-            let mut sel = sc.race_sel.borrow_mut();
-            let picked = sel.update(&data.races, &lc.race_lines, (car_x, car_z), app.minimap_cached_raw_yaw, in_race);
-            crate::maprender::draw_layers(
-                &crate::maprender::LayerCtx {
-                    p: &painter,
-                    cam: &cam,
-                    s: 1.0,
-                    a: 1.0,
-                    car: (car_x, car_z),
-                    corner_clip: None,
-                    icons: icons.as_deref(),
-                    race_sel: picked,
-                    week: None,
-                },
-                data,
-                lc,
-            );
-        }
+    };
+    if underlay {
+        layer_pass(&cam, false);
+    }
+    if let Some(r) = &relief {
+        app.map3d.add_scene(&painter, r, sc, lc.image.on.then_some(tex), cal, data, sel);
+    }
+    if !underlay {
+        layer_pass(&cam, true); // the roads are in the scene; race lines and POIs over it
     }
 
     // Markers (trails, teammates, own arrow, waypoints) come from `hud::map_shared`, the same
@@ -711,5 +952,170 @@ mod tests {
         assert!(!mv.tick(&ctx, Some(30.0), 105.0));
         mv.reset();
         assert_eq!(mv, ManualView::default());
+    }
+
+    // ── 3D (K4) ──────────────────────────────────────────────────────────────────────────────
+
+    use crate::maprender::terrain::Terrain;
+
+    /// A Dashboard-style config in 3D (tilt + relief on).
+    fn layers_3d() -> MapLayerConfig {
+        let mut l = MapLayerConfig::dashboard();
+        l.tilt.on = true;
+        l.tilt.relief.on = true;
+        l
+    }
+
+    /// The relief camera the draw code builds, over the synthetic hills (the big one is at
+    /// (-300, 200)), the car `car_y` m up.
+    fn cam_3d(layers: &MapLayerConfig, centre: (f32, f32), yaw: f32, zoom: f32, car_y: f32) -> Camera {
+        let t = Arc::new(Terrain::synthetic());
+        Camera::from_cfg_relief(&layers.tilt, centre, yaw, zoom, VIEW, Some(&t), Some(car_y))
+    }
+
+    /// D72 in 3D: pan and zoom move over the ground plane at the car's height, and that plane is
+    /// the one `Camera::unproject` and the relief-less camera (`camera()`, which `interact`
+    /// builds) share with the 3D camera. So the grabbed point stays under the pointer, and the
+    /// gestures need no 3D special case.
+    #[test]
+    fn pan_and_zoom_anchor_on_the_ground_plane_in_3d() {
+        let layers = layers_3d();
+        for yaw in [0.0_f32, 1.0, -2.2] {
+            let centre = (-250.0, 150.0);
+            let cam = cam_3d(&layers, centre, yaw, 400.0, 260.0);
+            assert!(cam.relief.is_some());
+            // The interaction camera (relief-less) agrees with the 3D one about the plane.
+            let flat = camera(&layers, centre, yaw, 400.0, VIEW);
+            for p in [pos2(400.0, 300.0), pos2(120.0, 500.0), pos2(700.0, 450.0)] {
+                let (a, b) = (cam.unproject(p).unwrap(), flat.unproject(p).unwrap());
+                assert!((a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3, "yaw {yaw}: {a:?} vs {b:?}");
+            }
+            // Pan: the plane point grabbed at `prev` ends under `now` in the next 3D frame.
+            let (prev, now) = (pos2(400.0, 420.0), pos2(470.0, 470.0));
+            let grabbed = cam.unproject(prev).unwrap();
+            let new_centre = panned(&flat, centre, prev, now);
+            let after = cam_3d(&layers, new_centre, yaw, 400.0, 260.0);
+            let (under, _) = after.project3(grabbed[0], 260.0, grabbed[1]).expect("visible");
+            assert!((under - now).length() < 0.2, "yaw {yaw}: {under:?} vs {now:?}");
+            // Zoom at the cursor: the plane point under it stays.
+            let at = pos2(560.0, 380.0);
+            let (c2, z2) = zoomed_at(&layers, centre, yaw, 400.0, VIEW, at, 0.6);
+            let before = cam.unproject(at).unwrap();
+            let zoomed = cam_3d(&layers, c2, yaw, z2, 260.0);
+            let (under, _) = zoomed.project3(before[0], 260.0, before[1]).expect("visible");
+            assert!((under - at).length() < 0.2, "yaw {yaw}: {under:?} vs {at:?}");
+        }
+    }
+
+    /// `unproject_at_height` is the inverse of `project3` at a fixed height, and `h = 0` is the
+    /// plane `unproject` knows.
+    #[test]
+    fn unproject_at_height_inverts_project3() {
+        let layers = layers_3d();
+        let cam = cam_3d(&layers, (-250.0, 150.0), 0.7, 500.0, 240.0);
+        let k = cam.view.scale * cam.relief.as_ref().unwrap().exag;
+        for p in [pos2(400.0, 300.0), pos2(150.0, 520.0), pos2(650.0, 380.0)] {
+            let flat = cam.unproject(p).unwrap();
+            let zero = unproject_at_height(&cam, p, 0.0).unwrap();
+            assert!((flat[0] - zero[0]).abs() < 1e-2 && (flat[1] - zero[1]).abs() < 1e-2, "{flat:?} vs {zero:?}");
+            for y in [100.0_f32, 180.0, 310.0] {
+                let w = unproject_at_height(&cam, p, (y - 240.0) * k).unwrap();
+                let (back, _) = cam.project3(w[0], y, w[1]).unwrap();
+                assert!((back - p).length() < 0.05, "y {y}: {back:?} vs {p:?}");
+            }
+        }
+    }
+
+    /// A click in 3D lands on the terrain surface under the pointer (the waypoint goes where the
+    /// user points, on a hillside too), not on the plane at the car's height.
+    #[test]
+    fn a_click_in_3d_picks_the_terrain_surface() {
+        let layers = layers_3d();
+        let t = Arc::new(Terrain::synthetic());
+        // Looking at the 220 m hill from the south-east, the car at its foot.
+        for yaw in [0.0_f32, 0.8] {
+            let cam = cam_3d(&layers, (-250.0, 80.0), yaw, 500.0, t.height(-250.0, 80.0) + 1.0);
+            let mut slopes = 0;
+            for p in [pos2(400.0, 330.0), pos2(330.0, 260.0), pos2(470.0, 200.0), pos2(300.0, 400.0)] {
+                let at = pick(&cam, p).expect("on the ground");
+                let (back, _) = cam.project3(at[0], t.height(at[0], at[1]), at[1]).unwrap();
+                assert!((back - p).length() < 0.5, "yaw {yaw}: picked {at:?} shows at {back:?}, not {p:?}");
+                let flat = cam.unproject(p).unwrap();
+                if (flat[0] - at[0]).hypot(flat[1] - at[1]) > 10.0 {
+                    slopes += 1; // the plane would have been off by metres here
+                }
+            }
+            assert!(slopes >= 1, "yaw {yaw}: the test points must include slopes");
+        }
+        // Without a relief it is the plane.
+        let flat = camera(&layers, (0.0, 0.0), 0.3, 500.0, VIEW);
+        assert_eq!(pick(&flat, pos2(300.0, 400.0)), flat.unproject(pos2(300.0, 400.0)));
+        // A camera with a relief over level ground picks the plane too.
+        let level = Arc::new(Terrain::flat(150.0));
+        let cam = Camera::from_cfg_relief(&layers.tilt, (0.0, 0.0), 0.3, 500.0, VIEW, Some(&level), Some(150.0));
+        let (a, b) = (pick(&cam, pos2(300.0, 400.0)).unwrap(), cam.unproject(pos2(300.0, 400.0)).unwrap());
+        assert!((a[0] - b[0]).abs() < 1e-2 && (a[1] - b[1]).abs() < 1e-2);
+    }
+
+    /// Windows runs 3D only with the opt-in flag; the other platforms never ask for it. The one
+    /// flag (`OverlayConfig::map_3d_windows`) is off by default and is the HUD's too.
+    #[test]
+    fn windows_needs_the_opt_in_for_3d() {
+        assert!(allowed_3d(true));
+        assert_eq!(allowed_3d(false), !cfg!(windows));
+        assert!(!crate::config::OverlayConfig::default().map_3d_windows);
+        let o: crate::config::OverlayConfig = serde_json::from_str("{}").unwrap();
+        assert!(!o.map_3d_windows, "a config saved before the flag existed");
+        assert_eq!(crate::hud::minimap::wants_3d(&crate::config::OverlayConfig { map_layers: layers_3d(), ..Default::default() }), !cfg!(windows));
+        assert!(crate::hud::minimap::wants_3d(&crate::config::OverlayConfig { map_layers: layers_3d(), map_3d_windows: true, ..Default::default() }));
+    }
+
+    /// The retry fires once per appearance of a 3D map, and only for a failed context.
+    #[test]
+    fn a_failed_context_is_retried_when_a_3d_map_comes_back() {
+        let mut g = RetryGate::default();
+        // Healthy: never.
+        assert!(!g.step(true, false) && !g.step(true, false));
+        // Fails while the map is up: no retry in the same run of frames ...
+        assert!(!g.step(true, true));
+        assert!(!g.step(true, true));
+        assert!(!g.step(true, true));
+        // ... the user leaves (settings page, Flat, another tab) and brings it back: once.
+        assert!(!g.step(false, true));
+        assert!(g.step(true, true));
+        assert!(!g.step(true, true), "still failed after the retry: wait for the next appearance");
+        // A recovered context needs nothing on the next appearance.
+        assert!(!g.step(false, false));
+        assert!(!g.step(true, false));
+    }
+
+    /// A fresh `Map3d` (no GL touched yet) wants the 2D underlay, has nothing to retry, and a
+    /// frame without any 3D map leaves it so.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn a_fresh_map3d_wants_the_underlay_and_survives_frames_without_gl() {
+        let mut m = Map3d::default();
+        assert!(m.wants_underlay());
+        m.begin_frame(None);
+        m.drew.set(true);
+        m.begin_frame(None); // a rising edge, but not failed: nothing to do
+        assert!(m.wants_underlay());
+    }
+
+    /// The exit path (`on_exit(Some(gl))` -> `Map3d::destroy`) on a real context: safe on a
+    /// renderer that never drew, and twice.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    #[ignore = "needs an EGL device"]
+    fn destroy_on_exit_is_safe_without_and_after_a_scene() {
+        use crate::overlay::gl::{Flavour, Headless};
+        let hl = match Headless::new_with(Flavour::Default, None) {
+            Ok(h) => h,
+            Err(e) => return eprintln!("SKIP: no EGL device: {e}"),
+        };
+        let m = Map3d::default();
+        m.destroy(&hl.glow);
+        m.destroy(&hl.glow);
+        assert!(m.wants_underlay());
     }
 }

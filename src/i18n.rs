@@ -1165,6 +1165,16 @@ fn de(s: &str) -> Option<&'static str> {
             => "Nutzt deine Grafikkarte; fällt auf Geneigt zurück, wenn sie das nicht unterstützt.",
         "Only for the Tilted view: the 3D view sets the line widths itself."
             => "Nur für die geneigte Ansicht: Die 3D-Ansicht bestimmt die Linienbreiten selbst.",
+        "Loading terrain…" => "Gelände wird geladen…",
+        "3D not available:" => "3D nicht verfügbar:",
+        "3D (experimental)" => "3D (experimentell)",
+        "Allow 3D on Windows" => "3D unter Windows erlauben",
+        "The 3D map has not been tested on Windows yet. Tick this to try it; if the map misbehaves, untick it to get the Tilted view back."
+            => "Die 3D-Karte wurde unter Windows noch nicht getestet. Aktiviere das Kästchen zum Ausprobieren; wenn die Karte sich komisch verhält, deaktiviere es, um die geneigte Ansicht zurückzubekommen.",
+        "switched off on Windows until you allow it above" => "unter Windows ausgeschaltet, bis du es oben erlaubst",
+        "no Forza Horizon 6 install found (the terrain comes from the game files)"
+            => "keine Forza-Horizon-6-Installation gefunden (das Gelände stammt aus den Spieldateien)",
+        "this system has no 3D map renderer" => "dieses System hat keinen 3D-Kartenrenderer",
         "Road height" => "Straßenhöhe",
         "Node heights" => "Knotenhöhen",
         "On the terrain" => "Auf dem Gelände",

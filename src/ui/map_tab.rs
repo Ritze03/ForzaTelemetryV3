@@ -93,7 +93,7 @@ fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
         // Same as the Dashboard map: a click drops a shared waypoint, a right-click clears it.
         if app.coop.role() != crate::coop::Role::Off {
             if resp.clicked() {
-                if let Some([wx, wz]) = resp.interact_pointer_pos().and_then(|m| cam.unproject(m)) {
+                if let Some([wx, wz]) = resp.interact_pointer_pos().and_then(|m| map_scene::pick(&cam, m)) {
                     app.coop.set_waypoint(Some((wx, wz)), cfg.coop_hue);
                 }
             }
@@ -207,6 +207,7 @@ fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Ico
     ui.add_space(4.0);
     let mut layers = if follow { cfg.minimap_layers.clone() } else { cfg.overlay.map_layers.clone() };
     let mut plate = cfg.overlay.map_plate_opacity;
+    let mut win3d = cfg.overlay.map_3d_windows;
     let on = cfg.overlay.enabled && cfg.overlay.minimap_on;
     let dash_view = ViewCfg::of_app(cfg);
     let mut reset = false;
@@ -220,6 +221,7 @@ fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Ico
             enabled: on && !follow,
             which: MapId::Minimap,
             minimap_follows: follow,
+            windows_3d: Some(&mut win3d),
         };
         layers_ui(ui, &mut layers, aux, &mut lead)
     };
@@ -230,6 +232,7 @@ fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Ico
         cfg.overlay.map_layers = layers;
     }
     cfg.overlay.map_plate_opacity = plate;
+    cfg.overlay.map_3d_windows = win3d;
     apply_requests(cfg, [layer_req, view_req]);
 }
 
@@ -250,6 +253,7 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     let mut layers = cfg.minimap_layers.clone();
     let mut view = ViewCfg::of_app(cfg);
     let mut allow = cfg.minimap_allow_pan_zoom;
+    let mut win3d = cfg.overlay.map_3d_windows;
     let mut reset = false;
     let mut view_req = None;
     let follows = cfg.overlay.map_use_dashboard;
@@ -263,12 +267,13 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
             view_req = copy_row(ui, MapId::Dashboard, follows, CopyWhat::View);
         });
     };
-    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Dashboard, minimap_follows: follows };
+    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Dashboard, minimap_follows: follows, windows_3d: Some(&mut win3d) };
     let layer_req = layers_ui(ui, &mut layers, aux, &mut lead);
     if reset {
         layers = MapLayerConfig::dashboard();
     }
     cfg.minimap_layers = layers;
+    cfg.overlay.map_3d_windows = win3d;
     view.apply_app(cfg);
     cfg.minimap_allow_pan_zoom = allow;
     apply_requests(cfg, [layer_req, view_req]);
@@ -282,6 +287,7 @@ fn viewer_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Icon
     let mut layers = cfg.viewer_layers.clone();
     let (mut north_up, mut mirror, mut compass) = (cfg.viewer_north_up, cfg.viewer_mirror_edges, cfg.viewer_show_compass);
     let (mut allow, mut zoom) = (cfg.viewer_allow_pan_zoom, cfg.viewer_zoom_m);
+    let mut win3d = cfg.overlay.map_3d_windows;
     let mut reset = false;
     let mut view_req = None;
     let follows = cfg.overlay.map_use_dashboard;
@@ -300,12 +306,13 @@ fn viewer_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Icon
             view_req = copy_row(ui, MapId::Viewer, follows, CopyWhat::View);
         });
     };
-    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Viewer, minimap_follows: follows };
+    let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Viewer, minimap_follows: follows, windows_3d: Some(&mut win3d) };
     let layer_req = layers_ui(ui, &mut layers, aux, &mut lead);
     if reset {
         layers = crate::config::viewer_layers_default();
     }
     cfg.viewer_layers = layers;
+    cfg.overlay.map_3d_windows = win3d;
     (cfg.viewer_north_up, cfg.viewer_mirror_edges, cfg.viewer_show_compass) = (north_up, mirror, compass);
     (cfg.viewer_allow_pan_zoom, cfg.viewer_zoom_m) = (allow, zoom);
     apply_requests(cfg, [layer_req, view_req]);

@@ -249,7 +249,7 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 | `view.rs` | `Camera` (flat or tilted; `from_cfg`, `focal_for`, `depth_scale_at_row`), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `clip_segment_convex`, `fan`. |
 | `style.rs` | Road draw order, the zoom-dependent width rule, dash patterns, the POI category table. |
 | `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" guess, and the in-race focus (`RoadFocus`: which roads lie along the picked line). |
-| `ui.rs` | The settings UI (D63): `layers_ui` (the Image / Tilted view / Race lines / Roads / Points of interest cards, used by both Overlay-tab map tabs), `view_rows` + `ViewCfg` (zoom / orientation options of either config), `status_ui` (store status + `MapLayers::note`). |
+| `ui.rs` | The settings UI (D63): `layers_ui` (the Image / View mode / Race lines / Roads / Points of interest cards, used by both Overlay-tab map tabs), `view_rows` + `ViewCfg` (zoom / orientation options of either config), `status_ui` (store status + `MapLayers::note`). |
 | `paint2d.rs` | `draw_base` (image mesh, far-edge fade) and `draw_layers` (roads, jumps, race lines, gate lines, POIs, the current chest) onto an egui `Painter`; `IconAtlas`, `CornerClip`. |
 
 ### Data model
@@ -467,7 +467,7 @@ Polish (I29b):
   so trails, teammates, waypoints and the own arrow sit where the layers' projection puts the same
   world point on both maps (pitch 0 is the old mapping, tested). Arrows themselves stay upright; trail
   widths taper. A point behind the eye goes far off-screen along its flat direction.
-- Both maps' tilt settings are on the Map tab (Minimap / Dashboard map / Viewer page → Tilted view).
+- Both maps' tilt settings are on the Map tab (Minimap / Dashboard map / Viewer page → View mode).
 
 ### 3D: data and camera (phase K, K1)
 
@@ -737,6 +737,50 @@ readback) and a real eframe window (the Dashboard path is covered by the same `e
 code in the harness, but not by a window framebuffer 0 or a compositor `pixels_per_point`); an
 integrated GPU, and the user's GPU while FH6 runs. The FBO-restore rule is the key defence on
 Windows; K3 / K4 keep 3D opt-in there.
+
+### 3D on the eframe side: Dashboard map and Viewer (phase K, K4)
+
+`ui/map_scene.rs` follows the renderer's five-step call shape for both maps (they share `map_scene::draw`):
+
+1. `relief_camera`: only when the map's View mode is 3D (and, on Windows, `map_3d_windows` is on) it asks
+   `store::terrain()` (so the terrain loads only while a 3D map is on screen) and, once `Ready`, builds
+   `Camera::from_cfg_relief`. `car_y` = telemetry `position_y + 1` while the view follows the car and a
+   race is on, else `None` (the terrain height under the view centre: a panned view).
+2. While `Map3d::wants_underlay()` (the scene is not `Ready` yet, or failed for good) the **tilted 2D map**
+   is drawn with the relief-less camera: image, roads, race lines, POIs, *and the markers*. *Why the
+   markers too:* they project with `cam.project`, which follows the terrain only for the relief camera;
+   mixing the two would put the arrow off its road.
+3. `gl3d::add_scene` with `corner_radius 0`, `a = s = 1`, the Viewer's / Dashboard's own `RoadsCfg`,
+   `ReliefCfg`, `ImageLook`; the mesh from `store::road_mesh` only when roads are on; the in-race focus
+   exactly when the 2D path applies it. Always called while 3D is wanted, also during the underlay
+   frames (the GL objects are created inside the callback).
+4. Over it `draw_layers_parts(.., Parts::OVER_3D)` (race lines, POIs), then the markers and compass.
+5. `Gl3dHandle::busy()` -> `request_repaint()` (the init is staged over a few frames).
+
+**Ownership.** `ForzaApp::map3d: Map3d` holds the *one* `Gl3dHandle` of the window's GL context. The
+Dashboard map and the viewer share it: they are never on screen together and the renderer's FBO is
+transient. `on_exit(Some(gl))` calls `Map3d::destroy(gl)` first (idempotent), eframe destroys its painter
+after. **Retry:** the failure is sticky per handle; at the start of `update` (context current)
+`RetryGate` fires on the frame a 3D map appears again (the settings page, another tab or Flat/Tilted
+took it off screen in between) while the handle is failed: `destroy` + `gl3d::clear_failure_if` so the
+next callback probes afresh (once per appearance; a "too slow" verdict costs two more slow seconds). The
+map texture needs no change: `app.rs` already loads it with `MirroredRepeat`, and `gl3d` adds the mipmaps
+itself on first use. The eframe window needs no depth or stencil buffer (the renderer has its own FBO).
+
+**Pan, zoom and clicks in 3D.** `ManualView` / `panned` / `zoomed_at` are unchanged: they use the
+relief-less camera, whose `unproject` is the ground plane at the car's height, the very plane the relief
+camera's `h = 0` is (tested), so the grabbed point stays under the pointer. A click for a co-op waypoint
+uses `map_scene::pick` instead: it re-casts the ray onto the plane at the terrain height it found
+(`unproject_at_height`, 6 rounds), so the waypoint lands on the hillside the user points at.
+
+**Status line.** The View mode card shows, while 3D is picked: "Loading terrain…" (store `Loading`), "3D not
+available: <reason>" (`gl3d::last_failure()`: an old GL, a shader that does not compile, "3D is too slow on
+this GPU", or the store's no-install / read error), nothing when fine (`maprender::ui::status_3d`).
+
+**Verified live** (headless sway, eframe on llvmpipe, `FORZA_MAP_3D_DEBUG=1`): Dashboard and viewer in 3D
+with roads, race line and POIs; drag and wheel; no GL error; the slow-GPU guard tripping on llvmpipe,
+the tilted fallback, the status line, and the retry on coming back to the map. Not verified: a real GPU, a
+compositor `pixels_per_point` other than 1, Windows.
 
 ### Configuration
 

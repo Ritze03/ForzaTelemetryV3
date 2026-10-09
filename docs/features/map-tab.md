@@ -30,7 +30,7 @@ Dashboard's "Map needs your Forza Horizon 6 install" state shows (the buttons st
   zooms around the car (the car stays in the middle; there is nothing to anchor to); once panned
   it zooms **around the cursor** (the point under the pointer stays under it). Panning with a
   tilted camera keeps the grabbed point under the pointer too (`map_scene::panned` /
-  `zoomed_at` use `Camera::unproject`).
+  `zoomed_at` use `Camera::unproject`; 3D: see Temporary pan / zoom).
 - **Follow car** (top left, lit while following; the default): the view centre is the car.
   Panning turns it off; pressing the button brings the view back at once (also resets a zoom).
   With nothing manual, pressing it freezes the view where it is.
@@ -66,6 +66,15 @@ player drives off again. Shared by the Dashboard map and the viewer: one state t
 - **Option, default on:** `minimap_allow_pan_zoom` (Mini-Settings → Dashboard → Map, and the Map tab's
   Dashboard map page), `viewer_allow_pan_zoom` (Viewer page). Off = no pan / zoom sensing, the
   old click-only behaviour (the Dashboard map keeps its waypoint click).
+- **In 3D** (View mode 3D, phase K, K4) nothing changes for the gestures: pan and zoom move over the
+  **ground plane at the car's height** ("pan / zoom on the flat plane", design) and anchor the grabbed
+  point under the pointer exactly as in Tilted; the interaction camera is the relief-less one, whose
+  `unproject` is that same plane (tested: `pan_and_zoom_anchor_on_the_ground_plane_in_3d`). *Why not
+  anchor on the terrain surface:* the plane is a stable, closed-form anchor; the surface would make the
+  drag speed jump over every ridge. The camera's car height is the telemetry height while following and
+  the terrain height under the view centre once panned. A click (co-op waypoint) *does* use the terrain
+  surface (`map_scene::pick`). The 3D renderer's state and fallback are described in
+  [minimap.md](minimap.md#3d-on-the-eframe-side-dashboard-map-and-viewer-phase-k-k4).
 - Tests: `map_scene::tests` (`manual_view_resets_when_the_player_drives_off`,
   `a_nudge_does_not_reset_the_view`, `panning_while_driving_waits_for_the_next_stop`,
   `manual_view_overrides_the_base_and_resets`, pan / zoom anchoring).
@@ -157,7 +166,13 @@ three modes, picked with a segmented control (`theme::segmented`) at the top of 
 - **3D:** the same camera, now over the terrain (relief) with the roads as decks. The same tilt rows
   apply (angle, perspective and car position *are* the 3D camera's pitch / lens / car position), except
   *Thinner lines*, greyed because 3D sets line widths itself. Tooltip on the **3D** segment: "Uses your
-  graphics card; falls back to Tilted if it isn't supported." Below the tilt rows a **3D** group appears
+  graphics card; falls back to Tilted if it isn't supported." On Windows the segment reads "3D
+  (experimental)" and a checkbox **Allow 3D on Windows** (`OverlayConfig::map_3d_windows`, one flag for
+  all three maps) appears while 3D is picked; until it is ticked the maps stay Tilted. Under the
+  segmented control a **status line** appears in 3D mode only: "Loading terrain…" while the terrain is
+  read, "3D not available: <reason>" when the GL renderer gave up (old OpenGL, shader error, "3D is too
+  slow on this GPU") or there is no install; nothing when all is well (`maprender::ui::status_3d`). The
+  map then draws Tilted by itself. Below the tilt rows a **3D** group appears
   (hidden in Flat and Tilted, not greyed: a block of rows that mean nothing there):
   - **Road height** (`ReliefCfg::road_height`): *Node heights* (default) or *On the terrain*.
     Tooltip: node heights put bridges and ramps at the height of the game's road network, the other

@@ -2585,7 +2585,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     if !cfg.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
         if map_resp.clicked() {
             if let Some(m) = map_resp.interact_pointer_pos() {
-                if let Some([wx, wz]) = cam.unproject(m) {
+                if let Some([wx, wz]) = crate::ui::map_scene::pick(&cam, m) {
                     app.coop.set_waypoint(Some((wx, wz)), cfg.coop_hue);
                 }
             }
