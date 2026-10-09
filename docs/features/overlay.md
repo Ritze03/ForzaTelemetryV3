@@ -187,6 +187,14 @@ A changed monitor layout recreates the window within a second.
 4. Things to look at: colours/transparency (premultiplied alpha), the HUD sitting on the right
    monitor, flicker or a one-frame white/black flash on show, CPU use at 1440p/4K (readback),
    and the Hide HUD hotkey / focus-only behaviour.
+5. **The 3D minimap is off on Windows** (K3): the Map tab's View mode *3D* is treated as *Tilted*
+   there (`hud::minimap::wants_3d`: `!cfg!(windows)`). *Why:* the 3D scene renders into its own FBO
+   inside the paint callback and restores the framebuffer binding it read first; the Windows overlay
+   draws into its *own* offscreen FBO (`wgl.rs`) and reads it back, a combination nobody could run.
+   For a tester: drop the `!cfg!(windows)` in `wants_3d` (or the proposed
+   `overlay.map_3d_windows` flag, see [Minimap in 3D](#minimap-in-3d)), set View mode to 3D and
+   check the pill shows terrain with roads, no flicker, and that Hide/Show and a switch back to
+   Tilted leave no stale picture; `FORZA_MAP_3D_DEBUG=1` prints a status line per second to stderr.
 
 ## Widgets
 
@@ -302,6 +310,76 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   pixels into the overlay's own `egui::Context` (the Dashboard uploads its own copy; a GL object is
   never shared between the two contexts, only the decoded pixels), 512 x 384 RGBA with mipmaps,
   0.75 MB; dropped again when no layer is on.
+
+#### Minimap in 3D
+
+Phase K (K3, plan D61/D65/D66). The Map tab's **View mode** card (`Flat / Tilted / 3D`, stored as
+`map_layers.tilt.{on, relief.on}`, see [map-tab.md](map-tab.md)) can put the HUD minimap in **3D**: the
+satellite image draped on the game's height raster, the roads as ribbons at their nav heights with
+decks, drawn by the shared GL renderer (`maprender::gl3d`, reference: [[minimap]] "3D renderer").
+Default stays **Tilted**; 3D is opt-in.
+
+- **Draw order (`hud/minimap.rs::draw`, 3D branch).** plate (as before) → the 3D scene as one egui
+  paint callback over the pill (`gl3d::add_scene`, `corner_radius = 22 * s`, the composite shader does
+  the rounded mask and the HUD fade) → the **tint** (`MAP_TINT`, drawn *after* the scene because a
+  callback is opaque and a tint under it would be invisible; it also dims the GL roads slightly) →
+  race lines and POIs (`draw_layers_parts(.., Parts::OVER_3D)`: egui, projected through the relief
+  camera so they sit on the terrain, **no occlusion by hills**, v1) → markers (`MapCanvas`, same
+  camera) → compass → border. The relief camera is the tilted one plus heights (`Camera::from_cfg_relief`,
+  D65): the car arrow sits at the same screen point as in Tilted; the car's height is the telemetry
+  `position_y + 1 m` while driving, else the terrain under the car (`minimap::car_height`).
+  The in-race focus (D66) is passed along: while the HUD's `RaceSel` has a focus line the scene
+  gets a `Focus3d` and mutes / hides the other roads exactly as the 2D map does.
+- **Where the 3D state lives.** `Renderer` (`overlay/render.rs`) owns a `Gl3dHandle` (no GL object
+  until the first scene callback) and, each frame the Minimap is in 3D, polls `store::terrain()`
+  (lazy: the first call starts the load, so a user who never selects 3D pays nothing) and
+  `store::road_mesh(layers, terrain)`, and hands `Hud::set_scene3d(Some(Scene3dIn { gl3d, terrain, mesh }))`
+  to `MapAnim` (like `set_layers` / `set_icons`: `minimap::draw`'s signature is fixed, the PNG
+  harness and tests call it). `Hud::set_scene3d(None)` = the 2D map. `minimap::wants_3d(cfg)` is the
+  one switch (`minimap_on`, view mode 3D, not Windows).
+- **Staged init, frame pacing.** The renderer spreads its init over three callbacks (programs and
+  static buffers, the 15 MB height raster, the road buffers), a few ms each, so the first 3D frame is
+  not a 40 ms hitch in the game. `Renderer::frame_at` returns "animating" (so the pacing in
+  `overlay/pacing.rs` keeps scheduling frames at ~60 Hz, never per monitor frame) while
+  `Gl3dHandle::busy()` (read **after** the paint, i.e. this frame's), while the terrain is still
+  loading, and while the road mesh is missing or stale (the `map-mesh` thread). *Why poll with
+  frames:* nothing else would wake the overlay for them when no packet flows. A hidden HUD never
+  counts: `waiting3d` needs `snap.visible` and `Hud` resets its state (the scene included) once the
+  fade-out finished, so a half-initialised scene cannot pin the frame loop and keep the surface up.
+- **Fallback.** Until the scene is `Ready`, and for good when it `Failed` (GL too old, shader
+  compile, incomplete FBO, a GL error in the first frames, or the slow-GPU guard: > 8 ms for 2 s),
+  `Gl3dHandle::wants_underlay()` is true and the minimap draws today's **tilted 2D map** (the
+  relief-less camera, `Parts::ALL`, markers through the 2D camera). The harness asserts the failed
+  3D HUD equals the Tilted picture pixel for pixel. The reason is `gl3d::last_failure()` (process
+  global, the settings status line reads it; the HUD's context is unreachable from the UI thread).
+  *Why a terrain that is still loading, missing or errored also gives the tilted map:*
+  `Camera::from_cfg` ignores the relief, and `Renderer` sets no scene then.
+- **Lifecycle and drop order.** Leaving 3D (view mode changed, minimap off) calls
+  `Gl3dHandle::destroy` with the context current (terrain, road buffers, scene FBO freed; a no-op
+  when nothing was created), which also resets a sticky `Failed`, so toggling the mode is the retry.
+  `Renderer::drop` destroys it **before** `painter.destroy()` (see
+  [Lifecycle and drop order](#lifecycle-and-drop-order)): its GL objects were made through the
+  painter's context, which must still be current.
+- **Windows: off.** The Windows overlay path (WGL context, offscreen FBO, readback) cannot be
+  tested here, and the 3D callback's FBO save/restore is the part most likely to differ, so
+  `wants_3d` is false on Windows and *3D* behaves as *Tilted* there. **Proposed opt-in:** an
+  `overlay.map_3d_windows: bool` (default false) in `OverlayConfig` read by `wants_3d`, plus the
+  Map tab's View-mode hint "3D (experimental)" on Windows; not added yet (it needs `config.rs` and
+  the settings card). Untested pieces on Windows: the FBO restore (`FRAMEBUFFER_BINDING` is read
+  first and put back, which is what the offscreen path needs), the compat-profile `#version 330
+  core` compile, the 8 ms guard on integrated GPUs.
+- **Verification** (Linux, headless EGL): `cargo test render_3d_states -- --ignored --nocapture`
+  writes `target/hud_png/m2_3d_*` (synthetic terrain: hills, a bridge, race focus, horizon view,
+  exaggeration, no roads / no image, co-op, fade 0.5, the failed-renderer fallback),
+  `composite_3d_1080p` through the real `Renderer::frame_at` and, with an install,
+  `m2_real_*_3d_*` (real terrain, roads, satellite) and a frame-time line. Checks: the pill's
+  rounded corners stay clear, the map paints the pill, no GL error, the car arrow above the scene,
+  relief / roads / image each change the picture, the fade scales it, the staged init settles,
+  leaving 3D frees the renderer, a loading terrain asks for frames without touching GL, a hidden HUD
+  never asks. CPU-side tests: `hud/tests.rs` `scene3d::*` (one callback, 2D underlay while not
+  Ready, hidden reset, `wants_3d`).
+- **Not agent-testable:** smoothness while FH6 saturates the GPU (the user's check), Windows, and an
+  integrated GPU. `FORZA_MAP_3D_DEBUG=1` prints the renderer's status line once a second to stderr.
 
 **Options (Mini-Settings → Overlay tab).** The HUD minimap has the Dashboard map's options.
 *Why:* the user wants everything the Dashboard map has on the HUD too. They live in
@@ -743,7 +821,7 @@ Tabs (`config::OverlayPage`):
 ### Map settings
 
 Moved to the **Map tab** (D67): the Minimap and Dashboard map pages and the `layers_ui` cards
-(Image, Roads, Points of interest, Race lines, Tilted view) are described in
+(Image, Roads, Points of interest, Race lines, View mode) are described in
 [map-tab.md](map-tab.md). The HUD minimap's own options (`overlay.map_*`, `map_layers`,
 `map_use_dashboard`, `map_plate_opacity`) are unchanged and still stored in the `overlay` key.
 
@@ -871,6 +949,9 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
   frame a layer is on and the store has icons, replaced when the store hands out new pixels (an
   install change) and dropped when the layers go off. It lives in `Renderer`, so the drop order above
   covers it.
+- **The 3D map renderer** (`Renderer::gl3d`, a `Gl3dHandle`; programs, height texture, road buffers,
+  scene FBO) is destroyed in `Renderer::drop` **before** `painter.destroy()`, context current, and
+  earlier whenever the Minimap leaves 3D. See [Minimap in 3D](#minimap-in-3d).
 - **EGL failures:** a failed swap/surface creation rebuilds the surface; 3 in a row (lost
   context, GPU reset) stop the thread, which the tab reports as stopped.
 - **Disabled reasons** (`overlay::DisabledReason`, translated): no `WAYLAND_DISPLAY`,
@@ -903,6 +984,8 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
   headless EGL device into `target/hud_png/`, at pinned time. It lives in `src/hud/png.rs` but
   is compiled as `overlay::render::png` via `#[path]`. *Why:* a binary crate can't expose its
   modules to `examples/`, and the harness needs the private `Renderer` and `gl::Headless`.
+- **3D PNG states:** `cargo test render_3d_states -- --ignored --nocapture` (see [Minimap in 3D](#minimap-in-3d)),
+  its own headless context with the real gl3d path; `m2_3d_*`, `composite_3d_1080p`, `m2_real_*_3d_*`.
 - Unit tests cover the classifier, drift window, lap trace, visibility target, layout
   stacking, fade/place/count-up curves, gear labels, the frame-pacing helper and the
   capability probe.

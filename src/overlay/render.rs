@@ -12,8 +12,14 @@ use egui_glow::glow;
 use super::snapshot::{hud_clock, HudSnapshot};
 use crate::coop::CoopReader;
 use crate::hud::minimap::{CoopInput, CoopLayer, MapLoader};
-use crate::maprender::icontex::IconTex;
+use crate::hud::minimap::{self, Scene3dIn};
 use crate::hud::{fonts, Hud};
+use crate::maprender::data::MapLayers;
+use crate::maprender::gl3d::Gl3dHandle;
+use crate::maprender::icontex::IconTex;
+use crate::maprender::mesh3d::RoadMesh;
+use crate::maprender::store::{LayerStatus, TerrainStatus};
+use crate::maprender::terrain::Terrain;
 
 pub struct Renderer {
     ctx: egui::Context,
@@ -31,6 +37,14 @@ pub struct Renderer {
     /// Where the layer data comes from: the process-wide store; the PNG harness swaps in a
     /// fixed synthetic set (no install needed, deterministic).
     layers_fn: fn() -> crate::maprender::store::Layers,
+    /// The shared 3D map renderer's GL objects for this context (the Minimap in 3D mode). Created
+    /// empty (no GL until the first scene callback), freed when the Minimap leaves 3D and in
+    /// `Drop` **before** the painter, with the context current.
+    gl3d: Gl3dHandle,
+    /// Where the 3D terrain and road mesh come from: the process-wide store; the PNG harness swaps
+    /// in synthetic ones, like `layers_fn`.
+    terrain_fn: fn() -> TerrainStatus,
+    mesh_fn: fn(&Arc<MapLayers>, &Arc<Terrain>) -> Option<Arc<RoadMesh>>,
 }
 
 impl Renderer {
@@ -40,7 +54,20 @@ impl Renderer {
         let painter = egui_glow::Painter::new(gl, "", None, true).map_err(|e| format!("egui_glow: {e}"))?;
         let ctx = egui::Context::default();
         fonts::install(&ctx);
-        Ok(Self { ctx, painter, start: Instant::now(), hud: Hud::default(), map: MapLoader::default(), coop, layer: CoopLayer::default(), icons: IconTex::default(), layers_fn: crate::maprender::layers })
+        Ok(Self {
+            ctx,
+            painter,
+            start: Instant::now(),
+            hud: Hud::default(),
+            map: MapLoader::default(),
+            coop,
+            layer: CoopLayer::default(),
+            icons: IconTex::default(),
+            layers_fn: crate::maprender::layers,
+            gl3d: Gl3dHandle::new(),
+            terrain_fn: crate::maprender::store::terrain,
+            mesh_fn: crate::maprender::store::road_mesh,
+        })
     }
 
     /// Draw one frame of `size` physical px. Returns true while an animation still needs
@@ -53,12 +80,26 @@ impl Renderer {
     /// [`Self::frame`] at a pinned `now` ([`hud_clock`] seconds) over a premultiplied
     /// `clear` colour (the PNG harness renders over an opaque backdrop).
     fn frame_at(&mut self, size: [u32; 2], snapshot: Option<&HudSnapshot>, test_pattern: bool, now: f64, clear: [f32; 4]) -> bool {
+        // The Minimap left 3D (or is off): give the GPU its terrain, road buffers and FBO back
+        // (a no-op when nothing was created). Also what makes a failed context retry on the next
+        // switch to 3D: `destroy` resets `Failed`. Before `paint`, which borrows the painter.
+        let want3d = snapshot.is_some_and(|s| minimap::wants_3d(&s.cfg));
+        if snapshot.is_some() && !want3d {
+            self.gl3d.destroy(self.painter.gl());
+        }
         let (hud, map, coop, layer, icons, layers_fn) = (&mut self.hud, &mut self.map, &self.coop, &mut self.layer, &mut self.icons, self.layers_fn);
-        paint(&self.ctx, &mut self.painter, self.start, size, clear, |ctx, p| {
+        let (gl3d, terrain_fn, mesh_fn) = (&self.gl3d, self.terrain_fn, self.mesh_fn);
+        // The 3D inputs that are still on their way (terrain loading, road mesh building): poll
+        // them with frames, since nothing else would wake the overlay for them.
+        let mut waiting3d = false;
+        let animating = paint(&self.ctx, &mut self.painter, self.start, size, clear, |ctx, p| {
             if test_pattern {
                 draw_test_pattern(p, ctx.content_rect(), ctx.cumulative_pass_nr());
             }
-            let Some(snap) = snapshot else { return false };
+            let Some(snap) = snapshot else {
+                hud.set_scene3d(None); // nothing is drawn, so nothing may keep asking for frames
+                return false;
+            };
             let tex = map.poll(ctx, now, snap.cfg.minimap_on);
             // Co-op layer: teammates, trails, waypoints (empty without a session or with the
             // minimap off). The overlay thread records the trails itself, see `CoopLayer`.
@@ -66,16 +107,45 @@ impl Renderer {
             // Roads / POIs / race lines from the process-wide store, polled here on the overlay
             // thread (the UI frame loop stops while the game covers the window). Only asked for
             // while the minimap draws a layer, so nothing loads for a user who never enables one.
+            let mut layers_status = None;
+            let mut layers_data = None;
             if snap.cfg.minimap_on && snap.cfg.map_layers.wants_layers() {
                 let l = layers_fn();
                 hud.set_icons(icons.ensure(ctx, l.data.as_ref().and_then(|d| d.icons.as_ref())));
+                layers_status = Some(l.status);
+                layers_data = l.data.clone();
                 hud.set_layers(l.data);
             } else {
                 hud.set_layers(None);
                 hud.set_icons(icons.ensure(ctx, None));
             }
+            // 3D: the terrain is requested only now (the store loads it lazily), the mesh needs
+            // the layers. Anything missing = the 2D map (tilted: `Camera::from_cfg` ignores the
+            // relief) while it loads, which is also the fallback for no install / an error.
+            let mut scene = None;
+            if want3d {
+                match terrain_fn() {
+                    TerrainStatus::Ready(t) => {
+                        let mesh = layers_data.as_ref().and_then(|d| mesh_fn(d, &t));
+                        // A missing or stale mesh (layers or terrain changed) is replaced by the
+                        // builder thread soon: keep frames coming until it lands.
+                        waiting3d = snap.visible
+                            && match (&layers_data, &mesh) {
+                                (Some(d), Some(m)) => (m.rev, m.terrain_rev) != (d.rev, t.rev),
+                                (Some(_), None) => true,
+                                (None, _) => layers_status == Some(LayerStatus::Loading),
+                            };
+                        scene = Some(Scene3dIn { gl3d: gl3d.clone(), terrain: t, mesh });
+                    }
+                    TerrainStatus::Loading => waiting3d = snap.visible,
+                    TerrainStatus::NoInstall | TerrainStatus::Error(_) => {}
+                }
+            }
+            hud.set_scene3d(scene);
             hud.draw(p, ctx.content_rect(), snap, now, tex, layer)
-        })
+        });
+        // After the paint: the callbacks have run, so `busy` is this frame's (staged init).
+        animating || waiting3d || self.hud.scene3d_busy()
     }
 }
 
@@ -131,6 +201,9 @@ impl Drop for Renderer {
     /// every owner drops `Renderer` before `Gl`: the `(Renderer, Gl)` tuple in `init`, and
     /// `Overlay`'s field order after its `Drop` has released the window surface.
     fn drop(&mut self) {
+        // The 3D objects first: they were made through this painter's context and `destroy` needs
+        // it current, which `painter.destroy()` below does not change (it only frees egui's).
+        self.gl3d.destroy(self.painter.gl());
         self.painter.destroy(); // idempotent
     }
 }

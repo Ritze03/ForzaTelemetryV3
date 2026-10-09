@@ -115,6 +115,22 @@ impl Hud {
         self.map_anim.set_icons(icons);
     }
 
+    /// The Minimap's 3D scene inputs (GL handle, terrain, road mesh) for this frame, or `None` for
+    /// the 2D map; set by the overlay renderer only while the Minimap is in 3D mode
+    /// ([`minimap::wants_3d`]). A setter for the same reason as [`Hud::set_layers`].
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn set_scene3d(&mut self, scene: Option<minimap::Scene3dIn>) {
+        self.map_anim.set_scene3d(scene);
+    }
+
+    /// The 3D scene is still being initialised (spread over frames): the renderer must report
+    /// "animating" so the overlay keeps requesting frames. `false` once the HUD has faded out
+    /// (the state is reset), so a hidden HUD never pins the frame loop.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn scene3d_busy(&self) -> bool {
+        self.map_anim.scene3d_busy()
+    }
+
     /// The cluster speed to show. With `speed_hold` the last shown value holds for
     /// [`SPEED_HOLD_SECS`], then the next frame takes the live one. why no `animating`: the
     /// packet stream redraws at 60 Hz anyway, so a due refresh just waits for the next packet.
