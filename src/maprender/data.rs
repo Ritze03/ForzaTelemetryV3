@@ -28,8 +28,8 @@ pub const POI_LIMIT_M: f32 = 12_000.0;
 #[derive(Clone, Debug)]
 pub struct Chain {
     pub pts: Vec<[f32; 2]>,
-    /// Height per vertex (phase K: bridges, tunnels). Unread by the 2D renderer.
-    #[allow(dead_code)]
+    /// Height per vertex (phase K: bridges, tunnels). Unread by the 2D renderer; the 3D road
+    /// mesh (`mesh3d`) takes its node heights from it. 0.0 = no height (nav orphans).
     pub y: Vec<f32>,
     /// `[min_x, min_z, max_x, max_z]`.
     pub bbox: [f32; 4],

@@ -1,0 +1,938 @@
+//! Headless tests of the 3D renderer: the real `Gl3d` inside a real `egui_glow::Painter` pass on
+//! an EGL device without a window (the same code path as `overlay/render.rs::paint`).
+//!
+//! The GL tests are `#[ignore]`d (they need an EGL device; they write PNGs). Run them one at a
+//! time, so the environment overrides do not race:
+//!
+//! ```text
+//! GL3D_PNG_DIR=/some/dir cargo test gl3d -- --ignored --test-threads=1 --nocapture
+//! ```
+//!
+//! * `gl3d_default_gl` - the repo's own context recipe (desktop Core on Mesa).
+//! * `gl3d_gles30` - an explicit OpenGL ES context; start the process with
+//!   `MESA_GLES_VERSION_OVERRIDE=3.0` so Mesa gives exactly 3.0 (it offers 3.2 otherwise).
+//! * `gl3d_llvmpipe` - Mesa's software rasteriser, the no-GPU case (skipped when there is none).
+//!
+//! The pure-CPU tests (the draw plan) run in every `cargo test`.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use egui::{pos2, vec2, Color32, ColorImage, Context, LayerId, Order, Rect, Stroke, StrokeKind, TextureOptions};
+use egui_glow::glow::{self, HasContext};
+
+use super::*;
+use crate::gamedata::roadtypes::RoadType;
+use crate::maprender::cfg::{MapLayerConfig, OtherRoads, RaceLineMode, TiltCfg};
+use crate::maprender::data::{Chain, MapLayers, RoadLayer};
+use crate::maprender::paint2d::{draw_base, draw_layers, BaseParams, LayerCtx};
+use crate::maprender::racesel::{RaceSel, Run};
+use crate::maprender::terrain::Terrain;
+use crate::overlay::gl::{Flavour, Headless};
+
+// ── the synthetic world ──────────────────────────────────────────────────────────────────────
+
+struct World {
+    terrain: Arc<Terrain>,
+    layers: Arc<MapLayers>,
+    mesh: Arc<RoadMesh>,
+    image: ColorImage,
+    cal: MapCalibration,
+    orig: [u32; 2],
+}
+
+/// The synthetic terrain (three hills on a flat 2 km square), roads of every type with D51's
+/// interesting heights (an elevated highway, a tunnel through the big hill, a jump over a small
+/// one, orphan nodes at y = 0), and a satellite stand-in that is calibrated to the 2 km square
+/// and carries a 200 m grid so the draping can be judged by eye.
+fn world() -> World {
+    let terrain = Arc::new(Terrain::synthetic());
+    let t = &*terrain;
+    let ground = |x: f32, z: f32| t.height(x, z);
+    // A chain along `pts` (every 40 m), heights from `f(x, z, ground)`.
+    let chain = |a: [f32; 2], b: [f32; 2], f: &dyn Fn(f32, f32, f32) -> f32| {
+        let n = (((b[0] - a[0]).hypot(b[1] - a[1])) / 40.0).ceil().max(1.0) as usize;
+        let mut pts = vec![];
+        let mut ys = vec![];
+        for i in 0..=n {
+            let u = i as f32 / n as f32;
+            // a gentle wiggle so the ribbons curve
+            let (x, z) = (a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u + 14.0 * (u * 9.0).sin());
+            pts.push([x, z]);
+            ys.push(f(x, z, ground(x, z)));
+        }
+        Chain::new(pts, ys)
+    };
+    let mut roads = RoadLayer::default();
+    let on_ground = |_: f32, _: f32, g: f32| g + 0.3;
+    roads.by_type[RoadType::Road.index() as usize].push(chain([-900.0, -300.0], [900.0, -300.0], &on_ground));
+    roads.by_type[RoadType::Offroad.index() as usize].push(chain([-900.0, -200.0], [900.0, -200.0], &on_ground));
+    roads.by_type[RoadType::Other.index() as usize].push(chain([100.0, -250.0], [700.0, -250.0], &on_ground));
+    roads.by_type[RoadType::Trail.index() as usize].push(chain([-900.0, -100.0], [900.0, -100.0], &on_ground));
+    // Cross-country: node heights far wrong on purpose, it is draped anyway.
+    roads.by_type[RoadType::Crosscountry.index() as usize].push(chain([-900.0, 40.0], [900.0, 40.0], &|_, _, _| 0.5));
+    // A tunnel through the big hill (-300, 200): underground inside it.
+    roads.by_type[RoadType::Tunnel.index() as usize].push(chain([-640.0, 210.0], [40.0, 210.0], &|_, _, g| g.min(150.0)));
+    // An elevated highway: 22 m above the ground all along (a bridge over the low parts).
+    roads.by_type[RoadType::Highway.index() as usize].push(chain([-900.0, 330.0], [900.0, 330.0], &|_, _, g| g + 22.0));
+    // Orphan nodes (y = 0) all along: node-height mode must put them on the ground.
+    roads.by_type[3].push(chain([-900.0, -420.0], [900.0, -420.0], &|_, _, _| 0.0));
+    // A short untyped one.
+    roads.by_type[0].push(chain([-300.0, -360.0], [300.0, -360.0], &on_ground));
+    // A jump over the 45 m hill at (50, 450).
+    roads.jumps.push([-120.0, 450.0, ground(-120.0, 450.0) + 2.0, 220.0, 450.0, ground(220.0, 450.0) + 2.0]);
+    let layers = Arc::new(MapLayers { rev: 1, roads: Arc::new(roads), ..Default::default() });
+    let mesh = Arc::new(RoadMesh::build(&layers.roads, &terrain, 1));
+
+    // The satellite stand-in: 512 px over the 2048 m square (4 m per px), calibrated to it.
+    let n = 512usize;
+    let mut px = vec![0u8; n * n * 4];
+    for r in 0..n {
+        for c in 0..n {
+            let (x, z) = (-1024.0 + (c as f32 + 0.5) * 4.0, 1024.0 - (r as f32 + 0.5) * 4.0);
+            let h = ground(x, z);
+            let hill = ((h - 100.0) / 220.0).clamp(0.0, 1.0);
+            let mut col = [60.0 + 120.0 * hill, 105.0 + 40.0 * hill, 55.0 + 60.0 * hill];
+            if (x.rem_euclid(200.0) < 6.0) || (z.rem_euclid(200.0) < 6.0) {
+                col = [col[0] * 0.55, col[1] * 0.55, col[2] * 0.55];
+            }
+            if x.abs() < 14.0 && z.abs() < 14.0 {
+                col = [220.0, 40.0, 40.0];
+            }
+            let i = (r * n + c) * 4;
+            px[i..i + 4].copy_from_slice(&[col[0] as u8, col[1] as u8, col[2] as u8, 255]);
+        }
+    }
+    World {
+        terrain,
+        layers,
+        mesh,
+        image: ColorImage::from_rgba_unmultiplied([n, n], &px),
+        cal: MapCalibration { px_per_m: 0.25, origin_x: -1024.0, origin_z: 1024.0 },
+        orig: [n as u32, n as u32],
+    }
+}
+
+// ── the rig: a headless context, a real painter, a target FBO ───────────────────────────────
+
+struct Out {
+    /// RGBA, top row first.
+    px: Vec<u8>,
+    w: usize,
+    h: usize,
+    gl_error: u32,
+    fbo_restored: bool,
+}
+
+impl Out {
+    fn at(&self, x: usize, y: usize) -> [u8; 4] {
+        let i = (y * self.w + x) * 4;
+        [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
+    }
+    fn save(&self, name: &str) {
+        let dir = png_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let img = image::RgbaImage::from_raw(self.w as u32, self.h as u32, self.px.clone()).expect("size");
+        img.save(dir.join(name)).unwrap_or_else(|e| eprintln!("could not write {name}: {e}"));
+    }
+    /// How many pixels in the box are within `tol` (per channel sum) of `c`.
+    fn count_near(&self, r: [usize; 4], c: [u8; 3], tol: i32) -> usize {
+        let mut n = 0;
+        for y in r[1]..r[3].min(self.h) {
+            for x in r[0]..r[2].min(self.w) {
+                let p = self.at(x, y);
+                let d: i32 = (0..3).map(|k| (p[k] as i32 - c[k] as i32).abs()).sum();
+                n += (d <= tol) as usize;
+            }
+        }
+        n
+    }
+}
+
+fn png_dir() -> PathBuf {
+    std::env::var_os("GL3D_PNG_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("gl3d_png"))
+}
+
+struct Rig {
+    painter: Option<egui_glow::Painter>,
+    ctx: Context,
+    fbo: glow::Framebuffer,
+    tex: glow::Texture,
+    /// Target size in px.
+    size: [i32; 2],
+    gl: Arc<glow::Context>,
+    t: f64,
+    /// Texture uploads of the setup frame, painted with the first real one.
+    pending: Option<egui::TexturesDelta>,
+    /// Declared last: the context outlives everything above (the painter's `destroy` needs it).
+    hl: Headless,
+}
+
+impl Rig {
+    fn new(flavour: Flavour, device: Option<usize>, size: [i32; 2]) -> Result<Rig, String> {
+        let hl = Headless::new_with(flavour, device)?;
+        let gl = hl.glow.clone();
+        // SAFETY: plain GL object setup on the current (surfaceless) context.
+        let (fbo, tex) = unsafe {
+            let tex = gl.create_texture()?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, size[0], size[1], 0, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None));
+            let fbo = gl.create_framebuffer()?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+                return Err("target FBO incomplete".into());
+            }
+            (fbo, tex)
+        };
+        let painter = egui_glow::Painter::new(gl.clone(), "", None, true).map_err(|e| format!("egui_glow: {e}"))?;
+        // egui limits textures to 2048 px until a frame has told it the GPU's limit.
+        let ctx = Context::default();
+        let first = ctx.run(egui::RawInput { max_texture_side: Some(8192), ..Default::default() }, |_| {});
+        Ok(Rig { painter: Some(painter), ctx, fbo, tex, size, gl, t: 0.0, pending: Some(first.textures_delta), hl })
+    }
+
+    fn info(&self) -> String {
+        // SAFETY: plain state queries.
+        unsafe { format!("{} | {} | {}", self.gl.get_parameter_string(glow::VERSION), self.gl.get_parameter_string(glow::RENDERER), self.hl.device) }
+    }
+
+    fn painter(&self) -> &egui_glow::Painter {
+        self.painter.as_ref().unwrap()
+    }
+
+    /// One egui frame at `ppp` into the target FBO, read back. `ui` runs once.
+    fn frame(&mut self, ppp: f32, ui: impl FnMut(&Context)) -> Out {
+        let [w, h] = self.size;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(w as f32 / ppp, h as f32 / ppp))),
+            time: Some(self.t),
+            max_texture_side: Some(8192),
+            viewports: [(egui::ViewportId::ROOT, egui::ViewportInfo { native_pixels_per_point: Some(ppp), ..Default::default() })].into_iter().collect(),
+            ..Default::default()
+        };
+        self.t += 1.0 / 60.0;
+        let mut out = self.ctx.run(raw, ui);
+        if let Some(mut d) = self.pending.take() {
+            d.append(std::mem::take(&mut out.textures_delta));
+            out.textures_delta = d;
+        }
+        let prims = self.ctx.tessellate(out.shapes, out.pixels_per_point);
+        let gl = self.gl.clone();
+        // SAFETY: plain GL on the current context.
+        unsafe {
+            // Clear any stale error so the one we read is this frame's.
+            while gl.get_error() != 0 {}
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
+            self.painter().clear([w as u32, h as u32], [0.0; 4]);
+        }
+        let painter = self.painter.as_mut().unwrap();
+        painter.paint_and_update_textures([w as u32, h as u32], out.pixels_per_point, &prims, &out.textures_delta);
+        // SAFETY: plain GL on the current context.
+        let (bound, err, px) = unsafe {
+            let bound = gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING) as u32;
+            let err = gl.get_error();
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut px)));
+            (bound, err, px)
+        };
+        // bottom-up -> top-down
+        let mut flipped = Vec::with_capacity(px.len());
+        for row in (0..h as usize).rev() {
+            flipped.extend_from_slice(&px[row * w as usize * 4..(row + 1) * w as usize * 4]);
+        }
+        Out { px: flipped, w: w as usize, h: h as usize, gl_error: err, fbo_restored: bound == self.fbo.0.get() }
+    }
+
+    fn load_map(&self, w: &World, opts: TextureOptions) -> (egui::TextureHandle, MapTex) {
+        let h = self.ctx.load_texture("test-map", w.image.clone(), opts);
+        let tex = MapTex { id: h.id(), orig_size: w.orig, winter: false };
+        (h, tex)
+    }
+
+    /// Free the 3D resources and the painter, in the order the owners must (3D first).
+    fn finish(mut self, h: &Gl3dHandle) {
+        h.destroy(&self.gl);
+        if let Some(mut p) = self.painter.take() {
+            p.destroy();
+        }
+        // SAFETY: deleting objects created in `new`.
+        unsafe {
+            self.gl.delete_framebuffer(self.fbo);
+            self.gl.delete_texture(self.tex);
+            assert_eq!(self.gl.get_error(), 0, "GL error while tearing down");
+        }
+    }
+}
+
+// ── a map frame the way the call sites build it ─────────────────────────────────────────────
+
+/// Dashboard-like (mipmaps off, no corner mask) or HUD-like.
+#[derive(Clone, Copy, PartialEq)]
+enum Site {
+    Hud,
+    Dashboard,
+}
+
+struct View {
+    site: Site,
+    rect: Rect,
+    car: (f32, f32),
+    yaw: f32,
+    zoom: f32,
+    angle: f32,
+    car_y: Option<f32>,
+    /// A clip rect for the 3D callback (egui scissor), if any.
+    clip: Option<Rect>,
+    /// Skip `add_scene` altogether (the pure 2D reference).
+    no_3d: bool,
+}
+
+impl View {
+    fn hud() -> View {
+        View { site: Site::Hud, rect: Rect::from_min_size(pos2(14.0, 14.0), vec2(208.0, 136.0)), car: (-60.0, -160.0), yaw: 0.6, zoom: 500.0, angle: 40.0, car_y: None, clip: None, no_3d: false }
+    }
+    fn dashboard() -> View {
+        View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0)), car: (0.0, -250.0), yaw: 0.0, zoom: 800.0, angle: 50.0, car_y: None, clip: None, no_3d: false }
+    }
+}
+
+const PLATE: Color32 = Color32::from_rgb(10, 12, 16);
+const BACKDROP: Color32 = Color32::from_rgb(60, 70, 80);
+
+fn tilt(angle: f32) -> TiltCfg {
+    let mut t = TiltCfg { on: true, angle_deg: angle, ..TiltCfg::default() };
+    t.relief.on = true;
+    t
+}
+
+fn camera(w: &World, v: &View) -> Camera {
+    Camera::from_cfg_relief(&tilt(v.angle), v.car, v.yaw, v.zoom, v.rect, Some(&w.terrain), v.car_y)
+}
+
+fn scene(w: &World, cam: Camera, mesh: bool, tex: Option<MapTex>, site: Site) -> Scene3d {
+    let mut roads = RoadsCfg::default();
+    if site == Site::Hud {
+        roads.casing_px = 1.0;
+    }
+    Scene3d {
+        cam,
+        mesh: mesh.then(|| w.mesh.clone()),
+        map: tex,
+        cal: w.cal,
+        look: ImageLook::FULL,
+        mirror: true,
+        a: 1.0,
+        s: 1.0,
+        corner_radius: if site == Site::Hud { 22.0 } else { 0.0 },
+        relief: tilt(40.0).relief,
+        roads,
+        focus: None,
+    }
+}
+
+/// One frame of a map: backdrop, plate (HUD), the tilted 2D underlay while the 3D is not ready,
+/// the 3D, and a marker + border over it - exactly the order a call site uses.
+fn map_frame(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, ppp: f32, tweak: &dyn Fn(&mut Scene3d)) -> Out {
+    let (mesh_on, size) = (true, rig.size);
+    let _ = size;
+    rig.frame(ppp, |ctx| {
+        let p = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("map")));
+        p.rect_filled(ctx.content_rect(), 0.0, BACKDROP);
+        if v.site == Site::Hud {
+            p.rect_filled(v.rect.expand(4.0), 24.0, PLATE);
+        }
+        let cam3 = camera(w, v);
+        if h.wants_underlay() {
+            // The 2D tilted map, as today: base image + the roads, from the camera without relief.
+            let cam2 = Camera::from_cfg(&tilt(v.angle), v.car, v.yaw, v.zoom, v.rect);
+            let outline = [v.rect.left_top(), v.rect.right_top(), v.rect.right_bottom(), v.rect.left_bottom()];
+            let pc = p.with_clip_rect(v.rect);
+            draw_base(&pc, &BaseParams { cam: &cam2, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: true });
+            let mut cfg = MapLayerConfig::default();
+            cfg.pois.on = false;
+            cfg.race_lines.mode = RaceLineMode::Off;
+            let sel = RaceSel::default();
+            let cx = LayerCtx { p: &pc, cam: &cam2, s: 1.0, a: 1.0, car: v.car, corner_clip: None, icons: None, race_sel: &sel, week: None };
+            draw_layers(&cx, &w.layers, &cfg);
+        }
+        if !v.no_3d {
+            let mut sc = scene(w, cam3, mesh_on, Some(tex), v.site);
+            tweak(&mut sc);
+            let pp = match v.clip {
+                Some(c) => p.with_clip_rect(c),
+                None => p.clone(),
+            };
+            add_scene(&pp, h, sc);
+        }
+        // Over the 3D: a marker at the car and the border.
+        p.circle_filled(v.rect.center() + vec2(0.0, 36.0), 6.0, Color32::WHITE);
+        let radius = if v.site == Site::Hud { 22.0 } else { 0.0 };
+        p.rect_stroke(v.rect, radius, Stroke::new(2.0, Color32::from_rgb(230, 235, 240)), StrokeKind::Inside);
+    })
+}
+
+/// Run frames until the 3D is ready (the init is spread over a few), asserting every one is clean.
+fn warm_up(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, ppp: f32) -> Out {
+    for i in 0..12 {
+        let o = map_frame(rig, w, h, tex, v, ppp, &|_| {});
+        assert_eq!(o.gl_error, 0, "frame {i}: GL error 0x{:X}", o.gl_error);
+        assert!(o.fbo_restored, "frame {i}: the target framebuffer was not restored");
+        if h.status() == Gl3dStatus::Ready && !h.busy() {
+            return map_frame(rig, w, h, tex, v, ppp, &|_| {});
+        }
+        if let Some(e) = h.status().failure() {
+            panic!("3D failed in frame {i}: {e}");
+        }
+    }
+    panic!("3D not ready after 12 frames: {:?}", h.status());
+}
+
+fn inside(v: &View, ppp: f32) -> [usize; 4] {
+    let r = v.rect.shrink(6.0);
+    [(r.min.x * ppp) as usize, (r.min.y * ppp) as usize, (r.max.x * ppp) as usize, (r.max.y * ppp) as usize]
+}
+
+/// Mean absolute error per channel (0..255) between two pictures of the same size.
+fn mae(a: &Out, b: &Out) -> f64 {
+    assert_eq!(a.px.len(), b.px.len());
+    a.px.iter().zip(&b.px).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.px.len() as f64
+}
+
+/// Roads wide enough that the fill colour, not only the casing, is on screen.
+fn thick(s: &mut Scene3d) {
+    s.roads.min_px = 5.0;
+    s.roads.max_px = 8.0;
+}
+
+fn rgb(c: crate::maprender::cfg::Rgb) -> [u8; 3] {
+    c.0
+}
+
+// ── the suite, run per GL flavour ────────────────────────────────────────────────────────────
+
+fn open(flavour: Flavour, device: Option<usize>, size: [i32; 2]) -> Option<Rig> {
+    match Rig::new(flavour, device, size) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("SKIP: no {flavour:?} context on device {device:?}: {e} (EGL devices: {:?})", Headless::devices());
+            None
+        }
+    }
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(|a, b| a.total_cmp(b));
+    if v.is_empty() { f64::NAN } else { v[v.len() / 2] }
+}
+
+/// What every flavour must do: the HUD scene and the Dashboard scene come out clean, covered, with
+/// roads in their type colours, the markers above, the framebuffer restored, and a PNG.
+fn suite(flavour: Flavour, device: Option<usize>, tag: &str) {
+    let Some(mut rig) = open(flavour, device, [1100, 520]) else { return };
+    eprintln!("[{tag}] {}", rig.info());
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
+
+    // ── HUD pill, ppp 1 and 1.5
+    for ppp in [1.0f32, 1.5] {
+        let hud = View::hud();
+        let o = warm_up(&mut rig, &w, &h, tex, &hud, ppp);
+        let caps = h.caps().expect("probed");
+        if ppp == 1.0 {
+            eprintln!("[{tag}] caps: {} | es {} | max tex {} | aniso {:?} | timer {}", caps.version, caps.es, caps.max_texture, caps.aniso, caps.timer);
+            assert_eq!(caps.es, flavour == Flavour::Gles3);
+        }
+        o.save(&format!("{tag}_hud_ppp{ppp}.png"));
+        // Covered: nearly every pixel inside the pill (shrunk past the rounded corners) is map, not plate.
+        let b = inside(&hud, ppp);
+        let total = (b[2] - b[0]) * (b[3] - b[1]);
+        let plate = o.count_near(b, [10, 12, 16], 6);
+        assert!(plate * 20 < total, "[{tag}] HUD ppp {ppp}: {plate} of {total} pixels are still the plate");
+        // Over the 3D: the marker (white) and the border.
+        let m = o.at(((hud.rect.center().x) * ppp) as usize, ((hud.rect.center().y + 36.0) * ppp) as usize);
+        assert!(m[0] > 240 && m[1] > 240 && m[2] > 240, "[{tag}] marker above the 3D: {m:?}");
+        // Under the 3D, outside the callback: backdrop and plate untouched.
+        assert_eq!(o.at((2.0 * ppp) as usize, (2.0 * ppp) as usize)[..3], [60, 70, 80]);
+        let corner = o.at(((hud.rect.min.x + 4.0) * ppp) as usize, ((hud.rect.min.y + 4.0) * ppp) as usize);
+        assert_eq!(corner[..3], [10, 12, 16], "[{tag}] the rounded mask cuts the pill corner (plate shows): {corner:?}");
+        assert_eq!(h.status(), Gl3dStatus::Ready);
+    }
+    if flavour == Flavour::Gles3 && std::env::var("MESA_GLES_VERSION_OVERRIDE").as_deref() == Ok("3.0") {
+        assert!(h.caps().unwrap().version.contains("ES 3.0"), "{:?}", h.caps().unwrap().version);
+    }
+
+    // ── Dashboard: roads in type colours
+    let dash = View::dashboard();
+    warm_up(&mut rig, &w, &h, tex, &dash, 1.0);
+    let o = map_frame(&mut rig, &w, &h, tex, &dash, 1.0, &thick);
+    o.save(&format!("{tag}_dashboard.png"));
+    // A close look at the bridge and the tunnel portal: HUD at 3x, 120 m zoom.
+    let close = View { zoom: 120.0, car: (-250.0, 300.0), yaw: 0.0, angle: 55.0, ..View::hud() };
+    map_frame(&mut rig, &w, &h, tex, &close, 3.0, &|_| {}).save(&format!("{tag}_hud_close_x3.png"));
+    // The elevated highway seen from the side (a 22 m bridge over flat ground, 3 m deck).
+    let side = View { zoom: 70.0, car: (450.0, 250.0), yaw: 0.0, angle: 72.0, car_y: Some(100.5), ..View::hud() };
+    map_frame(&mut rig, &w, &h, tex, &side, 3.0, &|s| s.relief.deck_m = 6.0).save(&format!("{tag}_hud_bridge_side_x3.png"));
+    let b = [0usize, 0, rig.size[0] as usize, rig.size[1] as usize];
+    let styles = RoadsCfg::default().styles;
+    let mut found = vec![];
+    for ty in [RoadType::Road, RoadType::Offroad, RoadType::Other, RoadType::Trail, RoadType::Crosscountry, RoadType::Tunnel, RoadType::Highway, RoadType::Jump] {
+        let st = styles.get(ty).unwrap();
+        let n = o.count_near(b, rgb(st.color), 30);
+        found.push((ty, n));
+    }
+    eprintln!("[{tag}] road colours found in the Dashboard scene: {found:?}");
+    assert!(found.iter().filter(|(_, n)| *n > 20).count() >= 7, "[{tag}] roads by type: {found:?}");
+    let s = h.stats();
+    eprintln!("[{tag}] Dashboard 600x400: {} tri, {} draws, tiles {} near / {} far, cpu {:.2} ms, gpu {:?} ms", s.last.triangles, s.last.draws, s.last.tiles_near, s.last.tiles_far, s.callback_ms, s.last.gpu_ms);
+
+    // ── perf: medians over 30 frames
+    for (name, v, ppp) in [("HUD 208x136 driving 500 m", View::hud(), 1.0f32), ("Dashboard 600x400 800 m", View::dashboard(), 1.0)] {
+        let (mut gpu, mut cpu) = (vec![], vec![]);
+        for _ in 0..30 {
+            let o = map_frame(&mut rig, &w, &h, tex, &v, ppp, &|_| {});
+            assert_eq!(o.gl_error, 0);
+            let s = h.stats();
+            gpu.extend(s.last.gpu_ms);
+            cpu.push(s.last.cpu_ms);
+        }
+        let s = h.stats();
+        eprintln!("[{tag}] PERF {name}: {} tri, {} draws, cpu {:.3} ms, gpu {:.3} ms (median of 30)", s.last.triangles, s.last.draws, median(cpu), median(gpu));
+    }
+    rig.finish(&h);
+}
+
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_default_gl() {
+    suite(Flavour::Default, None, "default");
+}
+
+#[test]
+#[ignore = "needs an EGL device; run alone with MESA_GLES_VERSION_OVERRIDE=3.0 in the environment"]
+fn gl3d_gles30() {
+    // Mesa reads the override when it initialises, i.e. at the first context of the process, so
+    // it has to be in the environment of the test process (a `set_var` here would race the other
+    // tests' contexts and be ignored after them).
+    if std::env::var("MESA_GLES_VERSION_OVERRIDE").as_deref() != Ok("3.0") {
+        eprintln!("NOTE gl3d_gles30: MESA_GLES_VERSION_OVERRIDE=3.0 is not set: this is Mesa's ES 3.2, not 3.0");
+    }
+    suite(Flavour::Gles3, None, "gles30");
+}
+
+/// Mesa's software rasteriser: the last EGL device whose renderer says llvmpipe (or softpipe).
+#[test]
+#[ignore = "needs a software EGL device (llvmpipe); writes PNGs"]
+fn gl3d_llvmpipe() {
+    let n = Headless::devices().len();
+    let sw = (0..n).rev().find_map(|i| {
+        let r = Rig::new(Flavour::Default, Some(i), [64, 64]).ok()?;
+        let name = r.info().to_lowercase();
+        let ok = name.contains("llvmpipe") || name.contains("softpipe");
+        r.finish(&Gl3dHandle::new());
+        ok.then_some(i)
+    });
+    let Some(i) = sw else {
+        eprintln!("SKIP gl3d_llvmpipe: no software EGL device among {:?}", Headless::devices());
+        return;
+    };
+    suite(Flavour::Default, Some(i), "llvmpipe");
+}
+
+// ── egui callback hygiene ────────────────────────────────────────────────────────────────────
+
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_callback_keeps_egui_state_and_respects_the_clip_rect() {
+    let Some(mut rig) = open(Flavour::Default, None, [520, 300]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions { wrap_mode: egui::TextureWrapMode::MirroredRepeat, ..TextureOptions::LINEAR });
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    for ppp in [1.0f32, 1.5] {
+        let mut v = View::hud();
+        // The 3D is clipped to the left 120 points of the pill.
+        v.clip = Some(Rect::from_min_max(v.rect.min, pos2(v.rect.min.x + 120.0, v.rect.max.y)));
+        let o = warm_up(&mut rig, &w, &h, tex, &v, ppp);
+        o.save(&format!("callback_clip_ppp{ppp}.png"));
+        assert!(o.fbo_restored && o.gl_error == 0);
+        let px = |x: f32, y: f32| o.at((x * ppp) as usize, (y * ppp) as usize);
+        // Inside the clip: the scene. Outside it (still inside the pill): not drawn; the 2D underlay
+        // is gone once Ready, so what is there is the plate.
+        let inside_clip = px(v.rect.min.x + 60.0, v.rect.min.y + 100.0);
+        let outside = px(v.rect.min.x + 170.0, v.rect.min.y + 100.0);
+        assert_ne!(inside_clip[..3], [10, 12, 16], "the 3D is drawn inside the clip");
+        assert_eq!(outside[..3], [10, 12, 16], "nothing of the 3D leaks past the clip rect (ppp {ppp}): {outside:?}");
+        // egui meshes before (backdrop, plate) and after (marker, border) the callback are intact.
+        assert_eq!(px(2.0, 2.0)[..3], [60, 70, 80]);
+        let marker = px(v.rect.center().x, v.rect.center().y + 36.0);
+        assert!(marker[0] > 240, "marker over the 3D: {marker:?}");
+        // The fade alpha applies once to the whole picture: half alpha = half the scene over the plate.
+        let half = map_frame(&mut rig, &w, &h, tex, &v, ppp, &|s| s.a = 0.5);
+        let (f, hf) = (px(v.rect.min.x + 60.0, v.rect.min.y + 100.0), half.at(((v.rect.min.x + 60.0) * ppp) as usize, ((v.rect.min.y + 100.0) * ppp) as usize));
+        for k in 0..3 {
+            let want = (f[k] as f32 * 0.5 + [10.0, 12.0, 16.0][k] * 0.5).round() as i32;
+            assert!((hf[k] as i32 - want).abs() <= 3, "fade alpha 0.5 (ppp {ppp}): got {hf:?}, wanted about {want} in channel {k} (full {f:?})");
+        }
+    }
+    rig.finish(&h);
+}
+
+// ── fallback ─────────────────────────────────────────────────────────────────────────────────
+
+/// A context that cannot do 3D (or a driver that cannot compile the shaders) must end in a
+/// status message and the plain tilted 2D map, pixel for pixel the map without any 3D call.
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_fallback_status_and_the_2d_map() {
+    let Some(mut rig) = open(Flavour::Default, None, [260, 180]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let mut reference = View::hud();
+    reference.no_3d = true;
+    let ref_h = Gl3dHandle::new();
+    let want = map_frame(&mut rig, &w, &ref_h, tex, &reference, 1.0, &|_| {});
+    want.save("fallback_2d_reference.png");
+    // The reference has real content (the 2D map).
+    assert!(want.count_near(inside(&reference, 1.0), [10, 12, 16], 6) * 10 < 90 * 120);
+
+    let cases: [(&str, Gl3dOptions, &str); 3] = [
+        ("a context that is too old", Gl3dOptions { min_gl: (9, 9), min_es: (9, 9), ..Default::default() }, "too old"),
+        ("a shader that does not compile", Gl3dOptions { break_shader: true, ..Default::default() }, "shader"),
+        ("a GPU that is too slow", Gl3dOptions { guard: Some((0.0, 0.0)), ..Default::default() }, "too slow"),
+    ];
+    for (what, opts, needle) in cases {
+        let h = Gl3dHandle::with_options(opts);
+        let mut last = None;
+        for _ in 0..14 {
+            let o = map_frame(&mut rig, &w, &h, tex, &View::hud(), 1.0, &|_| {});
+            assert_eq!(o.gl_error, 0, "{what}: GL error 0x{:X}", o.gl_error);
+            assert!(o.fbo_restored);
+            last = Some(o);
+            if h.status().failure().is_some() {
+                break;
+            }
+        }
+        let msg = h.status().failure().map(str::to_owned).unwrap_or_else(|| panic!("{what}: no failure, status {:?}", h.status()));
+        eprintln!("fallback ({what}): {msg}");
+        assert!(msg.contains(needle), "{what}: {msg}");
+        assert_eq!(last_failure().as_deref(), Some(msg.as_str()));
+        assert!(h.wants_underlay());
+        // After the failure the frame is the 2D reference, exactly.
+        let after = map_frame(&mut rig, &w, &h, tex, &View::hud(), 1.0, &|_| {});
+        // A failure before the first frame leaves the map texture untouched: identical to the pixel.
+        // One after frames were drawn (the guard) finds egui's texture mipmapped + anisotropic by us,
+        // which only makes the 2D map a little smoother.
+        if needle == "too slow" {
+            assert!(mae(&after, &want) < 2.0, "{what}: after the failure the picture is the 2D map (mae {:.2})", mae(&after, &want));
+        } else {
+            assert!(after.px == want.px, "{what}: after the failure the picture is exactly the plain 2D map");
+        }
+        let _ = last;
+        h.destroy(&rig.gl);
+    }
+    rig.finish(&ref_h);
+}
+
+// ── winding / culling ────────────────────────────────────────────────────────────────────────
+
+/// The road mesh's winding vs the GL cull face, chosen by looking: culling back faces must not change
+/// the picture (a wrong face would cull the road tops).
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_culling_matches_no_culling() {
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let mut imgs = vec![];
+    for cull in [false, true] {
+        let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, cull, ..Default::default() });
+        warm_up(&mut rig, &w, &h, tex, &View::dashboard(), 1.0);
+        let o = map_frame(&mut rig, &w, &h, tex, &View::dashboard(), 1.0, &thick);
+        o.save(&format!("culling_{cull}.png"));
+        imgs.push(o);
+        h.destroy(&rig.gl);
+    }
+    let differing = imgs[0].px.chunks(4).zip(imgs[1].px.chunks(4)).filter(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).abs()).sum::<i32>() > 12).count();
+    let road = rgb(RoadsCfg::default().styles.road.color);
+    let (r_off, r_on) = (imgs[0].count_near([0, 0, 620, 420], road, 30), imgs[1].count_near([0, 0, 620, 420], road, 30));
+    eprintln!("culling: {differing} of {} pixels differ (translucent tunnel pixels blend twice without culling); road pixels {r_off} without, {r_on} with culling", 620 * 420);
+    assert!(r_on > 400 && r_on * 10 >= r_off * 9, "back-face culling removed road tops: the winding is wrong ({r_off} vs {r_on})");
+    assert!(differing * 100 < 620 * 420, "culling changed {differing} pixels");
+    rig.finish(&Gl3dHandle::new());
+}
+
+// ── flat 3D == tilted 2D ─────────────────────────────────────────────────────────────────────
+
+/// Over a flat world the 3D camera is the tilt maths (design 3.1): the draped image must be the
+/// tilted 2D base, and a road must lie on `Camera::project` to a fraction of a pixel.
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_flat_world_equals_the_tilted_2d_map() {
+    let Some(mut rig) = open(Flavour::Default, None, [260, 180]) else { return };
+    let mut w = world();
+    let flat = Arc::new(Terrain::flat(100.0));
+    w.terrain = flat.clone();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let mut v = View::hud();
+    v.car = (100.0, 50.0);
+    v.yaw = 0.5;
+    v.car_y = Some(100.0);
+    // 2D reference: the base image only.
+    let none = Gl3dHandle::new();
+    let mut ref_v = View::hud();
+    ref_v.car = v.car;
+    ref_v.yaw = v.yaw;
+    ref_v.car_y = v.car_y;
+    ref_v.no_3d = true;
+    // (map_frame draws roads in the underlay: use an empty road layer for a pure base comparison)
+    let empty = World { layers: Arc::new(MapLayers::default()), mesh: Arc::new(RoadMesh::default()), terrain: flat.clone(), image: w.image.clone(), cal: w.cal, orig: w.orig };
+    let want = map_frame(&mut rig, &empty, &none, tex, &ref_v, 1.0, &|_| {});
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    for i in 0..12 {
+        map_frame(&mut rig, &empty, &h, tex, &v, 1.0, &|s| {
+            s.relief.shading = 0.0;
+            s.roads.on = false;
+        });
+        if h.status() == Gl3dStatus::Ready && !h.busy() && i > 2 {
+            break;
+        }
+    }
+    let got = map_frame(&mut rig, &empty, &h, tex, &v, 1.0, &|s| {
+        s.relief.shading = 0.0;
+        s.roads.on = false;
+    });
+    want.save("flat_2d_base.png");
+    got.save("flat_3d_base.png");
+    let b = inside(&v, 1.0);
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in b[1]..b[3] {
+        for x in b[0]..b[2] {
+            let (p, q) = (want.at(x, y), got.at(x, y));
+            sum += (0..3).map(|k| (p[k] as i32 - q[k] as i32).unsigned_abs() as u64).sum::<u64>();
+            n += 3;
+        }
+    }
+    let mae = sum as f64 / n as f64;
+    eprintln!("flat world, 3D vs tilted 2D base: mean abs error {mae:.2} / 255 over {} px", n / 3);
+    assert!(mae < 6.0, "the flat 3D map differs from the tilted 2D one by {mae:.2}/255");
+
+    // A road along x at z = 0, 3 px wide: its pixels centre on Camera::project of its centreline.
+    let mut roads = RoadLayer::default();
+    roads.by_type[1].push(Chain::new(vec![[-300.0, 0.0], [300.0, 0.0]], vec![100.0, 100.0]));
+    let layers = Arc::new(MapLayers { rev: 1, roads: Arc::new(roads), ..Default::default() });
+    let mesh = Arc::new(RoadMesh::build(&layers.roads, &flat, 1));
+    let one = World { layers, mesh, terrain: flat.clone(), image: w.image.clone(), cal: w.cal, orig: w.orig };
+    v.car = (-60.0, -60.0);
+    v.yaw = 0.0;
+    let cam = camera(&one, &v);
+    let on = |s: &mut Scene3d| {
+        s.relief.shading = 0.0;
+        s.roads.min_px = 3.0;
+        s.roads.max_px = 3.0;
+        s.roads.casing_px = 0.0;
+        s.roads.styles.road.casing = false;
+    };
+    for _ in 0..8 {
+        map_frame(&mut rig, &one, &h, tex, &v, 1.0, &on);
+    }
+    let o = map_frame(&mut rig, &one, &h, tex, &v, 1.0, &on);
+    o.save("flat_3d_road.png");
+    let c = rgb(RoadsCfg::default().styles.road.color);
+    let p = cam.project(40.0, 0.0).expect("in front");
+    // centroid of road-coloured pixels in the column of p
+    let x = p.x.round() as usize;
+    let (mut sy, mut sw) = (0.0f64, 0.0f64);
+    for y in 0..o.h {
+        for xx in x - 1..=x + 1 {
+            let q = o.at(xx, y);
+            let d: i32 = (0..3).map(|k| (q[k] as i32 - c[k] as i32).abs()).sum();
+            if d < 60 {
+                sy += y as f64 + 0.5;
+                sw += 1.0;
+            }
+        }
+    }
+    assert!(sw > 3.0, "the road is not on screen");
+    let cy = sy / sw;
+    eprintln!("road centre row {cy:.2} vs Camera::project {:.2}", p.y);
+    assert!((cy - p.y as f64).abs() < 0.8, "the road lies {:.2} px from Camera::project", (cy - p.y as f64).abs());
+    rig.finish(&h);
+}
+
+// ── in-race focus ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_in_race_focus_mutes_or_hides_the_other_roads() {
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    // Focus: the Road chain is on the race line, every other chain is not.
+    let mut focus = crate::maprender::racesel::RoadFocus::default();
+    for (slot, chains) in w.layers.roads.by_type.iter().enumerate() {
+        for (ci, ch) in chains.iter().enumerate() {
+            focus.runs[slot].push(Run { chain: ci as u32, a: 0, b: ch.pts.len() as u32 - 1, relevant: slot == RoadType::Road.index() as usize, bbox: ch.bbox });
+        }
+    }
+    focus.jumps = vec![false; w.layers.roads.jumps.len()];
+    let focus = Arc::new(focus);
+    let styles = RoadsCfg::default().styles;
+    let count = |o: &Out, ty: RoadType| o.count_near([0, 0, 620, 420], rgb(styles.get(ty).unwrap().color), 30);
+    let mut counts = vec![];
+    for mode in [OtherRoads::Normal, OtherRoads::Muted, OtherRoads::Hidden] {
+        let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+        let f = Focus3d { focus: focus.clone(), cfg: RaceFocusCfg { other_roads: mode, ..Default::default() } };
+        let mut v = View::dashboard();
+        v.no_3d = false;
+        let mut last = None;
+        for _ in 0..8 {
+            last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                thick(s);
+                s.focus = Some(f.clone());
+            }));
+        }
+        let o = last.unwrap();
+        o.save(&format!("focus_{mode:?}.png"));
+        counts.push((mode, count(&o, RoadType::Road), count(&o, RoadType::Offroad), count(&o, RoadType::Highway)));
+        h.destroy(&rig.gl);
+    }
+    eprintln!("focus counts (mode, road, offroad, highway): {counts:?}");
+    let (normal, muted, hidden) = (counts[0], counts[1], counts[2]);
+    assert!(normal.2 > 20 && normal.3 > 20, "unfocused: other roads in their colours {normal:?}");
+    assert!(muted.1 > 20, "the road on the race line keeps its colour when others are muted");
+    assert!(muted.2 < 5 && muted.3 < 5, "muted roads lose their type colour {muted:?}");
+    assert!(hidden.1 > 20 && hidden.2 < 5 && hidden.3 < 5, "hidden roads are gone {hidden:?}");
+    rig.finish(&Gl3dHandle::new());
+}
+
+// ── the draw plan (CPU only) ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn plan_uses_the_far_set_when_zoomed_out_and_culls_what_is_off_screen() {
+    let w = world();
+    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(208.0, 136.0));
+    let cam = |car: (f32, f32), zoom: f32| Camera::from_cfg_relief(&tilt(40.0), car, 0.0, zoom, rect, Some(&w.terrain), None);
+    // Driving zoom: every tile within reach is the near set, with the deck.
+    let near = roads::plan(&w.mesh, &cam((0.0, 0.0), 500.0), 1.0, 10.0);
+    assert!(near.tiles_near > 0 && near.tiles_far == 0, "{near:?}");
+    assert!(near.triangles > 0 && !near.normal.is_empty() && near.normal.iter().all(|d| !d.far));
+    // Stopped zoom 3 km: 0.02 px per metre, the 32 m top-only set.
+    let far = roads::plan(&w.mesh, &cam((0.0, 0.0), 3000.0), 1.0, 10.0);
+    assert!(far.tiles_far > 0 && far.tiles_near == 0, "{far:?}");
+    assert!(far.normal.iter().all(|d| d.far));
+    assert!(far.triangles * 2 < near.triangles * 3, "the far set is much lighter: {} vs {} triangles", far.triangles, near.triangles);
+    // Tunnels are separate ranges (drawn last, on top).
+    assert!(!near.tunnel.is_empty(), "the tunnel through the hill");
+    // A view 6 km away from every road sees none of them.
+    let away = roads::plan(&w.mesh, &cam((6000.0, 6000.0), 200.0), 1.0, 10.0);
+    assert!(away.normal.is_empty() && away.tunnel.is_empty(), "{away:?}");
+}
+
+#[test]
+fn orphan_roads_do_not_dip_below_the_ground_in_the_mesh_the_renderer_gets() {
+    // The synthetic world carries an all-orphan (y = 0) chain; in node-height mode (the default)
+    // its vertices must lie on the terrain, not at 0.
+    let w = world();
+    let orphan_slot = 3u8;
+    let samples: Vec<_> = w.mesh.samples.iter().filter(|s| s.slot == orphan_slot && (s.z + 420.0).abs() < 40.0).collect();
+    assert!(samples.len() > 100);
+    for s in samples {
+        assert!((s.y_node - w.terrain.height(s.x, s.z)).abs() < 0.5 && s.y_node > 90.0, "orphan sample at ({}, {}) y {}", s.x, s.z, s.y_node);
+    }
+}
+
+// ── the real install ─────────────────────────────────────────────────────────────────────────
+
+/// The island: real terrain, the user's road data, the satellite image. `None` without an install.
+fn real_world() -> Option<World> {
+    let media = crate::gamedata::install::find_media(None)?;
+    let t0 = std::time::Instant::now();
+    let terrain = Arc::new(Terrain::load(&media, &|_| {}).map_err(|e| eprintln!("terrain: {e}")).ok()?);
+    let game = crate::maprender::data::GameData::load(&media).map_err(|e| eprintln!("game data: {e}")).ok()?;
+    let cur = crate::gamedata::roadtypes::RoadTypes::current(&crate::gamedata::roadtypes::override_path(), &game.nav);
+    let layers = Arc::new(game.layers(&cur, 1));
+    let mesh = Arc::new(RoadMesh::build(&layers.roads, &terrain, 1));
+    let (image, orig) = crate::minimap::overlay_map_image(crate::minimap::current_season()).map_err(|e| eprintln!("map image: {e:?}")).ok()?;
+    eprintln!("real world loaded in {} ms: {} road samples, {} + {} triangles (near + far set)", t0.elapsed().as_millis(), mesh.samples.len(), mesh.triangles().0, mesh.triangles().1);
+    Some(World { terrain, layers, mesh, image, cal: MapCalibration::DEFAULT, orig })
+}
+
+/// Scenes of the real island, rendered the way the three sites would: PNGs to look at, the GL
+/// state asserted clean, perf numbers printed (GPU time by timer query where available).
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_scenes() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_scenes: no FH6 install");
+        return;
+    };
+    // GL3D_DEVICE=<index> picks another EGL device (e.g. the llvmpipe one) for the perf numbers.
+    let device = std::env::var("GL3D_DEVICE").ok().and_then(|d| d.parse().ok());
+    let Some(mut rig) = open(Flavour::Default, device, [1300, 760]) else { return };
+    eprintln!("{}", rig.info());
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let t = &w.terrain;
+
+    // Where to look: an elevated highway (node height well above the ground), the highest road
+    // vertex, and the densest 200 m cell of the road mesh (the city).
+    let mut bridge = (0.0f32, 0.0f32, 0.0f32);
+    for ch in &w.layers.roads.by_type[RoadType::Highway.index() as usize] {
+        for (p, &y) in ch.pts.iter().zip(&ch.y) {
+            let ex = y - t.height(p[0], p[1]);
+            if ex > bridge.2 && ex < 60.0 {
+                bridge = (p[0], p[1], ex);
+            }
+        }
+    }
+    let mut peak = (0.0f32, 0.0f32, f32::MIN);
+    for ch in w.layers.roads.by_type.iter().flatten() {
+        for p in &ch.pts {
+            let h = t.height(p[0], p[1]);
+            if h > peak.2 {
+                peak = (p[0], p[1], h);
+            }
+        }
+    }
+    let mut cells = std::collections::HashMap::<(i32, i32), u32>::new();
+    for s in &w.mesh.samples {
+        *cells.entry(((s.x / 200.0).floor() as i32, (s.z / 200.0).floor() as i32)).or_default() += 1;
+    }
+    let (&(cx, cz), &n) = cells.iter().max_by_key(|(_, &n)| n).unwrap();
+    let city = (cx as f32 * 200.0 + 100.0, cz as f32 * 200.0 + 100.0);
+    let b = t.grid.bounds();
+    let centre = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+    eprintln!("scenes: bridge at ({:.0}, {:.0}) {:.0} m above ground; highest road ({:.0}, {:.0}) at {:.0} m; densest 200 m cell ({:.0}, {:.0}) with {n} samples; island centre ({:.0}, {:.0})", bridge.0, bridge.1, bridge.2, peak.0, peak.1, peak.2, city.0, city.1, centre.0, centre.1);
+
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
+    let hud = |car: (f32, f32), zoom: f32, yaw: f32| View { car, zoom, yaw, car_y: Some(t.height(car.0, car.1) + 1.0), ..View::hud() };
+    let big = |car: (f32, f32), zoom: f32, angle: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false };
+    let scenes: Vec<(&str, View, f32)> = vec![
+        ("hud_bridge_150_x3", hud((bridge.0, bridge.1), 150.0, 0.4), 3.0),
+        ("hud_mountain_500_x3", hud((peak.0, peak.1), 500.0, 0.0), 3.0),
+        ("hud_city_500_x3", hud(city, 500.0, 0.8), 3.0),
+        ("hud_city_stopped_3000", hud(city, 3000.0, 0.0), 1.0),
+        ("dashboard_city_1500", big(city, 1500.0, 55.0, 600.0, 400.0), 1.0),
+        ("dashboard_bridge_150", big((bridge.0, bridge.1), 150.0, 55.0, 600.0, 400.0), 1.0),
+        ("viewer_island_8000", big(centre, 8000.0, 55.0, 1280.0, 720.0), 1.0),
+        ("viewer_mountain_3000", big((peak.0, peak.1), 3000.0, 55.0, 1280.0, 720.0), 1.0),
+        ("viewer_west_edge_3000", big((b[0] + 600.0, centre.1), 3000.0, 55.0, 1280.0, 720.0), 1.0),
+    ];
+    for (name, v, ppp) in scenes {
+        let o = warm_up(&mut rig, &w, &h, tex, &v, ppp);
+        assert_eq!(o.gl_error, 0, "{name}: GL error 0x{:X}", o.gl_error);
+        o.save(&format!("real_{name}.png"));
+        let (mut gpu, mut cpu) = (vec![], vec![]);
+        for _ in 0..20 {
+            let o = map_frame(&mut rig, &w, &h, tex, &v, ppp, &|_| {});
+            assert_eq!(o.gl_error, 0, "{name}: GL error 0x{:X}", o.gl_error);
+            assert!(o.fbo_restored);
+            let s = h.stats();
+            gpu.extend(s.last.gpu_ms);
+            cpu.push(s.last.cpu_ms);
+        }
+        let s = h.stats().last;
+        eprintln!("PERF real {name}: {} tri, {} draws, tiles {} near / {} far, render cpu {:.3} ms, gpu {:.3} ms", s.triangles, s.draws, s.tiles_near, s.tiles_far, median(cpu), median(gpu));
+    }
+    rig.finish(&h);
+}

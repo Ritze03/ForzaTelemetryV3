@@ -186,6 +186,19 @@ impl Drop for Gl {
     }
 }
 
+
+/// Which GL the headless harness asks EGL for (the phase-K tests run the 3D renderer on each).
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Flavour {
+    /// What the overlay and eframe do today: `ContextAttributesBuilder::new().build(None)`
+    /// (desktop Core 4.6 on Mesa).
+    Default,
+    /// An explicit OpenGL ES 3.0 context (`MESA_GLES_VERSION_OVERRIDE=3.0` makes Mesa give
+    /// exactly 3.0 instead of its 3.2).
+    Gles3,
+}
+
 /// Headless EGL for the offscreen PNG harness: a GPU device display (`EGL_EXT_device_*`,
 /// no Wayland, no window) with the overlay's context setup, current surfaceless. Render into
 /// an FBO; `Drop` tears down in `Gl`'s order.
@@ -194,35 +207,78 @@ pub struct Headless {
     pub glow: Arc<glow::Context>,
     context: ManuallyDrop<PossiblyCurrentContext>,
     display: ManuallyDrop<Display>,
+    /// The EGL device's name, for test logs (Mesa's software rasteriser shows up as a device).
+    pub device: String,
 }
 
 #[cfg(test)]
 impl Headless {
+    /// The overlay's own recipe on the first device that works.
     pub fn new() -> Result<Self, String> {
+        Self::new_with(Flavour::Default, None)
+    }
+
+    /// `flavour` picks the context kind; `device` = index into [`Headless::devices`] (`None` =
+    /// the first that works). On a machine with a GPU, device 0 is the GPU and a later one is
+    /// usually Mesa's software rasteriser (llvmpipe): the no-GPU case.
+    pub fn new_with(flavour: Flavour, device: Option<usize>) -> Result<Self, String> {
         use glutin::api::egl::device::Device;
+        use glutin::config::Api;
+        use glutin::context::{ContextApi, Version};
         let mut last = String::from("no EGL device");
         let devices = Device::query_devices().map_err(|e| format!("EGL device query: {e}"))?;
-        for device in devices {
+        for (i, dev) in devices.enumerate() {
+            if device.is_some_and(|d| d != i) {
+                continue;
+            }
             // SAFETY: no native display handle; the device outlives the EGL library.
-            let display = match unsafe { Display::with_device(&device, None) } {
+            let display = match unsafe { Display::with_device(&dev, None) } {
                 Ok(d) => d,
                 Err(e) => {
                     last = format!("EGL device display: {e}");
                     continue;
                 }
             };
-            match Gl::init(&display, ConfigSurfaceTypes::empty(), &|_| true) {
-                Ok((glow, context, _)) => {
-                    return Ok(Self { glow: Arc::new(glow), context: ManuallyDrop::new(context), display: ManuallyDrop::new(display) })
+            let name = format!("{:?}", dev.name());
+            let (api, attrs) = match flavour {
+                Flavour::Default => (Api::OPENGL | Api::GLES3, ContextAttributesBuilder::new().build(None)),
+                Flavour::Gles3 => (Api::GLES3, ContextAttributesBuilder::new().with_context_api(ContextApi::Gles(Some(Version::new(3, 0)))).build(None)),
+            };
+            match Self::open(&display, api, &attrs) {
+                Ok((glow, context)) => {
+                    return Ok(Self { glow: Arc::new(glow), context: ManuallyDrop::new(context), display: ManuallyDrop::new(display), device: name })
                 }
                 Err(e) => {
                     last = e;
-                    // SAFETY: nothing created from this display survived `init`'s failure.
+                    // SAFETY: nothing created from this display survived the failure.
                     unsafe { display.terminate() };
                 }
             }
         }
         Err(last)
+    }
+
+    /// The names of the EGL devices, in the order `new_with` indexes them.
+    pub fn devices() -> Vec<String> {
+        use glutin::api::egl::device::Device;
+        Device::query_devices().map(|d| d.map(|d| format!("{:?}", d.name())).collect()).unwrap_or_default()
+    }
+
+    /// Explicit 8-bit RGBA config (as `Gl::init`), the context, current surfaceless.
+    fn open(display: &Display, api: glutin::config::Api, attrs: &glutin::context::ContextAttributes) -> Result<(glow::Context, PossiblyCurrentContext), String> {
+        let template = ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(true).with_surface_type(ConfigSurfaceTypes::empty()).with_api(api).build();
+        // SAFETY: plain config query on a valid display.
+        let configs = unsafe { display.find_configs(template) }.map_err(|e| format!("EGL configs: {e}"))?;
+        let rgba8 = Some(ColorBufferType::Rgb { r_size: 8, g_size: 8, b_size: 8 });
+        let config = configs.into_iter().find(|c| c.alpha_size() == 8 && c.num_samples() == 0 && c.color_buffer_type() == rgba8).ok_or("no 8-bit RGBA EGL config")?;
+        // SAFETY: config comes from this display.
+        let context = unsafe { display.create_context(&config, attrs) }
+            .map_err(|e| format!("EGL context: {e}"))?
+            .make_current_surfaceless()
+            .map_err(|e| format!("EGL surfaceless context: {e}"))?;
+        // SAFETY: the context is current on this thread and stays so.
+        let glow = unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) };
+        Ok((glow, context))
     }
 }
 

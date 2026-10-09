@@ -9,6 +9,7 @@
 //! view     Camera (flat, tilted, or with a Relief the 3D camera), world boxes, thinning, polygon clipping
 //! terrain  3D: the filled 8 m height grid (K1), hole fill + sea skirt shared with the map editor
 //! mesh3d   3D: the road mesh (resampled ribbons with decks, tiles, LOD sets, in-race focus flags), pure CPU (K1)
+//! gl3d     3D: the GL renderer of both (clipmap terrain + ribbon roads, per-context state, soft fallback to 2D), K2
 //! style    draw order, zoom-dependent widths, dash patterns, the POI category table
 //! racesel  which race lines to draw ("current race" is a best-effort guess) + the in-race road focus
 //! paint2d  draw_base + draw_layers: the egui Painter output
@@ -36,7 +37,7 @@
 //!   every layer already makes) follows the ground with no call-site change, and at height 0 it
 //!   *is* the tilt maths (tested to 1e-3 px). Terrain (`terrain`) and road mesh (`mesh3d`) are pure
 //!   CPU data built lazily on their own threads (`store::terrain` / `store::road_mesh`) only while a
-//!   map is in 3D mode; the GL scene that draws them is a separate module (K2). `Camera` lost
+//!   map is in 3D mode; the GL scene that draws them is `gl3d` (K2). `Camera` lost
 //!   `Copy` for the `Arc<Terrain>`: see `view` and `docs/features/minimap.md` ("3D: data and camera").
 //! * **Turnarounds are never drawn (D52)**: they exist so the game's AI can route, not for
 //!   people; no setting exists for them.
@@ -47,6 +48,8 @@
 
 pub mod cfg;
 pub mod data;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub mod gl3d;
 pub mod icontex;
 pub mod mesh3d;
 pub mod paint2d;

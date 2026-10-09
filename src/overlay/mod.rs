@@ -19,7 +19,7 @@
 pub mod snapshot;
 
 #[cfg(target_os = "linux")]
-mod gl;
+pub(crate) mod gl;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod pacing;
 #[cfg(any(target_os = "linux", target_os = "windows"))]

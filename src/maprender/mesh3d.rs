@@ -47,7 +47,6 @@
 //! Sizes on the real data (8 m steps): ~121 k samples, 485 068 vertices = 13.6 MB, 2.85 M near
 //! indices = 11.4 MB, 2 440 pieces over 177 tiles (a 186 ms build in a debug test, ~15 ms release).
 
-#![allow(dead_code)] // phase K: consumed by the GL renderer (K2); tested here
 
 use std::collections::HashMap;
 
@@ -81,9 +80,13 @@ pub const VERTS_PER_SAMPLE: usize = 4;
 /// Bytes per GPU vertex: `x, z, y_node` f32 (offset 0), `side` i8 / `bot` u8 / `slot` u8 / pad (12),
 /// `tx, tz` f32 (16), `s` f32 (24).
 pub const VERTEX_STRIDE: usize = 28;
+#[allow(dead_code)] // layout documentation; the renderer binds the same offsets (`gl3d::roads`)
 pub const OFFSET_POS: usize = 0;
+#[allow(dead_code)]
 pub const OFFSET_FLAGS: usize = 12;
+#[allow(dead_code)]
 pub const OFFSET_TAN: usize = 16;
+#[allow(dead_code)]
 pub const OFFSET_S: usize = 24;
 
 // ── height rules ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +94,7 @@ pub const OFFSET_S: usize = 24;
 /// The y (m) of a road point under D51's rules, as the vertex shader evaluates them (lift
 /// included): cross-country is always the terrain, jump lines always `y_node` (their taut
 /// string), everything else `y_node` ([`RoadHeight::Nodes`]) or the terrain ([`RoadHeight::Terrain`]).
+#[allow(dead_code)] // the CPU mirror of the shader's rule (tests pin the two together)
 pub fn road_y(slot: u8, y_node: f32, y_terrain: f32, mode: RoadHeight) -> f32 {
     let base = match (slot, mode) {
         (SLOT_CROSSCOUNTRY, _) => y_terrain,
@@ -203,6 +207,7 @@ pub struct Tile {
 
 impl Tile {
     /// Distance from (x, z) to the tile's box (0 inside), for choosing the LOD set.
+    #[allow(dead_code)] // the renderer's LOD choice needs the nearest point, not just the distance (`gl3d::roads::plan`)
     pub fn dist_to(&self, x: f32, z: f32) -> f32 {
         let dx = (self.bbox[0] - x).max(x - self.bbox[2]).max(0.0);
         let dz = (self.bbox[1] - z).max(z - self.bbox[3]).max(0.0);
@@ -266,14 +271,23 @@ struct Dense {
     seg: u32,
 }
 
+/// A nav node's height if it has one. `data::build_roads` gives nav **orphans** (nodes that are
+/// on no polyline, linked in only by the road-type file's `added` links) `y = 0.0` for "no height";
+/// that is 100 m below the sea, so taken literally the road would dive into the ground at every
+/// such node. A height of exactly 0 (or a non-finite one) counts as unknown and falls back to the
+/// terrain (K2; no real node sits at y = 0, the island is -1.8..1473 m with the sea at 100).
+pub fn known_y(y: f32) -> Option<f32> {
+    (y.is_finite() && y.abs() > 1e-3).then_some(y)
+}
+
 /// Resample a chain to <= `step` m: every chain vertex is kept, with equal sub-steps between
-/// them. Node heights are linear between vertices (non-finite ones fall back to the terrain);
+/// them. Node heights are linear between vertices (unknown ones, [`known_y`], fall back to the terrain);
 /// `drape` makes every sample take the terrain height (cross-country).
 fn densify(pts: &[[f32; 2]], ys: &[f32], step: f32, drape: bool, terrain: &Terrain) -> Vec<Dense> {
     let mut out: Vec<Dense> = Vec::with_capacity(pts.len() * 2);
     let node_y = |i: usize, x: f32, z: f32| {
         let y = ys.get(i).copied().unwrap_or(f32::NAN);
-        if drape || !y.is_finite() { terrain.height(x, z) } else { y }
+        if drape { terrain.height(x, z) } else { known_y(y).unwrap_or_else(|| terrain.height(x, z)) }
     };
     let mut last_seg = 0u32;
     for i in 0..pts.len().saturating_sub(1) {
@@ -461,6 +475,7 @@ impl RoadMesh {
     }
 
     /// Triangles of the near / far set.
+    #[allow(dead_code)] // tests and diagnostics
     pub fn triangles(&self) -> (usize, usize) {
         (self.idx_near.len() / 3, self.idx_far.len() / 3)
     }
@@ -517,7 +532,7 @@ fn jump_chain(j: &[f32; 6], terrain: &Terrain) -> Vec<Dense> {
         s[i] = s[i - 1] + (dense[i].x - dense[i - 1].x).hypot(dense[i].z - dense[i - 1].z);
     }
     let yt: Vec<f32> = dense.iter().map(|d| terrain.height(d.x, d.z)).collect();
-    let ys = taut_string(&s, &yt, j[2], j[5]);
+    let ys = taut_string(&s, &yt, known_y(j[2]).unwrap_or(f32::NAN), known_y(j[5]).unwrap_or(f32::NAN));
     for (d, y) in dense.iter_mut().zip(ys) {
         d.y = y;
     }
@@ -740,7 +755,7 @@ mod tests {
         // Cross-country over the 220 m hill at (-300, 200) with node heights far from the ground.
         roads.by_type[5].push(Chain::new(vec![[-500.0, 200.0], [-100.0, 200.0]], vec![0.0, 0.0]));
         // A road with the same nodes keeps them.
-        roads.by_type[1].push(Chain::new(vec![[-500.0, 210.0], [-100.0, 210.0]], vec![0.0, 0.0]));
+        roads.by_type[1].push(Chain::new(vec![[-500.0, 210.0], [-100.0, 210.0]], vec![50.0, 50.0]));
         // A jump from one side of the hill to the other, ends at 120 m (the hill is 320 m).
         roads.jumps.push([-500.0, 200.0, 120.0, -100.0, 200.0, 120.0]);
         let m = RoadMesh::build(&roads, &t, 1);
@@ -754,7 +769,7 @@ mod tests {
                 }
                 1 => {
                     road += 1;
-                    assert_eq!(sm.y_node, 0.0, "a road keeps its node heights (underground here)");
+                    assert_eq!(sm.y_node, 50.0, "a road keeps its node heights (underground here)");
                 }
                 7 => {
                     jump += 1;
@@ -776,6 +791,36 @@ mod tests {
         assert!(slopes.windows(2).all(|w| w[1] <= w[0] + 1e-3), "not concave");
         // Jump chains are numbered by the jump list and carry the jump slot into the vertices.
         assert!(m.src.iter().zip(&m.samples).filter(|(_, s)| s.slot == 7).all(|(r, _)| r.chain == 0 && r.seg == 0));
+    }
+
+    /// K1 note, handled in K2: nav orphans carry `y = 0` (`data::build_roads`), 100 m below the sea;
+    /// a node-height road must not dive to 0 at such a node - the node counts as height-less and
+    /// takes the terrain, with its neighbours' heights linear to it.
+    #[test]
+    fn orphan_nodes_without_a_height_take_the_terrain_not_zero() {
+        let t = Terrain::synthetic();
+        let mut roads = RoadLayer::default();
+        // Over the 220 m hill: real node heights 300 at both ends, an orphan (y = 0) in the middle.
+        roads.by_type[1].push(Chain::new(vec![[-400.0, 200.0], [-300.0, 200.0], [-200.0, 200.0]], vec![300.0, 0.0, 300.0]));
+        // A chain made only of orphans lies on the ground.
+        roads.by_type[3].push(Chain::new(vec![[300.0, -200.0], [400.0, -200.0]], vec![0.0, 0.0]));
+        // A jump whose take-off is an orphan: the string starts on the ground there, not at 0.
+        roads.jumps.push([-500.0, -500.0, 0.0, -400.0, -500.0, 120.0]);
+        let m = RoadMesh::build(&roads, &t, 1);
+        assert!(m.samples.iter().all(|s| s.y_node > 50.0), "no sample dives to 0: min {}", m.samples.iter().map(|s| s.y_node).fold(f32::MAX, f32::min));
+        let mid = m.samples.iter().find(|s| s.slot == 1 && (s.x - -300.0).abs() < 1e-3).expect("orphan node kept");
+        assert!((mid.y_node - t.height(-300.0, 200.0)).abs() < 1e-3, "{} vs ground {}", mid.y_node, t.height(-300.0, 200.0));
+        // (Between two orphan nodes the height is linear between their terrain heights.)
+        let orphans: Vec<_> = m.samples.iter().filter(|s| s.slot == 3).collect();
+        for s in [orphans[0], orphans[orphans.len() - 1]] {
+            assert!((s.y_node - t.height(s.x, s.z)).abs() < 1e-3);
+        }
+        assert!(orphans.iter().all(|s| s.y_node > 90.0));
+        let j0 = m.samples.iter().find(|s| s.slot == 7).unwrap();
+        assert!((j0.y_node - t.height(j0.x, j0.z)).abs() < 1e-3, "jump starts on the ground: {}", j0.y_node);
+        assert_eq!(known_y(0.0), None);
+        assert_eq!(known_y(f32::NAN), None);
+        assert_eq!(known_y(-1.8), Some(-1.8));
     }
 
     #[test]
