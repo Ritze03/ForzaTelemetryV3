@@ -244,7 +244,7 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 | Module | What it holds |
 |---|---|
 | `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
-| `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid + arc length per point `cum`). |
+| `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `RoadLayer::joins` (`Joins`: an `End` per chain end + the `Overpass`es, D81), `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid + arc length per point `cum`). |
 | `icontex.rs` | `IconTex`: uploads the store's icon pixels as a texture **per egui context** and builds that context's `IconAtlas`. |
 | `store.rs` | The process-wide loader / cache: `layers()`, `refresh_now()`, thread `map-layers`. |
 | `view.rs` | `Camera` (flat or tilted; `from_cfg`, `focal_for`, `depth_scale_at_row`), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `clip_segment_convex`, `fan`. |
@@ -266,7 +266,9 @@ All coordinates are world metres (x east, z north; heights ride along for phase 
   `jumps` (take-off from `jump_from`, else the first node); `added` links follow as single segments.
   On the project data: 1 798 chains / 41 380 vertices (edges: road 21 701, offroad 7 237, other 317,
   trail 3 943, cross-country 144, tunnel 904, highway 4 996, turnaround 340, jump 18; a real-install
-  test pins them). *Why not `mapedit::data::road_graph`:* it rounds to 0.1 m, loses the polyline
+  test pins them). **Joins (D81):** `RoadLayer::joins()` says how every chain end meets the rest
+  (`End::Dead` / `End::Join { next, slot }` = exactly one other piece goes on / `End::Junction` = 3+
+  arms) and lists the `Overpass`es; see "Road joins and junctions" below. *Why not `mapedit::data::road_graph`:* it rounds to 0.1 m, loses the polyline
   order (no chains) and has no `jump_from`.
 - **POIs**: the reader's `Poi`s plus the 15 **danger signs** (`Pois::load_danger_signs`, ~0.2 s, they
   live in the 40 GB GeoChunk0), each mapped to a *category* (`style::POI_CATS`, the demo's category
@@ -322,8 +324,9 @@ folder, mirrored into `gamedata::install::USER_DIR` for the helper threads). One
 Order on the Dashboard: base image, then **`draw_layers`** (roads by type, jump lines, race lines with
 start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compass.
 
-- **CPU `Painter`, no baking.** One `Shape::line` per visible chain, a casing pass then a fill pass per
-  type, chains culled by their bbox against the view's world box (`Camera::world_aabb`), vertices
+- **CPU `Painter`, no baking.** One `Shape::line` per visible chain, every type's casing first, then
+  every type's fill (D81; chain ends mitred or round-capped, overpasses outlined, see "Road joins and
+  junctions" below), chains culled by their bbox against the view's world box (`Camera::world_aabb`), vertices
   thinned to >= 2 px apart on screen (`view::thin` keeps the first and last point and is idempotent).
   *Why:* road types change on every editor Save and are toggled per map, and widths are in screen px
   and change with the eased zoom; baking into the map texture or pre-tessellating in world space would
@@ -369,6 +372,113 @@ start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compa
 - **Image look**: opacity and brightness are the mesh vertex colour. **Saturation is approximate:**
   egui cannot desaturate a texture, so below 1 a grey veil (alpha `0.6 * (1 - saturation)`) is drawn
   over the same shape.
+
+### Road joins and junctions (D81)
+
+*Why (the user, 2026-10-09):* "In general, we need a better way of connecting the roads to each other.
+All intersections look a bit broken. Good enough for a demo, not for a product." and, with a 3D
+screenshot of an L-corner with a notch: "It should also connect the nodes to each other in a way, that
+allows intersections to be drawn more cleanly". Before D81 every chain was drawn on its own: square
+ends at every chain end (a notch on the outside of a corner where two chains meet, an overlap inside),
+in 2D each type's casing drawn right before its fill (so a road's outline ran across the mouth of every
+lower-ranked road joining it), in 3D the casing a band of each ribbon (the same).
+
+**Topology** (`data::Joins`, built once per road layer on the loader thread, `RoadLayer::joins()`): chain
+vertices at bit-identical (x, z) are one nav node (`build_roads` takes every position from the node id,
+so a shared node gives identical floats). Every chain end gets an `End`: **`Dead`** (nothing else
+there), **`Join { next, slot }`** (exactly one other piece goes on: a type change, an L-corner of two
+chains, a ring closing on itself; `next` = that piece's neighbouring vertex) or **`Junction`** (3+
+arms; a vertex inside a chain counts two arms, a chain end one). Turnarounds (never drawn) and jump
+lines (drawn apart) are no arms, so a road ending at a turnaround is a dead end. Real install: 775
+dead ends (674 of them the turnarounds' own), 830 joined ends, 1 991 at a junction. **Roads that only
+cross share no vertex and are no junction**: a proper crossing of two segments without a shared vertex,
+both heights known and differing by `OVERPASS_DY_M` = 4 m or more, is an **`Overpass`** (503 on the
+island; the upper road's slot / chain / segment, the point, its height, the lower road's slot and the
+crossing angle), found with a 64 m cell grid. The table is rebuilt for the call when chains were pushed
+after it was built (synthetic layers), and a cloned `RoadLayer` drops it. Build ~7 ms release, most
+of it the overpass grid (the road rebuild on an editor Save goes from ~5 to ~12 ms, on the loader
+thread).
+
+**One rule for both renderers: every casing under every fill.** The outline then runs round the union
+of the roads that meet, never across one of them, so a junction is the union of its arms: no polygon
+of its own is needed. **Joined ends are mitred** (both pieces end on the corner's bisector, so a road
+reads as one line through a type change or round an L-corner); **dead ends and junction ends get a
+round cap** of the road's own width (at a junction the caps of the arms and the through road overlap
+at the node; the top-ranked arm's fill is on top, so the patch takes the "biggest" road's style, a
+highway's rounded end over the road it joins).
+
+*Why not a junction polygon with the ribbons trimmed to it* (the first idea): the road widths are
+screen px (the zoom rule, clamped to `min_px..max_px`, tapered with depth), so the trim points move
+with every zoom step and, in 3D, differ per vertex depth; a world-space polygon cannot be precomputed,
+and computing it per frame on the CPU (2D) or in the shader (3D) buys nothing the casing-first rule
+does not give for free. Round caps also need no knowledge of the other arms' widths or types, so a
+hidden or switched-off arm simply leaves the others' caps (no stub: a cap belongs to its own road).
+
+**2D** (`paint2d::road_pass`): every type's lines are collected first (culled, projected, thinned,
+tapered), then all casings are drawn (bottom to top type order), then all fills. A `Join` end is drawn
+on 1 px along the corner's bisector (egui mitres the corner onto that short last segment and ends it
+square to it, i.e. along the bisector, where the next piece ends the same way; the 1 px overlap hides
+the anti-aliasing seam) plus a **mitre wedge** (`Deco::Wedge`: the triangle node, outer edge point, mitre
+tip, in each pass's width and colour, because egui bevels that short segment's outer corner). A
+`Dead` / `Junction` end gets a **round cap** (`Deco::Cap`: a half disc reaching 1 px back into the
+line). The fill's caps and wedges are skipped for a translucent or dashed fill (a translucent one would
+darken where it meets its own line, a dashed one ending in a gap would get a dot); the casing's always
+come. A join onto a type that is switched off is a cap. **Overpasses**: casing-first alone would merge
+an overpass with the road under it (the pre-D81 drawing did that only for crossings of one type: the
+interchange ramps were one yellow blob). After the fills, the upper road's stretch over each overpass
+is drawn once more, its casing over the lower road and its fill over that, 1.5 px past the casing's
+ends; the stretches of one road that overlap are merged and drawn lowest first. Crossings flatter than
+~15 degrees get none (`OVERPASS_MIN_SIN`), and a stretch that would run over a road lying under it
+almost in parallel is dropped (it showed as a patch of the upper road over the lower one at a stacked
+interchange); only cased, solid, opaque upper types, both types drawn in the pass.
+Caps, wedges and overpass outlines of a line narrower than 3 px are not drawn (`DECO_MIN_R`: unseen
+at that size, and the zoomed-out island has ~4 000 of them; see Performance). *Trade-offs:* the in-race
+focus's muted pass keeps plain square ends (translucent, no casing); two roads stacked almost in
+parallel at different heights are drawn by type rank as before (2D cannot show that stacking).
+
+**3D** (`mesh3d`, `gl3d::shaders::ROAD_VS`, `scene.rs`): the mesh's tangent at every sample is the
+bisector of its two segments times the mitre factor `1 / cos(turn / 2)` (at most `MITER_MAX` = 2, a
+120 degree turn; the shader offsets by `(-tz, tx) * half_width`, so the ribbon keeps its width through
+a bend). At a `Join` the end takes the bisector with the next piece's first segment, so **both ribbons
+end in the very same two vertices** (tested: an L-corner's vertices are the mitre's inner and outer
+corner exactly) at the node's one height. A `Dead` / `Junction` end gets a **round cap**: 7 rim samples
+(`CAP_RIM`) after the piece's own, whose left vertex lies on the rim and whose right vertices are the
+cap's centre (pad byte 1: the shader puts it on the point with side 0), a fan of 8 triangles round the
+centre (near and far set), plus the rim wall and the underside in the near set, so a dead end's deck is
+closed. All of a cap's vertices sit on the end's point, so the shader gives them the ribbon's half-width.
+The renderer draws the roads in **two passes** (`uPass`): **casing** (every cased road at fill + casing
+px in its casing colour, with its deck) and **fill** (every road at its fill width, nearer the eye by
+`BIAS_FILL` = 0.05 % of the depth; the casing pass ranks its types with a step of 0.005 %, so every fill
+is over every casing and the topmost fill, 0.41 %, stays under the trails' 0.44 %). A cased road's deck
+is the casing pass's (the fill pass keeps its bottom vertices up: walls and underside collapse); a road
+without a casing (the untyped slot, muted roads) is drawn wholly in the fill pass. The fill's edge over
+its casing is anti-aliased in the fragment shader (`vSide`, `fwidth`; no MSAA in the scene FBO), radial in
+a cap. Real install: 2 092 caps, +14 644 samples (135 911), +66 944 near / +16 736 far triangles (1.02 M /
+71 k).
+
+**In-race focus and per-edge styling (for the route recolouring, D80 / #215).** Nothing is shared
+between two roads: a join is two half-mitres, a junction patch is each arm's own cap, so every piece
+keeps its own style and the focus can mute or hide any run of any chain without leaving a stub
+(tested: a 4-way with one arm hidden, 2D and 3D). 2D: a run's own ends inside its chain (where the
+relevance changes) stay square; a run that ends at a chain end takes that end's join or cap. 3D: cap
+samples carry the end sample's `SampleSrc` (`cap: true`), so `build_rel` flags them with their road.
+A route colour (#215) can therefore be one more per-run / per-vertex style exactly like the focus: in
+2D a pass (or a slot style override) over the route's runs, in 3D a per-vertex value next to `aRel`; a
+recoloured run's caps and wedges come with it. The one thing to watch: a `Join` between a route piece
+and a non-route piece is mitred against the other piece's geometry, which stays right whatever colour
+either gets.
+
+**Tests:** `data::tests` (type change, L-corner, ring, T / X / Y junctions, turnaround and jump no arms,
+overpass vs at-grade vs shared vertex, a stale table rebuilt; the real install pins 775 / 830 / 1 991 ends
+and 503 overpasses), `mesh3d::tests` (an L-corner's and a type change's ends share the mitre's vertices
+exactly, caps only on dead ends, a cap as wide as its road, cap faces outward, a hidden arm takes its cap
+along), `paint2d::tests` (every casing before every fill and no outline across a junction's mouth by
+tessellated coverage, the L-corner's outer corner filled to the mitre tip and no further, a type change's
+colour boundary on the bisector, a hidden arm leaves nothing, an overpass outlined and an at-grade
+crossing not). PNGs (`--ignored`, `GL3D_PNG_DIR`, `JOIN_TAG=before|after`): `gl3d_synthetic_joins` (the
+scenes above in flat 2D and 3D, plus the 4-way with an arm hidden) and `gl3d_real_install_joins` (a city
+crossing and T, a highway junction, an L-corner, a type change, a shallow Y of the real island, 2D at
+120 / 400 m and 3D at 40 / 150 m).
 
 ### Race lines and the "current race" guess
 
@@ -644,8 +754,10 @@ port of the editor page's `tautString`; real data: 12 of the 18 jump lines bend 
 vertices) and the per-vertex width rule. *Why heights live in the shader, not in the mesh:* the
 Nodes/Terrain switch, the deck and the exaggeration are live settings; a mesh rebuild per slider
 step would stall. *Why `s` is the distance along the whole chain:* dashes run on across tile borders.
-Tangents are central differences across the whole chain, so adjacent pieces meet without a gap;
-corners are not mitred (the ribbon narrows a little at sharp nodes).
+Tangents are the bisector of the two segments at each sample, scaled by the mitre factor, so
+adjacent pieces meet without a gap and corners keep the full width; chain ends are mitred onto the
+next piece or capped (D81, "Road joins and junctions" above; the numbers above are pre-D81, the caps
+add 14 644 samples and 66 944 near triangles).
 `Tile { key, bbox, y_range, near, far }`: `in_frustum(view_proj, exag, pad)` (conservative, 8
 corners x 6 planes) and `dist_to(x, z)` (for choosing the LOD set) are the helpers for the per-frame
 tile loop (one `draw_elements` per visible tile, +1 for its tunnels).
@@ -725,7 +837,8 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
   colour, dashes and focus are all uniforms / per-vertex shader work, so no setting re-uploads
   anything. Node heights vs terrain drape is one uniform, cross-country always draped, jump lines
   carry their taut string. The width is the 2D rule evaluated per vertex depth
-  (`clamp(px/m * metres, min, max) * type factor`, casing = the outer band of `casing_px`), so it
+  (`clamp(px/m * metres, min, max) * type factor`; the casing is a pass of its own since D81: every
+  casing at fill + `casing_px`, then every fill over them, see "Road joins and junctions"), so it
   tapers by construction. Dashes (trail, jump) are in **metres** along the chain, converted from the 2D
   pixel pattern at the car's scale (so they foreshorten with the road). **Tunnels** are a second range
   per tile, drawn last with the depth test off (underground, as the editor page). In-race focus
@@ -736,7 +849,8 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
 - **Depth bias toward the eye** (0.2 % of the camera depth + 0.02 % per draw rank, `BIAS_*`):
   the coarse clipmap levels (cells ~ distance / 32) sit above or below the exact bilinear surface the
   roads follow, so unbiased ribbons were buried on slopes at distance; the per-rank step orders
-  overlapping types (highway over road over trail) without z-fighting. A *relative* bias keeps working
+  overlapping types (highway over road over trail) without z-fighting (since D81 per pass: the casing
+  pass at 0.2 % + 0.005 % per rank, the fill pass at 0.25 % + 0.02 % per rank). A *relative* bias keeps working
   from the HUD's 1 km eye distance to the Viewer's 25 km (depth resolution is relative too).
 - **LOD** (design 5.5, `roads::plan`): per 1 km tile, from the screen scale at the tile's nearest
   point: below `FAR_PPM` = 0.1 px/m the 32 m top-only index set, else the 8 m set with the deck; tiles
@@ -777,7 +891,8 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
 **Defaults used** (design 9.3): sea flat at y 100, POIs / markers / race lines over the 3D in egui
 without occlusion (a POI behind a ridge still shows: K6), exaggeration 1.0, shading 0.35, deck 3 m.
 
-**Measured** (RX 7900 XTX, Mesa 26.2.4, release, `GL_TIME_ELAPSED` around terrain + roads, median of
+**Measured** before D81 (two road passes since, about twice the road triangles and draws, GPU
++0.004..0.012 ms: see Performance) (RX 7900 XTX, Mesa 26.2.4, release, `GL_TIME_ELAPSED` around terrain + roads, median of
 20 frames; real island data; the design's numbers in brackets):
 
 | Scene | triangles | draws | GPU ms | CPU ms (render) |
@@ -968,6 +1083,16 @@ at 5 km 0.4 + 0.6 ms; tilted 900 x 600 at 5 km 0.8 + 0.6 ms; HUD-sized 208 x 136
 at 300 m 0.20 + 0.13 ms (144 chains, 3 k vertices, 20 POIs, 7 gates), at 700 m 0.56 + 0.30 ms (90
 POIs); tilted 900 x 600 at 5 km 1.3 + 0.6 ms with the taper. Debug builds are about 8x slower. Loading: `GameData::load` 0.44 s in a cold test run,
 a roads rebuild 4 ms.
+
+**D81 (road joins), the same bench before -> after on one machine** (build + tessellate, ms): Dashboard
+900 x 600 at 5 km 0.73 + 1.22 -> 0.76 + 1.08 (roads alone 0.73 + 1.16), at 1.5 km roads alone 0.23 +
+0.37; 420 x 420 at 5 km 0.64 + 0.79 -> 0.76 + 1.06; tilted 900 x 600 at 5 km 1.68 + 0.92 -> 1.67 + 0.69;
+HUD 208 x 136 tilted at 300 m 0.12 + 0.08 -> 0.13 + 0.07, at 700 m 0.38 + 0.16 -> 0.37 + 0.17. *The
+first cut drew every cap and wedge*: ~4 000 tiny polygons at 5 km doubled it (1.58 + 2.02 ms), so
+caps, wedges and overpass outlines of lines narrower than 3 px are skipped (`DECO_MIN_R`; unseen at
+that size). The road layer rebuild 5 -> 12 ms (the join table, loader thread). 3D: the mesh build 16 ->
+20 ms release (real island), the real-scene GPU time +0.004..0.012 ms (twice the road draws and
+triangles: HUD city 122 k -> 219 k, Dashboard city 294 k -> 608 k), render CPU unchanged (~0.3 ms).
 
 ## Solo trail
 
