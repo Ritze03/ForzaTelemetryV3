@@ -243,13 +243,33 @@ pub fn style_table(roads: &RoadsCfg, focus: Option<&RaceFocusCfg>, scale: f32, s
             match f.other_roads {
                 OtherRoads::Normal => 0.0,
                 OtherRoads::Muted => 1.0,
-                OtherRoads::Hidden => 2.0,
+                // RaceOnly with the race road: the scene skips the road mesh altogether
+                // (`Gl3d::render`); without one it is Hidden.
+                OtherRoads::Hidden | OtherRoads::RaceOnly => 2.0,
             },
             f.mute_alpha,
             f.mute_width,
             0.0,
         ];
         t.mute_rgb = rgb(f.mute_color);
+    }
+    t
+}
+
+/// The style table of the race road's own mesh (D80, `RoadMesh::race_road`): every slot in the
+/// race colour (opaque; its tunnel stretches at the road tunnels' alpha), solid, cased in the
+/// `Road` type's casing colour, [`style::RACE_ROAD_WIDTH`] wide under the roads' width rule; no
+/// focus muting, one rank.
+pub fn race_table(roads: &RoadsCfg, color: crate::maprender::cfg::Rgb, scale: f32, s: f32, ppp: f32) -> StyleTable {
+    let mut t = style_table(roads, None, scale, s, ppp);
+    let c = rgb(color);
+    let casing = rgb(roads.styles.road.casing_color);
+    let tunnel_alpha = roads.styles.tunnel.alpha.clamp(0.3, 1.0);
+    for slot in 0..SLOTS {
+        let alpha = if slot == crate::maprender::mesh3d::SLOT_TUNNEL as usize { tunnel_alpha } else { 1.0 };
+        t.a[slot] = [c[0], c[1], c[2], alpha];
+        t.b[slot] = [casing[0], casing[1], casing[2], style::RACE_ROAD_WIDTH];
+        t.c[slot] = [0.0, 0.0, 1.0, 0.0];
     }
     t
 }

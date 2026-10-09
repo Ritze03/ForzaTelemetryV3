@@ -906,6 +906,74 @@ fn gl3d_in_race_focus_mutes_or_hides_the_other_roads() {
     rig.finish(&Gl3dHandle::new());
 }
 
+// ── the race road (D80) and "race road only" (D82) ──────────────────────────────────────────
+
+/// The focus of the synthetic world with a race road along chain 0 of `slot` (its points and
+/// heights, the driving line 0.3 m up): that chain relevant, every other one not.
+fn race_focus(w: &World, slot: RoadType, color: crate::maprender::cfg::Rgb) -> Arc<crate::maprender::racesel::RoadFocus> {
+    let mut focus = crate::maprender::racesel::RoadFocus::default();
+    for (s, chains) in w.layers.roads.by_type.iter().enumerate() {
+        for (ci, ch) in chains.iter().enumerate() {
+            focus.runs[s].push(Run { chain: ci as u32, a: 0, b: ch.pts.len() as u32 - 1, relevant: s == slot.index() as usize && ci == 0, bbox: ch.bbox });
+        }
+    }
+    focus.jumps = vec![false; w.layers.roads.jumps.len()];
+    let ch = &w.layers.roads.by_type[slot.index() as usize][0];
+    focus.race = Some(crate::maprender::racesel::RaceRoad { pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), closed: false, color });
+    Arc::new(focus)
+}
+
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_race_road_over_the_roads_and_race_only() {
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let race = crate::maprender::cfg::RaceCfg::default().sprint_color;
+    let styles = RoadsCfg::default().styles;
+    let count = |o: &Out, c: [u8; 3]| o.count_near([0, 0, 620, 420], c, 30);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    // (name, race road along, view centre, other roads)
+    let cases = [
+        ("race_road_muted", RoadType::Road, (0.0, -250.0), OtherRoads::Muted),
+        ("race_road_hidden", RoadType::Road, (0.0, -250.0), OtherRoads::Hidden),
+        ("race_road_only", RoadType::Road, (0.0, -250.0), OtherRoads::RaceOnly),
+        ("race_road_tunnel", RoadType::Tunnel, (-300.0, 0.0), OtherRoads::Muted),
+    ];
+    let mut counts = vec![];
+    for (name, slot, car, mode) in cases {
+        let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+        let f = Focus3d { focus: race_focus(&w, slot, race), cfg: RaceFocusCfg { other_roads: mode, ..Default::default() } };
+        v.car = car;
+        let mut last = None;
+        for _ in 0..8 {
+            last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                thick(s);
+                s.focus = Some(f.clone());
+            }));
+        }
+        let o = last.unwrap();
+        assert_eq!(o.gl_error, 0, "{name}");
+        o.save(&format!("{name}.png"));
+        let c = (name, count(&o, race.0), count(&o, rgb(styles.road.color)), count(&o, rgb(styles.offroad.color)), count(&o, rgb(styles.highway.color)), h.stats().last.triangles);
+        eprintln!("{c:?}");
+        counts.push(c);
+        h.destroy(&rig.gl);
+    }
+    let (muted, hidden, only, tunnel) = (counts[0], counts[1], counts[2], counts[3]);
+    assert!(muted.1 > 300 && hidden.1 > 300 && only.1 > 300, "the race road is drawn {counts:?}");
+    assert!(muted.2 < 20, "the road under the race road is covered by it {muted:?}");
+    assert!(only.2 < 5 && only.3 < 5 && only.4 < 5, "race road only: no road of the road mesh {only:?}");
+    // Hidden still draws the road mesh (its hidden pieces discarded); race-only draws the terrain
+    // and the race mesh alone: the road mesh's triangles (two passes) are gone.
+    let road_tris = w.mesh.triangles().0;
+    assert!(hidden.5 >= only.5 + road_tris / 2, "race only: no road mesh triangles {hidden:?} {only:?} (road mesh {road_tris})");
+    assert!(tunnel.1 > 200, "the race road through the hill is drawn over it like a tunnel {tunnel:?}");
+    rig.finish(&Gl3dHandle::new());
+}
+
+
 // ── the draw plan (CPU only) ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1265,4 +1333,128 @@ fn gl3d_real_install_joins() {
         }
     }
     rig.finish(&h);
+}
+
+/// D80 on the island: race roads (a turn at a junction, a road passing over the route, a
+/// cross-country route, The Goliath 5555) in 3D (HUD and Dashboard looks, other roads muted, and
+/// the Goliath with "race road only") and in flat 2D, to look at. Prints where each one is and the
+/// race mesh build time.
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_race_roads() {
+    use crate::gamedata::icons::RaceClass;
+    use crate::maprender::racesel::{RaceRoad, RoadFocus};
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_race_roads: no FH6 install");
+        return;
+    };
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let races = &w.layers.races;
+    let heading = |l: &crate::gamedata::racelines::RaceLine, i: usize| {
+        let (a, b) = (l.pts[i.saturating_sub(2)], l.pts[(i + 2).min(l.pts.len() - 1)]);
+        (b[0] - a[0]).atan2(b[1] - a[1])
+    };
+    let wrap = |x: f32| (x + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    // A sharp turn (> 70 degrees within 20 m) on an asphalt route at a road node.
+    let mut nodes = std::collections::HashSet::new();
+    for ch in w.layers.roads.by_type.iter().flatten() {
+        for p in &ch.pts {
+            nodes.insert(((p[0] / 4.0).round() as i32, (p[1] / 4.0).round() as i32));
+        }
+    }
+    let class = |li: usize| w.layers.race_class.get(&races.lines[li].route).copied();
+    let mut junction = None;
+    'j: for li in 0..races.lines.len() {
+        if !matches!(class(li), Some(RaceClass::AsphaltP2p | RaceClass::AsphaltCircuit | RaceClass::Streetracing)) {
+            continue;
+        }
+        let l = &races.lines[li];
+        for i in 4..l.pts.len().saturating_sub(4) {
+            let turn = wrap(heading(l, i + 2) - heading(l, i - 2)).abs();
+            let p = l.pts[i];
+            if turn > 1.2 && nodes.contains(&((p[0] / 4.0).round() as i32, (p[1] / 4.0).round() as i32)) {
+                junction = Some((li, i));
+                break 'j;
+            }
+        }
+    }
+    // A road crossing over the route (more than 6 m above it, within 3 m horizontally).
+    let mut over = None;
+    'o: for li in 0..races.lines.len() {
+        let l = &races.lines[li];
+        for ch in w.layers.roads.by_type.iter().flatten() {
+            if !crate::maprender::view::bbox_hits(&ch.bbox, &l.bbox) {
+                continue;
+            }
+            for (k, p) in ch.pts.iter().enumerate() {
+                for i in (0..l.pts.len()).step_by(2) {
+                    let q = l.pts[i];
+                    if (p[0] - q[0]).abs() < 3.0 && (p[1] - q[1]).abs() < 3.0 && ch.y[k] - l.y[i] > 6.0 && ch.y[k] - l.y[i] < 20.0 {
+                        over = Some((li, i));
+                        break 'o;
+                    }
+                }
+            }
+        }
+    }
+    let cross = (0..races.lines.len()).find(|&li| matches!(class(li), Some(RaceClass::CrosscountryP2p | RaceClass::CrosscountryCircuit))).map(|li| (li, races.lines[li].pts.len() / 3));
+    let goliath = races.lines.iter().position(|l| l.route == 5555).map(|li| (li, 40));
+    let spots = [("junction", junction, 120.0f32), ("overpass", over, 70.0), ("crosscountry", cross, 400.0), ("goliath", goliath, 600.0)];
+    let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0));
+    let rc = crate::maprender::cfg::RaceCfg::default();
+    for (name, spot, zoom) in spots {
+        let Some((li, i)) = spot else {
+            eprintln!("race road spot {name}: none found");
+            continue;
+        };
+        let l = &races.lines[li];
+        let (x, z, y, yaw) = (l.pts[i][0], l.pts[i][1], l.y[i], heading(l, i));
+        let mut focus = RoadFocus::build(&w.layers.roads, l);
+        focus.race = Some(RaceRoad { pts: l.pts.clone(), y: l.y.clone(), closed: l.closed, color: if l.circuit { rc.circuit_color } else { rc.sprint_color } });
+        let t0 = std::time::Instant::now();
+        let m = crate::maprender::mesh3d::RoadMesh::race_road(focus.race.as_ref().unwrap(), &w.terrain);
+        eprintln!("race road spot {name}: route {} ({:.1} km, class {:?}) at ({x:.0}, {z:.0}) y {y:.1}; race mesh {} samples, {} triangles, built in {:.1} ms", l.route, l.length_m / 1000.0, class(li), m.samples.len(), m.triangles().0, t0.elapsed().as_secs_f64() * 1e3);
+        let focus = Arc::new(focus);
+        let modes: &[OtherRoads] = match name {
+            "goliath" => &[OtherRoads::Muted, OtherRoads::RaceOnly],
+            "overpass" => &[OtherRoads::Muted, OtherRoads::Normal],
+            _ => &[OtherRoads::Muted],
+        };
+        for &mode in modes {
+            let f = Focus3d { focus: focus.clone(), cfg: RaceFocusCfg { other_roads: mode, ..Default::default() } };
+            let views = [
+                ("hud", View { car: (x, z), yaw, zoom: zoom.min(500.0), car_y: Some(y + 1.0), ..View::hud() }, 2.0f32),
+                ("dash", View { site: Site::Dashboard, rect, car: (x, z), yaw, zoom, angle: 50.0, car_y: Some(y + 1.0), clip: None, no_3d: false, marker: None }, 1.0),
+            ];
+            for (vn, v, ppp) in views {
+                let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+                warm_up(&mut rig, &w, &h, tex, &v, ppp);
+                let mut o = None;
+                for _ in 0..4 {
+                    o = Some(map_frame(&mut rig, &w, &h, tex, &v, ppp, &|s| s.focus = Some(f.clone())));
+                }
+                let o = o.unwrap();
+                assert_eq!(o.gl_error, 0, "{name} {vn}");
+                o.save(&format!("race_{name}_{vn}_{mode:?}_3d.png"));
+                h.destroy(&rig.gl);
+            }
+        }
+        // Flat 2D (the Dashboard look) with the race road and the marks, other roads muted.
+        let o = rig.frame(1.0, |ctx| {
+            let p = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("map")));
+            p.rect_filled(ctx.content_rect(), 0.0, BACKDROP);
+            let cam = Camera::from_cfg(&TiltCfg::default(), (x, z), 0.0, zoom * 1.5, rect);
+            let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+            let pc = p.with_clip_rect(rect);
+            draw_base(&pc, &BaseParams { cam: &cam, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: false });
+            let mut cfg = MapLayerConfig::default();
+            cfg.pois.on = false;
+            let sel = RaceSel::fixed(vec![li], true);
+            let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None };
+            draw_layers(&cx, &w.layers, &cfg);
+        });
+        o.save(&format!("race_{name}_2d.png"));
+    }
+    rig.finish(&Gl3dHandle::new());
 }

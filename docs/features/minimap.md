@@ -483,8 +483,9 @@ crossing and T, a highway junction, an L-corner, a type change, a shallow Y of t
 ### Race lines and the "current race" guess
 
 Modes: `off`, `current` (default), `nearest`, `near` (within `radius_m`, default 1 500 m), `all`
-(40 000-vertex budget). 4 px, circuit `#38bdf8`, sprint `#fb7185`, alpha .85, with start / finish marks
-(green dot + chequered flag for sprints, chequered flag for circuits).
+(40 000-vertex budget). Drawn as a **race road** by default (D80, below); with
+`race_lines.route = "line"` as the thin line of before: 4 px, alpha .85. Circuit `#38bdf8`, sprint
+`#fb7185`, with start / finish marks (green dot + chequered flag for sprints, chequered flag for circuits).
 
 The telemetry has **no race id**, so "current" is a **best-effort inference**, not verified against
 live races. *Why it keeps candidates (D76; the user, 2026-10-09):* "does it keep track of which route was
@@ -513,6 +514,21 @@ arc length; `RaceLayer::cum` holds the arc length per point, `racesel::Poly` is 
   matches; if none does (a shortcut, a spin, a wide corner) the set is kept; if none does and a line
   with a well agreeing heading is under the car, that line set replaces them (as a new match replaced
   the single pick before).
+- *Lock (the user, 2026-10-09, lap 2 of a circuit whose start a sprint shares):* "after I got back to
+  the finish line, so another lap again, it just switched to a sprint circuit … it had already
+  determined that the beginning part is shared by two different tracks, and then it correctly
+  determined that it was the circuit race, but for some reason, after starting the new lap, it just
+  threw away that information and just started fresh … it should stay with its decision". Once the set
+  is certain (one candidate, or duplicates) that route is **locked** for the rest of the race
+  (`RaceSel::locked`, `track_locked`): only its own stretch under the car is looked at (any progress,
+  so lap wraps are free), no route is picked up, and the lock is only given up after 200 m driven off it
+  (`LOCK_DROP_M`; then the usual rules, the route stays the pick until another one matches). *The cause
+  of the reset:* a circuit line that does not close within 3 m (`RaceLine::closed` false) was tracked
+  like a sprint, so the progress jump from its end back to its start at the line failed the 300 m
+  window, the candidate fell off, and the pick-up re-added every route through the start (the sprint
+  too). The progress window now also wraps for any `circuit` line, and the lock covers the rest.
+  (The telemetry's lap counter would be a further signal, but `RaceSel::update` gets no packet; the
+  call sites would have to pass it.)
 - *Reset:* `race_position == 0` (race over), mode change, or new race data.
 
 **What is drawn** (`RaceSel::picked()` + `RaceSel::span(line) -> Option<Span { s0, s1, start }>`):
@@ -548,6 +564,56 @@ when the set changes. Release, real install, 514 623 updates over all 170 routes
 `RaceSel::update` returns the selector itself (`picked()` = the lines), because the renderer reads the
 in-race focus from it too (below).
 
+### Race lines as roads (D80) and "race road only" (D82)
+
+*Why (the user, 2026-10-09):* first "I dont like the way that the racetrack is drawn on top of the
+road. If anything, it should be the 3D road mesh just drawn on top of the other one, but i would rather
+prefer it just changing the road, that is the racetrack, to the given color", plus floating highway
+pieces in 3D; then, after playing a cross-country race that does not follow the road network: "I just
+played a race and it was cross-country, I changed my mind on the roads being drawn, it should also just
+draw a 3d road to draw the race line." So the race line itself is drawn **as a road**, along its own
+points and heights, not the nav roads recoloured (a graph-matching attempt was dropped: a race does not
+have to use the roads). `RaceCfg::route: RouteStyle` = `road` (default) / `line` (the thin line of
+before).
+
+- **2D** (`paint2d::draw_race_lines`): the line (or the shown span, D76) as a road: every race road's
+  casing (the `Road` type's casing colour and `casing_px`), then every fill in the race colour,
+  **opaque**, round ends (none for a closed circuit), width = the roads' width rule x
+  `style::RACE_ROAD_WIDTH` (1.5). *Why the road rule, not the track's half-width:* the rule keeps every
+  road readable at the HUD's and the Viewer's zooms (a 12 m track is a hairline at 3 km and a slab at
+  150 m); 1.5 is a little wider than a highway (1.44), so the race road covers whichever road it runs
+  on and that road's casing shows as its edge. Drawn after all roads, so it lies on top; where a side road
+  meets it, the race road's casing runs across the side road's end (it is the road on top, like an
+  overpass). Every picked line is drawn this way in 2D (also `nearest` / `near` / `all`).
+- **3D** (`mesh3d::RoadMesh::race_road`, `gl3d::scene::Gl3d::sync_race`): its own small road mesh,
+  built by the same code as the roads (`race_road_layer` puts the line into a `RoadLayer`): 8 m samples,
+  the deck, mitred joins, round caps at the shown extent's ends, a closed circuit ends on its first point
+  so it closes in one mitre. Heights are the line's own (`RaceLine.y`, the AI's driving line: on the
+  bridge, in the tunnel, across the field; `uMode` forced to node heights). Stretches 4 m or more under
+  the terrain (`RACE_TUNNEL_DEPTH_M`) go into the tunnel slot, so they are drawn like the road tunnels
+  (last, without the depth test, at the tunnel alpha). Drawn after the roads with the road shader and
+  `roads::race_table` (every slot in the race colour, `Road` casing, `RACE_ROAD_WIDTH`, no muting), in
+  the same two passes (casing, fill), depth-tested against terrain and roads with a depth bias above
+  every road fill (`RACE_BIAS` 0.0042 casing, +0.00008 fill; the trails stay above at 0.0044): it sits on
+  the road it overlaps without z-fighting, and a road really above it (an overpass) still covers it.
+  The 3D scene only gets the race through the in-race focus: `RoadFocus::race: Option<RaceRoad>` (points,
+  heights, closed, colour) is built with the focus (`RaceSel::road_focus`, from the config of the last
+  `update`), so it follows the drawn extent (D76) and is rebuilt when that changes; the mesh is rebuilt
+  when the focus `Arc` changes. Cost: route 5555 (85 km) 14 342 samples, 114 k triangles, 5.3 ms release
+  (median routes 0.1-0.4 ms), on the GL thread once per extent change.
+- **Over the 3D view** `paint2d` draws only the marks of the focus line (the race road is the scene's).
+  The call sites (`ui/map_scene.rs`, `hud/minimap.rs`) hand the scene the focus only when *Other roads*
+  is not `normal`; with `normal` the scene has no race road, so `paint2d` draws the race road with egui
+  over the 3D (flat, as the race lines were). Lines of the other modes (`nearest` / `near` / `all`) are
+  drawn that way over 3D too.
+- **"Race road only"** (D82, `OtherRoads::RaceOnly`, serde `"race_only"`): *Why (the user, 2026-10-09):*
+  "Here should be a setting, to not draw anything from the normal road mesh and only draw the circuit
+  using the 3d renderer". While the focus is on, nothing of the road layer is drawn: 2D skips
+  `draw_roads`; 3D skips the road mesh (casings, caps, jump lines, tunnels) when the scene has a race
+  road. With `route = "line"` it falls back to `hidden` (`OtherRoads::effective`). Outside a race
+  everything is normal. (The Map-tab dropdown entry comes with #211; until then the label reuses
+  "Hidden".)
+
 ### In-race focus (D66): other roads muted, POIs hidden
 
 *Why (the user, 2026-10-08):* "that it detects the right race is actually really nice, but ... there
@@ -565,7 +631,7 @@ opacity rows unless *Other roads* is *Muted*):
 
 | Field | Default | Meaning |
 |---|---|---|
-| `other_roads` | `muted` | `normal` / `muted` / `hidden`: roads off the race's corridor |
+| `other_roads` | `muted` | `normal` / `muted` / `hidden`: roads off the race's corridor; `race_only` (D82): no road of the road layer at all, only the race road |
 | `mute_color` | `#ffffff` | colour of muted roads |
 | `mute_alpha` | 0.25 | their alpha |
 | `mute_width` | 0.8 | factor on each type's own width (keeps highway > road) |
@@ -593,8 +659,8 @@ race line's height (`RaceLine.y`, interpolated at the nearest line point) using 
 (`Chain.y`, the D51 rule the 3D mesh draws), judged only when both are known (road height 0 = unknown, the
 3D mesh then uses the terrain, so the sample is judged by the corridor alone). Real install, route 5555:
 4 379 -> 4 371 relevant segments (8 overpass / underpass pieces gone over 85 km). The 2D map uses the same
-`RoadFocus`, so it draws the same set. D80 is to replace the corridor with proper nav-graph route matching;
-this stays self-contained in `Corridor::hit`. Cross-country, trail, tunnel and every other type count alike. A jump line is
+`RoadFocus`, so it draws the same set. (D80 first planned nav-graph route matching here; with the race
+drawn as a road of its own, the corridor stays.) Cross-country, trail, tunnel and every other type count alike. A jump line is
 relevant when both ends are on the corridor. **The corridor follows what is drawn (D76):** while the route is
 uncertain it is the corridor of the shared part only (`RoadFocus::build_pts` on `Poly::slice`), the whole
 line once it is certain. The focus cache key includes a counter that changes only when the drawn line or
