@@ -22,6 +22,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::data::{GameData, MapLayers};
+use super::mesh3d::RoadMesh;
+use super::terrain::Terrain;
 use crate::minimap::Season;
 
 /// How often the install lookup runs (Steam detection reads the filesystem).
@@ -47,6 +49,19 @@ pub struct Layers {
     pub data: Option<Arc<MapLayers>>,
 }
 
+/// State of the lazily loaded 3D terrain ([`Store::terrain`]).
+#[allow(dead_code)] // phase K: payloads are read by the 3D maps (K3, K4)
+#[derive(Clone, Debug)]
+pub enum TerrainStatus {
+    /// No FH6 install found: no 3D terrain exists.
+    NoInstall,
+    /// Building / reading the height grid (cache hit: 0.2-0.4 s release; cold: +~2 s per raster).
+    Loading,
+    Ready(Arc<Terrain>),
+    /// The rasters could not be read or built; retried when the install changes.
+    Error(String),
+}
+
 /// mtime + length of the road-type override file; `None` = no file.
 pub type FileStat = Option<(SystemTime, u64)>;
 
@@ -62,6 +77,8 @@ pub trait Source: Send + Sync + 'static {
     fn load_game(&self, media: &std::path::Path) -> Result<GameData, String>;
     /// Build the layers from it for the current road-type data.
     fn build(&self, game: &GameData, rev: u64) -> MapLayers;
+    /// Build the 3D terrain (filled height grid) of the install.
+    fn load_terrain(&self, media: &std::path::Path) -> Result<Terrain, String>;
 }
 
 struct Real;
@@ -86,6 +103,9 @@ impl Source for Real {
     fn build(&self, game: &GameData, rev: u64) -> MapLayers {
         let cur = crate::gamedata::roadtypes::RoadTypes::current(&crate::gamedata::roadtypes::override_path(), &game.nav);
         game.layers(&cur, rev)
+    }
+    fn load_terrain(&self, media: &std::path::Path) -> Result<Terrain, String> {
+        Terrain::load(media, &|_| {})
     }
 }
 
@@ -114,9 +134,30 @@ struct Inner {
     rev: u64,
 }
 
+/// The 3D terrain's own state: separate from [`Inner`] because it is loaded only when some map
+/// asks for 3D and does not depend on the season or the road-type file, only on the install.
+#[derive(Default)]
+struct TerrainState {
+    /// The install the terrain (or the failure) is for.
+    media: Option<PathBuf>,
+    data: Option<Arc<Terrain>>,
+    loading: bool,
+    failed: Option<String>,
+}
+
+/// The 3D road mesh cache ([`Store::road_mesh`]): the newest finished mesh, and the key
+/// `(MapLayers::rev, Terrain::rev)` of the build in flight.
+#[derive(Default)]
+struct MeshState {
+    data: Option<Arc<RoadMesh>>,
+    building: Option<(u64, u64)>,
+}
+
 pub struct Store {
     src: Arc<dyn Source>,
     inner: Arc<Mutex<Inner>>,
+    terrain: Arc<Mutex<TerrainState>>,
+    mesh: Arc<Mutex<MeshState>>,
 }
 
 fn lock(m: &Mutex<Inner>) -> std::sync::MutexGuard<'_, Inner> {
@@ -125,7 +166,17 @@ fn lock(m: &Mutex<Inner>) -> std::sync::MutexGuard<'_, Inner> {
 
 impl Store {
     pub fn new(src: impl Source) -> Store {
-        Store { src: Arc::new(src), inner: Arc::new(Mutex::new(Inner::default())) }
+        Store { src: Arc::new(src), inner: Arc::new(Mutex::new(Inner::default())), terrain: Arc::new(Mutex::new(TerrainState::default())), mesh: Arc::new(Mutex::new(MeshState::default())) }
+    }
+
+    /// The install's `media` folder with the debounced lookup (Steam detection reads the
+    /// filesystem), shared by [`Store::layers`] and [`Store::terrain`].
+    fn media_checked(&self, g: &mut Inner, now: Instant) -> Option<PathBuf> {
+        if g.media_at.is_none_or(|t| now.duration_since(t) >= MEDIA_CHECK) {
+            g.media = self.src.media();
+            g.media_at = Some(now);
+        }
+        g.media.clone()
     }
 
     /// Current state; also does the (debounced) staleness checks and starts a load if the key
@@ -134,16 +185,13 @@ impl Store {
     pub fn layers(&self) -> Layers {
         let now = Instant::now();
         let mut g = lock(&self.inner);
-        if g.media_at.is_none_or(|t| now.duration_since(t) >= MEDIA_CHECK) {
-            g.media = self.src.media();
-            g.media_at = Some(now);
-        }
+        let media = self.media_checked(&mut g, now);
         if g.stat_at.is_none_or(|t| now.duration_since(t) >= STAT_CHECK) {
             g.stat = self.src.override_stat();
             g.season = Some(self.src.season());
             g.stat_at = Some(now);
         }
-        let Some(media) = g.media.clone() else {
+        let Some(media) = media else {
             // Install gone (or never there): nothing can be drawn. Keep nothing stale.
             g.data = None;
             g.built = None;
@@ -162,6 +210,116 @@ impl Store {
             ready_or_loading(&g)
         };
         Layers { status, data: g.data.clone() }
+    }
+
+    /// The 3D terrain: **only call it while some map is in 3D mode** — the first call starts the
+    /// load on the `map-terrain` thread (a second thread, so the layers never wait for it), and a
+    /// user who never uses 3D pays nothing (15 MB, 0.2-0.4 s release with the editor's caches warm,
+    /// +~2 s per raster when they have to be built, which are then cached). Cheap to poll every
+    /// frame. Keyed on the install only; a changed install drops the old terrain and reloads, a
+    /// failed load is not retried until it changes.
+    #[allow(dead_code)] // phase K: the 3D maps (K3, K4) poll it; tested with the fake source
+    pub fn terrain(&self) -> TerrainStatus {
+        let now = Instant::now();
+        let media = {
+            let mut g = lock(&self.inner);
+            self.media_checked(&mut g, now)
+        };
+        let mut t = self.terrain.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(media) = media else {
+            let loading = t.loading;
+            *t = TerrainState { loading, ..Default::default() };
+            return TerrainStatus::NoInstall;
+        };
+        if t.media.as_ref() != Some(&media) {
+            // New install (or the first call): forget what was for the old one. A load that is
+            // still running for the old one finishes into a state that no longer matches and is
+            // discarded by its key check.
+            let loading = t.loading;
+            *t = TerrainState { media: Some(media.clone()), loading, ..Default::default() };
+        }
+        if t.data.is_none() && t.failed.is_none() && !t.loading {
+            t.loading = true;
+            drop(t);
+            self.spawn_terrain(media);
+            t = self.terrain.lock().unwrap_or_else(|e| e.into_inner());
+        }
+        match (&t.data, &t.failed) {
+            (Some(d), _) => TerrainStatus::Ready(d.clone()),
+            (None, Some(e)) => TerrainStatus::Error(e.clone()),
+            (None, None) => TerrainStatus::Loading,
+        }
+    }
+
+    /// The 3D road mesh for `layers` over `terrain`: the newest finished one, which is stale
+    /// (`mesh.rev != layers.rev` or `mesh.terrain_rev != terrain.rev`) while a rebuild for the
+    /// request runs on the `map-mesh` thread this call starts; `None` before the first finishes
+    /// (~15 ms release, ~200 ms debug). Cheap to poll every frame; both 3D maps share the result,
+    /// and a road-type save (new `layers.rev`) rebuilds it. The renderer re-uploads when the
+    /// returned `Arc` changes.
+    #[allow(dead_code)] // phase K: the 3D maps (K3, K4) poll it; tested below
+    pub fn road_mesh(&self, layers: &Arc<MapLayers>, terrain: &Arc<Terrain>) -> Option<Arc<RoadMesh>> {
+        let want = (layers.rev, terrain.rev);
+        let mut m = self.mesh.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh = m.data.as_ref().is_some_and(|d| (d.rev, d.terrain_rev) == want);
+        if !fresh && m.building.is_none() {
+            m.building = Some(want);
+            let (layers, terrain, state) = (layers.clone(), terrain.clone(), self.mesh.clone());
+            let spawned = std::thread::Builder::new().name("map-mesh".into()).spawn(move || {
+                let t0 = Instant::now();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| RoadMesh::build(&layers.roads, &terrain, layers.rev)));
+                let mut m = state.lock().unwrap_or_else(|e| e.into_inner());
+                m.building = None;
+                match r {
+                    Ok(mesh) => {
+                        eprintln!("3D road mesh: built in {} ms ({} samples)", t0.elapsed().as_millis(), mesh.samples.len());
+                        m.data = Some(Arc::new(mesh));
+                    }
+                    Err(_) => eprintln!("3D road mesh: the builder panicked"),
+                }
+            });
+            if let Err(e) = spawned {
+                eprintln!("3D road mesh: could not start the builder thread: {e}");
+                m.building = None;
+            }
+        }
+        m.data.clone()
+    }
+
+    fn spawn_terrain(&self, media: PathBuf) {
+        let (src, state) = (self.src.clone(), self.terrain.clone());
+        let key = media.clone();
+        let spawned = std::thread::Builder::new().name("map-terrain".into()).spawn(move || {
+            let t0 = Instant::now();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| src.load_terrain(&media)));
+            let mut t = state.lock().unwrap_or_else(|e| e.into_inner());
+            t.loading = false;
+            if t.media.as_ref() != Some(&media) {
+                return; // the install changed meanwhile: the next poll starts a load for the new one
+            }
+            match r {
+                Ok(Ok(terrain)) => {
+                    eprintln!("3D terrain: loaded in {} ms ({}x{} at {} m)", t0.elapsed().as_millis(), terrain.grid.w, terrain.grid.h, terrain.grid.res);
+                    t.data = Some(Arc::new(terrain));
+                }
+                Ok(Err(e)) => {
+                    eprintln!("3D terrain: {e}");
+                    t.failed = Some(e);
+                }
+                Err(_) => {
+                    eprintln!("3D terrain: the loader panicked");
+                    t.failed = Some("the terrain loader crashed".into());
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            eprintln!("3D terrain: could not start the loader thread: {e}");
+            let mut t = self.terrain.lock().unwrap_or_else(|e| e.into_inner());
+            t.loading = false;
+            if t.media.as_ref() == Some(&key) {
+                t.failed = Some(e.to_string());
+            }
+        }
     }
 
     /// Check the override file at the next [`Store::layers`] call instead of up to a second
@@ -241,6 +399,19 @@ pub fn layers() -> Layers {
     global().layers()
 }
 
+/// The process-wide 3D road mesh (see [`Store::road_mesh`]).
+#[allow(dead_code)] // phase K: see Store::road_mesh
+pub fn road_mesh(layers: &Arc<MapLayers>, terrain: &Arc<Terrain>) -> Option<Arc<RoadMesh>> {
+    global().road_mesh(layers, terrain)
+}
+
+/// The process-wide 3D terrain (see [`Store::terrain`]). Call it only while a map is in 3D mode:
+/// the first call starts the load.
+#[allow(dead_code)] // phase K: see Store::terrain
+pub fn terrain() -> TerrainStatus {
+    global().terrain()
+}
+
 /// Make the next [`layers`] call re-check the road-type file now (after the editor saved).
 /// Does nothing if nobody ever asked for layers.
 pub fn refresh_now() {
@@ -262,6 +433,8 @@ mod tests {
         fail_game: Mutex<Option<String>>,
         games: AtomicUsize,
         builds: AtomicUsize,
+        terrains: AtomicUsize,
+        fail_terrain: Mutex<Option<String>>,
     }
 
     struct Fake(Arc<FakeState>);
@@ -298,6 +471,14 @@ mod tests {
                 project_updated_since_save: false,
             };
             game.layers(&cur, rev)
+        }
+        fn load_terrain(&self, _: &std::path::Path) -> Result<Terrain, String> {
+            self.0.terrains.fetch_add(1, SeqCst);
+            std::thread::sleep(Duration::from_millis(30)); // a visible Loading state
+            if let Some(e) = self.0.fail_terrain.lock().unwrap().clone() {
+                return Err(e);
+            }
+            Ok(Terrain::synthetic())
         }
     }
 
@@ -444,5 +625,109 @@ mod tests {
         let l = s.layers();
         assert_eq!(l.status, LayerStatus::NoInstall);
         assert!(l.data.is_none());
+    }
+
+    /// Call `terrain()` until `done` holds.
+    fn wait_terrain(s: &Store, done: impl Fn(&TerrainStatus) -> bool) -> TerrainStatus {
+        for _ in 0..500 {
+            let t = s.terrain();
+            if done(&t) {
+                return t;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out: {:?}", s.terrain());
+    }
+
+    #[test]
+    fn terrain_is_lazy_loads_once_and_is_shared() {
+        let (s, st) = fake();
+        *st.media.lock().unwrap() = Some(PathBuf::from("/fh6/media"));
+        // Asking for the layers (the 2D maps) never loads the terrain.
+        wait(&s, |l| l.status == LayerStatus::Ready);
+        assert_eq!(st.terrains.load(SeqCst), 0);
+        // The first terrain() call starts it on its own thread: Loading, then Ready.
+        assert!(matches!(s.terrain(), TerrainStatus::Loading));
+        let TerrainStatus::Ready(a) = wait_terrain(&s, |t| matches!(t, TerrainStatus::Ready(_))) else { unreachable!() };
+        let TerrainStatus::Ready(b) = s.terrain() else { panic!("not ready") };
+        assert!(Arc::ptr_eq(&a, &b), "one shared terrain");
+        assert_eq!(st.terrains.load(SeqCst), 1);
+        // A road-type save rebuilds the layers but not the terrain.
+        *st.stat.lock().unwrap() = Some((SystemTime::now(), 99));
+        s.refresh_now();
+        wait(&s, |l| l.data.as_ref().is_some_and(|d| d.rev == 2));
+        let TerrainStatus::Ready(c) = s.terrain() else { panic!("not ready") };
+        assert!(Arc::ptr_eq(&a, &c));
+        assert_eq!(st.terrains.load(SeqCst), 1);
+        assert_eq!(a.grid.w, 256);
+    }
+
+    #[test]
+    fn terrain_without_install_a_failed_load_and_a_changed_install() {
+        let (s, st) = fake();
+        assert!(matches!(s.terrain(), TerrainStatus::NoInstall));
+        assert_eq!(st.terrains.load(SeqCst), 0);
+        // A failure is reported and not retried in a loop.
+        *st.media.lock().unwrap() = Some(PathBuf::from("/a/media"));
+        lock(&s.inner).media_at = None;
+        *st.fail_terrain.lock().unwrap() = Some("no GeoChunk0.minizip".into());
+        let e = wait_terrain(&s, |t| matches!(t, TerrainStatus::Error(_)));
+        assert!(matches!(&e, TerrainStatus::Error(m) if m == "no GeoChunk0.minizip"));
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(5));
+            assert!(matches!(s.terrain(), TerrainStatus::Error(_)));
+        }
+        assert_eq!(st.terrains.load(SeqCst), 1, "retry loop");
+        // Another install: tried again, now fine.
+        *st.fail_terrain.lock().unwrap() = None;
+        *st.media.lock().unwrap() = Some(PathBuf::from("/b/media"));
+        lock(&s.inner).media_at = None;
+        wait_terrain(&s, |t| matches!(t, TerrainStatus::Ready(_)));
+        assert_eq!(st.terrains.load(SeqCst), 2);
+        // Losing the install clears it.
+        *st.media.lock().unwrap() = None;
+        lock(&s.inner).media_at = None;
+        assert!(matches!(s.terrain(), TerrainStatus::NoInstall));
+    }
+
+    #[test]
+    fn the_road_mesh_is_built_off_thread_cached_and_rebuilt_per_rev() {
+        let (s, _) = fake();
+        let terrain = Arc::new(Terrain::synthetic());
+        let layers = Arc::new(MapLayers::synthetic());
+        // First request: nothing yet, the build starts.
+        assert!(s.road_mesh(&layers, &terrain).is_none());
+        let mesh = loop {
+            if let Some(m) = s.road_mesh(&layers, &terrain) {
+                break m;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!((mesh.rev, mesh.terrain_rev), (layers.rev, terrain.rev));
+        assert!(!mesh.samples.is_empty());
+        // Same key: the same Arc, no rebuild.
+        assert!(Arc::ptr_eq(&mesh, &s.road_mesh(&layers, &terrain).unwrap()));
+        // A road-type save (new rev): the old mesh is served until the new one is ready.
+        let layers2 = Arc::new(MapLayers { rev: layers.rev + 1, ..(*layers).clone() });
+        let stale = s.road_mesh(&layers2, &terrain).unwrap();
+        assert!(Arc::ptr_eq(&stale, &mesh) || stale.rev == layers2.rev);
+        for _ in 0..500 {
+            if s.road_mesh(&layers2, &terrain).is_some_and(|m| m.rev == layers2.rev) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let fresh = s.road_mesh(&layers2, &terrain).unwrap();
+        assert_eq!(fresh.rev, layers2.rev);
+        assert!(!Arc::ptr_eq(&fresh, &mesh));
+        // A different terrain rebuilds too.
+        let terrain2 = Arc::new(Terrain::synthetic());
+        for _ in 0..500 {
+            if s.road_mesh(&layers2, &terrain2).is_some_and(|m| m.terrain_rev == terrain2.rev) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(s.road_mesh(&layers2, &terrain2).unwrap().terrain_rev, terrain2.rev);
     }
 }

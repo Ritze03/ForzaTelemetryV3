@@ -6,7 +6,9 @@
 //! data     render-ready layer data: road chains per type, POIs + cell grid, race lines + segment grid
 //! store    process-wide loader / cache of that data (thread "map-layers"), keyed on install + override file
 //! icontex  the POI icon atlas uploaded per egui context (Dashboard and HUD each have their own)
-//! view     Camera (flat or tilted), world boxes, thinning, polygon clipping
+//! view     Camera (flat, tilted, or with a Relief the 3D camera), world boxes, thinning, polygon clipping
+//! terrain  3D: the filled 8 m height grid (K1), hole fill + sea skirt shared with the map editor
+//! mesh3d   3D: the road mesh (resampled ribbons with decks, tiles, LOD sets, in-race focus flags), pure CPU (K1)
 //! style    draw order, zoom-dependent widths, dash patterns, the POI category table
 //! racesel  which race lines to draw ("current race" is a best-effort guess) + the in-race road focus
 //! paint2d  draw_base + draw_layers: the egui Painter output
@@ -29,6 +31,13 @@
 //! * **`Camera` with pitch (D65, K).** The tilted view is a flat perspective of the 2D map done
 //!   on the CPU (a subdivided map mesh plus projecting every layer vertex), and its camera is
 //!   the one phase K's GL 3D scene reuses; pitch 0 is exactly `minimap::MapView`.
+//! * **3D = the same camera plus heights (phase K, D61, D51).** The tilted view is a pinhole
+//!   camera on a flat world; `Camera::relief` adds terrain heights, so `Camera::project` (the call
+//!   every layer already makes) follows the ground with no call-site change, and at height 0 it
+//!   *is* the tilt maths (tested to 1e-3 px). Terrain (`terrain`) and road mesh (`mesh3d`) are pure
+//!   CPU data built lazily on their own threads (`store::terrain` / `store::road_mesh`) only while a
+//!   map is in 3D mode; the GL scene that draws them is a separate module (K2). `Camera` lost
+//!   `Copy` for the `Arc<Terrain>`: see `view` and `docs/features/minimap.md` ("3D: data and camera").
 //! * **Turnarounds are never drawn (D52)**: they exist so the game's AI can route, not for
 //!   people; no setting exists for them.
 //! * **POI icons (D64).** The loader thread reads the game's icons once (`MapLayers::icons`, CPU
@@ -39,10 +48,12 @@
 pub mod cfg;
 pub mod data;
 pub mod icontex;
+pub mod mesh3d;
 pub mod paint2d;
 pub mod racesel;
 pub mod store;
 pub mod style;
+pub mod terrain;
 pub mod ui;
 pub mod view;
 

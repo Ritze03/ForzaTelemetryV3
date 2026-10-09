@@ -439,7 +439,7 @@ in 24 x 24 cells, each projected and cut to the map outline, every vertex's UV t
 projection (egui interpolates UVs affinely inside a triangle; a perspective is not affine, hence the
 subdivision). Every layer vertex goes through the same `Camera::project`, so roads, race lines and POIs
 agree with the image; POI icons stay upright and scale with the perspective. *Why a camera type now:*
-phase K's GL 3D scene will reuse it, and this CPU version doubles as a cross-check for the GL matrices.
+phase K's GL 3D scene reuses it ("3D: data and camera" below), and this CPU version doubles as a cross-check for the GL matrices.
 Polish (I29b):
 
 - **The perspective distance scales with the view's height**: `perspective_px` is the value for the
@@ -468,6 +468,128 @@ Polish (I29b):
   world point on both maps (pitch 0 is the old mapping, tested). Arrows themselves stay upright; trail
   widths taper. A point behind the eye goes far off-screen along its flat direction.
 - Both maps' tilt settings are on the Map tab (Minimap / Dashboard map / Viewer page → Tilted view).
+
+### 3D: data and camera (phase K, K1)
+
+K1 lays the CPU foundation of the shared 3D renderer (D61); the GL scene itself (`maprender::gl3d`,
+K2) and the call sites (K3 HUD, K4 Dashboard + Viewer, K5 settings card) come after. Nothing here
+draws yet, and no maps' behaviour changed: the defaults keep today's views (HUD tilted, Dashboard
+and Viewer flat). Design: phase K scout (`design.md`, kept by the lead); this section is the
+reference for what exists.
+
+**View modes** (`cfg::ViewMode`, derived by `TiltCfg::view_mode()`): `Flat` (`tilt.on` off),
+`Tilted` (D65) and `Relief` = "3D" (`tilt.on && tilt.relief.on`; the variant cannot be called `3D`).
+`cfg::ReliefCfg` is **nested in `TiltCfg`** (`tilt.relief`, `serde(default)`): old configs load, the
+`MapLayerConfig { image, roads, pois, race_lines, tilt }` shape is unchanged, and "Copy to ..." of the
+tilt category (`LayerCategory::Tilt`, D68) copies the 3D settings with it. *Why not a separate
+category:* the angle, perspective and car position of the tilted view **are** the 3D camera's pitch,
+FOV and car position, so the two are one set of settings. Fields and defaults (design questions
+answered with the recommendations, to be revisited after the user has seen it): `on` false on all
+three maps, `road_height` `Nodes` (`RoadHeight::{Nodes, Terrain}`; serde `"nodes"` / `"terrain"`),
+`deck_m` 3.0 (0..20), `exaggeration` 1.0 (0.5..3), `shading` 0.35 (0..1); `ReliefCfg::sane()` clamps
+hand-edited values. The sea is flat at y 100 and not configurable.
+
+**Terrain** (`maprender/terrain.rs`, `docs/game-data/fh6-terrain.md`): the filled 8 m `HeightGrid`
+(`u16`, 0.1 m steps) in an `Arc<Terrain>`. **Lazy:** `store::terrain()` / `Store::terrain()` returns
+`TerrainStatus::{NoInstall, Loading, Ready(Arc<Terrain>), Error(String)}`; the first call starts the
+build on its own thread `map-terrain` (cached elevation rasters, 0.2-0.4 s release warm, +~2 s per
+raster cold), keyed on the install only (not season or the road-type file: a Save rebuilds the
+layers but never the terrain), a failed load is not retried until the install changes. A user who
+never uses 3D never pays the 15 MB / 0.3 s, so call it **only while some map is in 3D mode**.
+*Why a separate thread from `map-layers`:* a cold terrain build must not delay the 2D layers of the
+other map. While `Loading` the maps draw the tilted 2D path (`Camera::from_cfg_relief` returns the
+plain tilted camera without a terrain).
+
+**Camera relief** (`view::Relief { terrain, exag, car_y }`, `Camera::relief: Option<Relief>`).
+The tilted view is exactly a pinhole camera looking at a flat world; with `a` the pitch, `P` the
+focal, `(ox, oy)` the plane offset px of a world point (y down) and `h = (y - car_y) * exag * scale` its
+height px above the car's plane:
+
+```text
+cam    = ( ox,  oy cos a - h sin a,  P - oy sin a - h cos a )
+screen = centre + cam.xy * P / cam.z
+```
+
+At `h = 0` this **is** `project_offset` (test `project3_at_height_zero_equals_project_offset`: 2000
+random points, yaws, pitches 5-80 deg, eye distances: max difference < 1e-3 px, the prototype
+measured 1.5e-5), so Tilted <-> 3D is seamless: the car stays on the same screen point at the same
+ground scale, only relief and parallax appear. Geometrically: an eye `P / scale` m (= 2.94 x zoom for any
+landscape view) from the car, up by `cos a`, back by `sin a`, looking at it, with the car off-centre
+(`centre`, the lens shift). Zoom is a dolly. API (all on `Camera`):
+
+- `project3(x, y, z) -> Option<(Pos2, depth_px)>` the formula; `project(x, z)` is **unchanged for
+  a camera without a relief** and with one projects the *terrain surface point* above (x, z), so
+  every existing call site (layers, markers, trails; ~30) gets 3D with no edit. `k_at(x, z)` =
+  `P / depth` (the general `perspective_at`; icon scale). *Known v1 limit:* egui overlays have no
+  depth test, so a POI behind a ridge still shows (occlusion = K6).
+- `with_relief(Relief)`, `Relief::new(terrain, exag, car_y)`, and the constructor the call sites use,
+  `Camera::from_cfg_relief(tilt, car, yaw, zoom, rect, Option<&Arc<Terrain>>, Option<car_y>)`: relief
+  only when `tilt.on && tilt.relief.on` **and** a terrain is given (car height defaults to the
+  terrain under the car; pass the telemetry height + ~1 m when following).
+- `eye()` (world metres), `eye_clear(margin)`, `with_eye_clearance(margin)`: the **eye-clearance
+  rule**. If the eye is within `margin` m (use 3) of the ground, or the line of sight car -> eye is
+  blocked by more than 1 m of terrain, the pitch is lowered by bisection (down to `MIN_PITCH` 5 deg)
+  until it clears; unchanged when it already clears. Needed for 0.1-0.7 % of road positions
+  (measured over 7 500 road samples, 8 headings); the caller should **ease** the pitch over ~0.5 s
+  (`MapAnim`) instead of snapping.
+- `footprint(margin) -> [min_x, min_z, max_x, max_z]`: the 3D replacement of `world_aabb` for
+  culling: the four view corners cast onto the plane at the car's height and onto the planes at the
+  lowest / highest terrain found under that first box (so hills and valleys are inside), far-limited
+  at depth `P / FAR_MIN_SCALE`. Test: 16 000 random terrain points that land inside the rect are
+  inside the box.
+- `view_proj_rel(ppp)` / `view_proj(ppp)` / `car_exag()` / `exag()` / `near_far(ppp)`: the GL matrix
+  (column-major; NDC spans the camera's `rect` as the GL viewport, `rect.size() * ppp` px; near
+  0.05 P, far 60 P). **Draw with the car-relative form:** the shader subtracts `car_exag()` from
+  `(x, y * exag, z)` and multiplies by `view_proj_rel`; the folded `view_proj` (translation included)
+  loses up to ~0.01 px near the near plane in f32 (a translation column of thousands of px; found by
+  the test), which is fine for **culling tile corners** (`mesh3d::Tile::in_frustum`) but not for
+  vertices. Both equal `project3` (relative 1e-3 px, folded 0.05 px beyond the near plane, tested
+  with exaggeration, a raised car, ppp 1 / 1.5 / 2).
+- **Pan / zoom / `unproject` stay on the flat plane at the car's height** (the tilt maths): while
+  panning, the grabbed ground point stays under the pointer exactly on flat ground and
+  approximately on hills (an exact ray march is K6).
+
+*`Camera` is no longer `Copy`* (decision, K1): the relief holds an `Arc<Terrain>`. *Why not keep `Copy`
+and pass the terrain separately:* `cam.project(x, z)` has ~30 call sites that must get terrain heights
+without being touched; with the terrain inside the camera they do. Cost: none outside `maprender`
+(every use was already by reference or a fresh `Camera::from_cfg`; nothing needed a change), clone it
+(one `Arc` bump) where a copy was implied.
+
+**Road mesh** (`maprender/mesh3d.rs`, pure CPU): `RoadMesh::build(&RoadLayer, &Terrain, rev)` makes
+the GPU-ready bytes. Every chain is resampled to <= 8 m (all nodes kept; jump lines 2 m), cut at
+1 km tile borders, and laid out as 4 vertices per sample `{right, left} x {top, bottom}` (28 B:
+`x, z, y_node`, `side/bot/slot`, tangent, distance along) plus two index sets per tile: **near**
+(8 m, 8 triangles per segment: top, both walls, underside) and **far** (samples >= 32 m apart, jump
+lines all, top surface only: the LOD of design §5.5). Tunnels sit in a second range of each tile
+(drawn on top, depth test off). On the real island: **121 267 samples, 485 068 vertices (13.6 MB),
+950 616 near triangles (11.4 MB of u32 indices), 54 176 far triangles, 2 440 pieces in 177 tiles**,
+built in 186 ms in a debug test (~15 ms release). The shader does the rest (`road_y` documents the
+rules): the **height rules of D51** (node heights by default, switchable to the terrain drape;
+**cross-country always draped**; **jump lines a taut string** over the terrain, computed here into
+`y_node` with `taut_string`: the upper convex hull of the two end heights and the ground between,
+port of the editor page's `tautString`; real data: 12 of the 18 jump lines bend > 0.5 m, the largest
+13.4 m, as measured by the scout), a 0.6 m lift, the deck (`deck_m / exag` dropped from the bottom
+vertices) and the per-vertex width rule. *Why heights live in the shader, not in the mesh:* the
+Nodes/Terrain switch, the deck and the exaggeration are live settings; a mesh rebuild per slider
+step would stall. *Why `s` is the distance along the whole chain:* dashes run on across tile borders.
+Tangents are central differences across the whole chain, so adjacent pieces meet without a gap;
+corners are not mitred (the ribbon narrows a little at sharp nodes).
+`Tile { key, bbox, y_range, near, far }`: `in_frustum(view_proj, exag, pad)` (conservative, 8
+corners x 6 planes) and `dist_to(x, z)` (for choosing the LOD set) are the helpers for the per-frame
+tile loop (one `draw_elements` per visible tile, +1 for its tunnels).
+**Cache:** `store::road_mesh(&Arc<MapLayers>, &Arc<Terrain>) -> Option<Arc<RoadMesh>>` returns the
+newest finished mesh (stale while a rebuild runs: compare `mesh.rev` / `mesh.terrain_rev`), starts
+the build on a `map-mesh` thread when the key `(MapLayers::rev, Terrain::rev)` changed, and shares
+it between the HUD and the Dashboard/Viewer (each GL context uploads it itself).
+**In-race focus (D66):** `RoadMesh::build_rel(&RoadFocus) -> Vec<u8>` is one byte per GPU vertex, 1
+= relevant (own style), 0 = other (muted / hidden by `RaceFocusCfg`), from the same `RoadFocus` the
+2D path uses (`RaceSel::road_focus`); recompute only when the pick or the road rev changes (~0.2 ms)
+and upload with `buffer_sub_data`. A sample is tagged with the segment it starts, so the flag flips
+up to half a quad (<= 4 m) early/late once interpolated.
+Tests: `view::tests` (h = 0 parity, matrices, eye clearance, footprint, `from_cfg_relief`),
+`terrain::tests` (incl. `real_install_terrain`), `mesh3d::tests` (resample/tiles/LOD/winding/rel/frustum
+on synthetic data, `real_install_mesh` on the install), `store::tests` (lazy terrain, mesh cache),
+`cfg::tests` (relief serde, view mode, the `copy_category` fixture differs in `relief`).
 
 ### Configuration
 
