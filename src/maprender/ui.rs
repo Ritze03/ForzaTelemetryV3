@@ -1,6 +1,6 @@
 //! The settings UI of the shared map renderer (D63): everything `MapLayerConfig` holds, as
 //! cards, written once and used by the three map pages of the Map tab (Minimap, Dashboard map
-//! and Viewer).
+//! and Viewer, which share one set of settings).
 //!
 //! *Why one function for both maps:* the two maps are one renderer with two parameter sets
 //! (D61). A control that exists for one must exist for the other, so [`layers_ui`] takes the
@@ -159,18 +159,6 @@ impl ViewCfg {
         c.minimap_zoom_stopped_m = self.zoom_stopped_m;
     }
 
-    /// Take over `src`'s values. `full`: every field; else only north-up, mirror and compass
-    /// (what the viewer shares with the other maps).
-    pub fn take(&mut self, src: &ViewCfg, full: bool) {
-        if full {
-            *self = src.clone();
-        } else {
-            self.north_up = src.north_up;
-            self.mirror_edges = src.mirror_edges;
-            self.compass = src.compass;
-        }
-    }
-
     pub fn of_overlay(o: &OverlayConfig) -> Self {
         Self {
             north_up: o.map_north_up,
@@ -220,25 +208,22 @@ pub fn view_rows(ui: &mut Ui, v: &mut ViewCfg) {
 
 // ── "Copy to …" (D68) ────────────────────────────────────────────────────────────────────────
 
-/// The three maps that have settings.
+/// The maps that have settings: two, since the Map tab's viewer shares the Dashboard map's (D73).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum MapId {
     /// The HUD minimap (`overlay.map_layers`, `overlay.map_*`).
     Minimap,
-    /// The Dashboard's Map widget (`minimap_layers`, `minimap_*`).
+    /// The Dashboard's Map widget and the Map tab's viewer (`minimap_layers`, `minimap_*`).
     Dashboard,
-    /// The Map tab's viewer (`viewer_layers`, `viewer_*`).
-    Viewer,
 }
 
 impl MapId {
-    pub const ALL: [MapId; 3] = [MapId::Minimap, MapId::Dashboard, MapId::Viewer];
+    pub const ALL: [MapId; 2] = [MapId::Minimap, MapId::Dashboard];
 
     pub fn name(self) -> &'static str {
         tr(match self {
             MapId::Minimap => "Minimap",
-            MapId::Dashboard => "Dashboard map",
-            MapId::Viewer => "Viewer",
+            MapId::Dashboard => "Dashboard map & Viewer",
         })
     }
 }
@@ -266,22 +251,14 @@ fn layers_of(cfg: &AppConfig, id: MapId) -> &MapLayerConfig {
         MapId::Minimap if cfg.overlay.map_use_dashboard => &cfg.minimap_layers,
         MapId::Minimap => &cfg.overlay.map_layers,
         MapId::Dashboard => &cfg.minimap_layers,
-        MapId::Viewer => &cfg.viewer_layers,
     }
 }
 
-/// The view options a map draws with. The viewer has no stopped / moving zoom pair, rotation
-/// easing or stick look: those fields are filler (see [`ViewCfg::take`]).
+/// The view options a map draws with.
 fn view_of(cfg: &AppConfig, id: MapId) -> ViewCfg {
     match id {
         MapId::Minimap if !cfg.overlay.map_use_dashboard => ViewCfg::of_overlay(&cfg.overlay),
         MapId::Minimap | MapId::Dashboard => ViewCfg::of_app(cfg),
-        MapId::Viewer => ViewCfg {
-            north_up: cfg.viewer_north_up,
-            mirror_edges: cfg.viewer_mirror_edges,
-            compass: cfg.viewer_show_compass,
-            ..ViewCfg::of_app(cfg)
-        },
     }
 }
 
@@ -301,7 +278,6 @@ pub fn apply_copy(cfg: &mut AppConfig, req: &CopyRequest) -> Vec<MapId> {
                 match to {
                     MapId::Minimap => cfg.overlay.map_layers.copy_category(&src, cat),
                     MapId::Dashboard => cfg.minimap_layers.copy_category(&src, cat),
-                    MapId::Viewer => cfg.viewer_layers.copy_category(&src, cat),
                 }
             }
             CopyWhat::View => copy_view(cfg, req.from, to),
@@ -311,34 +287,12 @@ pub fn apply_copy(cfg: &mut AppConfig, req: &CopyRequest) -> Vec<MapId> {
     done
 }
 
-/// Copy the view options from one map to another. All of [`ViewCfg`] when both are the HUD
-/// minimap / Dashboard map; to or from the viewer only what it has (north-up, mirror, compass),
-/// plus *Allow pan and zoom* between the viewer and the Dashboard map (the HUD cannot pan).
+/// Copy the view options from one map to another (all of [`ViewCfg`]).
 fn copy_view(cfg: &mut AppConfig, from: MapId, to: MapId) {
     let src = view_of(cfg, from);
-    let full = from != MapId::Viewer && to != MapId::Viewer;
     match to {
-        MapId::Minimap => {
-            let mut v = ViewCfg::of_overlay(&cfg.overlay);
-            v.take(&src, full);
-            v.apply_overlay(&mut cfg.overlay);
-        }
-        MapId::Dashboard => {
-            let mut v = ViewCfg::of_app(cfg);
-            v.take(&src, full);
-            v.apply_app(cfg);
-            if from == MapId::Viewer {
-                cfg.minimap_allow_pan_zoom = cfg.viewer_allow_pan_zoom;
-            }
-        }
-        MapId::Viewer => {
-            cfg.viewer_north_up = src.north_up;
-            cfg.viewer_mirror_edges = src.mirror_edges;
-            cfg.viewer_show_compass = src.compass;
-            if from == MapId::Dashboard {
-                cfg.viewer_allow_pan_zoom = cfg.minimap_allow_pan_zoom;
-            }
-        }
+        MapId::Minimap => src.apply_overlay(&mut cfg.overlay),
+        MapId::Dashboard => src.apply_app(cfg),
     }
 }
 
@@ -734,6 +688,13 @@ fn road_type_rows(s: &mut RoadStyles) -> [(&mut RoadTypeStyle, &'static str); 8]
     ]
 }
 
+/// Upper end of the road width sliders (minimum, maximum, fixed width), px. *Why 100 (D74):* the
+/// zoom rule clamps the width to `max_px`, and the old 30 px limit stopped roads growing when
+/// zoomed far in; the user wants to tune it themselves ("raise the limit to, like, 50"), so the
+/// range goes past that. Nothing else in the renderer caps the width (`style::road_base_px`
+/// is the only clamp).
+pub const ROAD_PX_MAX: f32 = 100.0;
+
 fn roads_card(ui: &mut Ui, c: &mut RoadsCfg, enabled: bool, cp: &CopyCtx) {
     theme::card(ui, tr("Roads"), |ui| {
         ui.add_enabled_ui(enabled, |ui| {
@@ -745,10 +706,12 @@ fn roads_card(ui: &mut Ui, c: &mut RoadsCfg, enabled: bool, cp: &CopyCtx) {
             if c.scale_with_zoom {
                 theme::slider_row(ui, tr("Road width"), &mut c.metres, 1.0..=40.0, 0.5, 1, " m")
                     .on_hover_text(tr("How wide a road is drawn in metres at the map's scale, before the minimum and maximum."));
-                theme::slider_row(ui, tr("Minimum width"), &mut c.min_px, 0.5..=10.0, 0.1, 1, " px");
-                theme::slider_row(ui, tr("Maximum width"), &mut c.max_px, 1.0..=30.0, 0.5, 1, " px");
+                theme::slider_row(ui, tr("Minimum width"), &mut c.min_px, 0.5..=ROAD_PX_MAX, 0.1, 1, " px")
+                    .on_hover_text(tr("The thinnest a road gets when zoomed far out."));
+                theme::slider_row(ui, tr("Maximum width"), &mut c.max_px, 1.0..=ROAD_PX_MAX, 0.5, 1, " px")
+                    .on_hover_text(tr("The widest a road gets when zoomed far in. Raise it to let roads keep growing with the zoom."));
             } else {
-                theme::slider_row(ui, tr("Road width"), &mut c.base_px, 0.5..=20.0, 0.5, 1, " px");
+                theme::slider_row(ui, tr("Road width"), &mut c.base_px, 0.5..=ROAD_PX_MAX, 0.5, 1, " px");
             }
             theme::slider_row(ui, tr("Outline width"), &mut c.casing_px, 0.0..=6.0, 0.1, 1, " px")
                 .on_hover_text(tr("Extra width of the dark outline under each line."));
@@ -1070,7 +1033,7 @@ mod tests {
     use super::super::cfg::Rgb;
 
     /// A config where each map has its own look in every category.
-    fn three_maps() -> AppConfig {
+    fn two_maps() -> AppConfig {
         let mut c = AppConfig::default();
         c.overlay.map_use_dashboard = false;
         c.overlay.map_layers = MapLayerConfig::hud();
@@ -1084,11 +1047,6 @@ mod tests {
         c.minimap_layers.image.opacity = 0.22;
         c.minimap_layers.tilt.angle_deg = 22.0;
         c.minimap_layers.race_lines.focus.mute_alpha = 0.22;
-        c.viewer_layers.roads.styles.road.color = Rgb::hex(0x333333);
-        c.viewer_layers.pois.size_px = 33.0;
-        c.viewer_layers.image.opacity = 0.33;
-        c.viewer_layers.tilt.angle_deg = 33.0;
-        c.viewer_layers.race_lines.focus.mute_alpha = 0.33;
         c
     }
 
@@ -1096,7 +1054,6 @@ mod tests {
         match m {
             MapId::Minimap => &mut c.overlay.map_layers,
             MapId::Dashboard => &mut c.minimap_layers,
-            MapId::Viewer => &mut c.viewer_layers,
         }
     }
 
@@ -1111,7 +1068,7 @@ mod tests {
         for from in MapId::ALL {
             for to in MapId::ALL.into_iter().filter(|m| *m != from) {
                 for cat in LayerCategory::ALL {
-                    let before = three_maps();
+                    let before = two_maps();
                     let mut c = before.clone();
                     assert_eq!(apply_copy(&mut c, &req(from, CopyWhat::Layer(cat), &[to])), vec![to]);
                     for m in MapId::ALL {
@@ -1131,58 +1088,45 @@ mod tests {
         }
     }
 
-    /// "Both" writes the two other maps and skips the source.
+    /// "Both" with two maps is just the other one; a request that names the source is ignored for it.
     #[test]
-    fn copy_to_both_writes_both_others() {
-        let mut c = three_maps();
-        let others = [MapId::Dashboard, MapId::Viewer];
-        let done = apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Roads), &others));
-        assert_eq!(done, others);
+    fn copy_to_both_writes_the_other_map_and_skips_the_source() {
+        let mut c = two_maps();
+        let both = MapId::ALL;
+        let done = apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Roads), &both));
+        assert_eq!(done, vec![MapId::Dashboard]);
         assert_eq!(c.minimap_layers.roads, c.overlay.map_layers.roads);
-        assert_eq!(c.viewer_layers.roads, c.overlay.map_layers.roads);
-        assert_eq!(c.viewer_layers.pois.size_px, 33.0, "other categories stay");
-        // A request that names the source is ignored for it.
-        let mut c = three_maps();
-        assert!(apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Pois), &[MapId::Viewer])).is_empty());
-        assert_eq!(c.viewer_layers, three_maps().viewer_layers);
+        assert_eq!(c.minimap_layers.pois.size_px, 22.0, "other categories stay");
+        let mut c = two_maps();
+        assert!(apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::Layer(LayerCategory::Pois), &[MapId::Dashboard])).is_empty());
+        assert_eq!(c.minimap_layers, two_maps().minimap_layers);
     }
 
     /// The race focus travels with the Race lines card.
     #[test]
     fn race_lines_copy_includes_the_focus() {
-        let mut c = three_maps();
-        apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::RaceLines), &[MapId::Dashboard]));
-        assert_eq!(c.minimap_layers.race_lines.focus.mute_alpha, 0.33);
+        let mut c = two_maps();
+        apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::RaceLines), &[MapId::Dashboard]));
+        assert_eq!(c.minimap_layers.race_lines.focus.mute_alpha, 0.11);
     }
 
     /// While the Minimap follows the Dashboard map, copying into it is refused (its own config is
-    /// not written); copying from it copies what it draws, i.e. the Dashboard map's values.
+    /// not written, and nothing is reported as done); the Dashboard map is no target of itself.
     #[test]
-    fn following_minimap_is_no_target_but_a_source_of_its_effective_values() {
-        let mut c = three_maps();
+    fn following_minimap_is_no_target() {
+        let mut c = two_maps();
         c.overlay.map_use_dashboard = true;
         let own = c.overlay.map_layers.clone();
-        let done = apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Roads), &[MapId::Minimap, MapId::Dashboard]));
-        assert_eq!(done, vec![MapId::Dashboard]);
+        let done = apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::Layer(LayerCategory::Roads), &MapId::ALL));
+        assert!(done.is_empty());
         assert_eq!(c.overlay.map_layers, own);
         assert!(apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::View, &[MapId::Minimap])).is_empty());
-
-        let mut c = three_maps();
-        c.overlay.map_use_dashboard = true;
-        c.minimap_north_up = true;
-        c.overlay.map_north_up = false; // what the HUD would have on its own; unused while following
-        apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Pois), &[MapId::Viewer]));
-        assert_eq!(c.viewer_layers.pois, c.minimap_layers.pois, "the Dashboard's values, not the HUD's own");
-        c.viewer_north_up = false;
-        apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::View, &[MapId::Viewer]));
-        assert!(c.viewer_north_up, "the view comes from the Dashboard map too");
     }
 
-    /// View options: all of them between the HUD and the Dashboard map, the shared three
-    /// (+ allow pan and zoom with the Dashboard map) with the viewer.
+    /// View options: all of them, in both directions, each map's own keys.
     #[test]
     fn view_copy_maps_each_maps_own_keys() {
-        let mut c = three_maps();
+        let mut c = two_maps();
         c.overlay.map_north_up = true;
         c.overlay.zoom_driving_m = 777.0;
         c.overlay.compass = true;
@@ -1194,38 +1138,19 @@ mod tests {
         assert_eq!(c.minimap_zoom_driving_m, 777.0);
         assert_eq!(ViewCfg::of_app(&c), ViewCfg::of_overlay(&c.overlay));
 
-        // Dashboard -> viewer: three flags + allow pan and zoom, not the zoom.
-        c.minimap_north_up = false;
-        c.minimap_mirror_edges = false;
-        c.minimap_show_compass = true;
-        c.minimap_allow_pan_zoom = false;
-        c.viewer_zoom_m = 4321.0;
-        apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::View, &[MapId::Viewer]));
-        assert_eq!((c.viewer_north_up, c.viewer_mirror_edges, c.viewer_show_compass, c.viewer_allow_pan_zoom), (false, false, true, false));
-        assert_eq!(c.viewer_zoom_m, 4321.0);
-
-        // Viewer -> HUD: the three flags only; the zoom keys stay.
-        c.viewer_north_up = true;
-        c.viewer_mirror_edges = true;
-        c.viewer_show_compass = false;
-        let zoom = c.overlay.zoom_driving_m;
-        apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::View, &[MapId::Minimap]));
-        assert_eq!((c.overlay.map_north_up, c.overlay.map_mirror_edges, c.overlay.compass), (true, true, false));
-        assert_eq!(c.overlay.zoom_driving_m, zoom);
-
-        // Viewer -> Dashboard also takes "allow pan and zoom".
-        c.viewer_allow_pan_zoom = true;
-        let before = c.minimap_zoom_driving_m;
-        apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::View, &[MapId::Dashboard]));
-        assert!(c.minimap_allow_pan_zoom);
-        assert_eq!(c.minimap_zoom_driving_m, before);
+        c.minimap_mirror_edges = !c.overlay.map_mirror_edges;
+        c.minimap_zoom_stopped_m = 321.0;
+        apply_copy(&mut c, &req(MapId::Dashboard, CopyWhat::View, &[MapId::Minimap]));
+        assert_eq!(c.overlay.map_mirror_edges, c.minimap_mirror_edges);
+        assert_eq!(c.overlay.zoom_stopped_m, 321.0);
+        assert_eq!(ViewCfg::of_app(&c), ViewCfg::of_overlay(&c.overlay));
     }
 
     // ── the "View mode" card ─────────────────────────────────────────────────────────────────
 
     /// One frame of the View mode card alone, with `events` fed in. Returns the frame's output.
     fn card_frame(ctx: &egui::Context, t: &mut TiltCfg, events: Vec<egui::Event>, time: f64) -> egui::FullOutput {
-        let cp = CopyCtx { which: MapId::Viewer, minimap_follows: false, out: Default::default() };
+        let cp = CopyCtx { which: MapId::Dashboard, minimap_follows: false, out: Default::default() };
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(420.0, 900.0))),
             events,
@@ -1390,25 +1315,24 @@ mod tests {
     /// the mode with it, leaves every other category of the target alone.
     #[test]
     fn copying_view_mode_copies_the_relief_fields() {
-        let mut c = three_maps();
+        let mut c = two_maps();
         let relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 9.0, exaggeration: 2.5, shading: 0.9 };
-        c.viewer_layers.tilt.on = true;
-        c.viewer_layers.tilt.relief = relief;
+        c.overlay.map_layers.tilt.on = true;
+        c.overlay.map_layers.tilt.relief = relief;
         assert_eq!(c.minimap_layers.tilt.relief, ReliefCfg::default());
         let before = c.clone();
-        let done = apply_copy(&mut c, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Tilt), &[MapId::Dashboard, MapId::Minimap]));
-        assert_eq!(done, vec![MapId::Dashboard, MapId::Minimap]);
-        for tilt in [&c.minimap_layers.tilt, &c.overlay.map_layers.tilt] {
-            assert_eq!(tilt.relief, relief);
-            assert_eq!(tilt.view_mode(), ViewMode::Relief);
-            assert_eq!(tilt.angle_deg, 33.0, "the tilt rows travel with it");
-        }
+        let done = apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Tilt), &[MapId::Dashboard]));
+        assert_eq!(done, vec![MapId::Dashboard]);
+        let tilt = &c.minimap_layers.tilt;
+        assert_eq!(tilt.relief, relief);
+        assert_eq!(tilt.view_mode(), ViewMode::Relief);
+        assert_eq!(tilt.angle_deg, 11.0, "the tilt rows travel with it");
         assert_eq!(c.minimap_layers.roads, before.minimap_layers.roads);
         assert_eq!(c.minimap_layers.image, before.minimap_layers.image);
-        assert_eq!(c.viewer_layers, before.viewer_layers);
+        assert_eq!(c.overlay.map_layers, before.overlay.map_layers);
         // The other categories do not carry the 3D options.
         let mut d = before.clone();
-        apply_copy(&mut d, &req(MapId::Viewer, CopyWhat::Layer(LayerCategory::Roads), &[MapId::Dashboard]));
+        apply_copy(&mut d, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Roads), &[MapId::Dashboard]));
         assert_eq!(d.minimap_layers.tilt, before.minimap_layers.tilt);
     }
 

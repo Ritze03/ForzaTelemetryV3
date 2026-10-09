@@ -11,6 +11,10 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ### Fixed
 - **Settings no longer reset completely** when one saved value can't be read (e.g. after switching versions): only that setting goes back to its default (a single unreadable dashboard widget only drops itself), and the old file is kept as `config.json.bad-…`. If `config.json` is unusable as a whole, your settings are restored from your active profile instead of defaults, and that profile's file is backed up too before anything overwrites it. The same goes for profiles and the saved gearbox calibrations (kept as `….bad-…` next to the file); files with broken text encoding are salvaged instead of replaced.
+- **Roads can grow wider when zoomed far in**: the road width limit (Map tab → Roads → Maximum width, and the minimum and fixed widths) now goes up to 100 px instead of 30 px, so with the width-follows-zoom rule roads keep growing as you zoom in instead of stopping at the limit. Set the maximum as high as you like to get the behaviour you want; the defaults are unchanged.
+
+### Info
+- **The Map tab viewer now uses the Dashboard map's settings**: the viewer and the Dashboard map are drawn with one set of settings (layers, north-up, mirror at edges, compass, allow pan and zoom, zoom radius), so there is a single page for both, **Dashboard map & Viewer**, and "Copy to…" only has the Minimap and that page left. The viewer's own settings from earlier builds are no longer used (your other settings are kept). The viewer's Settings button moved to the bottom right, so it no longer sits on the co-op player list.
 
 ## [0.6.0] – 2026-10-08
 

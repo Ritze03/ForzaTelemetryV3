@@ -847,24 +847,12 @@ pub enum OverlayPage {
 pub enum MapPage {
     #[default]
     Minimap,
+    /// The Dashboard map's settings, which the Viewer shares too (D73). An old saved `viewer`
+    /// page (the page that no longer exists) loads as this one.
+    #[serde(alias = "viewer")]
     DashboardMap,
-    Viewer,
     MapData,
 }
-
-/// The Map tab viewer's layer defaults (D67): the Dashboard map's look, but POIs stay visible
-/// at the viewer's wide zoom levels (a viewer is mostly used zoomed out, where POIs are the
-/// point). Since D71 the Dashboard shows them up to 10 km already, so the 8000 m floor only
-/// matters if that default is lowered again.
-pub fn viewer_layers_default() -> crate::maprender::cfg::MapLayerConfig {
-    let mut l = crate::maprender::cfg::MapLayerConfig::dashboard();
-    l.pois.max_zoom_m = l.pois.max_zoom_m.max(8000.0);
-    l
-}
-
-fn default_viewer_zoom() -> f32 { 1500.0 }
-
-fn default_viewer_layers() -> crate::maprender::cfg::MapLayerConfig { viewer_layers_default() }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
@@ -1048,23 +1036,9 @@ pub struct AppConfig {
     /// Selected module tab of the Overlay tab (UI memory, see [`OverlayPage`]).
     #[serde(default)]
     pub overlay_page: OverlayPage,
-    // Map tab (D67). `viewer_*` are the full-size viewer's own settings (its layers, view
-    // options); `map_tab_*` are UI memory (settings mode on/off, selected page).
-    #[serde(default = "default_viewer_layers")]
-    pub viewer_layers: crate::maprender::cfg::MapLayerConfig,
-    /// Viewer: lock north-up (off = the map turns with the car's heading).
-    #[serde(default = "default_true")]
-    pub viewer_north_up: bool,
-    #[serde(default = "default_true")]
-    pub viewer_mirror_edges: bool,
-    #[serde(default)]
-    pub viewer_show_compass: bool,
-    /// Viewer: drag to pan and wheel to zoom (D72).
-    #[serde(default = "default_true")]
-    pub viewer_allow_pan_zoom: bool,
-    /// Viewer: the radius (metres, centre to nearest edge) it shows by default and returns to.
-    #[serde(default = "default_viewer_zoom")]
-    pub viewer_zoom_m: f32,
+    // Map tab (D67). The viewer has no settings of its own (D73): it draws with the Dashboard
+    // map's `minimap_*` keys. Old configs may still carry `viewer_*` keys; serde ignores them
+    // and the next save drops them. `map_tab_*` are UI memory (settings mode on/off, page).
     /// The Map tab shows its settings instead of the viewer (UI memory, [`EXPORT_EXCLUDE`]).
     #[serde(default)]
     pub map_tab_settings: bool,
@@ -1206,12 +1180,6 @@ impl Default for AppConfig {
             coop_list_class: false,
             overlay: OverlayConfig::default(),
             overlay_page: OverlayPage::default(),
-            viewer_layers: viewer_layers_default(),
-            viewer_north_up: true,
-            viewer_mirror_edges: true,
-            viewer_show_compass: false,
-            viewer_allow_pan_zoom: true,
-            viewer_zoom_m: default_viewer_zoom(),
             map_tab_settings: false,
             map_tab_page: MapPage::default(),
         }
@@ -1491,11 +1459,6 @@ const ACCEL_KEYS: &[&str] = &[
 /// HUD overlay: every Overlay-tab setting lives under the one `overlay` key.
 const OVERLAY_KEYS: &[&str] = &["overlay"];
 
-/// Map tab viewer (D67): its layer settings and view options.
-const VIEWER_KEYS: &[&str] = &[
-    "viewer_layers", "viewer_north_up", "viewer_mirror_edges", "viewer_show_compass", "viewer_allow_pan_zoom", "viewer_zoom_m",
-];
-
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
 const EXPORT_EXCLUDE: &[&str] = &[
@@ -1522,7 +1485,6 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
     KeyGroup { section: "Tuning",    name: "Acceleration Tests", keys: ACCEL_KEYS },
     // Appended last so existing group indices (UI selection vectors) don't shift.
     KeyGroup { section: "Overlay",   name: "HUD Overlay",      keys: OVERLAY_KEYS },
-    KeyGroup { section: "Map",       name: "Map viewer",       keys: VIEWER_KEYS },
 ];
 
 /// Keys belonging to the groups selected by index into KEY_GROUPS.
