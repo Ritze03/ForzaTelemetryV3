@@ -1303,13 +1303,19 @@ fn migrate_tire_display_style(map: &mut serde_json::Map<String, serde_json::Valu
     }
 }
 
-/// The circuit race colour used to default to the road blue (#38bdf8), so a circuit did not stand
-/// out; the default is now orange. Saved configs carry the old default, so rewrite exactly that
-/// value (a colour the user picked stays) in both map layer configs.
+/// Race colours (D88). Sprints and circuits used to have a colour each (`circuit_color`,
+/// `sprint_color`); `RaceCfg` now has one, `color`, which reads the old `circuit_color` through a
+/// serde alias (the old `sprint_color` key is simply ignored). Here: the circuit colour used to
+/// default to the road blue (#38bdf8), so a circuit did not stand out (D86); the default is now
+/// orange, so rewrite exactly that old default (a colour the user picked stays) in both map layer
+/// configs. Only the *old* key is rewritten: a `color` of #38bdf8 is the user's own choice. If a
+/// config somehow has both keys, `color` wins (serde rejects a field and its alias together).
 fn migrate_circuit_color(map: &mut serde_json::Map<String, serde_json::Value>) {
     fn fix(layers: Option<&mut serde_json::Value>) {
-        let c = layers.and_then(|l| l.get_mut("race_lines")).and_then(|r| r.get_mut("circuit_color"));
-        if let Some(c) = c {
+        let Some(race) = layers.and_then(|l| l.get_mut("race_lines")).and_then(|r| r.as_object_mut()) else { return };
+        if race.contains_key("color") {
+            race.remove("circuit_color");
+        } else if let Some(c) = race.get_mut("circuit_color") {
             if c.as_str().is_some_and(|s| s.eq_ignore_ascii_case("#38bdf8")) {
                 *c = serde_json::json!("#f97316");
             }
@@ -2116,8 +2122,21 @@ mod tests {
     #[test]
     fn circuit_color_migrates_old_default_only() {
         let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"circuit_color":"#38bdf8"}},"overlay":{"map_layers":{"race_lines":{"circuit_color":"#123456"}}}}"##);
-        assert_eq!(c.minimap_layers.race_lines.circuit_color, crate::maprender::cfg::Rgb::hex(0xf97316));
-        assert_eq!(c.overlay.map_layers.race_lines.circuit_color, crate::maprender::cfg::Rgb::hex(0x123456));
+        assert_eq!(c.minimap_layers.race_lines.color, crate::maprender::cfg::Rgb::hex(0xf97316));
+        assert_eq!(c.overlay.map_layers.race_lines.color, crate::maprender::cfg::Rgb::hex(0x123456));
+    }
+
+    /// D88: one race colour. The old `circuit_color` is read as `color`, the old `sprint_color` is
+    /// ignored (also when both are set), a `color` already there wins, and a new-style `color` of
+    /// #38bdf8 is the user's own choice (not migrated).
+    #[test]
+    fn one_race_colour_reads_old_configs() {
+        use crate::maprender::cfg::Rgb;
+        let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"circuit_color":"#38bdf8","sprint_color":"#111111"}},"overlay":{"map_layers":{"race_lines":{"sprint_color":"#222222"}}}}"##);
+        assert_eq!(c.minimap_layers.race_lines.color, Rgb::hex(0xf97316), "old default blue -> orange, sprint colour dropped");
+        assert_eq!(c.overlay.map_layers.race_lines.color, Rgb::hex(0xf97316), "a sprint-only config: the default");
+        let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"color":"#38bdf8","circuit_color":"#123456"}}}"##);
+        assert_eq!(c.minimap_layers.race_lines.color, Rgb::hex(0x38bdf8));
     }
 
     #[test]

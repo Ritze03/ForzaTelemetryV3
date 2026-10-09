@@ -484,8 +484,13 @@ crossing and T, a highway junction, an L-corner, a type change, a shallow Y of t
 
 Modes: `off`, `current` (default), `nearest`, `near` (within `radius_m`, default 1 500 m), `all`
 (40 000-vertex budget). Drawn as a **race road** by default (D80, below); with
-`race_lines.route = "line"` as the thin line of before: 4 px, alpha .85. Circuit `#f97316` (orange), sprint
-`#fb7185`, with start / finish marks (green dot + chequered flag for sprints, chequered flag for circuits).
+`race_lines.route = "line"` as the thin line of before: 4 px, alpha .85. One colour for every race, `RaceCfg::color` (default `#f97316`, orange), with start /
+finish marks (green dot + chequered flag for sprints, chequered flag for circuits).
+*Why one colour (D88; the user, 2026-10-10):* "Sprints and circuits should have the same color."
+(It replaces D86's separate circuit and sprint colours. Old configs: `circuit_color` is read as `color`
+through a serde alias, `sprint_color` is ignored, and a saved `circuit_color` still at the old blue
+`#38bdf8` is rewritten to orange by `config::migrate_circuit_color`; only the old key, so a `color` the
+user sets to that blue stays.)
 
 The telemetry has **no race id**, so "current" is a **best-effort inference**, not verified against
 live races. *Why it keeps candidates (D76; the user, 2026-10-09):* "does it keep track of which route was
@@ -601,6 +606,15 @@ before).
   `update`), so it follows the drawn extent (D76) and is rebuilt when that changes; the mesh is rebuilt
   when the focus `Arc` changes. Cost: route 5555 (85 km) 14 342 samples, 114 k triangles, 5.3 ms release
   (median routes 0.1-0.4 ms), on the GL thread once per extent change.
+  *Occlusion (D88; the user, 2026-10-10: "occlusion should work for the race circuit aswel"):* the race
+  road is hidden behind hills and under decks above it exactly like the road ribbons: its open stretches
+  are depth-tested and only its tunnel stretches (>= 4 m under the terrain, by the AI line's own height)
+  show through, as the road tunnels do. Guarded by
+  `gl3d::tests::gl3d_race_road_is_hidden_behind_hills` (a race road behind the big hill is not drawn, the
+  same road seen from the other side is; a road along the elevated highway is covered by the deck).
+  *What is still not occluded:* whatever `paint2d` draws with egui over the 3D has no depth test (K6):
+  the start / finish marks, the **Line** style, and the race roads of the modes `nearest` / `near` / `all`
+  (only the picked focus line of an in-race `current` is the scene's, see below).
 - **Over the 3D view** `paint2d` draws only the marks of the focus line (the race road is the scene's).
   The call sites (`ui/map_scene.rs`, `hud/minimap.rs`) hand the scene the focus only when *Other roads*
   is not `normal`; with `normal` the scene has no race road, so `paint2d` draws the race road with egui

@@ -192,7 +192,7 @@ saved road types were ignored").
   radius (nearest / near), **Race line style** (D80, `RaceCfg::route`: *Road*, the default, = the race
   is drawn as a road of its own in the race colour (outline, rounded ends, as wide as a highway; in 3D
   a real road at the race's own heights), or *Line* = the thin line on top), width and opacity (greyed
-  unless *Line*: a race road has its own width and is opaque), circuit (default orange `#f97316`, not the road blue; a saved old default `#38bdf8` is migrated on load by `migrate_circuit_color`) and sprint colours, start /
+  unless *Line*: a race road has its own width and is opaque), one **Race colour** for every race, circuit or sprint (default orange `#f97316`, not the road blue; D88; the field is `RaceCfg::color`, which reads the old `circuit_color` through a serde alias and ignores the old `sprint_color`; a saved old circuit default `#38bdf8` is migrated to orange on load by `migrate_circuit_color`), start /
   finish marks, then
   the section **In a race** (the in-race focus, D66, [minimap.md](minimap.md#in-race-focus-d66-other-roads-muted-pois-hidden)):
   *Other roads* (Normal / Muted / Hidden / **Race road only**, D82), and for Muted the colour, opacity and width factor,

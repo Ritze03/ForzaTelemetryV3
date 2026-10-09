@@ -657,11 +657,8 @@ fn race_lines_card(ui: &mut Ui, c: &mut RaceCfg, enabled: bool, cp: &CopyCtx) {
                 theme::slider_row(ui, tr("Line width"), &mut c.width_px, 1.0..=12.0, 0.5, 1, " px");
                 pct_row(ui, tr("Opacity"), &mut c.alpha, 0.0, 100.0, 1.0, Some(line_only));
             });
-            control_row(ui, tr("Circuit colour"), |ui| {
-                egui::color_picker::color_edit_button_srgb(ui, &mut c.circuit_color.0);
-            });
-            control_row(ui, tr("Sprint colour"), |ui| {
-                egui::color_picker::color_edit_button_srgb(ui, &mut c.sprint_color.0);
+            control_row(ui, tr("Race colour"), |ui| {
+                egui::color_picker::color_edit_button_srgb(ui, &mut c.color.0);
             });
             theme::checkbox_row(ui, &mut c.marks, tr("Start / finish marks"));
             race_focus_rows(ui, c);

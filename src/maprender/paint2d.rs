@@ -969,7 +969,7 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, skip
         if !bbox_hits(&l.bbox, &aabb) {
             continue;
         }
-        let rgb = if l.circuit { rc.circuit_color } else { rc.sprint_color };
+        let rgb = rc.color;
         // An uncertain current race (D76): only the part all candidate routes share, no finish.
         let span = if rc.mode == RaceLineMode::All { None } else { cx.race_sel.span(i).filter(|_| i < layers.races.cum.len()) };
         if rc.marks {
@@ -2177,7 +2177,7 @@ mod tests {
             .iter()
             .filter_map(|s| if let Shape::Path(p) = &s.shape { if let egui::epaint::ColorMode::Solid(c) = p.stroke.color { Some((p.stroke.width, c)) } else { None } } else { None })
             .collect();
-        let fill = cfg.race_lines.sprint_color.color(1.0);
+        let fill = cfg.race_lines.color.color(1.0);
         let casing = cfg.roads.styles.road.casing_color.color(cfg.roads.casing_alpha);
         assert_eq!(strokes.len(), 2, "{strokes:?}");
         assert_eq!((strokes[0].1, strokes[1].1), (casing, fill), "casing first, then the opaque race colour");
