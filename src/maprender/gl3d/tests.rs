@@ -1036,3 +1036,233 @@ fn gl3d_real_install_scenes() {
     }
     rig.finish(&h);
 }
+
+// ── road joins (D81): close-ups of real junctions, 2D and 3D ─────────────────────────────────
+
+/// Real road nodes worth a close look at the join geometry: `(name, x, z, y)`. Found from the chain
+/// vertices alone (equal positions = one node), nearest to `near` per kind.
+fn join_spots(l: &RoadLayer, near: (f32, f32)) -> Vec<(&'static str, f32, f32, f32)> {
+    #[derive(Default)]
+    struct Node {
+        x: f32,
+        z: f32,
+        y: f32,
+        ends: u32,
+        dirs: Vec<[f32; 2]>,
+        slots: Vec<usize>,
+    }
+    let mut nodes: std::collections::HashMap<(u32, u32), Node> = Default::default();
+    for (slot, chains) in l.by_type.iter().enumerate() {
+        if slot == RoadType::Turnaround.index() as usize {
+            continue;
+        }
+        for ch in chains {
+            let n = ch.pts.len();
+            for (i, p) in ch.pts.iter().enumerate() {
+                let e = nodes.entry((p[0].to_bits(), p[1].to_bits())).or_default();
+                (e.x, e.z, e.y) = (p[0], p[1], ch.y[i]);
+                for j in [i.wrapping_sub(1), i + 1] {
+                    if let Some(q) = ch.pts.get(j) {
+                        let d = [q[0] - p[0], q[1] - p[1]];
+                        let len = d[0].hypot(d[1]).max(1e-6);
+                        e.dirs.push([d[0] / len, d[1] / len]);
+                        e.slots.push(slot);
+                    }
+                }
+                e.ends += (i == 0 || i + 1 == n) as u32;
+            }
+        }
+    }
+    let dist = |n: &Node| (n.x - near.0).hypot(n.z - near.1);
+    let angle = |a: [f32; 2], b: [f32; 2]| (a[0] * b[0] + a[1] * b[1]).clamp(-1.0, 1.0).acos().to_degrees();
+    let road = RoadType::Road.index() as usize;
+    let hw = RoadType::Highway.index() as usize;
+    type Pick = Box<dyn Fn(&Node) -> bool>;
+    let kinds: Vec<(&'static str, Pick)> = vec![
+        ("city_x", Box::new(move |n: &Node| n.dirs.len() >= 4 && n.ends > 0 && n.slots.iter().all(|&s| s == road))),
+        ("city_t", Box::new(move |n: &Node| n.dirs.len() == 3 && n.ends == 1 && n.slots.iter().all(|&s| s == road))),
+        ("highway", Box::new(move |n: &Node| n.dirs.len() >= 3 && n.slots.contains(&hw) && n.slots.iter().any(|&s| s != hw))),
+        ("l_corner", Box::new(move |n: &Node| n.dirs.len() == 2 && n.ends == 2 && n.slots.iter().all(|&s| s == road) && (60.0..120.0).contains(&angle(n.dirs[0], n.dirs[1])))),
+        ("type_change", Box::new(move |n: &Node| n.dirs.len() == 2 && n.ends == 2 && n.slots[0] != n.slots[1] && n.slots.iter().all(|&s| s != 0))),
+        ("y_shallow", Box::new(move |n: &Node| n.dirs.len() == 3 && n.ends > 0 && (0..3).any(|i| (i + 1..3).any(|j| angle(n.dirs[i], n.dirs[j]) < 30.0)))),
+    ];
+    let mut out = vec![];
+    for (name, f) in kinds {
+        if let Some(n) = nodes.values().filter(|n| f(n)).min_by(|a, b| dist(a).total_cmp(&dist(b))) {
+            out.push((name, n.x, n.z, n.y));
+        }
+    }
+    out
+}
+
+/// The synthetic join scenes (D81) on flat ground at 100 m, 200 m apart along x: `(name, centre)`
+/// and the world. Roads at node height 100.3 unless noted.
+fn join_world() -> (World, Vec<(&'static str, (f32, f32))>) {
+    let base = world();
+    let flat = Arc::new(Terrain::flat(100.0));
+    let mut roads = RoadLayer::default();
+    let y = 100.3;
+    let mut add = |t: RoadType, pts: &[[f32; 2]], h: f32| roads.by_type[t.index() as usize].push(Chain::new(pts.to_vec(), vec![h; pts.len()]));
+    let mut spots = vec![];
+    let mut at = |name: &'static str, i: usize| {
+        let o = (-700.0 + 200.0 * i as f32, 0.0);
+        spots.push((name, o));
+        o
+    };
+    // A type change straight through (road -> highway) and one at a 45 degree bend (road -> offroad).
+    let o = at("type_change", 0);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1 - 20.0], [o.0, o.1 - 20.0]], y);
+    add(RoadType::Highway, &[[o.0, o.1 - 20.0], [o.0 + 70.0, o.1 - 20.0]], y);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1 + 25.0], [o.0, o.1 + 25.0]], y);
+    add(RoadType::Offroad, &[[o.0, o.1 + 25.0], [o.0 + 40.0, o.1 + 65.0]], y);
+    // An L-corner of two chains (the screenshot).
+    let o = at("l_corner", 1);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0, o.1]], y);
+    add(RoadType::Road, &[[o.0, o.1], [o.0, o.1 + 70.0]], y);
+    // A T: a through road and a trail ending on it.
+    let o = at("t_junction", 2);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0, o.1], [o.0 + 70.0, o.1]], y);
+    add(RoadType::Trail, &[[o.0, o.1], [o.0, o.1 + 70.0]], y);
+    // An X of four chain ends: road, road, highway, offroad.
+    let o = at("x_junction", 3);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0, o.1]], y);
+    add(RoadType::Road, &[[o.0, o.1], [o.0 + 70.0, o.1]], y);
+    add(RoadType::Highway, &[[o.0, o.1 - 70.0], [o.0, o.1]], y);
+    add(RoadType::Offroad, &[[o.0, o.1], [o.0, o.1 + 70.0]], y);
+    // A shallow Y (two branches 15 degrees off the stem).
+    let o = at("y_shallow", 4);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0, o.1]], y);
+    add(RoadType::Road, &[[o.0, o.1], [o.0 + 70.0, o.1 + 18.8]], y);
+    add(RoadType::Road, &[[o.0, o.1], [o.0 + 70.0, o.1 - 18.8]], y);
+    // An overpass: a highway 12 m up crossing a road, no shared node (not a junction).
+    let o = at("overpass", 5);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0 + 70.0, o.1]], y);
+    add(RoadType::Highway, &[[o.0 - 50.0, o.1 - 50.0], [o.0 + 50.0, o.1 + 50.0]], 112.0);
+    // A plain 4-way of road chain ends (the in-race focus hides one arm).
+    let o = at("four_way", 6);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0, o.1]], y);
+    add(RoadType::Road, &[[o.0, o.1], [o.0 + 70.0, o.1]], y);
+    add(RoadType::Road, &[[o.0, o.1 - 70.0], [o.0, o.1]], y);
+    add(RoadType::Road, &[[o.0, o.1], [o.0, o.1 + 70.0]], y);
+    let layers = Arc::new(MapLayers { rev: 1, roads: Arc::new(roads), ..Default::default() });
+    let mesh = Arc::new(RoadMesh::build(&layers.roads, &flat, 1));
+    (World { terrain: flat, layers, mesh, image: base.image, cal: base.cal, orig: base.orig }, spots)
+}
+
+/// Before / after pictures of the synthetic join scenes in flat 2D and in 3D (`JOIN_TAG`), plus
+/// the 4-way with its north arm hidden by the in-race focus (3D).
+#[test]
+#[ignore = "needs an EGL device; writes PNGs"]
+fn gl3d_synthetic_joins() {
+    let (w, spots) = join_world();
+    let tag = std::env::var("JOIN_TAG").unwrap_or_else(|_| "now".into());
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0));
+    for (name, (x, z)) in spots {
+        let o = rig.frame(1.0, |ctx| {
+            let p = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("map")));
+            p.rect_filled(ctx.content_rect(), 0.0, BACKDROP);
+            let cam = Camera::from_cfg(&TiltCfg::default(), (x, z), 0.0, 90.0, rect);
+            let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+            let pc = p.with_clip_rect(rect);
+            draw_base(&pc, &BaseParams { cam: &cam, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: false });
+            let mut cfg = MapLayerConfig::default();
+            cfg.pois.on = false;
+            cfg.race_lines.mode = RaceLineMode::Off;
+            cfg.roads.max_px = 24.0;
+            cfg.roads.casing_px = 3.0;
+            let sel = RaceSel::default();
+            let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None };
+            draw_layers(&cx, &w.layers, &cfg);
+        });
+        o.save(&format!("synth_{tag}_{name}_2d.png"));
+        let v = View { site: Site::Dashboard, rect, car: (x, z - 30.0), yaw: 0.25, zoom: 70.0, angle: 55.0, car_y: Some(101.0), clip: None, no_3d: false, marker: None };
+        let wide = |s: &mut Scene3d| {
+            s.roads.max_px = 30.0;
+            s.roads.casing_px = 3.0;
+        };
+        warm_up(&mut rig, &w, &h, tex, &v, 1.0);
+        let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &wide);
+        assert_eq!(o.gl_error, 0);
+        o.save(&format!("synth_{tag}_{name}_3d.png"));
+        if name == "four_way" {
+            // The north arm (chain 3) off the race: hidden. Its cap must not leave a stub.
+            let mut focus = crate::maprender::racesel::RoadFocus::default();
+            let road = RoadType::Road.index() as usize;
+            for (slot, chains) in w.layers.roads.by_type.iter().enumerate() {
+                for (ci, ch) in chains.iter().enumerate() {
+                    let north = slot == road && ch.pts[0][0] == x && ch.pts[0][1] == z && ch.pts[1][1] > z;
+                    focus.runs[slot].push(Run { chain: ci as u32, a: 0, b: ch.pts.len() as u32 - 1, relevant: !north, bbox: ch.bbox });
+                }
+            }
+            let f = Focus3d { focus: Arc::new(focus), cfg: RaceFocusCfg { other_roads: OtherRoads::Hidden, ..Default::default() } };
+            for _ in 0..3 {
+                map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                    wide(s);
+                    s.focus = Some(f.clone());
+                });
+            }
+            let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                wide(s);
+                s.focus = Some(f.clone());
+            });
+            o.save(&format!("synth_{tag}_{name}_hidden_3d.png"));
+        }
+    }
+    rig.finish(&h);
+}
+
+/// Close-ups of real junctions (city crossing and T, a highway junction, an L-corner, a type
+/// change, a shallow Y) in flat 2D and in 3D, for looking at the join geometry. `JOIN_TAG` names
+/// the set (`before` / `after`).
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_joins() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_joins: no FH6 install");
+        return;
+    };
+    let tag = std::env::var("JOIN_TAG").unwrap_or_else(|_| "now".into());
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let mut cells = std::collections::HashMap::<(i32, i32), u32>::new();
+    for s in &w.mesh.samples {
+        *cells.entry(((s.x / 200.0).floor() as i32, (s.z / 200.0).floor() as i32)).or_default() += 1;
+    }
+    let (&(cx, cz), _) = cells.iter().max_by_key(|(_, &n)| n).unwrap();
+    let city = (cx as f32 * 200.0 + 100.0, cz as f32 * 200.0 + 100.0);
+    let spots = join_spots(&w.layers.roads, city);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0));
+    for (name, x, z, y) in spots {
+        eprintln!("join spot {name}: ({x:.1}, {z:.1}) y {y:.1}");
+        // Flat 2D, the Dashboard's look, at 120 m and 400 m.
+        for zoom in [120.0f32, 400.0] {
+            let o = rig.frame(1.0, |ctx| {
+                let p = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("map")));
+                p.rect_filled(ctx.content_rect(), 0.0, BACKDROP);
+                let cam = Camera::from_cfg(&TiltCfg::default(), (x, z), 0.0, zoom, rect);
+                let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+                let pc = p.with_clip_rect(rect);
+                draw_base(&pc, &BaseParams { cam: &cam, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: false });
+                let mut cfg = MapLayerConfig::default();
+                cfg.pois.on = false;
+                cfg.race_lines.mode = RaceLineMode::Off;
+                let sel = RaceSel::default();
+                let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None };
+                draw_layers(&cx, &w.layers, &cfg);
+            });
+            o.save(&format!("join_{tag}_{name}_2d_{zoom:.0}.png"));
+        }
+        // 3D, the Dashboard at 50 degrees: a close-up (40 m) and the neighbourhood (150 m).
+        for zoom in [40.0f32, 150.0] {
+            let v = View { site: Site::Dashboard, rect, car: (x, z), yaw: 0.3, zoom, angle: 50.0, car_y: Some(y + 1.0), clip: None, no_3d: false, marker: None };
+            let o = warm_up(&mut rig, &w, &h, tex, &v, 1.0);
+            assert_eq!(o.gl_error, 0);
+            o.save(&format!("join_{tag}_{name}_3d_{zoom:.0}.png"));
+        }
+    }
+    rig.finish(&h);
+}

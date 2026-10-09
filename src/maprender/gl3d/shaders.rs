@@ -113,11 +113,19 @@ void main() {
 }
 "#;
 
+/// The road ribbons, drawn in two passes (D81, `uPass`): **0 = casing**: every road that has a
+/// casing at its full width (fill + casing px) in its casing colour, with the deck; **1 = fill**:
+/// every road at its fill width in its own colour, nearer the eye by a depth step larger than all
+/// the casing pass's ranks, so every fill lies over every casing. That is what makes junctions
+/// clean: the outline runs round the union of the roads and never across another road's fill.
+/// The fill pass leaves a cased road's deck to the casing pass (its bottom vertices stay up, so
+/// walls and underside collapse); a road without a casing (the untyped slot, muted roads) is drawn
+/// wholly in the fill pass. Hidden roads get alpha 0 in both.
 pub const ROAD_VS: &str = r#"
 layout(location = 0) in vec3 aPos;     // x, z, node height
-layout(location = 1) in vec2 aTan;
+layout(location = 1) in vec2 aTan;     // tangent x the mitre factor (mesh3d::Sample)
 layout(location = 2) in float aS;
-layout(location = 3) in uvec4 aFlags;  // side (1 / 255 = -1), bot, slot, pad
+layout(location = 3) in uvec4 aFlags;  // side (1 / 255 = -1), bot, slot, cap centre (1)
 layout(location = 4) in uint aRel;     // 1 = on the picked race line, 0 = other (in-race focus)
 uniform float uMode;       // 0 = terrain drape, 1 = node heights (RoadHeight)
 uniform float uThick;      // deck thickness, m
@@ -129,14 +137,16 @@ uniform vec4 uRW;          // metres, min_px, max_px, casing_px  (px of the view
 uniform vec4 uFocus;       // mode (0 none, 1 muted, 2 hidden), muted alpha, muted width factor, 0
 uniform vec3 uMuteRgb;
 uniform vec2 uBias;        // depth bias toward the eye: base, per draw rank (fractions of the depth)
+uniform float uPass;       // 0 = casing, 1 = fill
+uniform float uCasingAlpha;
 out vec4 vCol;
-out vec4 vEdge;
 out vec4 vDash;
-out float vSide;
-out float vFrac;
 out float vCamZ;
 out float vShade;
 out float vS;
+out float vSide;
+out float vAA;
+out float vBot;
 void main() {
   int slot = int(aFlags.z);
   float yT = heightAt(aPos.xy);
@@ -156,23 +166,39 @@ void main() {
     // drag the triangle it shares with a visible sample across the screen.
     rgb = uMuteRgb; alpha = uFocus.x > 1.5 ? 0.0 : uFocus.y; wf = wf * uFocus.z; casingA = 0.0; dash = vec2(0.0);
   }
+  if (alpha <= 0.0) casingA = 0.0;      // a road switched off or hidden has no casing either
   float ppm = uCam.x * uCam.y / max(cz0, 1.0);          // px per metre at this depth
   float wpx = max(clamp(ppm * uRW.x, uRW.y, uRW.z) * wf, 0.7);
-  float tot = wpx + (casingA > 0.0 ? uRW.w : 0.0);
-  float hw = 0.5 * tot / ppm;                            // half width incl. casing, metres
-  float side = (aFlags.x == 1u) ? 1.0 : -1.0;
+  bool cased = casingA > 0.0;
+  bool casingPass = uPass < 0.5;
+  float px = wpx;
+  if (casingPass) {
+    px = wpx + uRW.w;
+    rgb = sb.rgb;
+    alpha = cased ? uCasingAlpha : 0.0;
+    dash = vec2(0.0);
+  }
+  float hw = 0.5 * px / ppm;                             // half width, metres
+  // A cap's centre vertex sits on the point itself (mesh3d::push_vertices).
+  float side = aFlags.w == 1u ? 0.0 : ((aFlags.x == 1u) ? 1.0 : -1.0);
   vec3 p = base + vec3(-aTan.y, 0.0, aTan.x) * side * hw;
-  if (aFlags.y == 1u) p.y -= uThick / uExag;
+  bool deck = !(cased && !casingPass);                   // the casing pass drew this road's deck
+  if (aFlags.y == 1u && deck) p.y -= uThick / uExag;
+  // ... so the fill pass drops a cased road's walls and underside (collapsed onto the top, they
+  // would still be drawn over it where back faces are not culled).
+  vBot = (!deck && aFlags.y == 1u) ? 1.0 : 0.0;
   vCol = vec4(rgb, alpha);
-  vEdge = vec4(sb.rgb, casingA);
   vDash = vec4(dash, 0.0, 0.0);
-  vSide = side;
-  vFrac = casingA > 0.0 ? uRW.w / tot : 0.0;
   vShade = aFlags.y == 1u ? 0.72 : 1.0;
   vS = aS;
+  vSide = side;
+  // The fill's edge over its casing is anti-aliased in the fragment shader (no MSAA here); the
+  // deck's own edges are geometry, as before.
+  vAA = (cased && !casingPass) ? 1.0 : 0.0;
   vec4 c = projectW(p);
   // Toward the eye along the view ray (same screen position): beats the coarse terrain levels
-  // that sit above the exact bilinear surface the road follows, and ranks overlapping types.
+  // that sit above the exact bilinear surface the road follows, ranks overlapping types, and
+  // (uBias per pass) puts every fill over every casing.
   float k = uBias.x + uBias.y * sc.w;
   c.z -= uCam.z * c.w * k;
   vCamZ = c.w;
@@ -182,22 +208,20 @@ void main() {
 
 pub const ROAD_FS: &str = r#"
 in vec4 vCol;
-in vec4 vEdge;
 in vec4 vDash;
-in float vSide;
-in float vFrac;
 in float vCamZ;
 in float vShade;
 in float vS;
-uniform float uCasingAlpha;
+in float vSide;
+in float vAA;
+in float vBot;
 out vec4 oC;
 void main() {
+  if (vBot > 0.0) discard;
   if (vDash.x > 0.0 && mod(vS, vDash.x + vDash.y) > vDash.x) discard;
-  float a = abs(vSide);
-  float aa = max(fwidth(vSide), 0.001);
-  float e = vFrac > 0.0 ? smoothstep(1.0 - vFrac - aa, 1.0 - vFrac + aa, a) : 0.0;
-  vec3 c = mix(vCol.rgb, vEdge.rgb, e) * vShade;
-  float al = mix(vCol.a, vEdge.a * uCasingAlpha, e) * farFade(vCamZ);
+  vec3 c = vCol.rgb * vShade;
+  float al = vCol.a * farFade(vCamZ);
+  if (vAA > 0.5) al *= clamp((1.0 - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0);
   if (al < 0.004) discard;
   oC = vec4(c * al, al);
 }
@@ -387,7 +411,7 @@ pub const TERRAIN_UNIFORMS: &[&str] = &[
 ];
 pub const ROAD_UNIFORMS: &[&str] = &[
     "uVP", "uCar", "uExag", "uCam", "uH", "uHSize", "uHGeo", "uMode", "uThick", "uLift", "uSlotA", "uSlotB", "uSlotC", "uRW", "uFocus", "uMuteRgb", "uBias",
-    "uCasingAlpha",
+    "uCasingAlpha", "uPass",
 ];
 pub const COMP_UNIFORMS: &[&str] = &["uTex", "uUv", "uSizePx", "uRadius", "uAlpha"];
 pub const MARKER_UNIFORMS: &[&str] = &["uVP", "uCar", "uExag", "uCam", "uPos", "uYaw", "uK", "uColor", "uHull", "uAlpha"];

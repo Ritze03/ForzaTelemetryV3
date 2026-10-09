@@ -3,18 +3,21 @@
 //! with different parameters (D61).
 //!
 //! Approach (measured in the design scout, `docs/features/minimap.md`): one `Shape::line` per
-//! visible road chain, a casing pass and a fill pass per type, chains culled by their bounding
-//! box against the view's world box, vertices thinned to 2 px on screen. No baking into the
-//! map texture and no pre-tessellated world meshes: road types change on every editor Save,
-//! types are toggled per map, and widths are in screen px and change with the eased zoom.
+//! visible road chain, chains culled by their bounding box against the view's world box,
+//! vertices thinned to 2 px on screen. No baking into the map texture and no pre-tessellated
+//! world meshes: road types change on every editor Save, types are toggled per map, and widths
+//! are in screen px and change with the eased zoom. Joins (D81): every type's casing first, then
+//! every fill; chain ends closed after `RoadLayer::joins` (mitred into the next piece at a
+//! degree-2 node, a round cap at a dead end or junction); overpasses drawn again with their
+//! casing over the road below.
 
 use std::collections::HashMap;
 
 use egui::epaint::Vertex;
-use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextureId};
+use egui::{pos2, vec2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextureId, Vec2};
 
 use super::cfg::{DashStyle, ImageCfg, MapLayerConfig, OtherRoads, RaceCfg, RaceLineMode, Rgb};
-use super::data::{MapLayers, NO_CAT};
+use super::data::{End, Joins, MapLayers, NO_CAT};
 use super::racesel::{Poly, RaceSel, RoadFocus};
 use super::style::{self, Shape as Marker};
 use super::view::{bbox_hits, clip_convex, clip_polyline_convex, clip_segment_convex, fan, inside_convex, thin, Camera, FAR_MIN_SCALE};
@@ -361,6 +364,132 @@ impl LayerCtx<'_> {
         flush(scratch, out, &self.corner_clip);
     }
 
+    /// A road chain (or a run of one) projected like [`Self::polyline`], with its ends closed
+    /// (D81): at [`EndPx::Ext`] (a join; the next piece's neighbouring vertex) the line runs on
+    /// 1 px (at most `ext_px`) along the corner's bisector and the mitre's outer corner is noted
+    /// in `caps` as a [`Deco::Wedge`]; at [`EndPx::Cap`] a round cap is noted there. The
+    /// [`Deco`]s are drawn per pass.
+    fn road_line(&self, pts: &[[f32; 2]], ends: [EndPx; 2], ext_px: f32, out: &mut Vec<Vec<Pos2>>, caps: &mut Vec<Deco>, scratch: &mut Vec<Pos2>) {
+        scratch.clear();
+        let n = pts.len();
+        let mut first = 0usize;
+        for i in 0..=n {
+            match pts.get(i).and_then(|q| self.cam.project(q[0], q[1])) {
+                Some(s) => {
+                    if scratch.is_empty() {
+                        first = i;
+                    }
+                    scratch.push(s);
+                }
+                None => {
+                    if scratch.len() >= 2 {
+                        let e = [if first == 0 { ends[0] } else { EndPx::Butt }, if i == n { ends[1] } else { EndPx::Butt }];
+                        self.road_piece(scratch, e, ext_px, out, caps);
+                    }
+                    scratch.clear();
+                }
+            }
+        }
+    }
+
+    fn road_piece(&self, scratch: &mut Vec<Pos2>, ends: [EndPx; 2], ext_px: f32, out: &mut Vec<Vec<Pos2>>, caps: &mut Vec<Deco>) {
+        thin(scratch, style::THIN_PX);
+        let m = scratch.len();
+        if m < 2 {
+            return;
+        }
+        let mut ext = [None, None];
+        for (k, e) in ends.into_iter().enumerate() {
+            let (p, q) = if k == 0 { (scratch[0], scratch[1]) } else { (scratch[m - 1], scratch[m - 2]) };
+            match e {
+                EndPx::Ext(nw) => {
+                    // A last, 1 px short segment along the corner's bisector direction: egui
+                    // mitres the corner onto it and ends the line square to it, i.e. along the
+                    // bisector line, where the next piece ends the same way. The 1 px overlap
+                    // hides the anti-aliasing seam (the later-drawn line covers it).
+                    if let Some(pn) = self.cam.project(nw[0], nw[1]) {
+                        let (din, dout) = ((p - q).normalized(), (pn - p).normalized());
+                        let t = (din + dout).normalized();
+                        let t = if t.is_finite() && (pn - p).length() > 1e-3 { t } else { din };
+                        if t.is_finite() {
+                            ext[k] = Some(p + t * ext_px.min(1.0));
+                        }
+                        // egui bevels the corner of that short segment; the rest of the mitre's
+                        // outer corner, up to its tip on the bisector, is a wedge of its own.
+                        if let Some(w) = mitre_wedge(din, dout) {
+                            caps.push(Deco::Wedge(p, w.0, w.1));
+                        }
+                    }
+                }
+                EndPx::Cap => {
+                    let d = p - q;
+                    if d.length() > 1e-3 {
+                        caps.push(Deco::Cap(p, d.normalized()));
+                    }
+                }
+                EndPx::Butt => {}
+            }
+        }
+        if let Some(x) = ext[0] {
+            scratch.insert(0, x);
+        }
+        if let Some(x) = ext[1] {
+            scratch.push(x);
+        }
+        match &self.corner_clip {
+            Some(cc) if scratch.iter().any(|q| !cc.safe.contains(*q)) => out.extend(clip_polyline_convex(scratch, cc.poly)),
+            _ => out.push(scratch.clone()),
+        }
+    }
+
+    /// A [`Deco`] for a line of half-width `r`.
+    fn deco(&self, d: Deco, r: f32, col: Color32) {
+        if r < DECO_MIN_R {
+            return;
+        }
+        match d {
+            Deco::Cap(at, dir) => self.round_cap(at, dir, r, col),
+            Deco::Wedge(at, n, tip) => {
+                if self.fits(at, r * tip.length()) {
+                    self.p.add(Shape::convex_polygon(vec![at, at + n * r, at + tip * r], col, Stroke::NONE));
+                }
+            }
+        }
+    }
+
+    /// A round cap (D81): the half disc of radius `r` beyond a line end at `at` (outward `dir`),
+    /// reaching 1 px back into the line so no anti-aliasing seam shows between the two. Skipped
+    /// when it would poke out of the map shape.
+    fn round_cap(&self, at: Pos2, dir: Vec2, r: f32, col: Color32) {
+        if !self.fits(at, r) {
+            return;
+        }
+        let side = dir.rot90();
+        let back = dir * -(1.0f32).min(r);
+        // Fewer arc segments on small caps (a 2 px cap is a half hexagon).
+        let n = (r.ceil() as usize).clamp(3, CAP_SEGS_2D);
+        let mut pts = Vec::with_capacity(n + 3);
+        pts.push(at + side * r + back);
+        for j in 0..=n {
+            let a = std::f32::consts::PI * j as f32 / n as f32;
+            pts.push(at + side * (r * a.cos()) + dir * (r * a.sin()));
+        }
+        pts.push(at - side * r + back);
+        self.p.add(Shape::convex_polygon(pts, col, Stroke::NONE));
+    }
+
+    /// The taper factor [`Self::tapered`] gives a line at screen row `y`.
+    fn taper_k(&self, y: f32, taper: bool) -> f32 {
+        let cam = self.cam;
+        if !taper || cam.is_flat() || cam.relief.is_some() {
+            return 1.0;
+        }
+        let (k0, k1) = (cam.depth_scale_at_row(cam.rect.top()), cam.depth_scale_at_row(cam.rect.bottom()));
+        let n = style::TAPER_BANDS as f32;
+        let b = (((cam.depth_scale_at_row(y) - k0) / (k1 - k0).max(1e-3)) * n).clamp(0.0, n - 1.0) as usize;
+        k0 + (b as f32 + 0.5) / n * (k1 - k0)
+    }
+
     /// The tilt's width taper: `lines` cut into pieces of similar depth, each with the factor
     /// its width gets (the perspective at its screen row, in [`style::TAPER_BANDS`] steps).
     /// Flat view or `taper` off: every line whole with factor 1.
@@ -419,6 +548,53 @@ impl LayerCtx<'_> {
     }
 }
 
+/// How [`road_pass`] closes a road line's end (from the chain's [`End`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EndPx {
+    /// Plain (egui's butt end): a run's end inside its chain, and every muted end.
+    Butt,
+    /// Run on towards this world point (the next piece at an [`End::Join`]).
+    Ext([f32; 2]),
+    /// A round cap (a dead end, a junction, a join onto a type that is switched off).
+    Cap,
+}
+
+/// Arc segments of a 2D round cap (at most).
+const CAP_SEGS_2D: usize = 8;
+
+/// Caps, mitre wedges and overpass outlines of a line narrower than twice this (px) are not
+/// drawn: a cap of a 2 px line is not seen, and the island zoomed out has ~4 000 of them, which
+/// cost more than all the lines (D81, measured: 5 km Dashboard 3.5 ms -> 2 ms).
+const DECO_MIN_R: f32 = 1.5;
+
+/// What a road line's end adds besides the line (D81), drawn in the casing and the fill pass
+/// with that pass's half-width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Deco {
+    /// A round cap: the end point, the outward direction.
+    Cap(Pos2, Vec2),
+    /// The outer corner of a mitred join: the node, the line's outer normal there and the offset
+    /// of the mitre's tip, both per unit of half-width. The triangle node, node + normal, tip is
+    /// this line's half of the corner; the next piece draws the other half, so the two meet on
+    /// the bisector.
+    Wedge(Pos2, Vec2, Vec2),
+}
+
+/// The outer normal and the mitre tip (per unit of half-width) where a line arriving along `din`
+/// turns into `dout` (unit vectors); `None` when it runs on straight (nothing to fill) or turns
+/// so sharply that the tip would be more than [`super::mesh3d::MITER_MAX`] half-widths out
+/// (left bevelled, as egui does).
+fn mitre_wedge(din: Vec2, dout: Vec2) -> Option<(Vec2, Vec2)> {
+    if !(din.is_finite() && dout.is_finite()) || din.dot(dout) > 0.9998 {
+        return None;
+    }
+    let n_in = if din.rot90().dot(dout) <= 0.0 { din.rot90() } else { -din.rot90() };
+    let n_out = if dout.rot90().dot(-din) <= 0.0 { dout.rot90() } else { -dout.rot90() };
+    let m = (n_in + n_out).normalized();
+    let f = 1.0 / m.dot(n_in).max(1e-3);
+    (m.is_finite() && f <= super::mesh3d::MITER_MAX).then_some((n_in, m * f))
+}
+
 /// Which roads one [`road_pass`] draws, and how.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
@@ -442,6 +618,158 @@ fn draw_roads(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Op
     }
 }
 
+/// Overpasses (D81, [`super::data::Overpass`]): the upper road's stretch over the crossing once more, its
+/// casing over the lower road and its fill over that, 1.5 px past the casing's ends (so they do
+/// not show across the road). The stretches of one road that overlap (a ramp crossing two lanes)
+/// are merged first, then drawn lowest first. Only for an upper type with a casing and a solid,
+/// opaque fill (a translucent or dashed stretch would not match the line under it), both types
+/// drawn in this pass, crossing at more than ~15 degrees (two roads stacked almost in parallel
+/// would be cut into pieces); with the in-race focus only an upper segment of the pass's own
+/// relevance.
+fn draw_overpasses(cx: &LayerCtx, layers: &MapLayers, joins: &Joins, focus: Option<(&RoadFocus, bool)>, slots: &[SlotLines], taper: bool, dashes: bool) {
+    let cam = cx.cam;
+    let find = |slot: usize| slots.iter().find(|s| s.slot == slot);
+    let rect = cam.rect.expand(40.0);
+    // (slot, chain) -> [(s0, s1, y, k)] stretches in metres along the chain.
+    let mut stretches: Vec<((u8, u32), [f32; 2], f32, f32)> = Vec::new();
+    // Where a road lies over another almost in parallel (a flat crossing, drawn by type rank as
+    // everywhere else): no stretch of that road may be drawn over there, it would show as a patch.
+    let mut blocked: Vec<((u8, u32), [f32; 2])> = Vec::new();
+    for ov in &joins.overpasses {
+        let (Some(up), Some(low)) = (find(ov.slot as usize), find(ov.lower_slot as usize)) else { continue };
+        let Some((_, extra)) = up.casing else { continue };
+        if !up.fill_caps || (up.dash != DashStyle::None && dashes) {
+            continue;
+        }
+        let Some(at) = cam.project(ov.at[0], ov.at[1]).filter(|p| rect.contains(*p)) else { continue };
+        if let Some((f, relevant)) = focus {
+            if seg_relevant(f, ov.slot as usize, ov.chain, ov.seg) != Some(relevant) {
+                continue;
+            }
+        }
+        let Some(ch) = layers.roads.by_type[ov.slot as usize].get(ov.chain as usize) else { continue };
+        let k = cx.taper_k(at.y, taper);
+        let wk = |w: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
+        let (wu, wl, c) = (wk(up.w), wk(low.w), extra * k);
+        if 0.5 * (wu + c) < DECO_MIN_R {
+            continue; // an outline of a hair-thin line is not seen
+        }
+        let cos = (1.0 - ov.sin * ov.sin).max(0.0).sqrt();
+        let len_px = (0.5 * (wl + low.casing.map_or(0.0, |cc| cc.1 * k)) + 0.5 * (wu + c) * cos) / ov.sin.max(0.05) + 1.5;
+        let len = len_px / (cam.scale() * cam.k_at(ov.at[0], ov.at[1]).max(1e-3));
+        let s = arc_at(&ch.pts, ov.seg as usize, ov.at);
+        if ov.sin < OVERPASS_MIN_SIN {
+            blocked.push(((ov.slot, ov.chain), [s - len, s + len]));
+        } else {
+            stretches.push(((ov.slot, ov.chain), [s - len, s + len], ov.y, k));
+        }
+    }
+    if stretches.is_empty() {
+        return;
+    }
+    // Merge the overlapping stretches of each road (the y of the highest crossing in them).
+    stretches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1[0].total_cmp(&b.1[0])));
+    let mut merged: Vec<((u8, u32), [f32; 2], f32, f32)> = Vec::with_capacity(stretches.len());
+    for st in stretches {
+        match merged.last_mut() {
+            Some(m) if m.0 == st.0 && st.1[0] <= m.1[1] => {
+                m.1[1] = m.1[1].max(st.1[1]);
+                m.2 = m.2.max(st.2);
+                m.3 = m.3.min(st.3);
+            }
+            _ => merged.push(st),
+        }
+    }
+    merged.retain(|m| !blocked.iter().any(|b| b.0 == m.0 && b.1[0] < m.1[1] && m.1[0] < b.1[1]));
+    merged.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let (mut scratch, mut caps) = (Vec::new(), Vec::new());
+    for ((slot, chain), [s0, s1], _, k) in merged {
+        let (Some(up), Some(ch)) = (find(slot as usize), layers.roads.by_type[slot as usize].get(chain as usize)) else { continue };
+        let Some((casing, extra)) = up.casing else { continue };
+        let wu = if k == 1.0 { up.w } else { (up.w * k).max(style::MIN_LINE_PX) };
+        // 1.5 px more fill than casing at each end, in metres at the stretch; at the chain's own
+        // ends (the fill cannot go on) the casing stops short instead.
+        let mid = piece_between(&ch.pts, (s0 + s1) * 0.5, (s0 + s1) * 0.5);
+        let grow = mid.first().map_or(0.0, |q| 1.5 / (cam.scale() * cam.k_at(q[0], q[1]).max(1e-3)));
+        let total: f32 = ch.pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        let (c0, c1) = (s0.max(grow), s1.min(total - grow));
+        if c1 <= c0 {
+            continue;
+        }
+        // The fill runs on 1 px into the next piece at a join it reaches (as the line under it).
+        let e = joins.get(slot as usize, chain as usize);
+        let on = |end: End, reached: bool| match end {
+            End::Join { next, .. } if reached => EndPx::Ext(next),
+            _ => EndPx::Butt,
+        };
+        let fill_ends = [on(e[0], c0 - grow <= 0.0), on(e[1], c1 + grow >= total)];
+        for (a, b, stroke, ends) in [(c0, c1, Stroke::new(wu + extra * k, casing), [EndPx::Butt; 2]), (c0 - grow, c1 + grow, Stroke::new(wu, up.color), fill_ends)] {
+            let mut lines = Vec::new();
+            cx.road_line(&piece_between(&ch.pts, a, b), ends, wu, &mut lines, &mut caps, &mut scratch);
+            for l in lines {
+                cx.p.add(Shape::line(l, stroke));
+            }
+        }
+    }
+}
+
+/// Crossings flatter than this (`|sin|` of the angle, ~15 degrees) get no overpass outline.
+const OVERPASS_MIN_SIN: f32 = 0.26;
+
+/// The relevance of segment `seg` of a chain in the in-race focus (`None`: the focus has no run
+/// for it).
+fn seg_relevant(f: &RoadFocus, slot: usize, chain: u32, seg: u32) -> Option<bool> {
+    let runs = f.runs.get(slot)?;
+    let i = runs.partition_point(|r| r.chain < chain);
+    runs[i..].iter().take_while(|r| r.chain == chain).find(|r| r.a <= seg && seg < r.b).map(|r| r.relevant)
+}
+
+/// Metres along a polyline to the point `at` on segment `seg`.
+fn arc_at(pts: &[[f32; 2]], seg: usize, at: [f32; 2]) -> f32 {
+    let d = |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+    pts.windows(2).take(seg).map(|w| d(w[0], w[1])).sum::<f32>() + d(pts[seg], at)
+}
+
+/// The stretch of a polyline from `s0` to `s1` metres along it (clamped to its ends).
+fn piece_between(pts: &[[f32; 2]], s0: f32, s1: f32) -> Vec<[f32; 2]> {
+    let mut out = Vec::new();
+    let mut acc = 0.0f32;
+    let lerp = |a: [f32; 2], b: [f32; 2], f: f32| [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+    for w in pts.windows(2) {
+        let l = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+        let (a, b) = (acc, acc + l);
+        if b >= s0 && a <= s1 && l > 0.0 {
+            if out.is_empty() {
+                out.push(lerp(w[0], w[1], ((s0 - a) / l).clamp(0.0, 1.0)));
+            }
+            out.push(lerp(w[0], w[1], ((s1 - a) / l).clamp(0.0, 1.0)));
+        }
+        acc = b;
+        if acc > s1 {
+            break;
+        }
+    }
+    out
+}
+
+/// One type's share of a [`road_pass`]: its look and what it draws.
+struct SlotLines {
+    slot: usize,
+    /// Fill colour, line width at the car's row (px), dash.
+    color: Color32,
+    w: f32,
+    dash: DashStyle,
+    /// Casing colour and its extra px, if the type has a casing in this pass.
+    casing: Option<(Color32, f32)>,
+    /// Round caps on the fill too: only for a solid, opaque fill (a translucent cap would
+    /// darken where it meets its own line; a dashed line ending in a gap would get a dot).
+    fill_caps: bool,
+    /// (taper factor, line).
+    pieces: Vec<(f32, Vec<Pos2>)>,
+    /// (taper factor, what) of the round caps and mitre wedges.
+    caps: Vec<(f32, Deco)>,
+}
+
 fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Option<&RoadFocus>, pass: Pass, st: &mut LayerStats) {
     let cam = cx.cam;
     let rf = &cfg.race_lines.focus;
@@ -452,8 +780,12 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
     // Widths are in design px (`min_px` / `max_px` / the zoom rule), scaled by the HUD's `s` after.
     let base = style::road_base_px(c, cam.scale() / cx.s) * cx.s;
     let dashes = cam.scale() / cx.s >= style::DASH_MIN_PX_PER_M;
+    let joins = layers.roads.joins();
     let mut scratch: Vec<Pos2> = Vec::new();
     let mut lines: Vec<Vec<Pos2>> = Vec::new();
+    // Is a slot drawn in this pass at all (for a join onto it)?
+    let drawn = |slot: usize| slot == 0 || RoadType::from_index(slot as u8).and_then(|t| c.styles.get(t)).is_some_and(|s| s.on);
+    let mut slots: Vec<SlotLines> = Vec::with_capacity(style::ROAD_DRAW_ORDER.len());
 
     for &slot in &style::ROAD_DRAW_ORDER {
         // (colour, alpha, width factor, dash, casing colour)
@@ -468,12 +800,24 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
         };
         // Muted: one faint neutral colour, solid, no casing; keeps each type's relative width.
         let (color, alpha, factor, dash, casing) = if muted { (rf.mute_color, rf.mute_alpha, factor * rf.mute_width, DashStyle::None, None) } else { (color, alpha, factor, dash, casing) };
+        let w = style::line_px(base, factor);
+        let casing_px = c.casing_px * cx.s;
+        // A join's line runs on past the node (D81), never further than half its widest stroke.
+        let ext_px = 0.5 * (w + if casing.is_some() { casing_px } else { 0.0 });
+        // How this pass closes a chain end (muted roads: translucent, no casing: plain ends).
+        let end_px = |e: End| match e {
+            _ if muted => EndPx::Butt,
+            End::Join { next, slot: ns } if pass != Pass::All || drawn(ns as usize) => EndPx::Ext(next),
+            _ => EndPx::Cap,
+        };
+        let mut caps: Vec<Deco> = Vec::new();
         lines.clear();
         match focus {
             None => {
-                for ch in &layers.roads.by_type[slot] {
+                for (ci, ch) in layers.roads.by_type[slot].iter().enumerate() {
                     if bbox_hits(&ch.bbox, &aabb) {
-                        cx.polyline(&ch.pts, false, &mut lines, &mut scratch);
+                        let e = joins.get(slot, ci);
+                        cx.road_line(&ch.pts, [end_px(e[0]), end_px(e[1])], ext_px, &mut lines, &mut caps, &mut scratch);
                         st.chains += 1;
                     }
                 }
@@ -483,7 +827,11 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
                     let Some(ch) = layers.roads.by_type[slot].get(run.chain as usize) else { continue };
                     if bbox_hits(&run.bbox, &aabb) {
                         if let Some(pts) = ch.pts.get(run.a as usize..=run.b as usize) {
-                            cx.polyline(pts, false, &mut lines, &mut scratch);
+                            // A run's own ends inside its chain (where the relevance changes) stay plain.
+                            let e = joins.get(slot, run.chain as usize);
+                            let a = if run.a == 0 { end_px(e[0]) } else { EndPx::Butt };
+                            let b = if run.b as usize + 1 == ch.pts.len() { end_px(e[1]) } else { EndPx::Butt };
+                            cx.road_line(pts, [a, b], ext_px, &mut lines, &mut caps, &mut scratch);
                             st.chains += 1;
                             st.muted += muted as usize;
                         }
@@ -495,19 +843,43 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
             continue;
         }
         st.vertices += lines.iter().map(Vec::len).sum::<usize>();
-        let w = style::line_px(base, factor);
         let pieces = cx.tapered(std::mem::take(&mut lines), taper);
-        // Width of a piece: the full width at the car's row (k = 1), thinner towards the horizon.
-        let wk = |k: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
-        if let Some(cc) = casing {
-            let col = cx.c(cc, c.casing_alpha);
-            for (k, l) in &pieces {
-                cx.p.add(Shape::line(l.clone(), Stroke::new(wk(*k) + c.casing_px * cx.s * k, col)));
-            }
+        // (taper factors stay under ~1.3 in the view: below that nothing would be drawn anyway)
+        if 0.65 * (w + if casing.is_some() { casing_px } else { 0.0 }) < DECO_MIN_R {
+            caps.clear();
         }
-        for (k, l) in pieces {
-            let stroke = Stroke::new(wk(k), cx.c(color, alpha));
-            match style::dash_pattern(dash, stroke.width).filter(|_| dashes) {
+        let caps = caps
+            .into_iter()
+            .map(|d| {
+                let (Deco::Cap(at, _) | Deco::Wedge(at, _, _)) = d;
+                (cx.taper_k(at.y, taper), d)
+            })
+            .collect();
+        let fill_caps = alpha >= 0.99 && (dash == DashStyle::None || !dashes);
+        slots.push(SlotLines { slot, color: cx.c(color, alpha), w, dash, casing: casing.map(|cc| (cx.c(cc, c.casing_alpha), casing_px)), fill_caps, pieces, caps });
+    }
+
+    // Width of a piece: the full width at the car's row (k = 1), thinner towards the horizon.
+    let wk = |w: f32, k: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
+    // Every casing first, then every fill (D81): outlines run round the union of the roads and
+    // never across another road's fill at a junction. Roads that only cross (an overpass) get
+    // their outline back below.
+    for sl in &slots {
+        let Some((col, extra)) = sl.casing else { continue };
+        for (k, l) in &sl.pieces {
+            cx.p.add(Shape::line(l.clone(), Stroke::new(wk(sl.w, *k) + extra * k, col)));
+        }
+        for &(k, d) in &sl.caps {
+            cx.deco(d, 0.5 * (wk(sl.w, k) + extra * k), col);
+        }
+    }
+    for sl in slots.iter_mut() {
+        for &(k, d) in sl.caps.iter().filter(|_| sl.fill_caps) {
+            cx.deco(d, 0.5 * wk(sl.w, k), sl.color);
+        }
+        for (k, l) in std::mem::take(&mut sl.pieces) {
+            let stroke = Stroke::new(wk(sl.w, k), sl.color);
+            match style::dash_pattern(sl.dash, stroke.width).filter(|_| dashes) {
                 Some((d, g)) => {
                     cx.p.extend(Shape::dashed_line(&l, stroke, d, g));
                 }
@@ -516,6 +888,10 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
                 }
             }
         }
+    }
+
+    if !muted {
+        draw_overpasses(cx, layers, &joins, focus.map(|f| (f, pass == Pass::Relevant)), &slots, taper, dashes);
     }
 
     // Jump lines: take-off → landing, drawn after the chains.
@@ -824,7 +1200,7 @@ mod tests {
         shapes
             .iter()
             .filter_map(|s| match &s.shape {
-                Shape::Path(p) => Some(p.points.clone()),
+                Shape::Path(p) if !p.closed => Some(p.points.clone()),
                 Shape::LineSegment { points, .. } => Some(points.to_vec()),
                 _ => None,
             })
@@ -918,7 +1294,7 @@ mod tests {
         let widths: Vec<f32> = shapes
             .iter()
             .filter_map(|s| match &s.shape {
-                Shape::Path(p) => Some(p.stroke.width),
+                Shape::Path(p) if !p.closed => Some(p.stroke.width),
                 Shape::LineSegment { stroke, .. } => Some(stroke.width),
                 _ => None,
             })
@@ -1132,13 +1508,183 @@ mod tests {
                 c.s = s;
                 draw_layers(&c, &layers, &cfg);
             });
-            shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { Some(p.stroke.width) } else { None }).collect::<Vec<_>>()
+            shapes.iter().filter_map(|s| match &s.shape { Shape::Path(p) if !p.closed => Some(p.stroke.width), _ => None }).collect::<Vec<_>>()
         };
         let (w1, w2) = (widths(1.0), widths(2.0));
         assert_eq!((w1.len(), w2.len()), (1, 1));
         assert!((w2[0] - 2.0 * w1[0]).abs() < 1e-3, "{w1:?} vs {w2:?}");
         // 300 m radius on a 136 px pill: 0.227 px/m * 10 m = 2.27 px.
         assert!((w1[0] - 2.2667).abs() < 0.01, "{w1:?}");
+    }
+
+    // ── joins (D81) ──
+
+    fn layers_of(chains: &[(RoadType, &[[f32; 2]], f32)]) -> MapLayers {
+        let mut roads = RoadLayer::default();
+        for (t, pts, y) in chains {
+            roads.by_type[t.index() as usize].push(Chain::new(pts.to_vec(), vec![*y; pts.len()]));
+        }
+        MapLayers { rev: 1, roads: Arc::new(roads), ..Default::default() }
+    }
+
+    fn solid(m: &egui::epaint::ColorMode) -> Color32 {
+        match m {
+            egui::epaint::ColorMode::Solid(c) => *c,
+            _ => Color32::TRANSPARENT,
+        }
+    }
+
+    /// The shapes tessellated into one mesh (feathering off: exact edges).
+    fn tessellate(shapes: &[ClippedShape]) -> Mesh {
+        let opts = egui::epaint::TessellationOptions { feathering: false, ..Default::default() };
+        let mut t = egui::epaint::Tessellator::new(1.0, opts, [1, 1], vec![]);
+        let mut mesh = Mesh::default();
+        for s in shapes {
+            t.tessellate_shape(s.shape.clone(), &mut mesh);
+        }
+        mesh
+    }
+
+    /// The colour of the last triangle that covers `pt` (what is on top there), if any.
+    fn top_colour(mesh: &Mesh, pt: Pos2) -> Option<Color32> {
+        let cross = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        mesh.indices.chunks(3).rev().find_map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize]);
+            let (d1, d2, d3) = (cross(a.pos, b.pos, pt), cross(b.pos, c.pos, pt), cross(c.pos, a.pos, pt));
+            let inside = (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0);
+            (inside && cross(a.pos, b.pos, c.pos).abs() > 1e-6).then_some(a.color)
+        })
+    }
+
+    /// Junctions: every casing is drawn before every fill (so no outline crosses a road at a
+    /// junction), and the side road ending on the through road gets a round cap there.
+    #[test]
+    fn every_casing_is_drawn_before_every_fill_and_a_junction_end_gets_a_round_cap() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 50.0); // 2 px per metre: 10 px roads
+        let layers = layers_of(&[(RoadType::Road, &[[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]], 10.0), (RoadType::Offroad, &[[0.0, 0.0], [0.0, 40.0]], 10.0)]);
+        let cfg = only_roads();
+        let shapes = paint(rect, |p| {
+            draw_layers(&ctx(p, &cam), &layers, &cfg);
+        });
+        let st = &cfg.roads.styles;
+        let casing = [st.road.casing_color.color(1.0), st.offroad.casing_color.color(1.0)];
+        let colour = |s: &Shape| match s {
+            Shape::Path(p) if p.closed => p.fill,
+            Shape::Path(p) => solid(&p.stroke.color),
+            _ => Color32::TRANSPARENT,
+        };
+        let is_casing: Vec<bool> = shapes.iter().map(|s| casing.contains(&colour(&s.shape))).collect();
+        let first_fill = is_casing.iter().position(|c| !c).expect("fills");
+        assert!(is_casing[..first_fill].iter().all(|&c| c) && is_casing[first_fill..].iter().all(|&c| !c), "{is_casing:?}");
+        // Round caps: the road's two dead ends and the offroad's two ends (junction + dead end),
+        // each in the casing pass and the fill pass.
+        let caps = shapes.iter().filter(|s| matches!(&s.shape, Shape::Path(p) if p.closed)).count();
+        assert_eq!(caps, 2 * (2 + 2));
+        // At the junction no outline crosses the side road's mouth: just past the through road's
+        // fill (10 px wide), where its casing band (1.4 px) runs, the side road's fill shows.
+        let mesh = tessellate(&shapes);
+        let c = rect.center();
+        for dx in [-3.0, 0.0, 3.0] {
+            assert_eq!(top_colour(&mesh, c + vec2(dx, -4.7)), Some(st.road.color.color(1.0)), "the road's fill at {dx}");
+            assert_eq!(top_colour(&mesh, c + vec2(dx, -5.35)), Some(st.offroad.color.color(1.0)), "the mouth at {dx}");
+        }
+        // Beside the mouth the road keeps its outline.
+        assert_eq!(top_colour(&mesh, c + vec2(-20.0, -5.35)), Some(casing[0]));
+    }
+
+    /// An L-corner of two chains (the screenshot of D81): mitred, the outer corner filled (it was
+    /// a notch between two square ends), the colour boundary of a type change on the bisector.
+    #[test]
+    fn an_l_corner_of_two_chains_is_mitred_and_a_type_change_meets_on_the_bisector() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 50.0);
+        let mut cfg = only_roads();
+        cfg.roads.styles.road.casing = false;
+        cfg.roads.styles.offroad.casing = false;
+        let c = rect.center();
+        let w = style::line_px(style::road_base_px(&cfg.roads, cam.scale()), 1.0);
+        assert!((w - 10.0).abs() < 1e-3, "{w}");
+        // East to the node, then north (screen: from the left, then up).
+        let l = layers_of(&[(RoadType::Road, &[[-40.0, 0.0], [0.0, 0.0]], 10.0), (RoadType::Road, &[[0.0, 0.0], [0.0, 40.0]], 10.0)]);
+        let shapes = paint(rect, |p| {
+            draw_layers(&ctx(p, &cam), &l, &cfg);
+        });
+        let mesh = tessellate(&shapes);
+        let road = cfg.roads.styles.road.color.color(1.0);
+        // The outer corner (screen right-down of the node): covered up to the mitre's tip.
+        assert_eq!(top_colour(&mesh, c + vec2(4.0, 4.0)), Some(road));
+        assert_eq!(top_colour(&mesh, c + vec2(4.9, 4.9)), Some(road));
+        assert_eq!(top_colour(&mesh, c + vec2(6.0, 6.0)), None, "no overshoot past the mitre");
+        assert_eq!(top_colour(&mesh, c + vec2(6.0, 0.0)), None, "nothing past the corner to the east");
+        // The same corner as a type change (road -> offroad): road on top, the boundary along the
+        // bisector: road colour just before it (1 px overlap), offroad colour past it.
+        let t = layers_of(&[(RoadType::Road, &[[-40.0, 0.0], [0.0, 0.0]], 10.0), (RoadType::Offroad, &[[0.0, 0.0], [0.0, 40.0]], 10.0)]);
+        let mesh = tessellate(&paint(rect, |p| {
+            draw_layers(&ctx(p, &cam), &t, &cfg);
+        }));
+        let off = cfg.roads.styles.offroad.color.color(1.0);
+        // Points just off the bisector (screen y = -x + ... through the node, from upper-left to
+        // lower-right): left-below of it is road, right-above is offroad.
+        assert_eq!(top_colour(&mesh, c + vec2(-3.0, 1.0)), Some(road));
+        assert_eq!(top_colour(&mesh, c + vec2(2.0, -4.0)), Some(off));
+        assert_eq!(top_colour(&mesh, c + vec2(4.0, 4.0)), Some(road), "outer corner filled");
+        assert_eq!(top_colour(&mesh, c + vec2(3.0, -4.9)), Some(off));
+    }
+
+    /// The in-race focus hides an arm of a 4-way: nothing of it is drawn, not even a stub of a
+    /// cap; the other arms' caps stay inside their own width.
+    #[test]
+    fn a_hidden_arm_leaves_no_stub_at_the_junction() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 50.0);
+        let arms: [[[f32; 2]; 2]; 4] = [[[0.0, 0.0], [-40.0, 0.0]], [[0.0, 0.0], [40.0, 0.0]], [[0.0, 0.0], [0.0, -40.0]], [[0.0, 0.0], [0.0, 40.0]]];
+        let layers = layers_of(&arms.iter().map(|a| (RoadType::Road, &a[..], 10.0)).collect::<Vec<_>>());
+        let mut focus = RoadFocus::default();
+        let road = RoadType::Road.index() as usize;
+        focus.runs[road] = (0..4).map(|c| crate::maprender::racesel::Run { chain: c, a: 0, b: 1, relevant: c != 3, bbox: layers.roads.by_type[road][c as usize].bbox }).collect();
+        let mut cfg = only_roads();
+        cfg.race_lines.focus.other_roads = OtherRoads::Hidden;
+        let mut st = LayerStats::default();
+        let shapes = paint(rect, |p| draw_roads(&ctx(p, &cam), &layers, &cfg, Some(&focus), &mut st));
+        assert_eq!(st.chains, 3);
+        let mesh = tessellate(&shapes);
+        let c = rect.center();
+        // North of the node (screen up) past the half-width + casing: nothing.
+        for dy in [7.0, 10.0, 30.0] {
+            assert_eq!(top_colour(&mesh, c + vec2(0.0, -dy)), None, "hidden arm at {dy} px");
+        }
+        assert!(top_colour(&mesh, c + vec2(0.0, 30.0)).is_some(), "the south arm is drawn");
+    }
+
+    /// An overpass (a highway 12 m over a road, no shared node) keeps its outline over the road:
+    /// after all fills the highway's stretch is drawn once more, casing then fill. At grade, no.
+    #[test]
+    fn an_overpass_is_drawn_again_with_its_casing_over_the_lower_road() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 50.0);
+        let cfg = only_roads();
+        let st = &cfg.roads.styles;
+        let hw_casing: Color32 = st.highway.casing_color.color(1.0);
+        let count = |dy: f32| {
+            let l = layers_of(&[(RoadType::Highway, &[[-40.0, 0.0], [40.0, 0.0]], 10.0 + dy), (RoadType::Road, &[[-30.0, -30.0], [30.0, 30.0]], 10.0)]);
+            let shapes = paint(rect, |p| {
+                draw_layers(&ctx(p, &cam), &l, &cfg);
+            });
+            let open: Vec<Color32> = shapes.iter().filter_map(|s| match &s.shape {
+                Shape::Path(p) if !p.closed => Some(solid(&p.stroke.color)),
+                _ => None,
+            }).collect();
+            (open.iter().filter(|c| **c == hw_casing).count(), open)
+        };
+        let (n, open) = count(12.0);
+        assert_eq!(n, 2, "{open:?}");
+        assert_eq!(open[open.len() - 2], hw_casing, "the stretch's casing, then its fill, last");
+        assert_eq!(open[open.len() - 1], st.highway.color.color(1.0));
+        assert_eq!(count(0.0).0, 1, "at grade: drawn once");
+        // The road under it: its casing, then its fill; a road over the highway gets the stretch.
+        let (n, _) = count(-12.0);
+        assert_eq!(n, 1);
     }
 
     #[test]
@@ -1265,7 +1811,7 @@ mod tests {
             let shapes = paint(rect, |p| {
                 draw_layers(&ctx(p, cam), &layers, &cfg);
             });
-            let mut w: Vec<f32> = shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { Some(p.stroke.width) } else { None }).collect();
+            let mut w: Vec<f32> = shapes.iter().filter_map(|s| match &s.shape { Shape::Path(p) if !p.closed => Some(p.stroke.width), _ => None }).collect();
             w.sort_by(f32::total_cmp);
             w
         };
@@ -1558,8 +2104,10 @@ mod tests {
         };
         // (label, rect size, zoom m, tilt, car) — the car on a busy part of the island.
         let car = (1500.0, 800.0);
-        let cases: [(&str, Vec2, f32, bool); 7] = [
+        let cases: [(&str, Vec2, f32, bool); 9] = [
             ("Dashboard 900x600 @ 5000 m", vec2(900.0, 600.0), 5000.0, false),
+            ("Dashboard 900x600 @ 5000 m, roads only", vec2(900.0, 600.0), 5000.0, false),
+            ("Dashboard 900x600 @ 1500 m, roads only", vec2(900.0, 600.0), 1500.0, false),
             ("Dashboard 900x600 @ 6000 m (whole island)", vec2(900.0, 600.0), 6000.0, false),
             ("Dashboard 600x400 @ 1500 m", vec2(600.0, 400.0), 1500.0, false),
             ("Dashboard 420x420 @ 5000 m", vec2(420.0, 420.0), 5000.0, false),
@@ -1574,6 +2122,10 @@ mod tests {
             let hud = size.y < 200.0;
             let mut cfg = if hud { MapLayerConfig::hud() } else { MapLayerConfig::default() };
             cfg.tilt.on = tilted;
+            if label.ends_with("roads only") {
+                cfg.pois.on = false;
+                cfg.race_lines.mode = RaceLineMode::Off;
+            }
             let cam = Camera::from_cfg(&cfg.tilt, car, 0.6, zoom, rect);
             let atlas = layers.icons.as_ref().map(|i| IconAtlas::from_poi_icons(TextureId::Managed(1), i));
             let (mut t_build, mut t_tess) = (Vec::new(), Vec::new());

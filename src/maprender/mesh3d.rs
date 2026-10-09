@@ -35,23 +35,31 @@
 //!   apart (jump lines all) and the top surface only: 585 k -> ~100 k triangles for the HUD's
 //!   stopped zoom. The renderer chooses per tile ([`Tile::dist_to`]); both index sets reference the
 //!   same vertices.
-//! * **Tangents** are central differences over the whole chain (also across tile borders), so two
-//!   pieces meet without a gap. Corners are not mitred: the ribbon narrows slightly at sharp
-//!   nodes (the prototype looked fine at 8 m).
+//! * **Tangents** are the bisector of the two segments at a sample, scaled by the mitre factor
+//!   (D81, [`Sample::tx`]): the ribbon keeps its width through a bend, and two pieces of a chain
+//!   (a tile border) meet in the same vertices.
+//! * **Chain ends (D81)** follow [`RoadLayer::joins`]: at an [`End::Join`] (exactly one other
+//!   piece goes on: a type change, an L-corner of two chains) the end takes the bisector with the
+//!   next piece's first segment, so both ends sit on the same two vertices, a mitre with no notch
+//!   or overlap; at a dead end or a junction ([`End::Junction`]) a **round cap** closes the end:
+//!   [`CAP_RIM`] rim samples after the piece's own, a fan round a centre vertex, the rim wall and
+//!   the underside in the near set. At a junction the arms' caps and the through road overlap at
+//!   the node's one height; the renderer's two passes (every casing, then every fill,
+//!   `gl3d::shaders::ROAD_VS`) make that a clean junction patch. Jump lines stay open.
 //! * **`s`** is the distance along the whole chain (dashes run on across tile borders).
 //! * **In-race focus (D66):** [`RoadMesh::build_rel`] makes one byte per GPU vertex, 1 for the
 //!   roads along the picked race line and 0 for the others, from the same [`RoadFocus`] the 2D
 //!   renderer uses. A sample is tagged with the segment it *starts*, so the flag flips half a
 //!   quad (<= 4 m) away from the real boundary once the GPU interpolates it; fine at map scale.
 //!
-//! Sizes on the real data (8 m steps): ~121 k samples, 485 068 vertices = 13.6 MB, 2.85 M near
-//! indices = 11.4 MB, 2 440 pieces over 177 tiles (a 186 ms build in a debug test, ~15 ms release).
+//! Sizes on the real data (8 m steps): 135 911 samples (121 267 + 2 092 caps of 7), 543 644
+//! vertices = 15.2 MB, 1.02 M near triangles = 12.2 MB of indices, 2 440 pieces over 177 tiles.
 
 
 use std::collections::HashMap;
 
 use super::cfg::RoadHeight;
-use super::data::{RoadLayer, N_TYPES};
+use super::data::{End, RoadLayer, N_TYPES};
 use super::racesel::RoadFocus;
 use super::terrain::Terrain;
 
@@ -67,6 +75,13 @@ pub const STEP_JUMP_M: f32 = 2.0;
 pub const LIFT_M: f32 = 0.6;
 /// Coincident chain vertices closer than this are one point.
 const MIN_SEG_M: f32 = 0.05;
+/// Cap of the mitre factor (`1 / cos` of half the turn) at a corner (D81): 2 = a full mitre up to
+/// a 120 degree turn; a sharper corner narrows a little instead of growing a spike.
+pub const MITER_MAX: f32 = 2.0;
+/// Triangles of a round cap (half a disc) at a dead end or a junction (D81).
+pub const CAP_SEGS: usize = 8;
+/// Samples a round cap adds: its rim between the end sample's two top vertices.
+pub const CAP_RIM: usize = CAP_SEGS - 1;
 
 /// Road type slots (`RoadType::index`), see `data::N_TYPES`.
 pub const SLOT_CROSSCOUNTRY: u8 = 5;
@@ -77,7 +92,8 @@ pub const SLOT_TURNAROUND: u8 = 9;
 /// GPU vertices per sample: `bot * 2 + (side > 0)`: 0 = top/right, 1 = top/left, 2 = bottom/right,
 /// 3 = bottom/left (`side` +1 offsets by `(-tz, tx) * half_width`).
 pub const VERTS_PER_SAMPLE: usize = 4;
-/// Bytes per GPU vertex: `x, z, y_node` f32 (offset 0), `side` i8 / `bot` u8 / `slot` u8 / pad (12),
+/// Bytes per GPU vertex: `x, z, y_node` f32 (offset 0), `side` i8 / `bot` u8 / `slot` u8 / cap
+/// centre u8 (12, see [`push_vertices`]),
 /// `tx, tz` f32 (16), `s` f32 (24).
 pub const VERTEX_STRIDE: usize = 28;
 #[allow(dead_code)] // layout documentation; the renderer binds the same offsets (`gl3d::roads`)
@@ -155,7 +171,11 @@ pub struct Sample {
     /// Node height (m, no lift): linear between the chain vertices; the terrain for cross-country;
     /// the taut string for jump lines.
     pub y_node: f32,
-    /// Unit tangent in (x, z).
+    /// Tangent in (x, z): unit length times the mitre factor (D81). At a corner it is the bisector
+    /// of the two segments, `1 / cos(turn / 2)` long (at most [`MITER_MAX`]), so the shader's
+    /// offset `(-tz, tx) * half_width` keeps the ribbon its full width through the bend; at a
+    /// [`End::Join`] both chains take the same bisector, so their ends share the edge. A cap
+    /// sample's tangent is unit and turned so its left vertex lies on the cap's rim.
     pub tx: f32,
     pub tz: f32,
     /// Distance along the whole chain, m.
@@ -170,9 +190,12 @@ pub struct Sample {
 pub struct SampleSrc {
     pub chain: u32,
     pub seg: u32,
+    /// A rim sample of a round cap (it takes the provenance of the end sample it caps).
+    pub cap: bool,
 }
 
-/// One chain piece inside one tile: samples `first .. first + count` (>= 2).
+/// One chain piece inside one tile: samples `first .. first + count` (>= 2), then the rim samples
+/// of its round caps ([`CAP_RIM`] each, the start cap first).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Piece {
     pub first: u32,
@@ -180,6 +203,28 @@ pub struct Piece {
     pub slot: u8,
     /// Index into [`RoadMesh::tiles`].
     pub tile: u32,
+    /// Round caps (D81): bit 0 at the first sample (the chain's start), bit 1 at the last.
+    pub caps: u8,
+}
+
+/// How a chain end is closed in the mesh (from [`End`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EndGeo {
+    /// Left open (jump lines).
+    Open,
+    /// A round cap (dead end, junction).
+    Cap,
+    /// Mitred onto the next piece, whose neighbouring vertex this is.
+    Mitre([f32; 2]),
+}
+
+impl From<End> for EndGeo {
+    fn from(e: End) -> EndGeo {
+        match e {
+            End::Join { next, .. } => EndGeo::Mitre(next),
+            End::Dead | End::Junction => EndGeo::Cap,
+        }
+    }
 }
 
 /// A range of an index buffer, in indices (not triangles).
@@ -320,17 +365,63 @@ fn tile_key(x: f32, z: f32) -> (i32, i32) {
     ((x / TILE_M).floor() as i32, (z / TILE_M).floor() as i32)
 }
 
-/// One piece under construction.
+/// One piece under construction: its samples, then its caps' rim samples (`caps` as in [`Piece`]).
 struct PieceBuild {
     key: (i32, i32),
     slot: u8,
     samples: Vec<Sample>,
     src: Vec<SampleSrc>,
+    caps: u8,
+}
+
+fn unit(dx: f32, dz: f32) -> Option<[f32; 2]> {
+    let l = dx.hypot(dz);
+    (l > 1e-6 && l.is_finite()).then(|| [dx / l, dz / l])
+}
+
+/// `v` turned by `a` radians (counter-clockwise in a right-handed x/z reading: +x towards +z, so
+/// the "left" normal `(-tz, tx)` of a tangent is the tangent turned by +90 degrees).
+fn turn(v: [f32; 2], a: f32) -> [f32; 2] {
+    let (s, c) = a.sin_cos();
+    [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
+}
+
+/// The tangent at a point with the incoming direction `din` and the outgoing `dout` (unit, either
+/// may be missing at an open end): the bisector, scaled by the mitre factor (D81).
+fn mitre(din: Option<[f32; 2]>, dout: Option<[f32; 2]>) -> [f32; 2] {
+    match (din, dout) {
+        (Some(a), Some(b)) => match unit(a[0] + b[0], a[1] + b[1]) {
+            Some(t) => {
+                let c = (t[0] * b[0] + t[1] * b[1]).max(1.0 / MITER_MAX);
+                [t[0] / c, t[1] / c]
+            }
+            None => b, // a full reversal: no bisector
+        },
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => [1.0, 0.0],
+    }
+}
+
+/// The [`CAP_RIM`] rim samples of a round cap on `end` (`start`: the chain's first sample, so the
+/// cap points backwards). Rim direction `j` = the outward direction turned by
+/// `90 - 180 j / CAP_SEGS` degrees: from the end sample's vertex on the left of the outward
+/// direction round to the one on its right. A rim sample's tangent is set so its *left* vertex
+/// (side +1) lies on the rim; its right vertices are unused.
+fn cap_rim(end: &Sample, start: bool) -> impl Iterator<Item = Sample> + '_ {
+    let t = unit(end.tx, end.tz).unwrap_or([1.0, 0.0]);
+    let f = if start { [-t[0], -t[1]] } else { t };
+    (1..CAP_SEGS).map(move |j| {
+        let dir = turn(f, std::f32::consts::FRAC_PI_2 - std::f32::consts::PI * j as f32 / CAP_SEGS as f32);
+        let tan = turn(dir, -std::f32::consts::FRAC_PI_2);
+        Sample { tx: tan[0], tz: tan[1], ..*end }
+    })
 }
 
 /// Samples of a dense chain with tangents and distance along, cut into one piece per tile (a piece
-/// ends with the first point of the next tile, which also starts the next piece).
-fn pieces_of(dense: &[Dense], slot: u8, chain: u32, out: &mut Vec<PieceBuild>) {
+/// ends with the first point of the next tile, which also starts the next piece). `ends` closes the
+/// chain's two ends: mitred onto the next piece, a round cap, or open.
+fn pieces_of(dense: &[Dense], slot: u8, chain: u32, ends: [EndGeo; 2], out: &mut Vec<PieceBuild>) {
     let n = dense.len();
     if n < 2 {
         return;
@@ -340,12 +431,23 @@ fn pieces_of(dense: &[Dense], slot: u8, chain: u32, out: &mut Vec<PieceBuild>) {
         s[i] = s[i - 1] + (dense[i].x - dense[i - 1].x).hypot(dense[i].z - dense[i - 1].z);
     }
     let sample = |i: usize| {
-        let (p0, p1) = (dense[i.saturating_sub(1)], dense[(i + 1).min(n - 1)]);
-        let (mut tx, mut tz) = (p1.x - p0.x, p1.z - p0.z);
-        let l = tx.hypot(tz).max(1e-6);
-        tx /= l;
-        tz /= l;
-        Sample { x: dense[i].x, z: dense[i].z, y_node: dense[i].y, tx, tz, s: s[i], slot }
+        let p = dense[i];
+        let din = if i > 0 {
+            unit(p.x - dense[i - 1].x, p.z - dense[i - 1].z)
+        } else if let EndGeo::Mitre(q) = ends[0] {
+            unit(p.x - q[0], p.z - q[1])
+        } else {
+            None
+        };
+        let dout = if i + 1 < n {
+            unit(dense[i + 1].x - p.x, dense[i + 1].z - p.z)
+        } else if let EndGeo::Mitre(q) = ends[1] {
+            unit(q[0] - p.x, q[1] - p.z)
+        } else {
+            None
+        };
+        let [tx, tz] = mitre(din, dout);
+        Sample { x: p.x, z: p.z, y_node: p.y, tx, tz, s: s[i], slot }
     };
     let mut start = 0usize;
     let mut cur = tile_key(dense[0].x, dense[0].z);
@@ -353,10 +455,20 @@ fn pieces_of(dense: &[Dense], slot: u8, chain: u32, out: &mut Vec<PieceBuild>) {
         if b <= a {
             return;
         }
-        let samples: Vec<Sample> = (a..=b).map(sample).collect();
+        let mut samples: Vec<Sample> = (a..=b).map(sample).collect();
         // The last sample of a piece (the next tile's first point) belongs to the segment before it.
-        let src = (a..=b).map(|i| SampleSrc { chain, seg: dense[if i == b && b > a { b - 1 } else { i }].seg }).collect();
-        out.push(PieceBuild { key, slot, samples, src });
+        let mut src: Vec<SampleSrc> = (a..=b).map(|i| SampleSrc { chain, seg: dense[if i == b && b > a { b - 1 } else { i }].seg, cap: false }).collect();
+        let mut caps = 0u8;
+        for (bit, at, k) in [(1u8, a == 0 && ends[0] == EndGeo::Cap, 0usize), (2, b == n - 1 && ends[1] == EndGeo::Cap, b - a)] {
+            if at {
+                let (end, end_src) = (samples[k], src[k]);
+                let rim: Vec<Sample> = cap_rim(&end, bit == 1).collect();
+                src.extend(std::iter::repeat_n(SampleSrc { cap: true, ..end_src }, rim.len()));
+                samples.extend(rim);
+                caps |= bit;
+            }
+        }
+        out.push(PieceBuild { key, slot, samples, src, caps });
     };
     for i in 1..n {
         let t = tile_key(dense[i].x, dense[i].z);
@@ -392,6 +504,7 @@ impl RoadMesh {
     /// chains are the `jumps` list. ~15 ms release on the real island (30 ms debug).
     pub fn build(roads: &RoadLayer, terrain: &Terrain, rev: u64) -> RoadMesh {
         let mut builds: Vec<PieceBuild> = Vec::new();
+        let joins = roads.joins();
         for slot in 0..N_TYPES {
             let sl = slot as u8;
             if sl == SLOT_TURNAROUND || sl == SLOT_JUMP {
@@ -399,12 +512,12 @@ impl RoadMesh {
             }
             for (ci, ch) in roads.by_type[slot].iter().enumerate() {
                 let dense = densify(&ch.pts, &ch.y, STEP_NEAR_M, sl == SLOT_CROSSCOUNTRY, terrain);
-                pieces_of(&dense, sl, ci as u32, &mut builds);
+                pieces_of(&dense, sl, ci as u32, joins.get(slot, ci).map(EndGeo::from), &mut builds);
             }
         }
         for (ji, j) in roads.jumps.iter().enumerate() {
             let dense = jump_chain(j, terrain);
-            pieces_of(&dense, SLOT_JUMP, ji as u32, &mut builds);
+            pieces_of(&dense, SLOT_JUMP, ji as u32, [EndGeo::Open; 2], &mut builds);
         }
         // Tile order, tunnels last within a tile (a stable sort keeps the type order otherwise).
         builds.sort_by_key(|b| (b.key, b.slot == SLOT_TUNNEL));
@@ -428,12 +541,13 @@ impl RoadMesh {
                 let yt = terrain.height(sm.x, sm.z);
                 t.y_range = [t.y_range[0].min(sm.y_node.min(yt)), t.y_range[1].max(sm.y_node.max(yt))];
             }
-            mesh.pieces.push(Piece { first: mesh.samples.len() as u32, count: b.samples.len() as u32, slot: b.slot, tile });
+            let count = (b.samples.len() - b.caps.count_ones() as usize * CAP_RIM) as u32;
+            mesh.pieces.push(Piece { first: mesh.samples.len() as u32, count, slot: b.slot, tile, caps: b.caps });
             mesh.samples.extend_from_slice(&b.samples);
             mesh.src.extend_from_slice(&b.src);
         }
-        for sm in &mesh.samples {
-            push_vertices(&mut mesh.vertices, sm);
+        for (sm, src) in mesh.samples.iter().zip(&mesh.src) {
+            push_vertices(&mut mesh.vertices, sm, src.cap);
         }
         mesh.build_indices();
         mesh
@@ -461,6 +575,13 @@ impl RoadMesh {
                     let keep = far_subset(samples, if p.slot == SLOT_JUMP { 0.0 } else { STEP_FAR_M });
                     for w in keep.windows(2) {
                         top_quad(&mut self.idx_far, (base + w[0]) as u32, (base + w[1]) as u32);
+                    }
+                    let mut rim = (base + p.count as usize) as u32;
+                    for (bit, end) in [(1u8, base), (2, base + p.count as usize - 1)] {
+                        if p.caps & bit != 0 {
+                            cap_tris(&self.samples, &self.src, end as u32, rim, bit == 1, &mut self.idx_near, &mut self.idx_far);
+                            rim += CAP_RIM as u32;
+                        }
                     }
                 }
                 let t = &mut self.tiles[ti];
@@ -518,7 +639,7 @@ impl RoadMesh {
             // (a side road's stub) from the relevant side by interpolation across the quad.
             if relevant && i > 0 && sm.slot != SLOT_JUMP {
                 let (ps, pr) = (&self.samples[i - 1], &self.src[i - 1]);
-                if ps.slot == sm.slot && pr.chain == src.chain && pr.seg < src.seg {
+                if ps.slot == sm.slot && pr.chain == src.chain && pr.seg < src.seg && !src.cap && !pr.cap {
                     relevant = rel_of(sm.slot, src.chain, pr.seg);
                 }
             }
@@ -550,13 +671,16 @@ fn jump_chain(j: &[f32; 6], terrain: &Terrain) -> Vec<Dense> {
     dense
 }
 
-fn push_vertices(out: &mut Vec<u8>, sm: &Sample) {
+/// The four GPU vertices of a sample. A cap's rim sample (`cap`) marks its right vertices (unused
+/// on the rim) as the cap's **centre** (pad byte 1: the shader puts them on the sample's point
+/// with `side` 0, so the fill's edge fade runs radially in the cap).
+fn push_vertices(out: &mut Vec<u8>, sm: &Sample, cap: bool) {
     for bot in 0..2u8 {
         for side in [-1i8, 1i8] {
             out.extend_from_slice(&sm.x.to_le_bytes());
             out.extend_from_slice(&sm.z.to_le_bytes());
             out.extend_from_slice(&sm.y_node.to_le_bytes());
-            out.extend_from_slice(&[side as u8, bot, sm.slot, 0]);
+            out.extend_from_slice(&[side as u8, bot, sm.slot, (cap && side < 0) as u8]);
             out.extend_from_slice(&sm.tx.to_le_bytes());
             out.extend_from_slice(&sm.tz.to_le_bytes());
             out.extend_from_slice(&sm.s.to_le_bytes());
@@ -576,6 +700,56 @@ fn vi(s: u32, bot: u32, left: u32) -> u32 {
 fn top_quad(idx: &mut Vec<u32>, a: u32, b: u32) {
     let (al, ar, bl, br) = (vi(a, 0, 1), vi(a, 0, 0), vi(b, 0, 1), vi(b, 0, 0));
     idx.extend_from_slice(&[al, bl, ar, bl, br, ar]);
+}
+
+/// Position of GPU vertex `v` relative to its sample's point for a half-width of 1 and a deck of
+/// 1 (what the shader makes of it, up to scale): for choosing a cap triangle's winding.
+fn unit_pos(samples: &[Sample], src: &[SampleSrc], v: u32) -> [f32; 3] {
+    let i = (v / VERTS_PER_SAMPLE as u32) as usize;
+    let sm = &samples[i];
+    let k = v % VERTS_PER_SAMPLE as u32;
+    let side = if k % 2 == 1 { 1.0 } else if src[i].cap { 0.0 } else { -1.0 };
+    let t = unit(sm.tx, sm.tz).unwrap_or([1.0, 0.0]);
+    [-t[1] * side, -((k / 2) as f32), t[0] * side]
+}
+
+/// Append the triangle `v` facing `out`, with the winding of [`top_quad`] (`(b - a) x (c - a)`
+/// points out of the deck).
+fn tri_out(idx: &mut Vec<u32>, samples: &[Sample], src: &[SampleSrc], v: [u32; 3], out: [f32; 3]) {
+    let [a, b, c] = v.map(|v| unit_pos(samples, src, v));
+    let (e1, e2) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+    let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    if n[0] * out[0] + n[1] * out[1] + n[2] * out[2] >= 0.0 {
+        idx.extend_from_slice(&v);
+    } else {
+        idx.extend_from_slice(&[v[0], v[2], v[1]]);
+    }
+}
+
+/// A round cap (D81) on sample `end` with its rim samples `rim .. rim + CAP_RIM` ([`cap_rim`]):
+/// the top as a fan round the centre vertex (the first rim sample's right vertex, see
+/// [`push_vertices`]; near and far set), and in the near set the rim wall and the underside, so
+/// a dead end's deck is closed. All its vertices sit on the end's point, so the shader gives them
+/// the same half-width: the cap is exactly as wide as the ribbon.
+fn cap_tris(samples: &[Sample], src: &[SampleSrc], end: u32, rim: u32, start: bool, near: &mut Vec<u32>, far: &mut Vec<u32>) {
+    // The rim from the end vertex on the left of the outward direction round to the one on its
+    // right (outward = backwards at a start cap: there the left one is the right-side vertex).
+    let (a_left, b_left) = if start { (0, 1) } else { (1, 0) };
+    let mut ring: Vec<u32> = Vec::with_capacity(CAP_RIM + 2);
+    ring.push(vi(end, 0, a_left));
+    ring.extend((0..CAP_RIM as u32).map(|j| vi(rim + j, 0, 1)));
+    ring.push(vi(end, 0, b_left));
+    let bot = |v: u32| v + 2; // the same sample's bottom vertex on the same side
+    let centre = vi(rim, 0, 0);
+    for w in ring.windows(2) {
+        tri_out(near, samples, src, [centre, w[0], w[1]], [0.0, 1.0, 0.0]);
+        tri_out(far, samples, src, [centre, w[0], w[1]], [0.0, 1.0, 0.0]);
+        tri_out(near, samples, src, [bot(centre), bot(w[0]), bot(w[1])], [0.0, -1.0, 0.0]);
+        let (p, q) = (unit_pos(samples, src, w[0]), unit_pos(samples, src, w[1]));
+        let out = [p[0] + q[0], 0.0, p[2] + q[2]];
+        tri_out(near, samples, src, [w[0], bot(w[0]), w[1]], out);
+        tri_out(near, samples, src, [w[1], bot(w[0]), bot(w[1])], out);
+    }
 }
 
 /// The whole deck of the segment `a -> b`: top 2, left wall 2, right wall 2, underside 2
@@ -678,7 +852,11 @@ mod tests {
         roads.by_type[1].push(Chain::new(vec![[-500.0, -700.0], [-400.0, -700.0], [-370.0, -700.0]], vec![10.0, 20.0, 20.0]));
         let m = RoadMesh::build(&roads, &t, 1);
         assert_eq!(m.pieces.len(), 1);
-        let s = &m.samples;
+        // Both ends are dead ends: a round cap each (D81), its rim samples after the ribbon's.
+        assert_eq!(m.pieces[0].caps, 3);
+        assert_eq!(m.samples.len(), 18 + 2 * CAP_RIM);
+        assert!(m.src[18..].iter().all(|r| r.cap) && m.src[..18].iter().all(|r| !r.cap));
+        let s = &m.samples[..18];
         // 100 m -> 13 steps of 7.69 m, 30 m -> 4 steps of 7.5, plus the end: 18 samples.
         assert_eq!(s.len(), 18);
         for w in s.windows(2) {
@@ -695,7 +873,7 @@ mod tests {
         assert!(s.iter().all(|p| (p.tx - 1.0).abs() < 1e-5 && p.tz.abs() < 1e-5 && p.slot == 1));
         assert!((s[17].s - 130.0).abs() < 1e-3);
         // Provenance: the first 13 samples start segment 0, the rest segment 1; the end belongs to segment 1.
-        assert_eq!(m.src.iter().map(|x| x.seg).collect::<Vec<_>>(), [vec![0; 13], vec![1; 5]].concat());
+        assert_eq!(m.src[..18].iter().map(|x| x.seg).collect::<Vec<_>>(), [vec![0; 13], vec![1; 5]].concat());
     }
 
     #[test]
@@ -707,9 +885,10 @@ mod tests {
         roads.by_type[9].push(line(0.0, 50.0, 50.0, 0.0, 0.0)); // turnaround: never
         let m = RoadMesh::build(&roads, &t, 1);
         assert_eq!(m.pieces.len(), 1);
-        assert!(m.samples.windows(2).all(|w| (w[1].x - w[0].x).hypot(w[1].z - w[0].z) > 0.04));
+        let ribbon = &m.samples[..m.pieces[0].count as usize];
+        assert!(ribbon.windows(2).all(|w| (w[1].x - w[0].x).hypot(w[1].z - w[0].z) > 0.04));
         assert!(m.samples.iter().all(|p| p.slot == 1));
-        assert!((m.samples.last().unwrap().x - 20.0).abs() < 1e-4);
+        assert!((ribbon.last().unwrap().x - 20.0).abs() < 1e-4);
         assert_eq!(RoadMesh::build(&RoadLayer::default(), &t, 1).vertices.len(), 0);
     }
 
@@ -857,7 +1036,8 @@ mod tests {
     /// shader computes in `Nodes` mode (y exaggeration 1).
     fn pos(m: &RoadMesh, v: u32, hw: f32, deck: f32) -> [f32; 3] {
         let (p, side, bot, _, tan, _) = decode(&m.vertices, v as usize);
-        let side = side as f32;
+        // A cap's centre vertex (pad byte 1) sits on the point.
+        let side = if m.vertices[v as usize * VERTEX_STRIDE + 15] == 1 { 0.0 } else { side as f32 };
         [p[0] + side * hw * -tan[1], p[2] - bot as f32 * deck, p[1] + side * hw * tan[0]]
     }
 
@@ -874,9 +1054,11 @@ mod tests {
         let mut roads = RoadLayer::default();
         roads.by_type[1].push(Chain::new(vec![[0.0, 0.0], [120.0, 0.0], [120.0, 90.0], [20.0, 90.0]], vec![40.0, 45.0, 45.0, 30.0]));
         let m = RoadMesh::build(&roads, &t, 1);
-        assert_eq!(m.idx_near.len() % 24, 0, "8 triangles per segment");
-        let segs = m.idx_near.len() / 24;
-        assert_eq!(segs, m.samples.len() - 1);
+        // 8 triangles per segment, then the two round caps of the dead ends: 4 x CAP_SEGS each.
+        let cap_idx = 4 * CAP_SEGS * 3;
+        let segs = (m.idx_near.len() - 2 * cap_idx) / 24;
+        assert_eq!(segs, m.pieces[0].count as usize - 1);
+        assert_eq!(m.idx_near.len(), segs * 24 + 2 * cap_idx);
         let (hw, deck) = (3.0, 4.0);
         for q in 0..segs {
             let tris = &m.idx_near[q * 24..(q + 1) * 24];
@@ -893,6 +1075,26 @@ mod tests {
                 }
             }
         }
+        // The caps: tops up, undersides down, the rim walls away from the end point.
+        let mut seen = [0usize; 3];
+        for tri in m.idx_near[segs * 24..].chunks(3) {
+            let v = [0, 1, 2].map(|k| pos(&m, tri[k], hw, deck));
+            let n = normal(v[0], v[1], v[2]);
+            let centre = m.samples[tri[0] as usize / VERTS_PER_SAMPLE];
+            let mid = [(v[0][0] + v[1][0] + v[2][0]) / 3.0 - centre.x, (v[0][2] + v[1][2] + v[2][2]) / 3.0 - centre.z];
+            let (top, bottom) = (v.iter().all(|p| p[1] == centre.y_node), v.iter().all(|p| p[1] == centre.y_node - deck));
+            if top {
+                assert!(n[1] > 0.0, "cap top faces up: {n:?}");
+                seen[0] += 1;
+            } else if bottom {
+                assert!(n[1] < 0.0, "cap underside faces down: {n:?}");
+                seen[1] += 1;
+            } else {
+                assert!(n[0] * mid[0] + n[2] * mid[1] > 0.0 && n[1].abs() < 1e-3, "cap wall outward: {n:?} at {mid:?}");
+                seen[2] += 1;
+            }
+        }
+        assert_eq!(seen, [2 * CAP_SEGS, 2 * CAP_SEGS, 4 * CAP_SEGS]);
         // The far set (top only) uses the same winding.
         for tri in m.idx_far.chunks(3) {
             let n = normal(pos(&m, tri[0], hw, deck), pos(&m, tri[1], hw, deck), pos(&m, tri[2], hw, deck));
@@ -919,21 +1121,24 @@ mod tests {
             (r[0].first, r[0].first + r[0].count, r[1].first, r[1].first + r[1].count)
         };
         let (a, b, c, d) = ends(t0, true);
-        assert_eq!((a, b), (0, 24 * (50 + 30)), "road 50 segments + jump 30 segments");
+        // Every road end is a dead end with a round cap (near: 4 x CAP_SEGS triangles, far: the
+        // top's CAP_SEGS); jump lines have none.
+        let (cap_near, cap_far) = (4 * CAP_SEGS as u32 * 3, CAP_SEGS as u32 * 3);
+        assert_eq!((a, b), (0, 24 * (50 + 30) + 2 * cap_near), "road 50 segments + jump 30 segments");
         assert_eq!(b, c, "normal then tunnel");
-        assert_eq!(d - c, 24 * 50, "400 m tunnel = 50 segments of 8 m");
+        assert_eq!(d - c, 24 * 50 + 2 * cap_near, "400 m tunnel = 50 segments of 8 m");
         let (_, e, _, g) = ends(&m.tiles[1], true);
         assert_eq!(g, n_all);
-        assert_eq!(e - m.tiles[1].near[0].first, 24 * 13);
+        assert_eq!(e - m.tiles[1].near[0].first, 24 * 13 + 2 * cap_near);
         let (fa, fb, fc, fd) = ends(t0, false);
         assert_eq!(fa, 0);
         assert_eq!(fb, fc);
         assert_eq!(ends(&m.tiles[1], false).3, f_all);
         // Far tunnel: 400 m / 32 m = 12 kept steps + the end -> 13 quads of 6 indices.
-        assert_eq!((fd - fc) / 6, 13, "far tunnel quads");
+        assert_eq!((fd - fc - 2 * cap_far) / 6, 13, "far tunnel quads");
         // The jump keeps all its samples in the far set (31 samples of 2 m -> 30 quads); the road
         // is thinned to ~32 m.
-        let jump_far = (fb - fa) / 6 - 13;
+        let jump_far = (fb - fa - 2 * cap_far) / 6 - 13;
         assert_eq!(jump_far, 30, "jump far quads {jump_far}");
         // The far set is much lighter than the near one (top only, 4x fewer samples).
         let (nt, ft) = m.triangles();
@@ -1047,6 +1252,72 @@ mod tests {
         assert!(focus.relevant_segments > 0);
     }
 
+    /// D81: two pieces meeting at a degree-2 node (an L-corner of two chains, a type change) end
+    /// in the very same vertices, the mitre's corners: no notch, no overlap, no cap; dead ends get
+    /// a round cap.
+    #[test]
+    fn joined_ends_share_their_mitred_vertices_and_dead_ends_get_a_cap() {
+        let t = Terrain::synthetic();
+        let mut roads = RoadLayer::default();
+        roads.by_type[1].push(Chain::new(vec![[0.0, 100.0], [100.0, 100.0]], vec![50.0; 2])); // east
+        roads.by_type[1].push(Chain::new(vec![[100.0, 100.0], [100.0, 200.0]], vec![50.0; 2])); // then north: an L
+        roads.by_type[8].push(Chain::new(vec![[100.0, 200.0], [100.0, 300.0]], vec![50.0; 2])); // on as highway
+        let m = RoadMesh::build(&roads, &t, 1);
+        let at = |slot: u8, chain: u32, x: f32, z: f32| {
+            let i = (0..m.samples.len()).find(|&i| {
+                let (s, r) = (m.samples[i], m.src[i]);
+                s.slot == slot && r.chain == chain && !r.cap && (s.x - x).abs() < 1e-3 && (s.z - z).abs() < 1e-3
+            });
+            i.expect("sample") as u32
+        };
+        let (hw, deck) = (1.0, 2.0);
+        let top = |i: u32| (pos(&m, vi(i, 0, 1), hw, deck), pos(&m, vi(i, 0, 0), hw, deck));
+        // The L: both ends carry the bisector, sqrt 2 long; left = the inner corner, right = the outer.
+        let (a, b) = (at(1, 0, 100.0, 100.0), at(1, 1, 100.0, 100.0));
+        let (sa, sb) = (m.samples[a as usize], m.samples[b as usize]);
+        assert_eq!((sa.tx, sa.tz), (sb.tx, sb.tz));
+        assert!((sa.tx - 1.0).abs() < 1e-5 && (sa.tz - 1.0).abs() < 1e-5, "{sa:?}");
+        assert_eq!(top(a), top(b));
+        let (l, r) = top(a);
+        assert!((l[0] - 99.0).abs() < 1e-4 && (l[2] - 101.0).abs() < 1e-4 && (r[0] - 101.0).abs() < 1e-4 && (r[2] - 99.0).abs() < 1e-4, "{l:?} {r:?}");
+        // The type change: straight on, unit tangent, the same vertices.
+        let (c, d) = (at(1, 1, 100.0, 200.0), at(8, 0, 100.0, 200.0));
+        assert_eq!(top(c), top(d));
+        // Caps only on the two dead ends.
+        let caps: Vec<(u8, u8)> = m.pieces.iter().map(|p| (p.slot, p.caps)).collect();
+        assert_eq!(caps, vec![(1, 1), (1, 0), (8, 2)]);
+        // A cap is exactly as wide as its road: every rim vertex hw from the end's point.
+        let p = m.pieces[0];
+        for j in 0..CAP_RIM as u32 {
+            let v = pos(&m, vi(p.first + p.count + j, 0, 1), hw, deck);
+            assert!(((v[0] - 0.0).hypot(v[2] - 100.0) - hw).abs() < 1e-4 && v[0] < 0.0, "rim {j}: {v:?}");
+        }
+    }
+
+    /// D81 + D66: an arm hidden by the in-race focus takes its round cap with it (no stub at the
+    /// junction), the other arms keep theirs.
+    #[test]
+    fn a_hidden_arm_takes_its_cap_with_it() {
+        let t = Terrain::synthetic();
+        let mut roads = RoadLayer::default();
+        let o = [500.0, 500.0];
+        for d in [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]] {
+            roads.by_type[1].push(Chain::new(vec![o, [o[0] + 80.0 * d[0], o[1] + 80.0 * d[1]]], vec![50.0; 2]));
+        }
+        let m = RoadMesh::build(&roads, &t, 1);
+        assert!(m.pieces.iter().all(|p| p.caps == 3), "a junction cap and a dead-end cap each");
+        let mut focus = RoadFocus::default();
+        let bb = [0.0; 4];
+        focus.runs[1] = (0..4).map(|c| Run { chain: c, a: 0, b: 1, relevant: c != 3, bbox: bb }).collect();
+        let rel = m.build_rel(&focus);
+        let mut cap_samples = [0; 4];
+        for (i, src) in m.src.iter().enumerate() {
+            assert_eq!(rel[i * VERTS_PER_SAMPLE] == 1, src.chain != 3, "sample {i} {src:?}");
+            cap_samples[src.chain as usize] += src.cap as usize;
+        }
+        assert_eq!(cap_samples, [2 * CAP_RIM; 4]);
+    }
+
     #[test]
     fn frustum_test_keeps_tiles_in_view_and_drops_the_rest() {
         use crate::maprender::view::{Camera, Relief};
@@ -1098,13 +1369,19 @@ mod tests {
         // Design numbers (prototype, 1 816 chains incl. 18 jump chains): 121 267 samples, 485 068
         // vertices, 2 440 pieces, 2.85 M near indices. The Rust layer has 1 798 chains + 18 jumps.
         // (Pinned like `data::real_install_layers`: the project road-type file and the install are fixed.)
-        assert_eq!((m.samples.len(), m.pieces.len(), m.tiles.len()), (121_267, 2_440, 177));
-        assert_eq!(m.vertex_count(), 485_068);
+        // D81 adds 2 092 round caps (dead ends and junctions; the joins of two pieces are mitred):
+        // 7 rim samples, 32 near and 8 far triangles each.
+        let caps: u32 = m.pieces.iter().map(|p| p.caps.count_ones()).sum();
+        assert_eq!(caps, 2_092);
+        assert_eq!((m.samples.len(), m.pieces.len(), m.tiles.len()), (121_267 + 2_092 * CAP_RIM, 2_440, 177));
+        assert_eq!(m.vertex_count(), 485_068 + 2_092 * CAP_RIM * VERTS_PER_SAMPLE);
         assert_eq!(m.vertices.len(), m.vertex_count() * VERTEX_STRIDE);
-        assert_eq!(nt, 950_616, "8 triangles per segment");
+        assert_eq!(nt, 950_616 + 2_092 * 4 * CAP_SEGS, "8 triangles per segment, 4 x CAP_SEGS per cap");
+        assert_eq!(ft, 54_176 + 2_092 * CAP_SEGS);
         assert!(ft * 4 < nt, "far set must be much lighter: {ft} vs {nt}");
         assert!(m.idx_near.iter().chain(&m.idx_far).all(|&i| (i as usize) < m.vertex_count()));
-        assert!(m.samples.iter().all(|s| s.x.is_finite() && s.z.is_finite() && s.y_node.is_finite() && (s.tx * s.tx + s.tz * s.tz - 1.0).abs() < 1e-3));
+        // Tangents: unit times the mitre factor (D81), never longer than MITER_MAX.
+        assert!(m.samples.iter().all(|s| s.x.is_finite() && s.z.is_finite() && s.y_node.is_finite() && (1.0 - 1e-3..=MITER_MAX + 1e-3).contains(&s.tx.hypot(s.tz))));
         // No turnaround, every other drawn slot present.
         assert!(m.samples.iter().all(|s| s.slot != SLOT_TURNAROUND));
         for sl in [1u8, 2, 3, 4, 5, 6, 7, 8] {
@@ -1115,7 +1392,7 @@ mod tests {
         for p in &m.pieces {
             assert_eq!(p.first, next);
             assert!(p.count >= 2);
-            next += p.count;
+            next += p.count + p.caps.count_ones() * CAP_RIM as u32;
         }
         assert_eq!(next as usize, m.samples.len());
         // Cross-country is on the ground; jump lines never below it, and some bend over the ground.

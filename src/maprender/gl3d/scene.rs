@@ -456,7 +456,6 @@ impl Gl3d {
             gl.uniform_4_f32(p.u("uRW"), table.rw[0], table.rw[1], table.rw[2], table.rw[3]);
             gl.uniform_4_f32(p.u("uFocus"), table.focus[0], table.focus[1], table.focus[2], table.focus[3]);
             gl.uniform_3_f32(p.u("uMuteRgb"), table.mute_rgb[0], table.mute_rgb[1], table.mute_rgb[2]);
-            gl.uniform_2_f32(p.u("uBias"), BIAS_BASE, BIAS_RANK);
             gl.uniform_1_f32(p.u("uCasingAlpha"), table.casing_alpha);
             gl.bind_vertex_array(Some(r.vao));
             if self.cull {
@@ -470,13 +469,25 @@ impl Gl3d {
                 st.triangles += d.count as usize / 3;
                 st.draws += 1;
             };
-            for d in &plan.normal {
-                draw(d, st);
+            // Two passes (D81): every casing, then every fill over them (`shaders::ROAD_VS`).
+            let pass = |which: f32| {
+                gl.uniform_1_f32(p.u("uPass"), which);
+                let (base, rank) = if which == 0.0 { (BIAS_BASE, BIAS_RANK_CASING) } else { (BIAS_BASE + BIAS_FILL, BIAS_RANK) };
+                gl.uniform_2_f32(p.u("uBias"), base, rank);
+            };
+            for which in [0.0, 1.0] {
+                pass(which);
+                for d in &plan.normal {
+                    draw(d, st);
+                }
             }
             // Tunnels are underground: drawn last, over everything, without the depth test.
             gl.disable(glow::DEPTH_TEST);
-            for d in &plan.tunnel {
-                draw(d, st);
+            for which in [0.0, 1.0] {
+                pass(which);
+                for d in &plan.tunnel {
+                    draw(d, st);
+                }
             }
             gl.disable(glow::CULL_FACE);
         }
@@ -689,3 +700,8 @@ impl Drop for Gl3d {
 /// roads follow), the per-rank step orders overlapping types (highway over road over trail).
 const BIAS_BASE: f32 = 0.002;
 const BIAS_RANK: f32 = 0.0002;
+/// The casing pass (D81) ranks its types with a smaller step, and the fill pass starts this much
+/// nearer: every fill is over every casing (9 ranks x 0.00005 < 0.0005), and the topmost fill
+/// (0.002 + 0.0005 + 8 x 0.0002 = 0.0041) stays under the trails (`BIAS_RANK * 12` = 0.0044).
+const BIAS_RANK_CASING: f32 = 0.00005;
+const BIAS_FILL: f32 = 0.0005;
