@@ -1458,3 +1458,179 @@ fn gl3d_real_install_race_roads() {
     }
     rig.finish(&Gl3dHandle::new());
 }
+
+// ── clipmap geomorphing: no pops while driving ──────────────────────────────────────────────
+
+/// The 360 m of a real road with the most up and down (straight-ish), in `step` m steps: (x, z, yaw).
+fn hilly_path(w: &World, step: f32, len: f32) -> Vec<(f32, f32, f32)> {
+    let t = &w.terrain;
+    let mut best: (f32, Vec<(f32, f32)>) = (0.0, vec![]);
+    for ch in &w.layers.roads.by_type[RoadType::Road.index() as usize] {
+        if ch.pts.len() < 10 {
+            continue;
+        }
+        let mut pts = vec![(ch.pts[0][0], ch.pts[0][1])];
+        let mut carry = 0.0f32;
+        for k in 1..ch.pts.len() {
+            let (a, b) = (ch.pts[k - 1], ch.pts[k]);
+            let d = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let mut s = step - carry;
+            while s <= d {
+                let u = s / d;
+                pts.push((a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u));
+                s += step;
+            }
+            carry = d - (s - step);
+        }
+        let n = (len / step) as usize;
+        if pts.len() < n + 2 {
+            continue;
+        }
+        let hs: Vec<f32> = pts.iter().map(|p| t.height(p.0, p.1)).collect();
+        let mut i = 0;
+        while i + n < pts.len() {
+            let chord = (pts[i + n].0 - pts[i].0).hypot(pts[i + n].1 - pts[i].1);
+            if chord > 0.9 * len {
+                let sl: f32 = hs[i..i + n].windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+                if sl > best.0 {
+                    best = (sl, pts[i..i + n].to_vec());
+                }
+            }
+            i += 10;
+        }
+    }
+    assert!(!best.1.is_empty(), "no straight stretch of road found");
+    eprintln!("hilly path: total |dh| {:.0} m over {len} m, from ({:.0}, {:.0})", best.0, best.1[0].0, best.1[0].1);
+    path_yaws(&best.1)
+}
+
+/// Positions with the heading towards the point 3 steps ahead.
+fn path_yaws(p: &[(f32, f32)]) -> Vec<(f32, f32, f32)> {
+    (0..p.len())
+        .map(|i| {
+            let (a, b) = (p[i.saturating_sub(3)], p[(i + 3).min(p.len() - 1)]);
+            (p[i].0, p[i].1, (b.0 - a.0).atan2(b.1 - a.1))
+        })
+        .collect()
+}
+
+/// (mean abs diff /255, % of pixels differing visibly - summed RGB difference > 24) inside `r`.
+fn diff_share(a: &Out, b: &Out, r: [usize; 4]) -> (f64, f64) {
+    let (mut sum, mut cnt, mut n) = (0u64, 0usize, 0usize);
+    for y in r[1]..r[3] {
+        for x in r[0]..r[2] {
+            let (p, q) = (a.at(x, y), b.at(x, y));
+            let d: i32 = (0..3).map(|k| (p[k] as i32 - q[k] as i32).abs()).sum();
+            sum += d as u64;
+            n += 1;
+            if d > 24 {
+                cnt += 1;
+            }
+        }
+    }
+    (sum as f64 / n as f64 / 3.0, 100.0 * cnt as f64 / n as f64)
+}
+
+/// Drive `path` and compare, at every step, the frame the terrain levels of THIS position give with
+/// the frame the levels of the PREVIOUS position would give under the same camera: that difference
+/// is exactly what a level snap changes on screen (a "pop"). Terrain only (no roads). Returns the
+/// worst frame's (mean abs diff /255, % of pixels differing visibly) per view kind.
+fn pop_run(rig: &mut Rig, w: &World, tex: MapTex, path: &[(f32, f32, f32)], tag: &str) -> Vec<(&'static str, f64, f64)> {
+    let t = w.terrain.clone();
+    let mk = |kind: &str, p: (f32, f32, f32)| -> (View, f32) {
+        let car_y = Some(t.height(p.0, p.1) + 1.0);
+        match kind {
+            "hud500" => (View { car: (p.0, p.1), zoom: 500.0, yaw: p.2, car_y, ..View::hud() }, 3.0),
+            "hud150" => (View { car: (p.0, p.1), zoom: 150.0, yaw: p.2, car_y, ..View::hud() }, 3.0),
+            "dash800" => (View { car: (p.0, p.1), zoom: 800.0, yaw: p.2, car_y, ..View::dashboard() }, 1.0),
+            _ => (View { car: (p.0, p.1), zoom: 1500.0, yaw: p.2, car_y, ..View::dashboard() }, 1.0),
+        }
+    };
+    let off = |s: &mut Scene3d| {
+        s.mesh = None;
+        s.roads.on = false;
+    };
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let mut out = vec![];
+    for kind in ["hud500", "hud150", "dash800", "dash1500"] {
+        let (v0, ppp) = mk(kind, path[path.len() / 2]);
+        let _ = warm_up(rig, w, &h, tex, &v0, ppp);
+        let r = inside(&v0, ppp);
+        let (mut worst, mut worst_pct, mut sum_pct, mut moved) = (0.0f64, 0.0f64, 0.0f64, 0usize);
+        for i in 0..path.len() - 1 {
+            let (va, _) = mk(kind, path[i]);
+            let (vb, _) = mk(kind, path[i + 1]);
+            *clipmap::LOD_CAR.lock().unwrap() = None;
+            let new = map_frame(rig, w, &h, tex, &vb, ppp, &off);
+            *clipmap::LOD_CAR.lock().unwrap() = Some([va.car.0 as f64, va.car.1 as f64]);
+            let stale = map_frame(rig, w, &h, tex, &vb, ppp, &off);
+            *clipmap::LOD_CAR.lock().unwrap() = None;
+            assert_eq!(new.gl_error, 0);
+            let (m, pct) = diff_share(&new, &stale, r);
+            if m > 0.0 {
+                moved += 1;
+            }
+            sum_pct += pct;
+            if pct > worst_pct {
+                worst_pct = pct;
+                new.save(&format!("pop_{tag}_{kind}_new.png"));
+                stale.save(&format!("pop_{tag}_{kind}_stale.png"));
+            }
+            worst = worst.max(m);
+        }
+        eprintln!(
+            "POPS [{tag}] {kind}: {} steps, {moved} with any difference; worst frame: mean |diff| {worst:.4} /255, {worst_pct:.4} % of pixels visibly different (avg {:.5} %)",
+            path.len() - 1,
+            sum_pct / (path.len() - 1) as f64
+        );
+        out.push((kind, worst, worst_pct));
+    }
+    h.destroy(&rig.gl);
+    out
+}
+
+/// The worst frame may change at most this share (%) of the pixels when a terrain level snaps, on
+/// the real island / on the synthetic hills. Measured without the geomorph: real 0.07..0.41,
+/// synthetic 0.021 (hud150); with it: real 0.003..0.004, synthetic 0.004.
+const POP_LIMIT_PCT: f64 = 0.05;
+const POP_LIMIT_SYNTHETIC_PCT: f64 = 0.01;
+
+/// Geomorphing (the hills-pop fix): the terrain levels re-centre every 16 * 2^l m, and without the
+/// blend towards the coarser level in the outer cells the strip that switches jumps in height and
+/// shading. Synthetic hills, 3 m steps over the big one.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_terrain_levels_do_not_pop() {
+    let Some(mut rig) = open(Flavour::Default, None, [1300, 760]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let pts: Vec<(f32, f32)> = (0..120).map(|i| (-520.0 + 3.0 * i as f32, 150.0 + 0.6 * i as f32)).collect();
+    let path = path_yaws(&pts);
+    let res = pop_run(&mut rig, &w, tex, &path, "synthetic");
+    if let Some(mut p) = rig.painter.take() {
+        p.destroy();
+    }
+    for (kind, mean, pct) in res {
+        assert!(pct < POP_LIMIT_SYNTHETIC_PCT, "{kind}: the worst frame changes {pct:.4} % of the pixels (mean {mean:.4}) when a terrain level snaps");
+    }
+}
+
+/// The same on the real island along its hilliest straight road stretch (skipped without an install).
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_terrain_levels_do_not_pop() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_terrain_levels_do_not_pop: no FH6 install");
+        return;
+    };
+    let Some(mut rig) = open(Flavour::Default, None, [1300, 760]) else { return };
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let path = hilly_path(&w, 3.0, 360.0);
+    let res = pop_run(&mut rig, &w, tex, &path, "real");
+    if let Some(mut p) = rig.painter.take() {
+        p.destroy();
+    }
+    for (kind, mean, pct) in res {
+        assert!(pct < POP_LIMIT_PCT, "{kind}: the worst frame changes {pct:.4} % of the pixels (mean {mean:.4}) when a terrain level snaps");
+    }
+}

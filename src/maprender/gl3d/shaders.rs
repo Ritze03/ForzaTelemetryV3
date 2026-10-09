@@ -57,6 +57,7 @@ uniform ivec2 uBase;     // raster pixel of grid vertex (0, 0)
 uniform int uStride;     // raster px per grid cell
 uniform int uM;          // cells per side
 uniform float uHasCoarser;
+uniform vec2 uCarPx;     // the car's continuous raster position (fractional px)
 out vec2 vXZ;
 out vec3 vN;
 out float vCamZ;
@@ -72,10 +73,34 @@ void main() {
     if (bz && (ij.x & 1) == 1) h = 0.5 * (hpx(px - ivec2(uStride, 0)) + hpx(px + ivec2(uStride, 0)));
     else if (bx && (ij.y & 1) == 1) h = 0.5 * (hpx(px - ivec2(0, uStride)) + hpx(px + ivec2(0, uStride)));
   }
+  // Geomorph: blend towards the coarser level's surface over the outer cells, so a level that
+  // re-centres (every 16 * 2^l m) changes nothing visible: where rings meet alpha is exactly 1.
+  // d = Chebyshev distance from the car in this level's cells. A level's outer boundary is
+  // always >= 31 cells away (the centre snap is <= 1 cell), so alpha = 1 there and both sides
+  // are identical; the blend starts at 24 cells, well outside the finer level's hole.
+  float alpha = 0.0;
+  if (uHasCoarser > 0.5) {
+    vec2 dpx = abs(vec2(px) - uCarPx) / float(uStride);
+    alpha = clamp((max(dpx.x, dpx.y) - 24.0) / 7.0, 0.0, 1.0);
+    ivec2 o = ij & 1;
+    float hc = h;
+    if (o.x == 1 && o.y == 0) hc = 0.5 * (hpx(px - ivec2(uStride, 0)) + hpx(px + ivec2(uStride, 0)));
+    else if (o.x == 0 && o.y == 1) hc = 0.5 * (hpx(px - ivec2(0, uStride)) + hpx(px + ivec2(0, uStride)));
+    // odd-odd: the coarse cell's diagonal is the index buffer's (b, c), the anti-diagonal
+    else if (o.x == 1 && o.y == 1) hc = 0.5 * (hpx(px + ivec2(uStride, -uStride)) + hpx(px + ivec2(-uStride, uStride)));
+    h = mix(h, hc, alpha);
+  }
   float hl = hpx(px - ivec2(uStride, 0)), hr = hpx(px + ivec2(uStride, 0));
   float hn = hpx(px - ivec2(0, uStride)), hs = hpx(px + ivec2(0, uStride));
   float sp = float(uStride) * uHGeo.z * 2.0;
   vN = normalize(vec3(-(hr - hl) * uExag / sp, 1.0, -(hn - hs) * uExag / sp));
+  if (alpha > 0.0) {
+    // the shading normal moves from the +-stride stencil to the +-2*stride one (the coarser level's)
+    float hl2 = hpx(px - ivec2(2 * uStride, 0)), hr2 = hpx(px + ivec2(2 * uStride, 0));
+    float hn2 = hpx(px - ivec2(0, 2 * uStride)), hs2 = hpx(px + ivec2(0, 2 * uStride));
+    vec3 n2 = normalize(vec3(-(hr2 - hl2) * uExag / (2.0 * sp), 1.0, -(hn2 - hs2) * uExag / (2.0 * sp)));
+    vN = normalize(mix(vN, n2, alpha));
+  }
   vXZ = vec2(uHGeo.x + (float(px.x) + 0.5) * uHGeo.z, uHGeo.y - (float(px.y) + 0.5) * uHGeo.z);
   vec4 c = projectW(vec3(vXZ.x, h, vXZ.y));
   vCamZ = c.w;
@@ -406,7 +431,7 @@ pub fn compile(gl: &glow::Context, name: &str, vs: &str, fs: &str, common: Commo
 }
 
 pub const TERRAIN_UNIFORMS: &[&str] = &[
-    "uVP", "uCar", "uExag", "uCam", "uH", "uHSize", "uHGeo", "uBase", "uNoMap", "uStride", "uM", "uHasCoarser", "uMap", "uMapGeo", "uLook", "uSun", "uShade", "uMirror",
+    "uVP", "uCar", "uExag", "uCam", "uH", "uHSize", "uHGeo", "uBase", "uNoMap", "uStride", "uM", "uHasCoarser", "uCarPx", "uMap", "uMapGeo", "uLook", "uSun", "uShade", "uMirror",
     "uHasMap",
 ];
 pub const ROAD_UNIFORMS: &[&str] = &[

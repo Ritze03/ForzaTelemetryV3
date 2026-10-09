@@ -16,7 +16,14 @@
 //!   `[M/4 + d, 3M/4 + d)` and no gap or overlap appears ([`levels`], tested).
 //! * **Cracks:** the odd vertices on a level's outer edge take the mean of their even
 //!   neighbours (`uHasCoarser` in the shader), so the edge lies exactly on the coarser level's
-//!   linear edge; no skirts, no geomorphing.
+//!   linear edge; no skirts.
+//! * **Geomorphing:** a level re-centres in whole cells, so without it the ring strip that
+//!   switches from the finer to the coarser level jumps in height and shading normal (hills
+//!   "pop" while driving). The vertex shader instead blends every vertex of a level towards
+//!   the coarser level's surface over its outer cells (`alpha = clamp((d - 24) / 7, 0, 1)`,
+//!   `d` = Chebyshev distance from the car in level cells, from `uCarPx`). Where rings meet
+//!   `alpha` is exactly 1 (a level's outer boundary is >= 31 cells out), which subsumes the
+//!   odd-edge rule above. See `docs/features/minimap.md`.
 //!
 //! Level 6 spans `64 * 64 = 4096` raster pixels > the 2752 px island, so the island is always
 //! fully covered; beyond the raster the heights are clamped to the edge (the sea).
@@ -32,6 +39,11 @@ pub const M: i32 = 64;
 pub const LEVELS: usize = 7;
 /// Index buffers: 1 full grid (level 0) + 9 ring variants (hole offset -1, 0, 1 cells in x and z).
 pub const VARIANTS: usize = 10;
+
+/// Tests only: the world (x, z) the terrain levels are placed for, instead of the camera's car
+/// (the pop regression test renders a frame with the previous frame's levels).
+#[cfg(test)]
+pub static LOD_CAR: std::sync::Mutex<Option<[f64; 2]>> = std::sync::Mutex::new(None);
 
 /// What one level draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
