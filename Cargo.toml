@@ -53,3 +53,7 @@ windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse",
 # HUD overlay (src/overlay/win32.rs): the same egui_glow painter as Linux, on a WGL context.
 # eframe's glow backend already builds egui_glow on Windows, so nothing new is compiled.
 egui_glow = { version = "0.33", default-features = false }
+
+# Dependencies (egui, image, glow...) optimised in debug builds; the app crate stays at opt-level 0.
+[profile.dev.package."*"]
+opt-level = 2

@@ -347,7 +347,7 @@ impl Default for RaceCfg {
             mode: RaceLineMode::Current,
             radius_m: 1500.0,
             width_px: 4.0,
-            circuit_color: Rgb::hex(0x38bdf8),
+            circuit_color: Rgb::hex(0xf97316), // orange: the old blue (#38bdf8) was the road colour (D83)
             sprint_color: Rgb::hex(0xfb7185),
             alpha: 0.85,
             marks: true,
