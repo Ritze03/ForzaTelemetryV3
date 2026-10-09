@@ -329,8 +329,8 @@ pub fn draw_layers_parts(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig
     }
     if parts.race_lines && rc.mode != RaceLineMode::Off {
         // Over the 3D scene (D80) the focus line's race road is the GL scene's: it gets it with the
-        // focus, which the call sites hand over whenever the other roads are not drawn normally.
-        let in_gl = !parts.roads && focusing && rc.route == RouteStyle::Road && other != OtherRoads::Normal;
+        // focus, which the call sites hand over (`cfg::focus_wanted`) whenever the race is a road.
+        let in_gl = !parts.roads && focusing && rc.route == RouteStyle::Road;
         let skip = if in_gl { cx.race_sel.focus_line() } else { None };
         draw_race_lines(cx, layers, cfg, skip, &mut st);
     }
@@ -2186,9 +2186,13 @@ mod tests {
         // Over the 3D scene with the other roads muted (the scene has the focus): marks only.
         let (st, shapes) = run(&cfg, Parts::OVER_3D);
         assert_eq!((st.race_lines, shapes.len()), (1, 1 + 10));
-        // ... with the other roads Normal the scene gets no focus: drawn here.
+        // ... and with the other roads Normal too (D82: the call sites hand over the focus whenever
+        // the race is a road, `cfg::focus_wanted`): the scene draws the race road, marks only here.
         cfg.race_lines.focus.other_roads = OtherRoads::Normal;
-        assert_eq!(run(&cfg, Parts::OVER_3D).1.len(), 2 + 4 + 1 + 10);
+        assert_eq!(run(&cfg, Parts::OVER_3D).1.len(), 1 + 10);
+        // A thin line has no road in the scene: drawn here.
+        cfg.race_lines.route = RouteStyle::Line;
+        assert!(run(&cfg, Parts::OVER_3D).1.len() > 1 + 10);
     }
 
     /// D82: "race road only" draws no road of the road layer in a race (2D), only the race road;

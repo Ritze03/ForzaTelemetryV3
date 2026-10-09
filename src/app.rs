@@ -406,7 +406,6 @@ pub enum DashboardSubTab {
     Inputs,
     Boost,
     Graphs,
-    MiniMap,
 }
 
 /// Modal dialog state for the Profile Manager (Settings → PROFILES).
@@ -420,14 +419,6 @@ pub enum ProfileDialog {
     ConfirmDelete,
     Export, // large two-pane export dialog
     Import, // large two-pane import dialog
-}
-
-/// Nested sub-tabs inside the mini-settings "Map" tab.
-#[derive(PartialEq, Clone, Copy, Default)]
-pub enum MiniMapTab {
-    #[default]
-    General,
-    Coop,
 }
 
 /// Last-known non-paused position of a co-op player, so a paused player can still
@@ -539,7 +530,6 @@ pub struct ForzaApp {
     pub page_settings_opacity: f32,
     pub page_settings_tab: PageSettingsTab,
     pub page_dashboard_sub_tab: DashboardSubTab,
-    pub page_map_sub_tab: MiniMapTab,
     // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
     // crate::config::KEY_GROUPS by index.
     pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete / Export / Import
@@ -906,7 +896,6 @@ impl ForzaApp {
             page_settings_opacity: 0.5,
             page_settings_tab: PageSettingsTab::Tab(Tab::Dashboard),
             page_dashboard_sub_tab: DashboardSubTab::default(),
-            page_map_sub_tab: MiniMapTab::default(),
             profile_dialog: ProfileDialog::None,
             input_probe,
             input_perm_modal_open,
@@ -1003,6 +992,22 @@ impl ForzaApp {
         }
         self.minimap_img_receiver = Some(rx);
         self.minimap_loaded_season = season;
+    }
+
+    /// Reload the map image now (the Map tab's "Reload map"); `rebuild` deletes the image cache
+    /// first ("Rebuild map cache"). The image is built again at `minimap_quality`.
+    pub fn reload_map_image(&mut self, rebuild: bool) {
+        if rebuild {
+            let _ = std::fs::remove_dir_all(crate::config::app_data_dir().join("map_cache"));
+            self.minimap_cache_progress = None;
+        }
+        let (tx, rx) = mpsc::channel::<MapLoadMessage>();
+        let (s, q) = (current_season(), self.config.minimap_quality);
+        std::thread::spawn(move || map_load_thread(s, q, tx));
+        self.minimap_texture = None;
+        self.minimap_error = None;
+        self.minimap_img_receiver = Some(rx);
+        self.minimap_loaded_season = s;
     }
 
     /// Open the map editor in the browser (I26b). Starts the local server and builds the map data
@@ -2285,7 +2290,6 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Inputs,      "Inputs"),
                                     (DashboardSubTab::Boost,       "Boost"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
-                                    (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
                                 }
@@ -2631,215 +2635,12 @@ impl eframe::App for ForzaApp {
                                     ui.add_space(8.0);
                                     crate::ui::power_curve::options_ui(ui, &mut self.config);
                                 }
-                                DashboardSubTab::MiniMap => {
-                                    ui.horizontal(|ui| {
-                                        for (sub, lbl) in [
-                                            (MiniMapTab::General, "General"),
-                                            (MiniMapTab::Coop,    "Co-Op"),
-                                        ] {
-                                            ui.selectable_value(&mut self.page_map_sub_tab, sub, tr(lbl));
-                                        }
-                                    });
-                                    ui.separator();
-                                    ui.add_space(6.0);
-                                    match self.page_map_sub_tab {
-                                    MiniMapTab::General => {
-                                    ui.horizontal(|ui| {
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit"));
-                                        if self.config.minimap_fps_limit_enabled {
-                                            ui.add(
-                                                egui::Slider::new(&mut self.config.minimap_fps_limit, 5.0..=120.0)
-                                                    .step_by(1.0)
-                                                    .suffix(" fps"),
-                                            );
-                                        }
-                                    });
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up, tr("Lock map north-up")).on_hover_text("F10");
-                                    if !self.config.minimap_north_up {
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up_when_stopped, tr("North up when stopped"));
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
-                                    }
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_look_stick, tr("Rotate with right stick"));
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_allow_pan_zoom, tr("Allow pan and zoom"))
-                                        .on_hover_text(tr(crate::ui::map_tab::PAN_ZOOM_TIP));
-                                    ui.add_space(4.0);
-                                    ui.label(tr("Zoom when driving (radius, metres)"));
-                                    ui.add(
-                                        egui::Slider::new(&mut self.config.minimap_zoom_driving_m, 50.0..=3000.0)
-                                            .suffix(" m"),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(tr("Zoom when stopped (radius, metres)"));
-                                    ui.add(
-                                        egui::Slider::new(&mut self.config.minimap_zoom_stopped_m, 500.0..=6000.0)
-                                            .suffix(" m"),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.label(tr("Image quality"));
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            egui::Slider::new(&mut self.config.minimap_quality, 20.0..=100.0)
-                                                .step_by(5.0)
-                                                .suffix("%"),
-                                        );
-                                        if ui.button(tr("Reload Map")).clicked() {
-                                            let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
-                                            let s = current_season();
-                                            let q = self.config.minimap_quality;
-                                            std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
-                                            self.minimap_texture = None;
-                                            self.minimap_error = None;
-                                            self.minimap_img_receiver = Some(map_rx);
-                                            self.minimap_loaded_season = s;
-                                        }
-                                        // Why: rebuilding deletes the cache, which without an install is the only copy of the map.
-                                        let have_install = crate::gamedata::install::find_media(None).is_some();
-                                        if ui
-                                            .add_enabled(have_install, egui::Button::new(tr("Rebuild Map Cache")))
-                                            .on_disabled_hover_text(tr("Needs your Forza Horizon 6 install — the map is read from it"))
-                                            .clicked()
-                                        {
-                                            let cache_dir = crate::config::app_data_dir().join("map_cache");
-                                            let _ = std::fs::remove_dir_all(&cache_dir);
-                                            let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
-                                            let s = current_season();
-                                            let q = self.config.minimap_quality;
-                                            std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
-                                            self.minimap_texture = None;
-                                            self.minimap_error = None;
-                                            self.minimap_cache_progress = None;
-                                            self.minimap_img_receiver = Some(map_rx);
-                                            self.minimap_loaded_season = s;
-                                        }
-                                    });
-                                    ui.label(
-                                        egui::RichText::new(tr("100% = full resolution; lower = faster load. Cache makes repeat loads near-instant."))
-                                            .size(11.0)
-                                            .color(egui::Color32::GRAY),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.collapsing(tr("Advanced calibration"), |ui| {
-                                        ui.add_space(4.0);
-                                        ui.label(
-                                            egui::RichText::new(tr(
-                                                "Tune if the car dot is misaligned with the map.\n\
-                                                 Default values are derived from in-game reference points."
-                                            ))
-                                            .size(11.0)
-                                            .color(egui::Color32::GRAY),
-                                        );
-                                        ui.add_space(6.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("Pixels per metre"));
-                                            ui.add(
-                                                egui::DragValue::new(&mut self.config.minimap_px_per_m)
-                                                    .speed(0.001)
-                                                    .range(0.01..=10.0),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("World origin X (m at pixel 0)"));
-                                            ui.add(
-                                                egui::DragValue::new(&mut self.config.minimap_world_origin_x)
-                                                    .speed(10.0),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("World origin Z (m at pixel 0)"));
-                                            ui.add(
-                                                egui::DragValue::new(&mut self.config.minimap_world_origin_z)
-                                                    .speed(10.0),
-                                            );
-                                        });
-                                        ui.add_space(4.0);
-                                        if ui.button(tr("Reset to defaults")).clicked() {
-                                            let d = crate::minimap::MapCalibration::DEFAULT;
-                                            self.config.minimap_px_per_m = d.px_per_m;
-                                            self.config.minimap_world_origin_x = d.origin_x;
-                                            self.config.minimap_world_origin_z = d.origin_z;
-                                        }
-                                    });
-                                    }
-                                    MiniMapTab::Coop => {
-                                        ui.label(crate::theme::section_label(tr("Tracer fade")));
-                                        ui.add_space(4.0);
-                                        ui.label(tr("Fade after (time)"));
-                                        ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
-                                        ui.add_space(4.0);
-                                        ui.label(tr("Fade after (distance)"));
-                                        ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
-                                        ui.label(
-                                            egui::RichText::new(tr("Tracers fade out with whichever comes first — age or distance behind the player."))
-                                                .size(11.0).color(egui::Color32::GRAY),
-                                        );
-                                        ui.add_space(10.0);
-                                        ui.separator();
-                                        ui.add_space(6.0);
-                                        crate::theme::styled_checkbox(ui, &mut self.config.coop_map_playerlist, tr("Show player list on map"));
-                                        ui.add_enabled_ui(self.config.coop_map_playerlist, |ui| {
-                                            ui.add_space(2.0);
-                                            ui.label(egui::RichText::new(tr("Columns")).size(11.0).color(egui::Color32::GRAY));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_distance, tr("Distance"));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_speed, tr("Speed"));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_gear, tr("Gear"));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_class, tr("Car class"));
-                                        });
-                                    }
-                                    }
-                                }
                             }
                         }
                         PageSettingsTab::Tab(Tab::Overlay) => {
-                            // HUD minimap (M2′) options: the Dashboard map's General and Co-Op
-                            // sections, minus what doesn't apply on the HUD (see overlay.md). Each
-                            // group has a "use Dashboard settings" tick that hides its own controls
-                            // (`OverlayConfig::effective` swaps the values in).
+                            // The HUD minimap and co-op map settings live on the Map tab (D79);
+                            // only the notifications stay here.
                             let o = &mut self.config.overlay;
-                            ui.label(crate::theme::section_label(tr("Minimap")));
-                            ui.add_space(4.0);
-                            crate::theme::styled_checkbox(ui, &mut o.map_use_dashboard, tr("Use Dashboard map settings"));
-                            if !o.map_use_dashboard {
-                                ui.add_space(4.0);
-                                crate::theme::styled_checkbox(ui, &mut o.map_north_up, tr("Lock map north-up"));
-                                if !o.map_north_up {
-                                    crate::theme::styled_checkbox(ui, &mut o.map_north_up_when_stopped, tr("North up when stopped"))
-                                        .on_hover_text(tr("Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves."));
-                                    crate::theme::styled_checkbox(ui, &mut o.map_smooth_rotation, tr("Smooth rotation"));
-                                    crate::theme::styled_checkbox(ui, &mut o.map_use_movement_dir, tr("Use movement direction as rotation"))
-                                        .on_hover_text(tr("Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)."));
-                                }
-                                crate::theme::styled_checkbox(ui, &mut o.map_mirror_edges, tr("Mirror map at edges"));
-                                crate::theme::styled_checkbox(ui, &mut o.map_look_stick, tr("Rotate with right stick"));
-                                crate::theme::styled_checkbox(ui, &mut o.compass, tr("Show compass"));
-                                ui.add_space(4.0);
-                                ui.label(tr("Zoom when driving (radius, metres)"));
-                                ui.add(egui::Slider::new(&mut o.zoom_driving_m, 50.0..=3000.0).suffix(" m"));
-                                ui.add_space(4.0);
-                                ui.label(tr("Zoom when stopped (radius, metres)"));
-                                ui.add(egui::Slider::new(&mut o.zoom_stopped_m, 500.0..=6000.0).suffix(" m"));
-                            }
-                            ui.add_space(10.0);
-                            ui.label(crate::theme::section_label(tr("Co-Op")));
-                            ui.add_space(4.0);
-                            crate::theme::styled_checkbox(ui, &mut o.coop_use_dashboard, tr("Use Dashboard co-op settings"));
-                            if !o.coop_use_dashboard {
-                                ui.add_space(4.0);
-                                crate::theme::styled_checkbox(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
-                                crate::theme::styled_checkbox(ui, &mut o.coop_waypoints, tr("Show shared waypoints"));
-                                crate::theme::styled_checkbox(ui, &mut o.coop_trails, tr("Show trails"));
-                                ui.add_enabled_ui(o.coop_trails, |ui| {
-                                    ui.add_space(4.0);
-                                    ui.label(tr("Fade after (time)"));
-                                    ui.add(egui::Slider::new(&mut o.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
-                                    ui.add_space(4.0);
-                                    ui.label(tr("Fade after (distance)"));
-                                    ui.add(egui::Slider::new(&mut o.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
-                                });
-                            }
-                            ui.add_space(10.0);
                             ui.label(crate::theme::section_label(tr("Notifications")));
                             ui.add_space(4.0);
                             crate::theme::styled_checkbox(ui, &mut o.notif_on, tr("Show notifications"));
@@ -2983,6 +2784,25 @@ impl eframe::App for ForzaApp {
 #[cfg(test)]
 mod tests {
     use super::trace_step;
+
+    /// D79: Mini-Settings has no map settings (they live on the Map tab). A source check, since
+    /// the window is built inline in `ForzaApp::update`: none of the map controls' labels may be
+    /// drawn from `app.rs` any more. (`test_support` strings are looked up in the text before the
+    /// tests module only.)
+    #[test]
+    fn mini_settings_has_no_map_controls() {
+        let src = include_str!("app.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").expect("tests module")];
+        for label in [
+            "Lock map north-up", "North up when stopped", "Mirror map at edges", "Rotate with right stick",
+            "Show compass", "Allow pan and zoom", "Zoom when driving", "Zoom when stopped", "Render FPS limit",
+            "Image quality", "Reload Map", "Rebuild Map Cache", "Advanced calibration", "Tracer fade",
+            "Show player list on map", "Use Dashboard map settings", "Use Dashboard co-op settings",
+            "Show co-op teammates", "Show shared waypoints", "Show trails",
+        ] {
+            assert!(!src.contains(&format!("tr(\"{label}")), "Mini-Settings still draws the map control \"{label}\"");
+        }
+    }
 
     #[test]
     fn trace_step_first_sample_starts_at_current_axis_time() {

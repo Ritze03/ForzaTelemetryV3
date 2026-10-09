@@ -7,7 +7,9 @@
 //!
 //! *Settings* (the cog on the viewer; "Back to map" returns): a module selector, the Overlay
 //! tab's control, over the pages Minimap · Dashboard map & Viewer · Map data. The first two moved
-//! here from the Overlay tab, the last from Setup. Which mode and page were last open is
+//! here from the Overlay tab, the last from Setup. Every map setting is here and nowhere else
+//! (D79): Mini-Settings has none, so the Map data page also holds the map image (quality, reload,
+//! cache, calibration) and the pages the co-op options and the Dashboard map's FPS limit. Which mode and page were last open is
 //! remembered (`map_tab_settings`, `map_tab_page`; never exported).
 //!
 //! *Why a tab of its own:* the user wanted the maps' settings out of the Overlay tab and the map
@@ -16,7 +18,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use egui::{pos2, vec2, Align, Layout, Rect, Sense, Ui, UiBuilder};
+use egui::{pos2, vec2, Align, Layout, Rect, RichText, Sense, Ui, UiBuilder};
 
 use crate::app::ForzaApp;
 use crate::config::{AppConfig, MapPage};
@@ -30,7 +32,7 @@ use crate::maprender::ui::{
 };
 use crate::maprender::RaceSel;
 use crate::ui::map_scene::{self, ManualView, Scene, ViewIn};
-use crate::ui::overlay_tab::{module_card, page_selector_with, status_line};
+use crate::ui::overlay_tab::{control_row, module_card, page_selector_with, status_line};
 use crate::theme;
 
 // ── viewer ───────────────────────────────────────────────────────────────────────────────────
@@ -109,44 +111,32 @@ fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
 
     // Controls on top of the map (drawn after it, so they take the clicks).
     let mv = &mut app.map_tab.manual;
-    let following = mv.centre.is_none();
-    let (follow_clicked, open_settings) = controls(ui, rect, following, zoom_m, app.config.minimap_show_compass);
+    let (follow_clicked, open_settings) = controls(ui, rect, mv.is_manual(), zoom_m, app.config.minimap_show_compass);
     if follow_clicked {
-        // Following: freeze the view where it is. Panned (or only zoomed): back to the car and
-        // the configured zoom, at once.
-        if following && !mv.is_manual() {
-            mv.pin_centre(centre, speed);
-        } else {
-            mv.reset();
-        }
+        // Panned (or only zoomed): back to the car and the configured zoom, at once.
+        mv.reset();
     }
     if open_settings {
         app.config.map_tab_settings = true;
     }
 }
 
-/// Right edge of the map's compass (`map_scene::draw`: `hud::minimap::draw_compass`, centre
-/// (18, 18), radius 11, scaled by `s`), px from the map's left edge. The compass sits where
-/// "Follow car" does, so the button steps aside while the compass is on.
-fn compass_right(rect: Rect) -> f32 {
-    let s = (rect.width().min(rect.height()) / 200.0).clamp(0.8, 1.6);
-    (18.0 + 11.0) * s
-}
-
-/// The viewer's buttons and zoom readout over the map: "Follow car" top left (lit while the view
-/// follows the car; right of the compass when that is on), the radius bottom left, "Settings"
-/// bottom right. *Why bottom right:* the top right belongs to the co-op player list (D73).
-/// Returns (Follow car pressed, Settings pressed).
-fn controls(ui: &mut Ui, rect: Rect, following: bool, zoom_m: f32, compass: bool) -> (bool, bool) {
+/// The viewer's buttons and zoom readout over the map: "Follow car" top left (only while the view
+/// is manual, like the Dashboard map's; right of the compass when that is on), the radius bottom
+/// left, "Settings" bottom right. *Why bottom right:* the top right belongs to the co-op player
+/// list (D73). *Why only while manual:* a "Follow car" that is already following does nothing
+/// and only covers the map (user, D79). Returns (Follow car pressed, Settings pressed).
+fn controls(ui: &mut Ui, rect: Rect, manual: bool, zoom_m: f32, compass: bool) -> (bool, bool) {
     const M: f32 = 10.0;
     let (mut follow_clicked, mut open) = (false, false);
-    let dx = if compass { (compass_right(rect) + 6.0 - M).max(0.0) } else { 0.0 };
-    let left = Rect::from_min_size(rect.left_top() + vec2(M + dx, M), vec2((rect.width() * 0.5 - M - dx).max(0.0), 30.0));
-    ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Min)), |ui| {
-        let label = format!("{}  {}", icons::CROSSHAIRS, tr("Follow car"));
-        let btn = if following { theme::primary_button(label) } else { theme::secondary_button(label) };
-        follow_clicked = ui.add(btn).clicked();
-    });
+    if manual {
+        let dx = if compass { (map_scene::compass_rect(rect).right() - rect.left() + 6.0 - M).max(0.0) } else { 0.0 };
+        let left = Rect::from_min_size(rect.left_top() + vec2(M + dx, M), vec2((rect.width() * 0.5 - M - dx).max(0.0), 30.0));
+        ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Min)), |ui| {
+            let label = format!("{}  {}", icons::CROSSHAIRS, tr("Follow car"));
+            follow_clicked = ui.add(theme::secondary_button(label)).clicked();
+        });
+    }
     let right = Rect::from_min_max(pos2(rect.center().x, rect.bottom() - M - 30.0), pos2(rect.right() - M, rect.bottom() - M));
     ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Max)), |ui| {
         open = ui.add(theme::secondary_button(format!("{}  {}", icons::COG, tr("Settings")))).clicked();
@@ -219,11 +209,12 @@ fn minimap_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&Ico
     let mut win3d = cfg.overlay.map_3d_windows;
     let on = cfg.overlay.enabled && cfg.overlay.minimap_on;
     let dash_view = ViewCfg::of_app(cfg);
+    let dash_fade = (cfg.coop_trail_fade_secs, cfg.coop_trail_fade_m);
     let mut reset = false;
     let mut view_req = None;
     let layer_req = {
         let o = &mut cfg.overlay;
-        let mut lead = |ui: &mut Ui| minimap_card(ui, o, &dash_view, &mut reset, &mut view_req);
+        let mut lead = |ui: &mut Ui| minimap_card(ui, o, &dash_view, dash_fade, &mut reset, &mut view_req);
         let aux = LayerAux {
             icons: atlas,
             plate: Some((&mut plate, on)),
@@ -267,15 +258,24 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     let mut reset = false;
     let mut view_req = None;
     let follows = cfg.overlay.map_use_dashboard;
+    let (mut fps_on, mut fps) = (cfg.minimap_fps_limit_enabled, cfg.minimap_fps_limit);
+    let mut coop = DashCoop::of(cfg);
     let mut lead = |ui: &mut Ui| {
         theme::card(ui, tr("Dashboard map & Viewer"), |ui| {
             view_rows(ui, &mut view);
             theme::checkbox_row(ui, &mut allow, tr("Allow pan and zoom")).on_hover_text(tr(PAN_ZOOM_TIP));
+            theme::checkbox_row(ui, &mut fps_on, tr("Render FPS limit")).on_hover_text(tr(
+                "Limits how often the Dashboard map takes the car's position and heading. Off = every frame.",
+            ));
+            ui.add_enabled_ui(fps_on, |ui| {
+                theme::slider_row(ui, tr("FPS limit"), &mut fps, 5.0..=120.0, 1.0, 0, " fps");
+            });
             if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
                 reset = true;
             }
             view_req = copy_row(ui, MapId::Dashboard, follows, CopyWhat::View);
         });
+        dashboard_coop_card(ui, &mut coop);
     };
     let aux = LayerAux { icons: atlas, plate: None, enabled: true, which: MapId::Dashboard, minimap_follows: follows, windows_3d: Some(&mut win3d) };
     let layer_req = layers_ui(ui, &mut layers, aux, &mut lead);
@@ -286,16 +286,138 @@ fn dashboard_page(ui: &mut Ui, cfg: &mut AppConfig, l: &Layers, atlas: Option<&I
     cfg.overlay.map_3d_windows = win3d;
     view.apply_app(cfg);
     cfg.minimap_allow_pan_zoom = allow;
+    cfg.minimap_fps_limit_enabled = fps_on;
+    cfg.minimap_fps_limit = fps;
+    coop.apply(cfg);
     apply_requests(cfg, [layer_req, view_req]);
 }
 
+/// The Dashboard map's co-op options (the keys the Dashboard map and the Viewer draw with, and
+/// that the HUD minimap follows with "Use Dashboard co-op settings"): trail fade and the player
+/// list. (Were in Mini-Settings → Dashboard → Map → Co-Op until D79.)
+#[derive(Clone, PartialEq, Debug)]
+struct DashCoop {
+    fade_secs: f32,
+    fade_m: f32,
+    list: bool,
+    distance: bool,
+    speed: bool,
+    gear: bool,
+    class: bool,
+}
+
+impl DashCoop {
+    fn of(c: &AppConfig) -> Self {
+        Self {
+            fade_secs: c.coop_trail_fade_secs,
+            fade_m: c.coop_trail_fade_m,
+            list: c.coop_map_playerlist,
+            distance: c.coop_list_distance,
+            speed: c.coop_list_speed,
+            gear: c.coop_list_gear,
+            class: c.coop_list_class,
+        }
+    }
+
+    fn apply(&self, c: &mut AppConfig) {
+        c.coop_trail_fade_secs = self.fade_secs;
+        c.coop_trail_fade_m = self.fade_m;
+        c.coop_map_playerlist = self.list;
+        c.coop_list_distance = self.distance;
+        c.coop_list_speed = self.speed;
+        c.coop_list_gear = self.gear;
+        c.coop_list_class = self.class;
+    }
+}
+
+fn dashboard_coop_card(ui: &mut Ui, c: &mut DashCoop) {
+    theme::card(ui, tr("Co-Op"), |ui| {
+        ui.label(theme::section_label(tr("Tracer fade")));
+        coop_fade_rows(ui, &mut c.fade_secs, &mut c.fade_m);
+        ui.add_space(4.0);
+        theme::checkbox_row(ui, &mut c.list, tr("Show player list on map"));
+        ui.add_enabled_ui(c.list, |ui| {
+            ui.label(RichText::new(tr("Columns")).size(11.0).color(theme::TEXT_DIM));
+            theme::checkbox_row(ui, &mut c.distance, tr("Distance"));
+            theme::checkbox_row(ui, &mut c.speed, tr("Speed"));
+            theme::checkbox_row(ui, &mut c.gear, tr("Gear"));
+            theme::checkbox_row(ui, &mut c.class, tr("Car class"));
+        });
+    });
+}
+
+/// The two trail-fade sliders (time and distance) both maps' co-op cards share.
+fn coop_fade_rows(ui: &mut Ui, secs: &mut f32, metres: &mut f32) {
+    let tip = tr("Tracers fade out with whichever comes first — age or distance behind the player.");
+    theme::slider_row(ui, tr("Fade after (time)"), secs, 1.0..=60.0, 1.0, 0, " s").on_hover_text(tip);
+    theme::slider_row(ui, tr("Fade after (distance)"), metres, 50.0..=3000.0, 50.0, 0, " m").on_hover_text(tip);
+}
+
+/// The Map data page's second card: the map image the maps are drawn on. Quality of the built
+/// image, rebuilding it, and the calibration of the world-to-image mapping. (Were in Mini-Settings
+/// → Dashboard → Map until D79.)
+pub(crate) fn map_image_card(ui: &mut Ui, app: &mut ForzaApp) {
+    let have_install = crate::gamedata::install::find_media(None).is_some();
+    if let Some(rebuild) = map_image_ui(ui, &mut app.config, have_install) {
+        app.reload_map_image(rebuild);
+    }
+}
+
+/// The card's body. Returns `Some(rebuild)` when "Reload Map" (false) or "Rebuild Map Cache" (true)
+/// was pressed. `have_install`: the cache can only be rebuilt from the game's files.
+fn map_image_ui(ui: &mut Ui, c: &mut AppConfig, have_install: bool) -> Option<bool> {
+    let mut reload = None;
+    theme::card(ui, tr("Map image"), |ui| {
+        theme::slider_row(ui, tr("Image quality"), &mut c.minimap_quality, 20.0..=100.0, 5.0, 0, "%").on_hover_text(tr(
+            "100% = full resolution; lower = faster load. Cache makes repeat loads near-instant.",
+        ));
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(theme::secondary_button(tr("Reload Map"))).on_hover_text(tr("Builds the map image again, at the quality above.")).clicked() {
+                reload = Some(false);
+            }
+            // Why: rebuilding deletes the cache, which without an install is the only copy of the map.
+            if ui
+                .add_enabled(have_install, theme::secondary_button(tr("Rebuild Map Cache")))
+                .on_hover_text(tr("Deletes the cached map images and builds them again."))
+                .on_disabled_hover_text(tr("Needs your Forza Horizon 6 install — the map is read from it"))
+                .clicked()
+            {
+                reload = Some(true);
+            }
+        });
+        ui.add_space(6.0);
+        ui.collapsing(tr("Advanced calibration"), |ui| {
+            ui.label(RichText::new(tr("Tune if the car dot is misaligned with the map.\nDefault values are derived from in-game reference points.")).size(11.0).color(theme::TEXT_DIM));
+            ui.add_space(6.0);
+            control_row(ui, tr("Pixels per metre"), |ui| {
+                ui.add(egui::DragValue::new(&mut c.minimap_px_per_m).speed(0.001).range(0.01..=10.0));
+            });
+            control_row(ui, tr("World origin X (m at pixel 0)"), |ui| {
+                ui.add(egui::DragValue::new(&mut c.minimap_world_origin_x).speed(10.0));
+            });
+            control_row(ui, tr("World origin Z (m at pixel 0)"), |ui| {
+                ui.add(egui::DragValue::new(&mut c.minimap_world_origin_z).speed(10.0));
+            });
+            ui.add_space(4.0);
+            if ui.add(theme::secondary_button(tr("Reset to defaults"))).clicked() {
+                let d = crate::minimap::MapCalibration::DEFAULT;
+                c.minimap_px_per_m = d.px_per_m;
+                c.minimap_world_origin_x = d.origin_x;
+                c.minimap_world_origin_z = d.origin_z;
+            }
+        });
+    });
+    reload
+}
+
 /// The Minimap module card of the HUD map page: module switch, "Use Dashboard map settings", the
-/// view options (the Dashboard's values, greyed, while it is on) and the co-op switch. The
+/// view options (the Dashboard's values, greyed, while it is on) and the co-op options. The
 /// layer cards are `maprender::ui::layers_ui`'s. `reset` is set by the "Reset map layers" button.
 fn minimap_card(
     ui: &mut Ui,
     o: &mut crate::config::OverlayConfig,
     dash_view: &ViewCfg,
+    dash_fade: (f32, f32),
     reset: &mut bool,
     view_req: &mut Option<CopyRequest>,
 ) {
@@ -309,9 +431,7 @@ fn minimap_card(
         if !follow {
             v.apply_overlay(o);
         }
-        ui.add_enabled_ui(!o.coop_use_dashboard, |ui| {
-            theme::checkbox_row(ui, &mut o.coop_teammates, tr("Show co-op teammates"));
-        });
+        minimap_coop_rows(ui, o, dash_fade);
         ui.add_enabled_ui(!follow, |ui| {
             if ui.add(theme::secondary_button(tr("Reset map layers"))).clicked() {
                 *reset = true;
@@ -320,6 +440,29 @@ fn minimap_card(
         let follow = o.map_use_dashboard;
         *view_req = copy_row(ui, MapId::Minimap, follow, CopyWhat::View);
     });
+}
+
+/// The HUD minimap's co-op options (inside its module card): "Use Dashboard co-op settings" and,
+/// when that is off, what the minimap shows of the team and how its trails fade. While it is on
+/// the rows show what the HUD really uses (`OverlayConfig::effective`: everything on, the
+/// Dashboard's fade), greyed. (Were in Mini-Settings → Overlay → Co-Op until D79.)
+fn minimap_coop_rows(ui: &mut Ui, o: &mut crate::config::OverlayConfig, dash_fade: (f32, f32)) {
+    ui.add_space(2.0);
+    ui.label(theme::section_label(tr("Co-Op")));
+    theme::checkbox_row(ui, &mut o.coop_use_dashboard, tr("Use Dashboard co-op settings"))
+        .on_hover_text(tr("Show everything and fade the trails like the Dashboard map does."));
+    let follow = o.coop_use_dashboard;
+    let (mut mates, mut ways, mut trails, mut secs, mut m) =
+        if follow { (true, true, true, dash_fade.0, dash_fade.1) } else { (o.coop_teammates, o.coop_waypoints, o.coop_trails, o.coop_trail_fade_secs, o.coop_trail_fade_m) };
+    ui.add_enabled_ui(!follow, |ui| {
+        theme::checkbox_row(ui, &mut mates, tr("Show co-op teammates"));
+        theme::checkbox_row(ui, &mut ways, tr("Show shared waypoints"));
+        theme::checkbox_row(ui, &mut trails, tr("Show trails"));
+        ui.add_enabled_ui(trails, |ui| coop_fade_rows(ui, &mut secs, &mut m));
+    });
+    if !follow {
+        (o.coop_teammates, o.coop_waypoints, o.coop_trails, o.coop_trail_fade_secs, o.coop_trail_fade_m) = (mates, ways, trails, secs, m);
+    }
 }
 
 #[cfg(test)]
@@ -338,6 +481,14 @@ mod tests {
                 for w in [600.0, 700.0, 1000.0, 1235.0] {
                     for compass in [false, true] {
                         let h = 500.0;
+                        // Following the car: no Follow car button. Panned or zoomed: it shows.
+                        let out = render("map_viewer", w, h, |ui, _| {
+                            let rect = ui.available_rect_before_wrap();
+                            controls(ui, rect, false, 1500.0, compass);
+                        });
+                        check_panes(&out, w, "viewer controls, following");
+                        let n = out.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Text(_))).count();
+                        assert_eq!(n, 2, "{lang:?} at {w} px: while following only the settings button and the radius show");
                         let out = render("map_viewer", w, h, |ui, _| {
                             let rect = ui.available_rect_before_wrap();
                             controls(ui, rect, true, 1500.0, compass);
@@ -366,7 +517,7 @@ mod tests {
                         assert!(!list.intersects(follow) || w < 700.0, "{lang:?} at {w} px: follow under the co-op list");
                         // The compass (top left, scaled with the map) is clear of the button.
                         if compass {
-                            let c = Rect::from_min_size(pos2(0.0, 0.0), vec2(compass_right(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))), 50.0));
+                            let c = Rect::from_min_size(pos2(0.0, 0.0), vec2(map_scene::compass_rect(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))).right(), 50.0));
                             assert!(!c.intersects(follow), "{lang:?} at {w} px: follow car over the compass");
                         }
                     }
@@ -376,8 +527,8 @@ mod tests {
     }
 
     /// Both maps' pages (the shared `layers_ui`), plus the HUD page following the Dashboard and
-    /// with its module off: six cards each, nothing leaves its pane. In German too (the long
-    /// labels).
+    /// with its module off: six cards each (seven on the Dashboard page, with its Co-Op card),
+    /// nothing leaves its pane. In German too (the long labels).
     #[test]
     fn map_pages_stay_inside_their_panes() {
         use crate::i18n::{with_language, Language};
@@ -408,7 +559,8 @@ mod tests {
                             n if n.starts_with("minimap") => minimap_page(ui, &mut cfg, &l, Some(atlas)),
                             _ => dashboard_page(ui, &mut cfg, &l, Some(atlas)),
                         });
-                        assert_eq!(check_panes(&out, w, name), 6, "{lang:?} {name} at {w} px: expected 6 card frames");
+                        let cards = if name.starts_with("dashboard") { 7 } else { 6 };
+                        assert_eq!(check_panes(&out, w, name), cards, "{lang:?} {name} at {w} px: expected {cards} card frames");
                     }
                 }
             });
@@ -426,7 +578,75 @@ mod tests {
             let out = render("map_status", 700.0, 3600.0, |ui, _| minimap_page(ui, &mut cfg, &l, None));
             assert_eq!(check_panes(&out, 700.0, "status"), 6);
             let out = render("map_status", 700.0, 3600.0, |ui, _| dashboard_page(ui, &mut cfg, &l, None));
-            assert_eq!(check_panes(&out, 700.0, "status"), 6);
+            assert_eq!(check_panes(&out, 700.0, "status"), 7);
+        }
+    }
+
+    /// The text is drawn (card titles are drawn in capitals).
+    fn has_text(out: &egui::FullOutput, text: &str) -> bool {
+        find_text(out, text).is_some() || find_text(out, &text.to_uppercase()).is_some()
+    }
+
+    /// The Race lines card's new controls (D82): the Race line style row with either style, and
+    /// "Race road only" as the selected In a race / Other roads entry; nothing leaves its pane.
+    #[test]
+    fn race_lines_card_shows_the_route_style_and_race_road_only() {
+        use crate::i18n::{with_language, tr, Language};
+        use crate::maprender::cfg::{OtherRoads, RouteStyle};
+        let l = layers_ready();
+        for lang in [Language::English, Language::German] {
+            with_language(lang, || {
+                for w in WIDTHS {
+                    for (route, other) in [(RouteStyle::Road, OtherRoads::RaceOnly), (RouteStyle::Line, OtherRoads::Muted), (RouteStyle::Road, OtherRoads::Normal)] {
+                        let mut cfg = AppConfig::default();
+                        cfg.minimap_layers.race_lines.route = route;
+                        cfg.minimap_layers.race_lines.focus.other_roads = other;
+                        let out = render("map_race_card", w, 3600.0, |ui, atlas| dashboard_page(ui, &mut cfg, &l, Some(atlas)));
+                        assert_eq!(check_panes(&out, w, "race card"), 7);
+                        assert!(has_text(&out, tr("Race line style")), "{lang:?} {w}: the style row");
+                        let style = if route == RouteStyle::Road { tr("Road") } else { tr("Line") };
+                        assert!(has_text(&out, style), "{lang:?} {w}: the style row shows {style}");
+                        if other == OtherRoads::RaceOnly {
+                            assert!(has_text(&out, tr("Race road only")), "{lang:?} {w}: Other roads shows Race road only");
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// The map settings that left Mini-Settings (D79) are all here: FPS limit and the Co-Op card on
+    /// the Dashboard page, "Use Dashboard co-op settings" on the Minimap page, and the Map image
+    /// card (quality, reload, rebuild, calibration) on the Map data page, in both languages and at
+    /// every pane width.
+    #[test]
+    fn map_settings_from_mini_settings_are_on_the_map_tab() {
+        use crate::i18n::{with_language, tr, Language};
+        let l = layers_ready();
+        for lang in [Language::English, Language::German] {
+            with_language(lang, || {
+                for w in WIDTHS {
+                    let mut cfg = AppConfig::default();
+                    let out = render("map_dash_extras", w, 3600.0, |ui, atlas| dashboard_page(ui, &mut cfg, &l, Some(atlas)));
+                    for t in ["Render FPS limit", "Co-Op", "Tracer fade", "Show player list on map", "Allow pan and zoom", "Rotate with right stick"] {
+                        assert!(has_text(&out, tr(t)), "{lang:?} {w}: Dashboard page lacks {t}");
+                    }
+                    cfg.overlay.map_use_dashboard = false;
+                    let out = render("map_mini_extras", w, 3600.0, |ui, atlas| minimap_page(ui, &mut cfg, &l, Some(atlas)));
+                    for t in ["Use Dashboard co-op settings", "Show co-op teammates", "Show shared waypoints", "Show trails"] {
+                        assert!(has_text(&out, tr(t)), "{lang:?} {w}: Minimap page lacks {t}");
+                    }
+                    for have_install in [true, false] {
+                        let out = render("map_image", w, 1200.0, |ui, _| {
+                            map_image_ui(ui, &mut cfg, have_install);
+                        });
+                        assert_eq!(check_panes(&out, w, "map image"), 1);
+                        for t in ["Map image", "Image quality", "Reload Map", "Rebuild Map Cache", "Advanced calibration"] {
+                            assert!(has_text(&out, tr(t)), "{lang:?} {w}: Map image card lacks {t}");
+                        }
+                    }
+                }
+            });
         }
     }
 
