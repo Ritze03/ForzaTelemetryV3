@@ -442,7 +442,9 @@ impl Gl3d {
                 let table = roads::style_table(rc, f.focus, f.cam.view.scale, f.s, f.ppp);
                 self.draw_roads(gl, f, &heights, &table, r, None, &mut st);
             }
-            // ── the race road (D80): after every road, over them
+            // ── the race road (D80): after every road, over them where nothing is in front of it:
+            // its open stretches are depth-tested like the roads' (hidden behind hills and under
+            // decks, D88), only its tunnel stretches go through (`draw_roads`, same as the roads')
             if let (Some((rc, color)), Some((_, r))) = (f.race, self.race.as_ref()) {
                 let table = roads::race_table(rc, color, f.cam.view.scale, f.s, f.ppp);
                 self.draw_roads(gl, f, &heights, &table, r, Some(RACE_BIAS), &mut st);

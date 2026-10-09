@@ -125,7 +125,7 @@ pub struct RaceSel {
     cache: Mutex<Option<(FocusKey, Arc<RoadFocus>)>>,
     /// The race road's colours (circuit, sprint) when race lines are drawn as roads (D80,
     /// `RouteStyle::Road`), from the config of the last `update`; `None` = drawn as a line.
-    route_cols: Option<(Rgb, Rgb)>,
+    route_cols: Option<Rgb>,
     /// The route the selector is certain of (D80 fix): kept for the rest of the race, through
     /// lap wraps and past routes that share its start (see [`LOCK_DROP_M`]).
     locked: Option<usize>,
@@ -434,7 +434,7 @@ impl RaceSel {
     pub fn road_focus(&self, layers: &MapLayers) -> Option<Arc<RoadFocus>> {
         let li = self.focus_line()?;
         let line = layers.races.lines.get(li)?;
-        let colour = self.route_cols.map(|(c, s)| if line.circuit { c } else { s });
+        let colour = self.route_cols;
         let key: FocusKey = (layers.rev, Arc::as_ptr(&layers.roads) as usize, Arc::as_ptr(&layers.races) as usize, li, self.shown_gen, colour.map(|c| c.0));
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((k, f)) = cache.as_ref() {
@@ -657,7 +657,7 @@ impl RaceSel {
         }
         self.key = key;
         self.focus_on = cfg.mode == RaceLineMode::Current && in_race && !self.picked.is_empty();
-        self.route_cols = (cfg.route == RouteStyle::Road).then_some((cfg.circuit_color, cfg.sprint_color));
+        self.route_cols = (cfg.route == RouteStyle::Road).then_some(cfg.color);
         self
     }
 }
@@ -794,7 +794,7 @@ pub struct RaceRoad {
     pub y: Vec<f32>,
     /// A whole closed circuit: the road closes on itself (no ends).
     pub closed: bool,
-    /// The race colour (`RaceCfg::circuit_color` / `sprint_color`), drawn opaque.
+    /// The race colour (`RaceCfg::color`), drawn opaque.
     pub color: Rgb,
 }
 
@@ -1233,7 +1233,7 @@ mod tests {
         let r = f.race.as_ref().expect("a race road");
         let len: f32 = r.pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
         assert!((len - 400.0).abs() < 8.0 && !r.closed && r.y.len() == r.pts.len(), "the shared 400 m: {len}");
-        assert_eq!(r.color, RaceCfg::default().sprint_color);
+        assert_eq!(r.color, RaceCfg::default().color);
         // Certain on route 1: the whole line.
         drive_line(&mut sel, &layers.races, 0, 202.0, 520.0, 0.0, |_, _| {});
         let f = sel.road_focus(&layers).expect("focus");

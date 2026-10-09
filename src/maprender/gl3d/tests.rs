@@ -929,7 +929,7 @@ fn gl3d_race_road_over_the_roads_and_race_only() {
     let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
     let w = world();
     let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
-    let race = crate::maprender::cfg::RaceCfg::default().sprint_color;
+    let race = crate::maprender::cfg::RaceCfg::default().color;
     let styles = RoadsCfg::default().styles;
     let count = |o: &Out, c: [u8; 3]| o.count_near([0, 0, 620, 420], c, 30);
     let mut v = View::dashboard();
@@ -973,6 +973,90 @@ fn gl3d_race_road_over_the_roads_and_race_only() {
     rig.finish(&Gl3dHandle::new());
 }
 
+/// D88 (the user: "occlusion should work for the race circuit as well"): an open stretch of the
+/// race road (not a tunnel: the driving line is on the ground) runs on the far side of the big
+/// hill. It is drawn where nothing is in its way, and not at all where the hill is in front of it,
+/// like every other road.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_race_road_is_hidden_behind_hills() {
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let race = crate::maprender::cfg::RaceCfg::default().color;
+    let count = |o: &Out| o.count_near([0, 0, 620, 420], race.0, 30);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    v.angle = 75.0;
+    v.zoom = 300.0;
+    // The same straight race road (z = 440, x = -440..-160, on the ground, "race road only" so it
+    // is the only road in the picture) seen from the far side of the big hill (plain view: the
+    // control, it is drawn) and from the near side (the hill is in the way).
+    let mut counts = vec![];
+    for (name, car, yaw) in [("race_road_plain_view", (-300.0f32, 700.0f32), std::f32::consts::PI), ("race_road_behind_hill", (-300.0, -20.0), 0.0)] {
+        v.car = car;
+        v.yaw = yaw;
+        let pts: Vec<[f32; 2]> = (0..=14).map(|i| [-440.0 + 20.0 * i as f32, 440.0]).collect();
+        let y: Vec<f32> = pts.iter().map(|p| w.terrain.height(p[0], p[1]) + 0.3).collect();
+        let mut focus = crate::maprender::racesel::RoadFocus::default();
+        focus.jumps = vec![false; w.layers.roads.jumps.len()];
+        focus.race = Some(crate::maprender::racesel::RaceRoad { pts, y, closed: false, color: race });
+        let f = Focus3d { focus: Arc::new(focus), cfg: RaceFocusCfg { other_roads: OtherRoads::RaceOnly, ..Default::default() } };
+        let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+        let mut last = None;
+        for _ in 0..8 {
+            last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                s.roads.min_px = 14.0; // wide, so the race road is easy to count
+                s.roads.max_px = 20.0;
+                s.focus = Some(f.clone());
+            }));
+        }
+        let o = last.unwrap();
+        assert_eq!(o.gl_error, 0, "{name}");
+        o.save(&format!("{name}.png"));
+        eprintln!("{name}: {} race pixels", count(&o));
+        counts.push(count(&o));
+        h.destroy(&rig.gl);
+    }
+    assert!(counts[0] > 200, "the control: the race road in plain view is drawn ({counts:?})");
+    assert!(counts[1] < 10, "the race road behind the hill is hidden by it ({counts:?})");
+
+    // The same for a road above it: the race road runs along the elevated highway (22 m up) on the
+    // ground under it, then again on the deck itself (the control: nothing covers it).
+    v.car = (600.0, 120.0);
+    v.yaw = 0.0;
+    v.angle = 12.0; // from nearly straight above
+    v.zoom = 250.0;
+    let hw = &w.layers.roads.by_type[RoadType::Highway.index() as usize][0];
+    let pts: Vec<[f32; 2]> = hw.pts.iter().copied().filter(|p| p[0] > 380.0 && p[0] < 820.0).collect();
+    let mut under = vec![];
+    for (name, lift) in [("race_road_on_the_deck", 22.3f32), ("race_road_under_the_deck", 0.3)] {
+        let y: Vec<f32> = pts.iter().map(|p| w.terrain.height(p[0], p[1]) + lift).collect();
+        let mut focus = crate::maprender::racesel::RoadFocus::default();
+        focus.jumps = vec![false; w.layers.roads.jumps.len()];
+        focus.race = Some(crate::maprender::racesel::RaceRoad { pts: pts.clone(), y, closed: false, color: race });
+        let f = Focus3d { focus: Arc::new(focus), cfg: RaceFocusCfg { other_roads: OtherRoads::Normal, ..Default::default() } };
+        let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+        let mut last = None;
+        for _ in 0..8 {
+            last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                s.roads.min_px = 8.0;
+                s.roads.max_px = 12.0;
+                s.focus = Some(f.clone());
+            }));
+        }
+        let o = last.unwrap();
+        assert_eq!(o.gl_error, 0, "{name}");
+        o.save(&format!("{name}.png"));
+        eprintln!("{name}: {} race pixels", count(&o));
+        under.push(count(&o));
+        h.destroy(&rig.gl);
+    }
+    assert!(under[0] > 200, "the control: the race road on the deck is drawn ({under:?})");
+    // (what peeks out below the deck is the parallax of the 22 m between them; without the depth test the whole road would be drawn: as many as on the deck)
+    assert!(under[1] * 3 < under[0] * 2, "the deck above the race road covers it ({under:?})");
+    rig.finish(&Gl3dHandle::new());
+}
 
 // ── the draw plan (CPU only) ─────────────────────────────────────────────────────────────────
 
@@ -1411,7 +1495,7 @@ fn gl3d_real_install_race_roads() {
         let l = &races.lines[li];
         let (x, z, y, yaw) = (l.pts[i][0], l.pts[i][1], l.y[i], heading(l, i));
         let mut focus = RoadFocus::build(&w.layers.roads, l);
-        focus.race = Some(RaceRoad { pts: l.pts.clone(), y: l.y.clone(), closed: l.closed, color: if l.circuit { rc.circuit_color } else { rc.sprint_color } });
+        focus.race = Some(RaceRoad { pts: l.pts.clone(), y: l.y.clone(), closed: l.closed, color: rc.color });
         let t0 = std::time::Instant::now();
         let m = crate::maprender::mesh3d::RoadMesh::race_road(focus.race.as_ref().unwrap(), &w.terrain);
         eprintln!("race road spot {name}: route {} ({:.1} km, class {:?}) at ({x:.0}, {z:.0}) y {y:.1}; race mesh {} samples, {} triangles, built in {:.1} ms", l.route, l.length_m / 1000.0, class(li), m.samples.len(), m.triangles().0, t0.elapsed().as_secs_f64() * 1e3);

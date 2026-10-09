@@ -312,9 +312,11 @@ pub struct RaceCfg {
     pub mode: RaceLineMode,
     pub radius_m: f32,
     pub width_px: f32,
-    /// Circuits and point-to-point sprints get their own colour.
-    pub circuit_color: Rgb,
-    pub sprint_color: Rgb,
+    /// One colour for every race, circuit or sprint (D88). *Why (the user, 2026-10-10):* "Sprints
+    /// and circuits should have the same color". `circuit_color` is the old key (old configs keep
+    /// their circuit colour; the old `sprint_color` key is ignored on load).
+    #[serde(alias = "circuit_color")]
+    pub color: Rgb,
     pub alpha: f32,
     /// Start / finish marks.
     pub marks: bool,
@@ -347,8 +349,7 @@ impl Default for RaceCfg {
             mode: RaceLineMode::Current,
             radius_m: 1500.0,
             width_px: 4.0,
-            circuit_color: Rgb::hex(0xf97316), // orange: the old blue (#38bdf8) was the road colour (D86)
-            sprint_color: Rgb::hex(0xfb7185),
+            color: Rgb::hex(0xf97316), // orange: the old circuit blue (#38bdf8) was the road colour (D86, D88)
             alpha: 0.85,
             marks: true,
             focus: RaceFocusCfg::default(),
