@@ -1135,6 +1135,18 @@ fn render_3d_states() -> Result<(), String> {
     bridge.pkt.position_y = terrain.height(-100.0, -500.0) + 22.0;
     let mut race = snap_3d(cfg_3d(|_| {}), &terrain, (398.0, 20.0), 0.0, WORLD_CAL);
     race.pkt.race_position = 2;
+    // D82: the race as a road over normal roads (the focus goes to the scene although the other
+    // roads are not changed), and the same race as a thin line (nothing for the scene).
+    let on_ring = |cfg: OverlayConfig| {
+        let mut s = snap_3d(cfg, &terrain, (398.0, 20.0), 0.0, WORLD_CAL);
+        s.pkt.race_position = 2;
+        s
+    };
+    let race_normal = on_ring(cfg_3d(|c| c.map_layers.race_lines.focus.other_roads = crate::maprender::cfg::OtherRoads::Normal));
+    let race_normal_line = on_ring(cfg_3d(|c| {
+        c.map_layers.race_lines.focus.other_roads = crate::maprender::cfg::OtherRoads::Normal;
+        c.map_layers.race_lines.route = crate::maprender::cfg::RouteStyle::Line;
+    }));
     let hills = on_hills(cfg_3d(|_| {}));
     let horizon = on_hills(cfg_3d(|c| c.map_layers.tilt.angle_deg = 72.0));
     let steep = on_hills(cfg_3d(|c| c.map_layers.tilt.relief.exaggeration = 2.5));
@@ -1157,6 +1169,8 @@ fn render_3d_states() -> Result<(), String> {
         ("hills", &hills, &none),
         ("bridge", &bridge, &none),
         ("race", &race, &none),
+        ("race_normal", &race_normal, &none),
+        ("race_normal_line", &race_normal_line, &none),
         ("horizon", &horizon, &none),
         ("exaggerated", &steep, &none),
         ("no_roads", &no_roads, &none),
@@ -1264,6 +1278,13 @@ fn render_3d_states() -> Result<(), String> {
         if d < min {
             failures.push(format!("3D hills: {what} barely changed the picture ({d} px < {min})"));
         }
+    }
+    // D82 call-site fix: with Other roads = Normal the race road is still the GL scene's (a lit,
+    // shaded 3D deck), not the flat egui one, which differs from the thin line in the race colour.
+    let d_race_road = differing(&imgs["race_normal"], &imgs["race_normal_line"]);
+    println!("  race road (Normal) vs thin line: {d_race_road} px");
+    if d_race_road < 300 {
+        failures.push(format!("3D race road over normal roads: barely differs from the thin line ({d_race_road} px < 300)"));
     }
     // A steeper pitch brings the horizon into view: the far edge fades into the game.
     let (hp, ht) = pill_coverage(&imgs["horizon"], true);

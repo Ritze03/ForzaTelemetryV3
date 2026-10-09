@@ -389,6 +389,13 @@ impl OtherRoads {
     }
 }
 
+/// Does a selected race line hand its [`RoadFocus`](super::racesel::RoadFocus) to the 3D scene?
+/// When the other roads are muted, hidden or gone, and also when the race is drawn as a road
+/// (the 3D scene draws that road, D80, only from the focus; D82 call-site fix).
+pub fn focus_wanted(rc: &RaceCfg) -> bool {
+    rc.focus.other_roads != OtherRoads::Normal || rc.route == RouteStyle::Road
+}
+
 /// The in-race focus (D66): while the car is in a race **and** a race line is selected (the
 /// `Current` mode's guess found one), roads away from that line are muted or hidden and the
 /// points of interest can be hidden, so the race stands out. With no selected line nothing
@@ -635,6 +642,24 @@ impl MapLayerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 3D scene gets the race focus whenever something of it is drawn there: other roads
+    /// changed, or the race as a road (D82). Only a thin line over normal roads needs none.
+    #[test]
+    fn focus_is_wanted_for_a_race_road_or_changed_other_roads() {
+        let mut rc = RaceCfg::default();
+        for (route, other, want) in [
+            (RouteStyle::Road, OtherRoads::Normal, true),
+            (RouteStyle::Road, OtherRoads::RaceOnly, true),
+            (RouteStyle::Line, OtherRoads::Normal, false),
+            (RouteStyle::Line, OtherRoads::Muted, true),
+            (RouteStyle::Line, OtherRoads::Hidden, true),
+        ] {
+            rc.route = route;
+            rc.focus.other_roads = other;
+            assert_eq!(focus_wanted(&rc), want, "{route:?} / {other:?}");
+        }
+    }
 
     #[test]
     fn rgb_round_trips_and_bad_values_do_not_break_the_load() {

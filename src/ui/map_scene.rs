@@ -304,12 +304,6 @@ impl ManualView {
         *self = Self::default();
     }
 
-    /// Freeze the view where it is (the viewer's "Follow car" switched off without a drag).
-    pub fn pin_centre(&mut self, at: (f32, f32), speed: Option<f32>) {
-        self.touch(speed);
-        self.centre = Some(at);
-    }
-
     /// The effective (centre, radius): the manual parts over the base.
     pub fn view(&self, car: (f32, f32), base_zoom_m: f32) -> ((f32, f32), f32) {
         (self.centre.unwrap_or(car), self.zoom_m.unwrap_or(base_zoom_m))
@@ -390,14 +384,14 @@ fn compass_scale(rect: Rect) -> f32 {
 /// Where [`draw`] paints the compass over a map of `rect` (`hud::minimap::draw_compass`: disc of
 /// radius 11 at (18, 18) in HUD units, scaled by [`compass_scale`]). It sits top left, where the
 /// "Follow car" buttons do, so those step aside while it is on (the Dashboard's
-/// [`follow_button`] does; the viewer's own button should use this too).
+/// [`follow_button`] and the viewer's own button both use this).
 pub fn compass_rect(rect: Rect) -> Rect {
     let s = compass_scale(rect);
     Rect::from_min_max(rect.min + vec2(7.0, 7.0) * s, rect.min + vec2(29.0, 29.0) * s)
 }
 
 /// The small "Follow car" button the Dashboard map shows in its corner while its view is manual
-/// (the viewer has its own, always there). True = pressed (the caller resets the view). Right of
+/// (the viewer's is the same: only while manual). True = pressed (the caller resets the view). Right of
 /// the compass when that is on: [`draw`] leaves whether it painted one in the egui context,
 /// keyed by the map's `Ui`, so the caller needs no extra argument.
 pub fn follow_button(ui: &mut Ui, rect: Rect) -> bool {
@@ -508,10 +502,12 @@ impl Map3d {
         let Some(relief) = &cam.relief else { return };
         // The road mesh only exists for roads that are drawn; it builds on its own thread.
         let mesh = data.filter(|_| lc.roads.on).and_then(|d| crate::maprender::store::road_mesh(d, &relief.terrain));
-        // The in-race focus (D66), exactly when the 2D path would apply it (`draw_layers_parts`).
+        // The in-race focus (D66), exactly when the 2D path would apply it (`draw_layers_parts`),
+        // and also for a race road over normal roads: 3D draws the race road (D80) only from the
+        // focus, so without it a flat egui race road would be all there is (D82).
         let focusing = data.is_some_and(|d| sel.focus_line().is_some_and(|l| l < d.races.lines.len()));
         let focus = data
-            .filter(|_| focusing && lc.race_lines.focus.other_roads != crate::maprender::cfg::OtherRoads::Normal)
+            .filter(|_| focusing && crate::maprender::cfg::focus_wanted(&lc.race_lines))
             .and_then(|d| sel.road_focus(d))
             .map(|focus| gl3d::Focus3d { focus, cfg: lc.race_lines.focus });
         gl3d::add_scene(
@@ -1194,7 +1190,8 @@ mod tests {
         assert!(!mv.is_manual());
         assert_eq!(mv.view((1.0, 2.0), 900.0), ((1.0, 2.0), 900.0));
         // A view made while driving keeps its first arming until it is reset.
-        mv.pin_centre((5.0, 5.0), Some(30.0));
+        mv.touch(Some(30.0));
+        mv.centre = Some((5.0, 5.0));
         assert!(!mv.tick(&ctx, Some(30.0), 100.0));
         assert!(!mv.tick(&ctx, Some(30.0), 105.0));
         mv.reset();

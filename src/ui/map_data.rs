@@ -12,14 +12,17 @@ use crate::i18n::tr;
 use crate::ui::overlay_tab::control_row_tip;
 use crate::ui::settings::{result_line, Dot};
 
-/// The page: the one "Map data" card, in the first column like the Overlay tab's single-card
-/// pages (three columns from 1100 px, else two), so it is as wide as it was in Setup.
+/// The page: the "Map data" card in the first column like the Overlay tab's single-card pages
+/// (three columns from 1100 px, else two), so it is as wide as it was in Setup, and the "Map
+/// image" card (quality, reload, calibration; from Mini-Settings, D79) in the second.
 pub fn page(ui: &mut Ui, app: &mut ForzaApp) {
     let n = if ui.available_width() >= crate::ui::overlay_tab::THREE_COLS_MIN_W { 3 } else { 2 };
     ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
     crate::theme::columns(ui, n, |cols| {
         cols[0].spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
         crate::theme::card(&mut cols[0], tr("Map data"), |ui| map_data_card(ui, app));
+        cols[1].spacing_mut().item_spacing.y = 0.0;
+        crate::ui::map_tab::map_image_card(&mut cols[1], app);
     });
 }
 

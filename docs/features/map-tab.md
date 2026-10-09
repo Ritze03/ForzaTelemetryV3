@@ -40,15 +40,18 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   it zooms **around the cursor** (the point under the pointer stays under it). Panning with a
   tilted camera keeps the grabbed point under the pointer too (`map_scene::panned` /
   `zoomed_at` use `Camera::unproject`; 3D: see Temporary pan / zoom).
-- **Follow car** (top left, lit while following; the default): the view centre is the car.
-  Panning turns it off; pressing the button brings the view back at once (also resets a zoom).
-  With nothing manual, pressing it freezes the view where it is.
+- **Follow car** (top left): the view centre is the car by default. The button is shown **only
+  while the view is manual** (panned or zoomed), like the Dashboard widget's
+  (`map_scene::follow_button`); pressing it brings the view back at once (also resets a zoom).
+  *Why (the user, 2026-10-09):* "only show the Follow Car button, while it isn't following the car
+  at the moment". Before, it was always there (lit while following) and, with nothing manual,
+  pressing it froze the view; that freeze (`ManualView::pin_centre`) is gone with the button.
 - **Settings** (**bottom right**, cog) switches the tab to the settings mode. The zoom radius is shown
   bottom left. *Why bottom right (the user, 2026-10-09):* "the settings are in the top right, but
   that's also where the co-op thingy draws ... just move the settings button to the bottom right."
   The co-op player list (`map_scene::draw`) owns the top right. The compass is drawn top left by the
   scene, where Follow car is: while the compass is on, Follow car steps right of it
-  (`map_tab::compass_right`, which mirrors the scene's compass size rule). Test:
+  (`map_scene::compass_rect`, the compass box the Dashboard widget's button uses too). Test:
   `viewer_controls_stay_inside_the_tab` (corners, no label overlap, clear of a simulated co-op list
   and the compass; EN + DE, 600-1235 px).
 - **North-up** by default (`minimap_north_up`, the Dashboard map's setting); off = the map turns with
@@ -80,17 +83,22 @@ player drives off again. Shared by the Dashboard map and the viewer: one state t
 - **Viewer:** the base zoom is the Dashboard's eased `minimap_current_zoom` (driving / stopped
   zoom). *Why not the last viewer zoom:* the viewer has no zoom setting any more (D73), and the
   Dashboard's value is what the user tuned for the map; the temporary manual zoom resets to it.
-- **Option, default on:** `minimap_allow_pan_zoom` (Mini-Settings → Dashboard → Map, and the Map tab's
-  Dashboard map & Viewer page; one switch for both). Off = no pan / zoom sensing, the
+- **Option, default on:** `minimap_allow_pan_zoom` (Map tab, Dashboard map & Viewer page; one
+  switch for both). Off = no pan / zoom sensing, the
   old click-only behaviour (the Dashboard map keeps its waypoint click).
-- **In 3D** (View mode 3D, phase K, K4) nothing changes for the gestures: pan and zoom move over the
-  **ground plane at the car's height** ("pan / zoom on the flat plane", design) and anchor the grabbed
-  point under the pointer exactly as in Tilted; the interaction camera is the relief-less one, whose
-  `unproject` is that same plane (tested: `pan_and_zoom_anchor_on_the_ground_plane_in_3d`). *Why not
-  anchor on the terrain surface:* the plane is a stable, closed-form anchor; the surface would make the
-  drag speed jump over every ridge. The camera's car height is the telemetry height while following and
-  the terrain height under the view centre once panned. A click (co-op waypoint) *does* use the terrain
-  surface (`map_scene::pick`). The 3D renderer's state and fallback are described in
+- **In 3D** (View mode 3D, phase K, K4) pan and wheel zoom anchor on the **terrain surface under the
+  pointer**, not the car-height plane. `map_scene::draw` leaves the drawn 3D look in the egui context,
+  keyed by the map's `Ui`, and `ManualView::interact` solves for the view centre that keeps the
+  grabbed or zoomed terrain point under the pointer. A panned view's camera height eases (about 0.2 s)
+  towards the terrain under the centre rather than snapping to it. *Why:* the camera height shifts
+  the whole picture, so a pivot that follows the terrain exaggerates a pan uphill by several times,
+  cancels it downhill, and makes the view jump on the first drag frame; easing lets the pan solve
+  exactly per frame and the new height settles smoothly afterwards (the earlier ground-plane anchor
+  was a stable but wrong answer: the map moved with the pointer only on flat ground). `pick()`
+  ray-marches the terrain, so waypoint clicks on slopes are exact. Tests:
+  `pan_keeps_the_grabbed_terrain_point_under_the_pointer_in_3d`,
+  `zoom_keeps_the_terrain_point_under_the_cursor_in_3d`, `the_panned_camera_height_eases_towards_the_terrain`.
+  The 3D renderer's state and fallback are described in
   [minimap.md](minimap.md#3d-on-the-eframe-side-dashboard-map-and-viewer-phase-k-k4).
 - Tests: `map_scene::tests` (`manual_view_resets_when_the_player_drives_off`,
   `a_nudge_does_not_reset_the_view`, `panning_while_driving_waits_for_the_next_stop`,
@@ -104,14 +112,15 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
 
 | Page | Content | Config |
 |---|---|---|
-| **Minimap** | the HUD minimap: Minimap card (Enabled, *Use Dashboard map settings*, view options, co-op teammates, *Reset map layers*) + the layer cards | `overlay.map_*`, `overlay.map_layers`, `overlay.map_plate_opacity` |
-| **Dashboard map & Viewer** (DE *Dashboard-Karte & Viewer*) | "Dashboard map & Viewer" card (view options, **Allow pan and zoom**, *Reset map layers*) + the layer cards; edits what both the Dashboard's Map widget and the Map tab viewer draw (D73) | `minimap_*`, `minimap_layers`, `minimap_allow_pan_zoom` |
-| **Map data** | the road-type map editor card, [map-editor.md](map-editor.md) | none |
+| **Minimap** | the HUD minimap: Minimap card (Enabled, *Use Dashboard map settings*, view options, a **Co-Op** block: *Use Dashboard co-op settings*, teammates, shared waypoints, trails + fade time / distance, then *Reset map layers*) + the layer cards | `overlay.map_*`, `overlay.coop_*`, `overlay.map_layers`, `overlay.map_plate_opacity` |
+| **Dashboard map & Viewer** (DE *Dashboard-Karte & Viewer*) | "Dashboard map & Viewer" card (view options, **Allow pan and zoom**, **Render FPS limit**, *Reset map layers*), a **Co-Op** card (tracer fade time / distance, player list and its columns) + the layer cards; edits what both the Dashboard's Map widget and the Map tab viewer draw (D73) | `minimap_*`, `minimap_layers`, `minimap_allow_pan_zoom`, `minimap_fps_limit*`, `coop_trail_fade_*`, `coop_map_playerlist`, `coop_list_*` |
+| **Map data** | the road-type map editor card, [map-editor.md](map-editor.md), and the **Map image** card (image quality, *Reload Map*, *Rebuild Map Cache*, the advanced calibration) | `minimap_quality`, `minimap_px_per_m`, `minimap_world_origin_x/z` |
 
 - **Moved, not copied:** the Minimap and Dashboard map pages came from the Overlay tab
   (D63-D66) with identical content (the Dashboard page was renamed *Dashboard map & Viewer* in D73); the Map data card from Setup. The Overlay tab keeps the HUD
   modules only (General, Drive cluster, Race / Drift, Notifications), including the Minimap
-  module's cell in its Layout card.
+  module's cell in its Layout card and, since D75, its **Minimap frame** (shape, size, outline,
+  background).
 - **Remembered across restarts:** `map_tab_settings` (settings vs viewer) and `map_tab_page`
   (`config::MapPage`), both in `config::EXPORT_EXCLUDE`, like `overlay_page` (where the user
   last looked is not a setting; kept across a profile switch). An old `overlay_page` of
@@ -127,9 +136,33 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
   `config::from_value_lenient`), and the next save writes the file without them. An old preset that
   has them imports with the keys ignored. Test: `map_tab::tests::an_old_config_with_viewer_keys_still_loads`.
 - The viewer's co-op trails (fade time / distance) and player list follow the Dashboard map's
-  co-op settings (Mini-Settings -> Dashboard -> Map -> Co-Op), as they always did.
-- **Map data page layout:** one card in the first column (three from 1100 px, else two), as wide as
-  it was in Setup. It runs the Game Install check itself (`Fh6Setup::poll`).
+  co-op settings (the Dashboard map & Viewer page's Co-Op card), as they always did.
+- **Map data page layout:** the Map data card in the first column (three from 1100 px, else two),
+  as wide as it was in Setup, and the Map image card in the second. The page runs the Game Install
+  check itself (`Fh6Setup::poll`).
+
+### Map settings are only here (D79)
+
+*Why (the user, 2026-10-09):* "make sure that all of the map settings are gone from the mini-settings
+menu and that they are placed inside of the map settings tab". **Mini-Settings has no map setting
+any more**: its Dashboard -> **Map** sub-tab (General + Co-Op) and the **Minimap** and **Co-Op**
+sections of its Overlay tab are gone (the Overlay tab keeps Notifications; `MiniMapTab` and
+`ForzaApp::page_map_sub_tab` were removed with them). Where each control went:
+
+| Was in Mini-Settings | Now |
+|---|---|
+| Lock north-up (F10), north up when stopped, smooth rotation, movement direction, mirror at edges, right stick, compass, zoom driving / stopped | already the View rows of the Dashboard map & Viewer / Minimap cards (`view_rows`) |
+| Allow pan and zoom | already on the Dashboard map & Viewer card |
+| Render FPS limit (+ slider) | **moved**: Dashboard map & Viewer card |
+| Image quality, Reload Map, Rebuild Map Cache, Advanced calibration | **moved**: Map data page, Map image card (`map_tab::map_image_card`; the reload code is `ForzaApp::reload_map_image(rebuild)`) |
+| Co-Op: tracer fade time / distance, player list + columns | **moved**: Dashboard map & Viewer page, Co-Op card |
+| Overlay -> Minimap: use Dashboard map settings, view options, zoom | already on the Minimap card |
+| Overlay -> Co-Op: use Dashboard co-op settings, teammates, waypoints, trails, fade | **moved**: Co-Op block of the Minimap card (while "use Dashboard" is on the rows show what the HUD uses, greyed) |
+
+There is no "Map settings..." link in Mini-Settings (considered, left out: the Map tab is in the tab
+bar with its own cog, and a link for settings that moved once is clutter). Test:
+`app::tests::mini_settings_has_no_map_controls` (a source check, since the window is built inline in
+`ForzaApp::update`), `map_tab::tests::map_settings_from_mini_settings_are_on_the_map_tab`.
 
 ### The layer cards
 
@@ -142,7 +175,8 @@ saved road types were ignored").
 
 - **Image:** satellite on/off, opacity, brightness, saturation (approximate, a grey veil); HUD
   only: **Map plate opacity** (`overlay.map_plate_opacity`, the minimap's own plate, not the
-  General tab's *Plate opacity*).
+  General tab's *Plate opacity*); the same field is also on the Overlay tab -> Minimap page
+  (**Minimap frame** card, D75).
 - **Roads:** on/off, scale width with zoom (road width in metres, minimum / maximum px; off =
   one fixed width; the three px sliders go up to **100 px**, `maprender::ui::ROAD_PX_MAX`, D74), outline width and opacity, then **By type**: per type a block with
   visible, line colour, outline colour, width factor, dash, opacity, outline on/off. Turnarounds
@@ -155,17 +189,27 @@ saved road types were ignored").
   install, the coloured fallback marker. A test guarantees every `style::POI_CATS` id has a
   checkbox.
 - **Race lines:** mode (off / current race / nearest line / near the car / all lines), search
-  radius (nearest / near), width, circuit and sprint colours, opacity, start / finish marks, then
+  radius (nearest / near), **Race line style** (D80, `RaceCfg::route`: *Road*, the default, = the race
+  is drawn as a road of its own in the race colour (outline, rounded ends, as wide as a highway; in 3D
+  a real road at the race's own heights), or *Line* = the thin line on top), width and opacity (greyed
+  unless *Line*: a race road has its own width and is opaque), circuit and sprint colours, start /
+  finish marks, then
   the section **In a race** (the in-race focus, D66, [minimap.md](minimap.md#in-race-focus-d66-other-roads-muted-pois-hidden)):
-  *Other roads* (Normal / Muted / Hidden), and for Muted the colour, opacity and width factor,
-  and *Hide points of interest in a race*. Tooltip: applies only in the Current race mode while
+  *Other roads* (Normal / Muted / Hidden / **Race road only**, D82), and for Muted the colour, opacity and width factor,
+  and *Hide points of interest in a race*. *Race road only* draws nothing of the road network in a
+  race, only the race road (the user: "a setting, to not draw anything from the normal road mesh and
+  only draw the circuit using the 3d renderer"); with the Line style it hides the other roads
+  instead (`OtherRoads::effective`). *Why the 3D scene needs the focus even over Normal roads:* it
+  draws the race road only from the focus (`gl3d::Focus3d`), so `cfg::focus_wanted` hands it over
+  whenever the style is Road, not only when the other roads change (`map_scene` and
+  `hud::minimap` call sites, D82). Tooltip: applies only in the Current race mode while
   the car is in a race and a line was detected. The rows are greyed in the other modes (the
   focus never applies there), the three muted-look rows unless *Muted* is chosen.
 - **View mode:** Flat / Tilted / 3D, then the tilt rows and (3D only) the relief options; see below.
 - **View options** (the lead card): lock north-up and its heading-up-only options, mirror,
   right-stick look, compass, zoom driving / stopped (50-6000 m). `maprender::ui::ViewCfg`
   copies them out of `AppConfig::minimap_*` or `OverlayConfig::map_*` so one function edits
-  both. Mini-Settings keeps its quick options; both edit the same keys.
+  both. (Mini-Settings used to have a copy of these; it has none since D79.)
 - **HUD tab with "Use Dashboard map settings" on:** the layer cards and view options show the
   *Dashboard's* values, greyed (what `OverlayConfig::effective` really uses), so the page never
   shows numbers that differ from what is drawn. The plate opacity stays editable: it is not
@@ -276,9 +320,11 @@ them in between."
 
 `ui::test_render` panes at 700 / 1000 / 1100 / 1235 px, **English and German** (the language is
 a process-wide static: such tests go through `i18n::with_language`, which serialises them): the
-Minimap and Dashboard map & Viewer pages (six cards each, following the Dashboard, module off, every
-layer status), the viewer's buttons (inside the tab, bottom right / left, never overlapping the
-compass or the co-op list), the module selector at the window minimum (three pages), the remembered
+Minimap and Dashboard map & Viewer pages (six cards each, seven on the Dashboard page with its
+Co-Op card; following the Dashboard, module off, every layer status), the Race lines card with
+either style and *Race road only*, the controls that came from Mini-Settings (D79) incl. the Map
+image card, the viewer's buttons (inside the tab, bottom right / left, Follow car only while
+manual, never overlapping the compass or the co-op list), the module selector at the window minimum (three pages), the remembered
 state (saved, not exported), old configs with `viewer_*` keys / `map_tab_page: "viewer"`, the road
 width range; the Map data
 card's pane and confirm-block tests moved with it.

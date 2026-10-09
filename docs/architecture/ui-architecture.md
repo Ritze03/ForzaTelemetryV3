@@ -97,8 +97,8 @@ disables the fade — when off the target opacity is pinned to 1.0.
   main `Tab` enum.
 - **`DashboardSubTab`** (`src/app.rs:460-479`, `Default = General`) — one variant per
   Dashboard widget group: `General, Modules, Kmh, Gear, Rpm, SprintTimes, Tires,
-  Suspension, Shift, Engine, GForce, Inputs, Boost, Graphs, MiniMap, Config`. A nested
-  `MiniMapTab` (`General | Coop`, `src/app.rs:482-487`) further splits the MiniMap page.
+  Suspension, Shift, Engine, GForce, Inputs, Boost, Graphs, Config`. (The former `MiniMap`
+  sub-tab and its nested `MiniMapTab` are gone: map settings are on the Map tab only, D79.)
 - **No `page_settings_*` functions exist** — the whole popup body is one large inline
   `match` inside `if self.page_settings_open { … }` (`src/app.rs:1519-2265`): first
   `match self.page_settings_tab` (`src/app.rs:1550`) picks `General`

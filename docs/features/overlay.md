@@ -434,15 +434,17 @@ style that is a circle would also be neat."
   that every pixel more than 1.5 px outside the shape is the backdrop (the map is clipped exactly), that
   the outline ring has its colour all round, and the co-op-coloured own arrow.
 
-**Options (Mini-Settings → Overlay tab).** The HUD minimap has the Dashboard map's options.
+**Options (Map tab → Minimap page).** The HUD minimap has the Dashboard map's options.
 *Why:* the user wants everything the Dashboard map has on the HUD too. They live in
-`OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys), in the cog-wheel
-**Mini-Settings**, tab **Overlay** (`src/app.rs`, "Minimap" and "Co-Op" sections; the Map
-tab's Minimap page edits the same options and all the layer settings, see [map-tab.md](map-tab.md)).
+`OverlayConfig` (`overlay.*`, not the top-level `minimap_*` keys) and are edited on the **Map
+tab's Minimap page** together with all the layer settings, see [map-tab.md](map-tab.md). They
+used to be in the cog-wheel **Mini-Settings**, tab **Overlay** ("Minimap" and "Co-Op" sections);
+D79 moved them (the user: all map settings belong on the Map tab; Mini-Settings -> Overlay keeps
+only Notifications).
 
 | Field | Default | Meaning |
 |---|---|---|
-| `map_use_dashboard` | off | **Use Dashboard map settings**: all the map fields below follow the Dashboard map and their controls are hidden. |
+| `map_use_dashboard` | off | **Use Dashboard map settings**: all the map fields below follow the Dashboard map and their controls show the Dashboard's values, greyed. |
 | `map_north_up` | off | Lock north-up: map fixed, the car arrow turns (`MapView::arrow_angle`). Off = heading-up, arrow fixed apex-up. |
 | `map_north_up_when_stopped` | off | Heading-up only: ease to north once stopped. |
 | `map_smooth_rotation` | on | Ease rotation; off snaps (ease-to-north still eases). |
