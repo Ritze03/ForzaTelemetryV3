@@ -243,12 +243,12 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 | Module | What it holds |
 |---|---|
 | `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
-| `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid). |
+| `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid + arc length per point `cum`). |
 | `icontex.rs` | `IconTex`: uploads the store's icon pixels as a texture **per egui context** and builds that context's `IconAtlas`. |
 | `store.rs` | The process-wide loader / cache: `layers()`, `refresh_now()`, thread `map-layers`. |
 | `view.rs` | `Camera` (flat or tilted; `from_cfg`, `focal_for`, `depth_scale_at_row`), `world_aabb`, `thin`, `clip_convex`, `clip_polyline_convex`, `clip_segment_convex`, `fan`. |
 | `style.rs` | Road draw order, the zoom-dependent width rule, dash patterns, the POI category table. |
-| `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" guess, and the in-race focus (`RoadFocus`: which roads lie along the picked line). |
+| `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" candidate tracking (D76) and the in-race focus (`RoadFocus`: which roads lie along what is drawn of the picked line). |
 | `ui.rs` | The settings UI (D63): `layers_ui` (the Image / View mode / Race lines / Roads / Points of interest cards, used by both Overlay-tab map tabs), `view_rows` + `ViewCfg` (zoom / orientation options of either config), `status_ui` (store status + `MapLayers::note`). |
 | `paint2d.rs` | `draw_base` (image mesh, far-edge fade) and `draw_layers` (roads, jumps, race lines, gate lines, POIs, the current chest) onto an egui `Painter`; `IconAtlas`, `CornerClip`. |
 
@@ -375,13 +375,65 @@ Modes: `off`, `current` (default), `nearest`, `near` (within `radius_m`, default
 (40 000-vertex budget). 4 px, circuit `#38bdf8`, sprint `#fb7185`, alpha .85, with start / finish marks
 (green dot + chequered flag for sprints, chequered flag for circuits).
 
-The telemetry has **no race id**, so "current" is a **best-effort guess**, not verified against live
-races: while `race_position != 0` (the HUD's own "in a race" rule) the line is the one whose centre
-line passes within `|half-width| + 4 m` of the car with a driving direction that agrees with the car's
-heading (dot product > 0). Several can match (many races share roads), so the closest wins, and the
-previous pick is **kept while it still matches** (no flicker between overlapping lines) and for a
-moment when the car is off every line. The lookup is the 100 m segment grid built once in the store.
-`RaceSel` (kept per map; the Dashboard's is `ForzaApp::minimap_race_sel`) holds the pick.
+The telemetry has **no race id**, so "current" is a **best-effort inference**, not verified against
+live races. *Why it keeps candidates (D76; the user, 2026-10-09):* "does it keep track of which route was
+determined? It should only display the route up to the possible fork and then display more, once the
+right route is established. Example: Route 1: A, B, C, D, E, F, G; Route 2: A, B, C, H, I, J, K ... Only
+display until C (no finish line yet). Once the user drives further, we can determine the right route
+really fast (D or H). So it mainly shouldn't just assume one route and only display further paths, once
+it can be sure that it is the right route." Real data shows why this matters: 103 of the 170 routes share
+their start with at least one other route (up to 7), some for kilometres (route 2411 shares 4 km with
+5555 and 30105; 11007 differs from 5201 only in its last ~50 m).
+
+**Candidates** (`racesel::Cand { line, s, off_m }`, `s` = the car's progress along the line in metres of
+arc length; `RaceLayer::cum` holds the arc length per point, `racesel::Poly` is the arc-length view):
+
+- *Pick-up:* while `race_position != 0` and there are no candidates, every line within
+  `|half-width| + 4 m` of the car whose direction agrees with the car's heading (`cos > 0.5`,
+  `ACQUIRE_COS`; a crossing road must not start a candidate) becomes one. Players join mid-route, so
+  this is "every route on this road", not only those that start here.
+- *Tracking, every frame* (segment grid, 40 m query): a candidate matches while the car is inside its
+  corridor with `cos > 0` and its new progress is within 300 m back / 300 m ahead of the last one (a
+  rewind or a packet gap is fine; a closed circuit wraps). A match updates `s` and resets `off_m`.
+- *Drop:* a candidate that does not match, or is more than 8 m (`DOMINATED_M`) farther from the car than
+  the nearest matching one, adds the distance driven to `off_m`; at 15 m (`DROP_M`) it is dropped. The
+  dominance rule is what makes a fork resolve fast: the corridor of the branch not taken is wide, but
+  the branch is clearly the farther one much sooner. Candidates are only dropped while another one still
+  matches; if none does (a shortcut, a spin, a wide corner) the set is kept; if none does and a line
+  with a well agreeing heading is under the car, that line set replaces them (as a new match replaced
+  the single pick before).
+- *Reset:* `race_position == 0` (race over), mode change, or new race data.
+
+**What is drawn** (`RaceSel::picked()` + `RaceSel::span(line) -> Option<Span { s0, s1, start }>`):
+
+- One candidate left: the whole line with both marks, as before (`span` is `None`).
+- Several: the **part they share**. The reference is the shortest candidate; the others are compared
+  with it in 4 m steps, forward from the car up to the first point where any other candidate is more
+  than `SAME_TOL_M` (4 m) away (the fork), and backward down to the first difference or the start. Only
+  that stretch of the reference line is drawn, with the start mark if it reaches the route's start and
+  **never a finish mark**. Computed once per candidate set (`compute_shown`, cached by the set), not per
+  frame: the fork ahead does not move while the set is unchanged. When a candidate is dropped, the
+  stretch grows to the next fork (or to certainty).
+- *Duplicates:* if the forward comparison runs to the end of the reference and every other candidate is
+  within 30 m (`FINISH_TOL_M`) of its own end, they are the same road to the finish and count as
+  certain; the lowest line index is drawn whole. (Real data: 69 % of the points of routes that have a
+  same-direction neighbour within 20 m have it within 0.5 m, 94 % within 3 m, so the 4 m tolerance
+  catches the shared stretches of different routes.) Where one route is the other's **prefix** (it
+  ends where the longer one goes on), the shared part ends at the shorter route's end, without a
+  finish mark, until the race ends or the car leaves: nothing tells them apart before that.
+- `paint2d::draw_race_lines` draws `Poly::slice(s0, s1)` instead of the line when a span is set, and
+  `draw_race_marks(.., start, finish)` only the marks that belong to it.
+
+**Real-install check** (`racesel::tests::real_install_drive_every_route`, `--ignored`): all 170 routes
+driven from start to finish through the whole layer, exactly on the line and with a +-3.5 m wobble. Every
+route ends on its own line (or an identical duplicate), never on a different one; 92 of 170 are certain
+within the first 30 m, 142 drops after a fork happened a median 24 m (p90 48 m) past the fork; 4 routes
+(351, 1201, 5191, 8008) stay uncertain to the end (prefix / near-duplicate pairs).
+
+**Cost:** per frame one grid query like before plus a few lookups per candidate; `compute_shown` only
+when the set changes. Release, real install, 514 623 updates over all 170 routes: 1.5 us per update on average; the worst single update (a set change on a long route) 2.8 ms; a shared prefix focus build is smaller than the route's (route 5555 whole: 11.2 ms under load, median route 0.4 ms).
+
+`RaceSel` (kept per map; the Dashboard's is `ForzaApp::minimap_race_sel`) holds the state.
 `RaceSel::update` returns the selector itself (`picked()` = the lines), because the renderer reads the
 in-race focus from it too (below).
 
@@ -413,11 +465,30 @@ default is to act; muted rather than hidden so the surroundings stay readable. M
 without casing, drawn first (under the relevant roads); a type switched off stays off.
 
 **What is relevant:** a road segment is relevant when more than half of its samples (every 10 m, both
-ends included) lie within `|half-width| + 8 m` of the picked line's centre line (`RaceLine::half`, per
-segment; a closed circuit's closing segment included). Roads that merely cross the line are therefore
-muted except for their short pieces at the crossing (which the race line covers anyway); cross-country,
-trail, tunnel and every other type count alike. A jump line is relevant when both ends are on the
-corridor. `racesel::RoadFocus` cuts every road chain into `Run`s (`a..=b` points, relevant or not), so
+ends included) lie within `|half-width| + 8 m` of the drawn line's centre line (`RaceLine::half`, per
+segment; a closed circuit's closing segment included) **on a stretch that runs the same way as the road**
+(`|cos| >= 0.94`, about 20 degrees, `ALIGN_COS`). *Why the heading test (the user, 2026-10-09):* "when it
+hides all non race track roads, while in a race, it still shows the first node of roads that are connected
+to the race circuit. This shouldn't be the case." The first segment of a side road out of a junction lies
+inside the corridor, but at an angle; without the test it passed the distance rule. Roads that cross or
+join the line from the side (perpendicular, 30 degrees) are therefore not relevant at all, junction included
+(the race line covers the junction); a road that runs parallel beside the route (a frontage road 10 m away)
+or merges at a shallow angle (15 degrees) still counts as along it: from geometry alone it cannot be told
+from the route's own road.
+**The test is 3D** (the user, 2026-10-09: short, disconnected highway pieces floated over the race road in 3D):
+an overpass crossing above the route lies in its xz corridor, so its few segments there counted while the
+rest of the highway was hidden. A road sample therefore also has to be within 6 m (`HEIGHT_TOL_M`) of the
+race line's height (`RaceLine.y`, interpolated at the nearest line point) using the road's node heights
+(`Chain.y`, the D51 rule the 3D mesh draws), judged only when both are known (road height 0 = unknown, the
+3D mesh then uses the terrain, so the sample is judged by the corridor alone). Real install, route 5555:
+4 379 -> 4 371 relevant segments (8 overpass / underpass pieces gone over 85 km). The 2D map uses the same
+`RoadFocus`, so it draws the same set. D80 is to replace the corridor with proper nav-graph route matching;
+this stays self-contained in `Corridor::hit`. Cross-country, trail, tunnel and every other type count alike. A jump line is
+relevant when both ends are on the corridor. **The corridor follows what is drawn (D76):** while the route is
+uncertain it is the corridor of the shared part only (`RoadFocus::build_pts` on `Poly::slice`), the whole
+line once it is certain. The focus cache key includes a counter that changes only when the drawn line or
+extent changes, i.e. when the candidate set changes (a handful of times per race), never while the car just
+drives along the shared part. `racesel::RoadFocus` cuts every road chain into `Run`s (`a..=b` points, relevant or not), so
 `draw_roads` runs two passes (`Pass::Muted`, then `Pass::Relevant`) over runs instead of chains.
 
 **Cost:** computed **once per picked line and road data** (cache in `RaceSel`, key = road `rev` +
@@ -583,9 +654,11 @@ the build on a `map-mesh` thread when the key `(MapLayers::rev, Terrain::rev)` c
 it between the HUD and the Dashboard/Viewer (each GL context uploads it itself).
 **In-race focus (D66):** `RoadMesh::build_rel(&RoadFocus) -> Vec<u8>` is one byte per GPU vertex, 1
 = relevant (own style), 0 = other (muted / hidden by `RaceFocusCfg`), from the same `RoadFocus` the
-2D path uses (`RaceSel::road_focus`); recompute only when the pick or the road rev changes (~0.2 ms)
-and upload with `buffer_sub_data`. A sample is tagged with the segment it starts, so the flag flips
-up to half a quad (<= 4 m) early/late once interpolated.
+2D path uses (`RaceSel::road_focus`); recompute only when the drawn extent or the road rev changes (~0.2 ms)
+and upload with `buffer_sub_data`. A sample is tagged with the segment it starts, and a sample on a
+node is relevant only if the segment before it is too, so the flag never leaks from the relevant side
+into a side road's first metres (D76 follow-up); the flag flips up to half a quad (<= 4 m) early on the
+relevant side once interpolated.
 Tests: `view::tests` (h = 0 parity, matrices, eye clearance, footprint, `from_cfg_relief`),
 `terrain::tests` (incl. `real_install_terrain`), `mesh3d::tests` (resample/tiles/LOD/winding/rel/frustum
 on synthetic data, `real_install_mesh` on the install), `store::tests` (lazy terrain, mesh cache),

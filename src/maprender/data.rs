@@ -290,12 +290,29 @@ impl SegGrid {
 pub struct RaceLayer {
     pub lines: Vec<RaceLine>,
     pub grid: SegGrid,
+    /// Per line, per point: the arc length from the first point (m, along the polyline). The
+    /// current-race candidate tracking (`racesel`, D76) works in arc length; built once here.
+    pub cum: Vec<Vec<f32>>,
 }
 
 impl RaceLayer {
     pub fn new(lines: Vec<RaceLine>) -> RaceLayer {
         let grid = SegGrid::build(&lines, 100.0);
-        RaceLayer { lines, grid }
+        let cum = lines
+            .iter()
+            .map(|l| {
+                let mut acc = 0.0f64;
+                let mut out = Vec::with_capacity(l.pts.len());
+                for (i, p) in l.pts.iter().enumerate() {
+                    if i > 0 {
+                        acc += f64::from(p[0] - l.pts[i - 1][0]).hypot(f64::from(p[1] - l.pts[i - 1][1]));
+                    }
+                    out.push(acc as f32);
+                }
+                out
+            })
+            .collect();
+        RaceLayer { lines, grid, cum }
     }
 }
 
