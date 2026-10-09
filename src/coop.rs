@@ -66,6 +66,72 @@ enum Control {
     /// Mesh (Trystero) only: sent by each side when its data channel opens and again when
     /// its identity changes. Binds the channel to that player id + name/colour.
     Peer { id: String, name: String, hue: f32 },
+    /// The room's shared navigation destination (one per room, last write wins on `(ts, id)`):
+    /// world [x, z], the setter's colour, their road filters as bits ([`DEST_ROAD`]…; unknown
+    /// bits are kept when relaying and ignored by consumers) and curve slider `c` (0..1).
+    /// `pos: None` clears it (a tombstone that keeps its `ts`). `ts` = setter's unix ms.
+    /// A tag of its own, not extra fields on `Waypoint`: see `docs/features/coop.md`.
+    Dest { id: String, pos: Option<[f32; 2]>, hue: f32, f: u8, c: f32, ts: u64 },
+}
+
+/// `Control::Dest.f` filter bits. Higher bits are reserved: ignored on receive
+/// ([`DEST_FILTER_MASK`]), preserved when relaying.
+#[allow(dead_code)]
+pub const DEST_ROAD: u8 = 1;
+#[allow(dead_code)]
+pub const DEST_HIGHWAY: u8 = 2;
+#[allow(dead_code)]
+pub const DEST_DIRT: u8 = 4;
+#[allow(dead_code)]
+pub const DEST_TRAIL: u8 = 8;
+#[allow(dead_code)]
+pub const DEST_CROSS_COUNTRY: u8 = 16;
+#[allow(dead_code)]
+pub const DEST_JUMPS: u8 = 32;
+pub const DEST_FILTER_MASK: u8 = 0b11_1111;
+
+/// The room's shared destination as read by the navigator / UI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedDest {
+    /// Player id of the setter (trusted: connection / channel id). In a mesh a destination
+    /// resent to a late joiner is attributed to the resender.
+    pub setter_id: String,
+    /// Setter's display name from the roster (empty if they left and are not in it).
+    pub setter_name: String,
+    pub x: f32,
+    pub z: f32,
+    pub hue: f32,
+    /// Raw filter bits as received (reserved bits included); use [`SharedDest::filters`].
+    pub filter_bits: u8,
+    /// Curve slider 0..1.
+    pub curve: f32,
+    pub ts: u64,
+}
+
+impl SharedDest {
+    /// The known filter bits only.
+    #[allow(dead_code)]
+    pub fn filters(&self) -> u8 {
+        self.filter_bits & DEST_FILTER_MASK
+    }
+}
+
+/// Stored slot: `pos: None` is the tombstone of a clear.
+#[derive(Clone, Debug)]
+struct DestSlot {
+    setter_id: String,
+    pos: Option<[f32; 2]>,
+    hue: f32,
+    f: u8,
+    c: f32,
+    ts: u64,
+}
+
+impl DestSlot {
+    fn message(&self) -> Message {
+        let c = Control::Dest { id: self.setter_id.clone(), pos: self.pos, hue: self.hue, f: self.f, c: self.c, ts: self.ts };
+        Message::Text(serde_json::to_string(&c).unwrap_or_default())
+    }
 }
 
 /// Per-remote jitter buffer: timestamped packets awaiting playback.
@@ -127,6 +193,11 @@ struct Inner {
     buffer_ms: u32,
     /// Per-player map pings, keyed by setter id: (world_x, world_z, setter hue).
     waypoints: HashMap<String, (f32, f32, f32)>,
+    /// The room's shared destination (or its clear tombstone), last write wins on `(ts, id)`.
+    dest: Option<DestSlot>,
+    /// Bumped on every accepted change of `dest` (and when it is dropped), so readers detect
+    /// change with one compare.
+    dest_seq: u64,
     /// Running cloudflared tunnel child. Owned here (not on CoopState) so the
     /// background host-start thread can hand it off and `stop()` can still kill it.
     tunnel: Option<Child>,
@@ -162,6 +233,8 @@ impl Inner {
             lan_url: None,
             buffer_ms,
             waypoints: HashMap::new(),
+            dest: None,
+            dest_seq: 0,
             tunnel: None,
             download: None,
             mesh: false,
@@ -268,6 +341,19 @@ impl CoopReader {
         self.0.lock().unwrap().waypoints.iter().map(|(id, &(x, z, h))| (id.clone(), x, z, h)).collect()
     }
 
+    /// The room's shared destination, `None` if unset / cleared.
+    #[allow(dead_code)] // consumed by the navigator runtime
+    pub fn destination(&self) -> Option<SharedDest> {
+        self.0.lock().unwrap().dest_view()
+    }
+
+    /// Change counter of the shared destination (set, clear, session end): compare to detect
+    /// change without cloning.
+    #[allow(dead_code)] // consumed by the navigator runtime
+    pub fn destination_seq(&self) -> u64 {
+        self.0.lock().unwrap().dest_seq
+    }
+
     /// Send our locally-received packet to peers (listener thread, every packet — it runs
     /// while the game covers the window, which the UI loop doesn't). No-op while co-op is off.
     pub fn push_local(&self, pkt: &ForzaPacket) {
@@ -301,6 +387,46 @@ impl Inner {
             }
             !matches!(tx.try_send(msg.clone()), Err(mpsc::TrySendError::Disconnected(_)))
         });
+    }
+    /// Last-write-wins on `(ts, id)`; `setter` is the trusted id (never the message's own).
+    /// Returns whether it was accepted (then the caller relays it). Garbage values are refused.
+    fn accept_dest(&mut self, setter: &str, pos: Option<[f32; 2]>, hue: f32, f: u8, c: f32, ts: u64) -> bool {
+        if pos.is_some_and(|[x, z]| !x.is_finite() || !z.is_finite()) || !hue.is_finite() || !c.is_finite() {
+            return false;
+        }
+        if let Some(cur) = &self.dest {
+            if (ts, setter) <= (cur.ts, cur.setter_id.as_str()) {
+                return false;
+            }
+        }
+        self.dest = Some(DestSlot { setter_id: setter.to_string(), pos, hue, f, c: c.clamp(0.0, 1.0), ts });
+        self.dest_seq += 1;
+        true
+    }
+    /// Forget the destination (session over).
+    fn drop_dest(&mut self) {
+        if self.dest.take().is_some() {
+            self.dest_seq += 1;
+        }
+    }
+    fn dest_view(&self) -> Option<SharedDest> {
+        let d = self.dest.as_ref()?;
+        let [x, z] = d.pos?;
+        let setter_name = self.roster.iter().find(|p| p.id == d.setter_id).map(|p| p.name.clone()).unwrap_or_default();
+        Some(SharedDest {
+            setter_id: d.setter_id.clone(),
+            setter_name,
+            x,
+            z,
+            hue: d.hue,
+            filter_bits: d.f,
+            curve: d.c,
+            ts: d.ts,
+        })
+    }
+    /// The live destination as a frame for a late joiner (a tombstone needs no resend).
+    fn dest_resend(&self) -> Option<Message> {
+        self.dest.as_ref().filter(|d| d.pos.is_some()).map(DestSlot::message)
     }
     fn roster_msg(&self) -> Message {
         let c = Control::Roster { players: self.roster.clone() };
@@ -403,6 +529,58 @@ impl CoopState {
         }
     }
 
+    /// The room's shared destination, `None` if unset / cleared ([`CoopReader::destination`]).
+    #[allow(dead_code)] // consumed by the navigator runtime / navigation tab
+    pub fn destination(&self) -> Option<SharedDest> {
+        self.inner.lock().unwrap().dest_view()
+    }
+
+    /// Change counter of the shared destination ([`CoopReader::destination_seq`]).
+    #[allow(dead_code)]
+    pub fn destination_seq(&self) -> u64 {
+        self.inner.lock().unwrap().dest_seq
+    }
+
+    /// Set the room's destination (world `x, z`) with my colour, road filter bits
+    /// (`DEST_*`) and curve slider 0..1; replaces whoever's it was. No-op outside a session.
+    /// Its `ts` is the wall clock, bumped past the stored one so my write always wins locally.
+    #[allow(dead_code)] // called by the navigation tab
+    pub fn set_destination(&self, pos: (f32, f32), hue: f32, filters: u8, curve: f32) {
+        self.write_destination(Some([pos.0, pos.1]), hue, filters, curve);
+    }
+
+    /// Clear the room's destination for everyone. No-op outside a session.
+    #[allow(dead_code)] // called by the navigation tab
+    pub fn clear_destination(&self) {
+        self.write_destination(None, 0.0, 0, 0.0);
+    }
+
+    fn write_destination(&self, pos: Option<[f32; 2]>, hue: f32, filters: u8, curve: f32) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.role == Role::Off {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let ts = inner.dest.as_ref().map_or(now, |d| now.max(d.ts + 1));
+        let my_id = inner.my_id.clone();
+        if !inner.accept_dest(&my_id, pos, hue, filters, curve, ts) {
+            return; // non-finite input
+        }
+        let msg = inner.dest.as_ref().expect("just stored").message();
+        match inner.role {
+            Role::Host => inner.broadcast(msg, None),
+            Role::Client if inner.mesh => inner.broadcast(msg, None),
+            Role::Client => {
+                if let Some(tx) = &inner.client_out {
+                    let _ = tx.try_send(msg);
+                }
+            }
+            Role::Off => {}
+        }
+    }
+
     /// Update my displayed identity; propagate to peers.
     pub fn update_identity(&self, name: &str, hue: f32) {
         let mut inner = self.inner.lock().unwrap();
@@ -470,6 +648,7 @@ impl CoopState {
         inner.words = None;
         inner.lan_url = None;
         inner.waypoints.clear();
+        inner.drop_dest();
         inner.status = "Stopped".into();
         inner.connecting = false;
         inner.error = None;
@@ -611,6 +790,7 @@ impl CoopState {
             inner.clients.clear();
             inner.client_out = None;
             inner.waypoints.clear();
+            inner.drop_dest();
             inner.mesh_bound.clear();
             mesh::initial_role_state(&mut inner, &room, name, hue);
         }
@@ -714,6 +894,10 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
         let _ = ws.write(Message::Text(
             serde_json::to_string(&welcome).unwrap_or_default(),
         ));
+        // Late joiner: the room's current destination (waypoints are not resent).
+        if let Some(m) = g.dest_resend() {
+            let _ = ws.write(m);
+        }
         let msg = g.roster_msg();
         g.broadcast(msg, None);
         g.status = format!("{} player(s)", g.roster.len());
@@ -772,6 +956,14 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
                             .unwrap_or_default(),
                     );
                     g.broadcast(msg, Some(&id)); // to the other clients
+                }
+                Ok(Control::Dest { pos, hue, f, c, ts, .. }) => {
+                    // Connection id is authoritative; relay only what won (stale = dropped).
+                    let mut g = inner.lock().unwrap();
+                    if g.accept_dest(&id, pos, hue, f, c, ts) {
+                        let msg = g.dest.as_ref().expect("just stored").message();
+                        g.broadcast(msg, Some(&id));
+                    }
                 }
                 _ => {}
             },
@@ -1036,6 +1228,10 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
                                 Some([x, z]) => { g.waypoints.insert(id, (x, z, hue)); }
                                 None => { g.waypoints.remove(&id); }
                             }
+                        }
+                        // The host stamps the setter's connection id (as for waypoints).
+                        Ok(Control::Dest { id, pos, hue, f, c, ts }) => {
+                            g.accept_dest(&id, pos, hue, f, c, ts);
                         }
                         _ => {}
                     }
@@ -1458,5 +1654,269 @@ mod tests {
         let i = st.inner.lock().unwrap();
         assert!(!i.mesh && i.clients.is_empty() && i.roster.is_empty() && i.words.is_none());
         assert!(i.waypoints.is_empty() && i.mesh_bound.is_empty());
+    }
+
+    // ── shared destination (Control::Dest) ─────────────────────────────
+
+    /// Today's `Control` minus `Dest`: what an older app's host / client / mesh path parses
+    /// with (each ends in `_ => {}` / ignores a parse error).
+    #[derive(Deserialize)]
+    #[serde(tag = "t")]
+    #[allow(dead_code)]
+    enum OldControl {
+        Hello { name: String, hue: f32 },
+        Welcome { id: String, roster: Vec<PlayerInfo> },
+        Roster { players: Vec<PlayerInfo> },
+        Update { name: String, hue: f32 },
+        Waypoint { id: String, pos: Option<[f32; 2]>, hue: f32 },
+        Peer { id: String, name: String, hue: f32 },
+    }
+
+    #[test]
+    fn dest_json_set_clear_and_filter_bits_round_trip() {
+        let set = Control::Dest { id: "abc".into(), pos: Some([1.5, -2.5]), hue: 200.0, f: 0b1000_0101, c: 0.25, ts: 1_700_000_000_123 };
+        let s = serde_json::to_string(&set).unwrap();
+        assert_eq!(s, r#"{"t":"Dest","id":"abc","pos":[1.5,-2.5],"hue":200.0,"f":133,"c":0.25,"ts":1700000000123}"#);
+        let clear = Control::Dest { id: "abc".into(), pos: None, hue: 0.0, f: 0, c: 0.0, ts: 7 };
+        let s2 = serde_json::to_string(&clear).unwrap();
+        assert_eq!(s2, r#"{"t":"Dest","id":"abc","pos":null,"hue":0.0,"f":0,"c":0.0,"ts":7}"#);
+        match serde_json::from_str::<Control>(&s).unwrap() {
+            Control::Dest { pos: Some([x, z]), f, c, ts, .. } => {
+                assert_eq!((x, z, f, c, ts), (1.5, -2.5, 133, 0.25, 1_700_000_000_123));
+            }
+            _ => panic!("set"),
+        }
+        assert!(matches!(serde_json::from_str::<Control>(&s2).unwrap(), Control::Dest { pos: None, ts: 7, .. }));
+    }
+
+    #[test]
+    fn old_apps_ignore_dest_in_every_path() {
+        // The host, client and mesh handlers of an older app all do
+        // `match serde_json::from_str::<Control>(&t) { Ok(known…) => …, _ => {} }`: an unknown
+        // tag must be a parse error (ignored), and the messages they do know must still parse.
+        let dest = serde_json::to_string(&Control::Dest { id: "x".into(), pos: Some([1.0, 2.0]), hue: 1.0, f: 3, c: 0.5, ts: 9 }).unwrap();
+        assert!(serde_json::from_str::<OldControl>(&dest).is_err());
+        let wp = serde_json::to_string(&Control::Waypoint { id: "x".into(), pos: None, hue: 1.0 }).unwrap();
+        assert!(serde_json::from_str::<OldControl>(&wp).is_ok());
+    }
+
+    #[test]
+    fn dest_last_write_wins_on_ts_then_id() {
+        let mut i = Inner::new("Me", 10.0, 0);
+        assert!(i.accept_dest("b", Some([1.0, 1.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(i.dest_seq, 1);
+        // Older loses (out-of-order arrival), equal ts with smaller / equal id loses.
+        assert!(!i.accept_dest("z", Some([9.0, 9.0]), 1.0, 0, 0.0, 99));
+        assert!(!i.accept_dest("a", Some([9.0, 9.0]), 1.0, 0, 0.0, 100));
+        assert!(!i.accept_dest("b", Some([9.0, 9.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(i.dest_seq, 1);
+        assert_eq!(i.dest_view().unwrap().setter_id, "b");
+        // Equal ts, larger id wins.
+        assert!(i.accept_dest("c", Some([2.0, 2.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(i.dest_view().unwrap().x, 2.0);
+        // Convergence: both arrival orders of two simultaneous setters end the same.
+        let mut j = Inner::new("Me", 10.0, 0);
+        assert!(j.accept_dest("c", Some([2.0, 2.0]), 1.0, 0, 0.0, 100));
+        assert!(!j.accept_dest("b", Some([1.0, 1.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(j.dest_view().unwrap().setter_id, "c");
+        // A clear is a tombstone with its ts: a stale set cannot resurrect, a newer one can.
+        assert!(i.accept_dest("a", None, 0.0, 0, 0.0, 150));
+        assert!(i.dest_view().is_none() && i.dest.is_some());
+        assert!(!i.accept_dest("z", Some([5.0, 5.0]), 1.0, 0, 0.0, 120));
+        assert!(i.dest_view().is_none());
+        assert!(i.dest_resend().is_none(), "a tombstone is not resent");
+        assert!(i.accept_dest("a", Some([5.0, 5.0]), 1.0, 0, 0.0, 151));
+        assert_eq!(i.dest_view().unwrap().x, 5.0);
+        // Garbage is refused; the curve is clamped.
+        assert!(!i.accept_dest("a", Some([f32::NAN, 0.0]), 1.0, 0, 0.0, 999));
+        assert!(!i.accept_dest("a", Some([0.0, 0.0]), 1.0, 0, f32::INFINITY, 999));
+        assert!(i.accept_dest("a", Some([0.0, 0.0]), 1.0, 0, 7.0, 999));
+        assert_eq!(i.dest_view().unwrap().curve, 1.0);
+    }
+
+    #[test]
+    fn dest_unknown_filter_bits_are_ignored_but_preserved() {
+        let mut i = Inner::new("Me", 10.0, 0);
+        assert!(i.accept_dest("a", Some([1.0, 2.0]), 1.0, DEST_ROAD | DEST_JUMPS | 0x80, 0.5, 1));
+        let d = i.dest_view().unwrap();
+        assert_eq!(d.filters(), DEST_ROAD | DEST_JUMPS, "consumers see known bits only");
+        assert_eq!(d.filter_bits, 0b1010_0001);
+        // …but a relay / resend carries the raw byte on.
+        match i.dest_resend() {
+            Some(Message::Text(t)) => assert!(t.contains(r#""f":161"#), "{t}"),
+            _ => panic!("expected a resend frame"),
+        }
+    }
+
+    #[test]
+    fn destination_api_syncs_resets_on_stop_and_wins_locally() {
+        let mut st = CoopState::new("Me", 10.0, 0);
+        st.set_destination((1.0, 2.0), 30.0, DEST_ROAD, 0.5);
+        assert!(st.destination().is_none(), "no-op outside a session");
+        let (tx, rx) = mpsc::sync_channel::<Message>(16);
+        {
+            let mut i = st.inner.lock().unwrap();
+            mesh::initial_role_state(&mut i, "abcd-efgh-jklm", "Me", 10.0);
+            i.clients.push(("p1".into(), tx));
+        }
+        let seq0 = st.destination_seq();
+        st.set_destination((1.0, 2.0), 30.0, DEST_ROAD | DEST_DIRT, 0.5);
+        let d = st.destination().unwrap();
+        assert_eq!((d.x, d.z, d.hue, d.filters(), d.curve), (1.0, 2.0, 30.0, 5, 0.5));
+        assert_eq!((d.setter_id.as_str(), d.setter_name.as_str()), (st.my_id().as_str(), "Me"));
+        assert_eq!(st.destination_seq(), seq0 + 1);
+        assert_eq!(st.reader().destination(), Some(d.clone()));
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains(r#""t":"Dest""#) && t.contains(r#""f":5"#)));
+        // A remote write from the future is beaten by our next one even with a skewed clock.
+        {
+            let mut i = st.inner.lock().unwrap();
+            let ts = i.dest.as_ref().unwrap().ts + 1_000_000;
+            assert!(i.accept_dest("zzz", Some([7.0, 7.0]), 1.0, 0, 0.0, ts));
+        }
+        st.clear_destination();
+        assert!(st.destination().is_none(), "my clear wins over the skewed remote set");
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains(r#""pos":null"#)));
+        st.set_destination((3.0, 4.0), 30.0, 0, 0.0);
+        assert!(st.destination().is_some());
+        st.stop();
+        assert!(st.destination().is_none());
+        assert!(st.inner.lock().unwrap().dest.is_none(), "tombstone dropped too");
+    }
+
+    // ── loopback: the real Cloudflare host and client paths ────────────
+
+    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(10);
+        while !cond() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    type RawWs = WebSocket<MaybeTlsStream<TcpStream>>;
+
+    /// A bare client: Hello, then read until Welcome; returns the socket and its host-given id.
+    fn raw_join(port: u16, name: &str) -> (RawWs, String) {
+        let (mut ws, _) = tungstenite::connect(format!("ws://127.0.0.1:{port}")).unwrap();
+        set_client_timeout(&mut ws, Some(Duration::from_secs(5)));
+        let hello = Control::Hello { name: name.into(), hue: 1.0 };
+        ws.send(Message::Text(serde_json::to_string(&hello).unwrap())).unwrap();
+        loop {
+            if let Message::Text(t) = ws.read().unwrap() {
+                if let Ok(Control::Welcome { id, .. }) = serde_json::from_str::<Control>(&t) {
+                    return (ws, id);
+                }
+            }
+        }
+    }
+
+    /// Next `Dest` frame (other frames skipped).
+    fn next_dest(ws: &mut RawWs) -> (String, Option<[f32; 2]>, u8, u64) {
+        loop {
+            if let Message::Text(t) = ws.read().expect("a Dest frame") {
+                if let Ok(Control::Dest { id, pos, f, ts, .. }) = serde_json::from_str::<Control>(&t) {
+                    return (id, pos, f, ts);
+                }
+            }
+        }
+    }
+
+    fn send_dest(ws: &mut RawWs, id: &str, pos: Option<[f32; 2]>, f: u8, ts: u64) {
+        let c = Control::Dest { id: id.into(), pos, hue: 5.0, f, c: 0.5, ts };
+        ws.send(Message::Text(serde_json::to_string(&c).unwrap())).unwrap();
+    }
+
+    #[test]
+    fn host_relays_dest_by_connection_id_and_resends_to_late_joiners() {
+        let st = CoopState::new("Host", 10.0, 0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        st.inner.lock().unwrap().role = Role::Host;
+        {
+            let (inner, stop) = (st.inner.clone(), stop.clone());
+            std::thread::spawn(move || host_accept_loop(listener, inner, stop));
+        }
+        st.set_destination((10.0, 20.0), 30.0, DEST_ROAD, 0.0);
+
+        // A joins late: gets the host's destination right after Welcome, with the host's id.
+        let (mut a, a_id) = raw_join(port, "A");
+        let (id, pos, _, _) = next_dest(&mut a);
+        assert_eq!((id.as_str(), pos), (st.my_id().as_str(), Some([10.0, 20.0])));
+        let (mut b, b_id) = raw_join(port, "B");
+        assert_eq!(next_dest(&mut b).1, Some([10.0, 20.0]));
+
+        // B sets one with a forged id and a reserved filter bit: host stores it under B's
+        // connection id and relays that (not the forged one), raw bits intact, to A and itself.
+        let host_ts = st.destination().unwrap().ts;
+        send_dest(&mut b, "forged", Some([1.0, 2.0]), DEST_JUMPS | 0x40, host_ts + 10);
+        let (id, pos, f, ts) = next_dest(&mut a);
+        assert_eq!((id.as_str(), pos, f, ts), (b_id.as_str(), Some([1.0, 2.0]), DEST_JUMPS | 0x40, host_ts + 10));
+        let d = st.destination().unwrap();
+        assert_eq!((d.setter_id.as_str(), d.setter_name.as_str()), (b_id.as_str(), "B"));
+
+        // A stale write (older ts) is neither stored nor relayed; A's clear is, to B.
+        send_dest(&mut a, "a", Some([9.0, 9.0]), 0, host_ts + 5);
+        send_dest(&mut a, "a", None, 0, host_ts + 20);
+        let (id, pos, _, _) = next_dest(&mut b);
+        assert_eq!((id.as_str(), pos), (a_id.as_str(), None), "the stale frame was not relayed");
+        assert!(st.destination().is_none());
+
+        // The host's own clear reaches both; a client joining after a clear gets nothing.
+        st.set_destination((3.0, 3.0), 30.0, 0, 0.0);
+        assert_eq!(next_dest(&mut a).1, Some([3.0, 3.0]));
+        assert_eq!(next_dest(&mut b).1, Some([3.0, 3.0]));
+        st.clear_destination();
+        assert_eq!(next_dest(&mut a).1, None);
+        let (mut c, _) = raw_join(port, "C");
+        set_client_timeout(&mut c, Some(Duration::from_millis(300)));
+        let got_dest = (0..5).any(|_| match c.read() {
+            Ok(Message::Text(t)) => matches!(serde_json::from_str::<Control>(&t), Ok(Control::Dest { .. })),
+            _ => false,
+        });
+        assert!(!got_dest, "a cleared destination is not resent");
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn real_client_loop_adopts_and_sends_dest() {
+        let host = CoopState::new("Host", 10.0, 0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        host.inner.lock().unwrap().role = Role::Host;
+        {
+            let (inner, stop) = (host.inner.clone(), stop.clone());
+            std::thread::spawn(move || host_accept_loop(listener, inner, stop));
+        }
+        host.set_destination((10.0, 20.0), 30.0, DEST_HIGHWAY, 0.75);
+
+        let mut guest = Inner::new("Guest", 50.0, 0);
+        guest.role = Role::Client;
+        let guest = Arc::new(Mutex::new(guest));
+        {
+            let (g, stop) = (guest.clone(), stop.clone());
+            let url = format!("ws://127.0.0.1:{port}");
+            std::thread::spawn(move || client_loop(url, "Guest".into(), 50.0, g, stop));
+        }
+        // The client writes Hello without flushing; any outgoing frame pushes it out (in the app
+        // that is the first telemetry packet), so send a waypoint to stand in for it.
+        let st = CoopState { inner: guest.clone(), stop: stop.clone(), port: 0 };
+        wait_for("client connects", || guest.lock().unwrap().client_out.is_some());
+        st.set_waypoint(Some((0.0, 0.0)), 50.0);
+        // Late-join resend, taken over by the client path with the host's id.
+        wait_for("client adopts the host's destination", || guest.lock().unwrap().dest_view().is_some());
+        let d = guest.lock().unwrap().dest_view().unwrap();
+        assert_eq!((d.x, d.z, d.filters(), d.curve, d.setter_id.as_str()), (10.0, 20.0, DEST_HIGHWAY, 0.75, host.my_id().as_str()));
+
+        // The client's own write goes up to the host (stored under the connection id).
+        let my_id = guest.lock().unwrap().my_id.clone();
+        st.set_destination((7.0, 8.0), 50.0, DEST_TRAIL, 0.1);
+        wait_for("host receives the client's destination", || host.destination().is_some_and(|d| d.x == 7.0));
+        assert_eq!(host.destination().unwrap().setter_id, my_id);
+        // …and a clear from the host comes back down.
+        host.clear_destination();
+        wait_for("client sees the clear", || guest.lock().unwrap().dest_view().is_none());
+        stop.store(true, Ordering::Relaxed);
     }
 }

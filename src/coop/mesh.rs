@@ -116,6 +116,11 @@ pub fn on_message(inner: &Mutex<Inner>, stop: &AtomicBool, key: &str, msg: Messa
                     None => g.roster.push(PlayerInfo { id: id.clone(), name, hue }),
                 }
                 g.remote.entry(id).or_insert_with(RemoteBuf::new);
+                // Late joiner (or a rejoin): hand the newcomer the room's destination. Idempotent
+                // for a peer that has it (same `(ts, id)` is refused), so a repeated Peer is harmless.
+                if let (Some(m), Some((_, tx))) = (g.dest_resend(), g.clients.iter().find(|(k, _)| k == key)) {
+                    let _ = tx.try_send(m);
+                }
             }
             Ok(Control::Waypoint { pos, hue, .. }) => {
                 // Keyed by the channel's bound id, never the message's.
@@ -128,6 +133,11 @@ pub fn on_message(inner: &Mutex<Inner>, stop: &AtomicBool, key: &str, msg: Messa
                         g.waypoints.remove(&id);
                     }
                 }
+            }
+            Ok(Control::Dest { pos, hue, f, c, ts, .. }) => {
+                // Full mesh, no relay; the setter is the channel's bound id, never the message's.
+                let Some(id) = g.mesh_bound.get(key).cloned() else { return };
+                g.accept_dest(&id, pos, hue, f, c, ts);
             }
             _ => {}
         },
@@ -626,6 +636,87 @@ mod tests {
         assert_eq!(g.roster.len(), 1);
         assert!(g.remote.is_empty() && g.waypoints.is_empty() && g.clients.is_empty());
         assert!(g.mesh_bound.is_empty());
+    }
+
+    fn dest_frame(forged: &str, pos: Option<[f32; 2]>, f: u8, ts: u64) -> Message {
+        Message::Text(
+            serde_json::to_string(&Control::Dest { id: forged.into(), pos, hue: 90.0, f, c: 0.3, ts }).unwrap(),
+        )
+    }
+
+    #[test]
+    fn dest_uses_the_bound_id_and_is_last_write_wins() {
+        let inner = mesh_inner("Me");
+        let stop = AtomicBool::new(false);
+        let (a, b) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+        for (k, id) in [("chanA", &a), ("chanB", &b)] {
+            let (tx, _rx) = mpsc::sync_channel(8);
+            assert!(on_open(&inner, &stop, k, tx));
+            on_message(&inner, &stop, k, peer_frame(id, k));
+        }
+        // Before a channel is bound it cannot speak.
+        on_message(&inner, &stop, "chanZ", dest_frame("x", Some([1.0, 1.0]), 1, 50));
+        assert!(lock(&inner).dest.is_none());
+
+        // A forged id in the message is ignored: the channel's bound id is the setter.
+        on_message(&inner, &stop, "chanA", dest_frame("forged", Some([1.0, 2.0]), 0xFF, 100));
+        {
+            let d = lock(&inner).dest_view().unwrap();
+            assert_eq!((d.setter_id.as_str(), d.setter_name.as_str()), (a.as_str(), "chanA"));
+            assert_eq!((d.x, d.z, d.hue, d.filter_bits, d.filters(), d.ts), (1.0, 2.0, 90.0, 0xFF, 0x3F, 100));
+        }
+        // Out-of-order: an older write from B arrives after and loses; a newer one wins.
+        on_message(&inner, &stop, "chanB", dest_frame(&a, Some([5.0, 5.0]), 0, 99));
+        assert_eq!(lock(&inner).dest_view().unwrap().x, 1.0);
+        on_message(&inner, &stop, "chanB", dest_frame(&a, Some([5.0, 5.0]), 0, 101));
+        assert_eq!(lock(&inner).dest_view().unwrap().setter_id, b);
+        // Same ts: the larger bound id wins whichever arrives first.
+        let (lo, hi) = if a < b { ("chanA", "chanB") } else { ("chanB", "chanA") };
+        on_message(&inner, &stop, hi, dest_frame("", Some([6.0, 6.0]), 0, 200));
+        on_message(&inner, &stop, lo, dest_frame("", Some([7.0, 7.0]), 0, 200));
+        assert_eq!(lock(&inner).dest_view().unwrap().x, 6.0);
+        // Anyone clears it for everyone; the setter leaving does not.
+        on_message(&inner, &stop, "chanA", dest_frame("", None, 0, 300));
+        assert!(lock(&inner).dest_view().is_none());
+        on_message(&inner, &stop, "chanA", dest_frame("", Some([8.0, 8.0]), 0, 400));
+        on_gone(&inner, "chanA");
+        assert_eq!(lock(&inner).dest_view().unwrap().x, 8.0, "the room's destination outlives its setter");
+    }
+
+    #[test]
+    fn dest_is_resent_to_a_newly_bound_channel() {
+        let inner = mesh_inner("Me");
+        let stop = AtomicBool::new(false);
+        let me = lock(&inner).my_id.clone();
+        // Nothing set: only our identity is queued.
+        let (tx, rx) = mpsc::sync_channel(8);
+        on_open(&inner, &stop, "chanA", tx);
+        on_message(&inner, &stop, "chanA", peer_frame(&Uuid::new_v4().to_string(), "A"));
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Peer")));
+        assert!(rx.try_recv().is_err(), "no destination, nothing resent");
+
+        lock(&inner).accept_dest(&me, Some([4.0, 5.0]), 70.0, 0x25, 0.5, 42);
+        let (tx, rx) = mpsc::sync_channel(8);
+        on_open(&inner, &stop, "chanB", tx);
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Peer")));
+        assert!(rx.try_recv().is_err(), "resent after the newcomer announced itself, not before");
+        on_message(&inner, &stop, "chanB", peer_frame(&Uuid::new_v4().to_string(), "B"));
+        match rx.try_recv() {
+            Ok(Message::Text(t)) => match serde_json::from_str::<Control>(&t).unwrap() {
+                Control::Dest { id, pos, f, ts, .. } => {
+                    assert_eq!((id, pos, f, ts), (me.clone(), Some([4.0, 5.0]), 0x25, 42));
+                }
+                _ => panic!("expected Dest, got {t}"),
+            },
+            _ => panic!("expected the destination"),
+        }
+        // A cleared destination is not resent.
+        lock(&inner).accept_dest(&me, None, 0.0, 0, 0.0, 43);
+        let (tx, rx) = mpsc::sync_channel(8);
+        on_open(&inner, &stop, "chanC", tx);
+        on_message(&inner, &stop, "chanC", peer_frame(&Uuid::new_v4().to_string(), "C"));
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Peer")));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

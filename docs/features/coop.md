@@ -54,6 +54,50 @@ the top of the Session card (`theme::segmented`, locked while a session is live;
 6. **Waypoints**: left-click the minimap to drop a shared waypoint everyone sees (a
    diamond in your colour, showing each player's distance to it) — handy for "meet here".
    Right-click clears it.
+7. **Shared navigation destination** (wire + state only; UI and routing live in the navigation
+   feature): one per room, set by anyone, adopted by teammates, cleared by anyone — see below.
+
+## Shared navigation destination (`Control::Dest`)
+
+`{"t":"Dest","id":"<setter>","pos":[x,z],"hue":200.0,"f":5,"c":0.25,"ts":1700000000123}`;
+clear = same with `"pos":null` (JSON has no NaN, same reason as `Waypoint`). `f` = the setter's road
+filters, `c` = their curve slider 0..1, `ts` = setter's unix ms.
+
+- **Filter bits** (`DEST_*` in `coop.rs`): Road = bit0 (1), Highway = bit1 (2), Dirt = bit2 (4),
+  Trail = bit3 (8), Cross-country = bit4 (16), Jumps = bit5 (32). Bits 6-7 are reserved: consumers
+  see `SharedDest::filters()` (masked with `DEST_FILTER_MASK` 0x3F), `filter_bits` keeps the raw
+  byte, and host relays / resends forward it untouched so a newer app's extra bits survive an older
+  relay hop.
+- **Why a new tag, not extra fields on `Waypoint`:** an older app hits `_ => {}` for an unknown tag
+  in the host, client and mesh paths and drops it. A Cloudflare host re-serialises messages through
+  its own `Control`, so extra `Waypoint` fields would be stripped by an old host and teammates would
+  silently get a plain waypoint without the setter's filters. A new tag makes an old host drop the
+  whole message: nobody gets a half-truth. (Old peer in a mesh: ignores it; the setter's own waypoint
+  is untouched. Old Cloudflare host: nobody receives it.)
+- **State:** a single slot `Inner.dest` (not a map) plus `dest_seq`, bumped on every accepted change
+  and when the slot is dropped. A clear is stored as a tombstone (`pos: None`) so it keeps its `ts`.
+- **Conflict rule:** accept a message only if `(ts, id)` is greater than the stored `(ts, id)`
+  (`Inner::accept_dest`). Two simultaneous setters converge to the same value on every peer without an
+  authority; an out-of-order stale set cannot resurrect a cleared destination. Non-finite numbers are
+  refused, `c` is clamped to 0..1. *Why local writes use `max(now, stored ts + 1)`:* a skewed clock
+  must not make my own set / clear lose against the value I am looking at.
+- **Trust:** the message `id` is not trusted. Host: the connection id; mesh: the channel's bound id
+  (a channel that has not sent `Peer` yet cannot set one); Cloudflare client: the id the host stamped
+  (as for waypoints). Anyone may set or clear (room members share the secret). The setter leaving does
+  not clear it; `stop()` / starting a session does.
+- **Relay:** the host stores a client's `Dest` and re-broadcasts the *winning* message to the other
+  clients under the connection id; a stale one is dropped, not relayed. The mesh is a full mesh, so
+  there is no relay.
+- **Late joiners:** the host writes the live destination to a new client right after `Welcome`; a mesh
+  peer queues it on a channel right after that channel's `Peer` binds. A tombstone is not resent. In a
+  mesh the resend carries the *resender's* id (the receiver trusts the channel), so a late joiner
+  attributes it to whoever resent it (the highest id wins among resenders); position / filters are
+  identical. Waypoints are still *not* resent to late joiners (pre-existing gap, unchanged).
+- **API:** `CoopState::set_destination((x, z), hue, filters, curve)` / `clear_destination()` (no-op
+  outside a session), `destination() -> Option<SharedDest>` and `destination_seq()` on both
+  `CoopState` and `CoopReader` (the listener / overlay threads poll the seq).
+- *Note (pre-existing):* the Cloudflare client writes its `Hello` without flushing; it goes out with
+  the first outgoing frame (in the app: the first telemetry packet).
 
 ## Trystero transport
 
