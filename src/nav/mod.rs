@@ -11,15 +11,23 @@
 //! * [`cost`] - the assumed speeds and the per-arc cost ([`CostModel`]).
 //! * [`snap`] - [`Snap`]: a world position -> a point on an edge.
 //! * [`search`] - [`Route`] / [`RouteError`] and the A* ([`RouteGraph::route`], [`RouteGraph::plan`]).
+//!
+//! The **runtime** (L2) keeps a live route from the car: [`follow`] (progress along a route,
+//! off-route / arrival rules; pure) and [`state`] (the listener-thread [`Tracker`], the
+//! `nav-route` worker thread, the process-global [`view()`] and the input setters).
 
-// Nothing calls this yet: the navigator (L2), the drawing (L3) and the tab (L5) build on it.
+// The listener thread uses `Tracker` / `CarSample` / `SharedIn` (L2); the input API, `view()`, the
+// config and most graph accessors are consumed by the drawing (L3) and the tab (L5): drop this
+// when those land.
 #![allow(dead_code, unused_imports)]
 
 pub mod cfg;
 pub mod cost;
+pub mod follow;
 pub mod graph;
 pub mod search;
 pub mod snap;
+pub mod state;
 
 #[cfg(test)]
 mod tests;
@@ -29,3 +37,6 @@ pub use cost::CostModel;
 pub use graph::{Edge, RouteGraph};
 pub use search::{Endpoint, Route, RouteError};
 pub use snap::Snap;
+pub use state::{
+    local_destination, set_destination, set_follow_shared, set_prefs, view, CarSample, Dest, DestSource, NavLine, NavStatus, NavView, SharedIn, Tracker,
+};

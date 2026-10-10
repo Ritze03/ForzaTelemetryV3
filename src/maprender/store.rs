@@ -439,8 +439,14 @@ fn global() -> &'static Store {
     GLOBAL.get_or_init(|| Store::new(Real))
 }
 
-/// The process-wide layers (see the module docs). Call it only while a layer is switched on: the
-/// first call starts the ~70 ms (release) load.
+/// The process-wide layers (see the module docs). The first call starts the ~70 ms (release)
+/// load, so call it only while something needs the data: a map layer is switched on, **or a
+/// navigation destination exists** (the navigator's `nav-route` thread calls it from the moment
+/// one is set, with no map on screen, e.g. HUD only: the route needs `MapLayers::route_graph`).
+/// That costs the UI nothing: the load runs on the store's own `map-layers` thread, the call
+/// itself is one short lock + an `Arc` clone (+ a `stat` at most once a second), and the
+/// navigator makes it on its own thread, not in a frame or in the packet loop. With no map and
+/// no destination nobody calls it and nothing is loaded.
 pub fn layers() -> Layers {
     global().layers()
 }

@@ -41,7 +41,15 @@ described below.
   (`winit wayland/event_loop/mod.rs:486`), so `eframe::App::update` simply stops being
   called. Anything key-output-driving that lives in the frame loop dies with it, so these
   two features (and the `G`/`B`/reset hotkeys that toggle them, and the synthetic-input
-  focus gate) must not depend on redraws.
+  focus gate) must not depend on redraws. It also runs the **navigation tracker** per packet
+  (`nav::Tracker::tick`: progress along the route, off-route detection, co-op shared-destination
+  poll; one atomic load while no destination is set) for the same reason: the HUD minimap shows the
+  route while the UI loop is stopped. See [[navigation]].
+- **`nav-route` thread** (`nav/state.rs:ThreadPlanner`, started by the first destination, Condvar-woken,
+  idle between requests) — computes routes (`RouteGraph::plan`, 2-6 ms) off the packet loop and,
+  while a destination exists, polls `maprender::store::layers()` once a second to notice a replaced
+  road graph (editor Save). Result and state reach readers through the process-global `nav::view()`
+  (not the HUD snapshot; same reasoning as the layer store). See [[navigation]].
 - **egui/eframe render thread (main)** — owns `ForzaApp`, including the receiver of
   *forwarded* packets. Everything else — stats, the three read-only listeners, Co-Op's
   incoming side (jitter buffers, roster, minimap), widgets — still happens here,
@@ -313,6 +321,16 @@ might produce.
 | `bc7.rs` / `icons.rs` | I28b: BC7 block decoder (modes 0-7, partial-region decode) and `PoiIcons::load(media)`: the ~45 map icons of `Horizon_Map.zip` (swatchbins + cells of `ForteMapIconSheet`) decoded, scaled to 64 px and packed into one 512 x 384 RGBA atlas with UVs per `PoiKind` / `RaceClass` / mascot region (~22 ms release). Loaded on the `map-layers` thread (`maprender::data::GameData::load`); both maps upload the atlas themselves (`maprender::icontex`). Nothing is shipped: read from the user's install. Docs: `docs/game-data/fh6-cars-names-icons.md`. |
 | `racelines.rs` | I28: `load_all(media, step_m)` reads the 170 `Route<N>.owt` race lines (+ start / finish from the `.nav` RVAN block), trims and decimates them to `RaceLine { route, circuit, pts, y, half, length_m, closed, bbox, … }` (~18 ms release); `race_pins`. Consumed by `maprender::data`. |
 
+### `src/nav/` (navigation; pure CPU, no egui / GL, compiles everywhere) — see [[navigation]]
+
+| File | What it does |
+|---|---|
+| `graph.rs` | `RouteGraph` (built in `maprender::data::GameData::layers`, carried as `MapLayers::route_graph`). |
+| `cfg.rs` | `RouteFilters` / `RoutePrefs` / `NavConfig`, the filter bits shared with co-op `Dest.f`. |
+| `cost.rs`, `snap.rs`, `search.rs` | Assumed speeds + slider cost; snapping a position to an edge; A* and `Route`. |
+| `follow.rs` | `Follower`: progress along a `Route` (windowed scan + global fallback), remaining distance / ETA, the 50 m / 2 s off-route rule, arrival, 150 m line trimming. Pure. |
+| `state.rs` | The runtime: `Tracker` (owned by the listener thread; inputs, debounce, race pause, co-op shared destination, publishing), `Planner` / `ThreadPlanner` (the `nav-route` thread), the process-global `view()` / `set_destination` / `set_prefs` / `set_follow_shared`. |
+
 ### `src/maprender/` (the shared map renderer, phase J, D61; the Dashboard map and the HUD minimap) — see [[minimap]]
 
 | File | What it does |
@@ -344,7 +362,7 @@ might produce.
 | File | What it does |
 | --- | --- |
 | `mod.rs` | Declares the five listener modules plus `worker`, `hud` and `lap_trace`. |
-| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, the global hotkeys (incl. the Hide HUD toggle, `hud_hidden`), the co-op send, and the HUD snapshot publishing; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener` / `PacketQueue`) + `Command` channel + `ListenerHandle` (`set_hud_sink`). |
+| `worker.rs` | The **listener thread**: owns Backfire + DSG, the per-car calibration map, the detected redline, its own pps, the global hotkeys (incl. the Hide HUD toggle, `hud_hidden`), the co-op send, the navigation `Tracker` tick (+ shared-destination poll every 100 ms), and the HUD snapshot publishing; runs off the UDP channel so key output survives a hidden window. Mailboxes (`ListenerView` / `ToListener` / `PacketQueue`) + `Command` channel + `ListenerHandle` (`set_hud_sink`). |
 | `hud.rs` | HUD data on the listener thread: `HudTracker` (packet → `HudSnapshot`), the race/drift `ModeClassifier`, the drift gain `DriftWindow`, `visible_target`. See [[overlay]]. |
 | `notify.rs` | D26 `Notifier`: queue of HUD messages + `watch` (diffs gearbox/backfire/calibration state each loop pass). See [[overlay]]. |
 | `lap_trace.rs` | Best-lap trace keyed by distance → the HUD's live lap delta. |
@@ -378,6 +396,8 @@ might produce.
 
 ## Where to look for X
 
+- **Navigation (route, destination, re-route, shared destination)** → `nav/` ([[navigation]]); the
+  per-packet hook is in `listeners/worker.rs:run` (`nav.tick`), the readers call `nav::view()`.
 - **Add / change a dashboard widget** → `ui/dashboard.rs` (render), plus
   `config.rs:WidgetKind` + `default_widget_layout` (register it) and a mini-settings
   sub-tab in `app.rs` (`DashboardSubTab` + its match arm). See [[dashboard]].
