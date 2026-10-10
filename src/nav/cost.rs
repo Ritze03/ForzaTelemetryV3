@@ -1,20 +1,38 @@
 //! The cost of driving an arc: assumed speed per road type (D84: there is no real speed data),
-//! blended with the "faster roads <-> more curves" slider. One [`CostModel`] per query.
+//! blended with the "faster roads <-> more curves" slider (`s`, 0 = fastest). One [`CostModel`]
+//! per query.
 //!
-//! Per metre of an arc (`s` = the slider, 0 = fastest):
+//! Per metre of an arc:
 //!
 //! ```text
-//! cost_per_m(kind, curv, s) = ((1 - s) / speed[kind] + s / V_REF) * (1 - BETA * s * min(curv / KAPPA, 1))
+//! cost_per_m(kind, curv, s) = ((1 - s) / speed[kind] + s / V_REF)
+//!                           * (kind == Highway ? (1 - s) * HW_FAST + s * HW_AVOID : 1)
+//!                           * (1 - BETA * s * min(curv / KAPPA, 1))
 //! cost(arc)                 = len * cost_per_m
 //! ```
 //!
-//! At `s = 0` that is plain travel time. Two ingredients make the other end "more curves":
-//! (a) the speed term blends towards one uniform speed, so highways stop being attractive;
-//! (b) a bonus of up to `BETA` (50 %) for winding edges. *Why both:* measured on 40 random pairs
-//! 4+ km apart, a curvature bonus alone (no speed blending) changed almost nothing (mean
-//! curvature 2.58 -> 2.78 mrad/m) because highways dominate the time; with both, `s = 1` gives
-//! +30 % winding for +8 % travel time and a highway share of 9 % instead of 30 %. `BETA` is the
-//! one tuning constant (0.8 gave 3.21 mrad/m at 8.74 min); it is a `const`, not a UI setting.
+//! This is the *search objective*, not the ETA: [`CostModel::eta_s`] stays plain length / assumed
+//! speed, so the preference factors never leak into the time shown.
+//!
+//! Three ingredients (D96, the user: "the highway is pretty much always the fastest mean of
+//! travel; for 'Faster roads' it should be (at least almost) always used. 'More curves' isn't
+//! aggressive enough, it still kinda avoids some touge routes"):
+//!
+//! (a) the speed term blends towards one uniform speed, so at `s = 1` highways are no faster;
+//! (b) a highway factor: `HW_FAST` (0.4) at `s = 0` makes a highway metre 2.5x cheaper than its
+//! speed alone says (a preference, not a speed: the ETA is unchanged), `HW_AVOID` (1.5) at
+//! `s = 1` makes it 50 % dearer than any other straight road. *Why:* by assumed speed alone a
+//! highway only beat a local road by 1.8x per metre, so a somewhat shorter local road often won
+//! and the route skipped the highway the user expects it to take; at the curvy end highways
+//! kept a share of the trips the curve bonus did not decide;
+//! (c) a winding bonus of up to `BETA` (90 %) on edges at or above `KAPPA` (10 mrad/m, about the
+//! 80th percentile of the island's road and dirt edges; touge hairpins sit at 15-50). *Why:*
+//! 50 % at 20 mrad/m left the route free to prefer a 2x shorter straight road to a hairpin pass.
+//! The measurements are in `docs/features/navigation.md` (cost section).
+//!
+//! All the constants are `const`s, not UI settings. A highway factor below 1 lowers the A*
+//! heuristic's lower bound (it uses the cheapest *enabled* per-metre cost), so the search stays
+//! exact; the test `astar_cost_equals_dijkstra_on_random_pairs` guards that.
 
 use crate::gamedata::roadtypes::RoadType;
 use crate::maprender::data::N_TYPES;
@@ -23,11 +41,16 @@ use super::cfg::RoutePrefs;
 
 /// Speed (m/s) the slider's "curves" end blends every road type towards = the Road speed.
 pub const V_REF: f32 = 22.0;
-/// Curvature (rad per m) at which the winding bonus is full (about the 95th percentile of the
-/// island's edges).
-pub const KAPPA: f32 = 0.02;
+/// Curvature (rad per m) at which the winding bonus is full (about the 80th percentile of the
+/// island's road and dirt edges).
+pub const KAPPA: f32 = 0.01;
 /// The winding bonus at `s = 1` for an edge at or above [`KAPPA`] (cost x `1 - BETA`).
-pub const BETA: f32 = 0.5;
+pub const BETA: f32 = 0.9;
+/// Cost factor of a highway metre at `s = 0` (the "faster roads" end): the preference for the
+/// highway on top of its speed. Not part of the ETA.
+pub const HW_FAST: f32 = 0.4;
+/// Cost factor of a highway metre at `s = 1` (the "more curves" end).
+pub const HW_AVOID: f32 = 1.5;
 
 /// Assumed speed (m/s) of a kind (`RoadType::index`, 0 = no type). *Why:* no real speed data
 /// exists, so these are plausible driving speeds that rank the types sensibly: highway 144 km/h,
@@ -55,7 +78,7 @@ pub fn speed_ms(kind: u8) -> f32 {
 pub struct CostModel {
     s: f32,
     mask: u16,
-    /// `(1 - s) / speed + s / V_REF` per kind.
+    /// `(1 - s) / speed + s / V_REF` per kind, times the highway factor for highways.
     base: [f32; N_TYPES],
     /// Lower bound of the cost per metre of any allowed arc (the heuristic's factor).
     h_per_m: f32,
@@ -65,18 +88,22 @@ impl CostModel {
     pub fn new(prefs: &RoutePrefs) -> CostModel {
         let s = prefs.curves();
         let mask = prefs.filters.mask();
+        let highway = RoadType::Highway.index() as usize;
         let mut base = [0.0; N_TYPES];
-        let mut vmax = 0.0f32;
+        let mut bmin = f32::INFINITY;
         for (k, b) in base.iter_mut().enumerate() {
             *b = (1.0 - s) / speed_ms(k as u8) + s / V_REF;
+            if k == highway {
+                *b *= (1.0 - s) * HW_FAST + s * HW_AVOID;
+            }
             if mask >> k & 1 != 0 {
-                vmax = vmax.max(speed_ms(k as u8));
+                bmin = bmin.min(*b);
             }
         }
-        // Every arc costs at least its 2D chord times this: 3D length >= 2D chord, speed <= vmax
-        // (of the *enabled* kinds), curvature factor >= 1 - BETA * s (> 0). So the straight-line
-        // distance times it is an admissible and consistent A* heuristic.
-        let h_per_m = if vmax > 0.0 { ((1.0 - s) / vmax + s / V_REF) * (1.0 - BETA * s) } else { 0.0 };
+        // Every arc costs at least its 2D chord times this: 3D length >= 2D chord, per-metre base
+        // >= the cheapest of the *enabled* kinds, curvature factor >= 1 - BETA * s (> 0). So the
+        // straight-line distance times it is an admissible and consistent A* heuristic.
+        let h_per_m = if bmin.is_finite() { bmin * (1.0 - BETA * s) } else { 0.0 };
         CostModel { s, mask, base, h_per_m }
     }
 
@@ -104,7 +131,8 @@ impl CostModel {
         dist * self.h_per_m
     }
 
-    /// Travel time in seconds of `len` metres of `kind` (the ETA; independent of the slider).
+    /// Travel time in seconds of `len` metres of `kind` (the ETA; independent of the slider and
+    /// of every preference factor).
     #[inline]
     pub fn eta_s(kind: u8, len: f32) -> f32 {
         len / speed_ms(kind)
@@ -121,18 +149,20 @@ mod tests {
     }
 
     #[test]
-    fn slider_zero_is_travel_time() {
+    fn slider_zero_is_travel_time_with_a_highway_preference() {
         let m = CostModel::new(&prefs(0.0, RouteFilters::ALL));
-        let hw = RoadType::Highway.index();
-        assert!((m.cost(hw, 0.05, 400.0) - 400.0 / 40.0).abs() < 1e-4, "curvature is ignored at s = 0");
-        assert!((CostModel::eta_s(hw, 400.0) - 10.0).abs() < 1e-6);
+        let (hw, rd) = (RoadType::Highway.index(), RoadType::Road.index());
+        assert!((m.cost(rd, 0.05, 440.0) - 440.0 / 22.0).abs() < 1e-4, "plain travel time, curvature ignored at s = 0");
+        assert!((m.cost(hw, 0.05, 400.0) - HW_FAST * 400.0 / 40.0).abs() < 1e-4, "highway: travel time x HW_FAST");
+        assert!((CostModel::eta_s(hw, 400.0) - 10.0).abs() < 1e-6, "the ETA never carries the preference");
     }
 
     #[test]
-    fn slider_one_blends_speeds_and_rewards_winding() {
+    fn slider_one_blends_speeds_avoids_highways_and_rewards_winding() {
         let m = CostModel::new(&prefs(1.0, RouteFilters::ALL));
-        let (hw, rd) = (RoadType::Highway.index(), RoadType::Road.index());
-        assert!((m.per_m(hw, 0.0) - m.per_m(rd, 0.0)).abs() < 1e-7, "all types cost the same per metre when straight");
+        let (hw, rd, dirt) = (RoadType::Highway.index(), RoadType::Road.index(), RoadType::Offroad.index());
+        assert!((m.per_m(dirt, 0.0) - m.per_m(rd, 0.0)).abs() < 1e-7, "all non-highway types cost the same per metre when straight");
+        assert!((m.per_m(hw, 0.0) - HW_AVOID * m.per_m(rd, 0.0)).abs() < 1e-7, "a straight highway costs HW_AVOID times a straight road");
         assert!((m.per_m(rd, KAPPA) - m.per_m(rd, 0.0) * (1.0 - BETA)).abs() < 1e-7, "full bonus at KAPPA");
         assert!((m.per_m(rd, 5.0 * KAPPA) - m.per_m(rd, KAPPA)).abs() < 1e-7, "bonus saturates");
     }
