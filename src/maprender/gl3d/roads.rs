@@ -39,6 +39,8 @@ pub struct RoadGpu {
     pub vao: glow::VertexArray,
     vbo: glow::Buffer,
     rel: glow::Buffer,
+    /// The route mesh's position along the route per vertex (`RoadMesh::along`), attribute 5.
+    along: Option<glow::Buffer>,
     pub ibo_near: glow::Buffer,
     pub ibo_far: glow::Buffer,
     /// The CPU mesh (tile table, rev); shared, not copied.
@@ -71,6 +73,18 @@ impl RoadGpu {
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &vec![1u8; mesh.vertex_count()], glow::DYNAMIC_DRAW);
             gl.enable_vertex_attrib_array(4);
             gl.vertex_attrib_pointer_i32(4, 1, glow::UNSIGNED_BYTE, 1, 0);
+            // Only the route's mesh has a position along the route; for the others attribute 5 stays
+            // disabled and the shader's cut (`uCut`) is off.
+            let along = if mesh.along.len() == mesh.vertex_count() && !mesh.along.is_empty() {
+                let b = gl.create_buffer()?;
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(b));
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, as_bytes(&mesh.along), glow::STATIC_DRAW);
+                gl.enable_vertex_attrib_array(5);
+                gl.vertex_attrib_pointer_f32(5, 1, glow::FLOAT, false, 0, 0);
+                Some(b)
+            } else {
+                None
+            };
             let ibo_near = gl.create_buffer()?;
             gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo_near));
             gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, as_bytes(&mesh.idx_near), glow::STATIC_DRAW);
@@ -78,7 +92,7 @@ impl RoadGpu {
             gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo_far));
             gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, as_bytes(&mesh.idx_far), glow::STATIC_DRAW);
             gl.bind_vertex_array(None);
-            Ok(RoadGpu { vao, vbo, rel, ibo_near, ibo_far, mesh, rel_focus: None })
+            Ok(RoadGpu { vao, vbo, rel, along, ibo_near, ibo_far, mesh, rel_focus: None })
         }
     }
 
@@ -105,7 +119,7 @@ impl RoadGpu {
         // SAFETY: deleting objects this struct created.
         unsafe {
             gl.delete_vertex_array(self.vao);
-            for b in [self.vbo, self.rel, self.ibo_near, self.ibo_far] {
+            for b in [self.vbo, self.rel, self.ibo_near, self.ibo_far].into_iter().chain(self.along) {
                 gl.delete_buffer(b);
             }
         }

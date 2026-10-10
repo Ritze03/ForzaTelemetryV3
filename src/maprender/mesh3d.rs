@@ -305,6 +305,11 @@ pub struct RoadMesh {
     pub idx_near: Vec<u32>,
     /// Far index set (u32): top surface only, >= 32 m apart.
     pub idx_far: Vec<u32>,
+    /// Only the navigation route's mesh ([`RoadMesh::nav_route`]): per GPU vertex the position
+    /// along the route, `segment + fraction` in the route's own vertex numbering (the
+    /// `NavProgress::u` scale); the road shader drops what is behind the car's. Empty for every
+    /// other mesh.
+    pub along: Vec<f32>,
 }
 
 /// The slot the race road's open stretches use in its own mesh (the `Road` slot; the renderer
@@ -317,6 +322,13 @@ pub const RACE_TUNNEL_DEPTH_M: f32 = 4.0;
 /// tunnel segments, consecutive runs sharing their boundary vertex (a mitred join); a closed
 /// circuit ends on its first point, so its ends join too.
 pub fn race_road_layer(r: &RaceRoad, terrain: &Terrain) -> RoadLayer {
+    race_road_layer_from(r, terrain, &mut Vec::new())
+}
+
+/// [`race_road_layer`] that also says where each chain starts: `(slot, index of its first point
+/// in r.pts)` per chain, in the order the chains were pushed into their slot (what the
+/// navigation route's `along` attribute needs to map a sample back to the route).
+fn race_road_layer_from(r: &RaceRoad, terrain: &Terrain, starts: &mut Vec<(usize, usize)>) -> RoadLayer {
     let mut l = RoadLayer::default();
     let (mut pts, mut ys) = (r.pts.clone(), r.y.clone());
     ys.resize(pts.len(), 0.0);
@@ -340,41 +352,56 @@ pub fn race_road_layer(r: &RaceRoad, terrain: &Terrain) -> RoadLayer {
         if s == n - 1 || tunnel(s) != tunnel(start) {
             let slot = if tunnel(start) { SLOT_TUNNEL } else { SLOT_RACE } as usize;
             l.by_type[slot].push(Chain::new(pts[start..=s].to_vec(), ys[start..=s].to_vec()));
+            starts.push((slot, start));
             start = s;
         }
     }
     l
 }
 
+/// Where the chains of a [`nav_route_layer`] layer start in the route: the index of the
+/// first route point of each chain (per slot, in chain order) and the segment of each jump.
+#[derive(Default)]
+struct NavOrigins {
+    chain: Vec<Vec<usize>>,
+    jump: Vec<usize>,
+}
+
 /// The navigation route as a road layer ([`RoadMesh::nav_route`]): one race-road layer per run of
-/// non-jump segments, merged, and the jump segments as `RoadLayer::jumps`.
-pub fn nav_route_layer(pts: &[[f32; 2]], y: &[f32], seg_kind: &[u8], terrain: &Terrain) -> RoadLayer {
+/// non-jump segments, merged, and the jump segments as `RoadLayer::jumps`; and where its chains start.
+fn nav_route_layer(pts: &[[f32; 2]], y: &[f32], seg_kind: &[u8], terrain: &Terrain) -> (RoadLayer, NavOrigins) {
     let mut layer = RoadLayer::default();
+    let mut org = NavOrigins { chain: vec![Vec::new(); N_TYPES], jump: Vec::new() };
     let n = pts.len();
     if n < 2 {
-        return layer;
+        return (layer, org);
     }
     let yat = |i: usize| y.get(i).copied().unwrap_or(0.0);
-    let run = |layer: &mut RoadLayer, a: usize, b: usize| {
+    let run = |layer: &mut RoadLayer, org: &mut NavOrigins, a: usize, b: usize| {
         let r = RaceRoad { pts: pts[a..=b].to_vec(), y: (a..=b).map(yat).collect(), closed: false };
-        for (slot, chains) in race_road_layer(&r, terrain).by_type.into_iter().enumerate() {
+        let mut starts = Vec::new();
+        for (slot, chains) in race_road_layer_from(&r, terrain, &mut starts).by_type.into_iter().enumerate() {
             layer.by_type[slot].extend(chains);
+        }
+        for (slot, first) in starts {
+            org.chain[slot].push(a + first);
         }
     };
     let mut start = 0usize;
     for i in 0..n - 1 {
         if seg_kind.get(i) == Some(&SLOT_JUMP) {
             if i > start {
-                run(&mut layer, start, i);
+                run(&mut layer, &mut org, start, i);
             }
             layer.jumps.push([pts[i][0], pts[i][1], yat(i), pts[i + 1][0], pts[i + 1][1], yat(i + 1)]);
+            org.jump.push(i);
             start = i + 1;
         }
     }
     if start + 1 < n {
-        run(&mut layer, start, n - 1);
+        run(&mut layer, &mut org, start, n - 1);
     }
-    layer
+    (layer, org)
 }
 
 /// A dense chain point before it is split into pieces.
@@ -653,8 +680,15 @@ impl RoadMesh {
     /// stretch (`seg_kind` [`SLOT_JUMP`]) as a jump line in the jump slot: a taut string over the
     /// ground between take-off and landing, no deck laid over the gap. `y` 0 = unknown (the terrain).
     /// A route is small (a 20 km one is ~2 500 samples): see `gl3d::Route3d` for when it is built.
+    ///
+    /// **The mesh is the whole route and is built once per route** (live progress, D97): every
+    /// vertex carries its position along the route in [`RoadMesh::along`] and the shader drops
+    /// what lies behind the car's, so driving, and a rewind, change one uniform and rebuild nothing.
     pub fn nav_route(pts: &[[f32; 2]], y: &[f32], seg_kind: &[u8], terrain: &Terrain) -> RoadMesh {
-        RoadMesh::build(&nav_route_layer(pts, y, seg_kind, terrain), terrain, 0)
+        let (layer, org) = nav_route_layer(pts, y, seg_kind, terrain);
+        let mut m = RoadMesh::build(&layer, terrain, 0);
+        m.along = nav_along(&m, pts, &org);
+        m
     }
 
     /// Fill `idx_near` / `idx_far` and the tiles' ranges from the pieces.
@@ -773,6 +807,31 @@ fn jump_chain(j: &[f32; 6], terrain: &Terrain) -> Vec<Dense> {
         d.y = y;
     }
     dense
+}
+
+/// [`RoadMesh::along`] of a route mesh: for every sample the route segment it lies on (the
+/// chain's first route point + the sample's segment in the chain) and its projection on that
+/// segment (clamped), `segment + fraction`; the same for the sample's four GPU vertices. A round
+/// cap's rim samples sit on their end sample's point, so they take its value.
+fn nav_along(m: &RoadMesh, pts: &[[f32; 2]], org: &NavOrigins) -> Vec<f32> {
+    let nseg = pts.len().saturating_sub(1);
+    let mut out = Vec::with_capacity(m.samples.len() * VERTS_PER_SAMPLE);
+    for (sm, src) in m.samples.iter().zip(&m.src) {
+        let first = if sm.slot == SLOT_JUMP { org.jump.get(src.chain as usize) } else { org.chain.get(sm.slot as usize).and_then(|c| c.get(src.chain as usize)) };
+        let u = match first {
+            Some(&f) if nseg > 0 => {
+                let seg = (f + src.seg as usize).min(nseg - 1);
+                let (a, b) = (pts[seg], pts[seg + 1]);
+                let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                let l2 = dx * dx + dz * dz;
+                let t = if l2 > 0.0 { (((sm.x - a[0]) * dx + (sm.z - a[1]) * dz) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                seg as f32 + t
+            }
+            _ => 0.0,
+        };
+        out.extend([u; VERTS_PER_SAMPLE]);
+    }
+    out
 }
 
 /// The four GPU vertices of a sample. A cap's rim sample (`cap`) marks its right vertices (unused
@@ -1563,6 +1622,27 @@ mod tests {
         assert!(j.iter().all(|s| s.x >= -200.5 && s.x <= 100.5));
         // Round caps: the two ends of the route and the two road ends at the gap; none in the middle.
         assert_eq!(m.pieces.iter().map(|p| p.caps.count_ones()).sum::<u32>(), 4);
+        // The position along the route (D97, `along`: segment + fraction in the route's own vertex
+        // numbering) of every GPU vertex, across the tunnel split, the gap and the tile borders:
+        // the road runs, the jump and the landing run each agree with the geometry.
+        assert_eq!(m.along.len(), m.vertex_count());
+        for (i, s) in m.samples.iter().enumerate() {
+            let want = if s.slot == SLOT_JUMP {
+                60.0 + (s.x + 200.0) / 300.0
+            } else if s.x < 0.0 {
+                (s.x + 800.0) / 10.0
+            } else {
+                61.0 + (s.x - 100.0) / 10.0
+            };
+            for v in 0..VERTS_PER_SAMPLE {
+                assert!((m.along[i * VERTS_PER_SAMPLE + v] - want).abs() < 2e-3, "sample {i} at x {} slot {}: {} vs {want}", s.x, s.slot, m.along[i * VERTS_PER_SAMPLE + v]);
+            }
+        }
+        // (the jump's samples fill 60..61, the road runs the rest)
+        let (lo, hi) = m.along.iter().fold((f32::MAX, f32::MIN), |(l, h), &a| (l.min(a), h.max(a)));
+        assert!(lo.abs() < 1e-3 && (hi - 71.0).abs() < 1e-3, "{lo} {hi}");
+        // other meshes carry none
+        assert!(RoadMesh::race_roads(&[RaceRoad { pts: pts.clone(), y: y.clone(), closed: false }], &t).along.is_empty());
         // Unknown heights (0) fall back to the terrain: no sample is below the ground by more than the lift.
         let flat = RoadMesh::nav_route(&[[0.0, -600.0], [100.0, -600.0], [200.0, -600.0]], &[0.0; 3], &[2, 2], &t);
         assert!(flat.samples.iter().all(|s| (s.y_node - t.height(s.x, s.z)).abs() < 0.01), "node height 0 = unknown = terrain");

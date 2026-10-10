@@ -26,7 +26,7 @@ use crate::gamedata::icons::{PoiIcons, RaceClass};
 use crate::gamedata::poi::{week_index_now, Poi, PoiKind};
 use crate::gamedata::roadtypes::RoadType;
 use crate::minimap::MapCalibration;
-use crate::nav::NavLine;
+use crate::nav::{NavLine, NavProgress};
 
 // ── base image ───────────────────────────────────────────────────────────────────────────────
 
@@ -273,9 +273,19 @@ pub struct LayerCtx<'a> {
     pub race_sel: &'a RaceSel,
     /// The game week for the current treasure chest (`poi::week_index_at`); `None` = now.
     pub week: Option<i64>,
-    /// The navigation route to draw (phase L; `NavView::line`, already filtered by [`route_line`]);
-    /// `None` = none. Drawn by [`Parts::nav`] with `cfg.nav_route`'s look.
-    pub nav: Option<&'a NavLine>,
+    /// The navigation route to draw (phase L; `NavView::line` + `progress`, already filtered by
+    /// [`route_line`]); `None` = none. Drawn by [`Parts::nav`] with `cfg.nav_route`'s look, from
+    /// the car's position on it on.
+    pub nav: Option<NavRoute<'a>>,
+}
+
+/// What a map draws of the navigation route: the whole line and where the car is on it. The 2D
+/// map cuts the line there per frame ([`NavLine::remaining`]); the GL scene's mesh is the whole
+/// line and its shader cuts at the same point ([`NavProgress::u`]).
+#[derive(Clone, Copy)]
+pub struct NavRoute<'a> {
+    pub line: &'a std::sync::Arc<NavLine>,
+    pub at: NavProgress,
 }
 
 /// What a [`draw_layers`] call drew (tests, perf numbers).
@@ -1232,10 +1242,17 @@ fn draw_road_polylines(cx: &LayerCtx, cfg: &MapLayerConfig, factor: f32, taper: 
 /// over the gap. Not over the 3D scene (`Parts::OVER_3D`): that has the route in GL.
 fn draw_nav_route(cx: &LayerCtx, cfg: &MapLayerConfig, st: &mut LayerStats) {
     let nc = &cfg.nav_route;
-    let Some(line) = cx.nav.filter(|l| nc.on && l.pts.len() >= 2) else { return };
+    let Some(route) = cx.nav.filter(|r| nc.on && r.line.pts.len() >= 2) else { return };
     let (taper, factor) = (cfg.tilt.taper, nc.width_factor());
-    let pts = &line.pts;
-    let jump = |i: usize| line.seg_kind.get(i) == Some(&style::NAV_SEG_JUMP);
+    // Only what is still to drive: from the car's exact position on the line on (live, per frame;
+    // a rewind brings the road behind the car back). A line the car has driven to its end has
+    // nothing left to draw.
+    let (rest, kind0) = route.line.remaining(route.at);
+    let (line, pts) = (&*route.line, &rest);
+    if pts.len() < 2 {
+        return;
+    }
+    let jump = |i: usize| line.seg_kind.get(kind0 + i) == Some(&style::NAV_SEG_JUMP);
     // Split at the jumps: road runs (>= 2 points) and the jump segments between them.
     let mut runs: Vec<&[[f32; 2]]> = Vec::new();
     let mut jumps: Vec<[[f32; 2]; 2]> = Vec::new();
@@ -1296,12 +1313,12 @@ fn draw_nav_route(cx: &LayerCtx, cfg: &MapLayerConfig, st: &mut LayerStats) {
 /// (`cfg.on`), or hidden because the car is in a race (`PausedRace`; the runtime sends no line
 /// then, this is the belt to its braces) or has arrived. *Why a function and not the call sites'
 /// own filter:* three call sites (HUD, Dashboard, Viewer) and the GL scene must agree.
-pub fn route_line<'a>(view: &'a crate::nav::NavView, cfg: &crate::maprender::cfg::NavRouteCfg) -> Option<&'a std::sync::Arc<crate::nav::NavLine>> {
+pub fn route_line<'a>(view: &'a crate::nav::NavView, cfg: &crate::maprender::cfg::NavRouteCfg) -> Option<NavRoute<'a>> {
     use crate::nav::NavStatus;
     if !cfg.on || matches!(view.status, NavStatus::PausedRace | NavStatus::Arrived) {
         return None;
     }
-    view.line.as_ref()
+    view.line.as_ref().map(|line| NavRoute { line, at: view.progress })
 }
 
 /// The destination a map pins ([`crate::hud::map_shared::draw_destination`]): any destination
@@ -2634,9 +2651,14 @@ mod tests {
     // ── the navigation route (phase L) ───────────────────────────────────────────────────────
 
     /// A straight route north from the origin to z = 1000 (every 50 m), `kinds` per segment.
-    fn route(kinds: &[u8]) -> NavLine {
+    fn route(kinds: &[u8]) -> Arc<NavLine> {
         let pts: Vec<[f32; 2]> = (0..=kinds.len()).map(|i| [0.0, 50.0 * i as f32]).collect();
-        NavLine { rev: 1, y: vec![0.0; pts.len()], pts, seg_kind: kinds.to_vec() }
+        Arc::new(NavLine { rev: 1, y: vec![0.0; pts.len()], pts, seg_kind: kinds.to_vec() })
+    }
+
+    /// The whole line, the car at its start.
+    fn at0(line: &Arc<NavLine>) -> NavRoute<'_> {
+        NavRoute { line, at: NavProgress::default() }
     }
 
     /// (width, colour) of the open polylines drawn, in draw order.
@@ -2651,11 +2673,11 @@ mod tests {
         let layers = layers_with(vec![[0.0, 0.0], [0.0, 1000.0]], RoadType::Road);
         let line = route(&[2; 20]);
         let mut cfg = only_roads();
-        let run = |cfg: &MapLayerConfig, layers: Option<&MapLayers>, parts: Parts, nav: Option<&NavLine>| {
+        let run = |cfg: &MapLayerConfig, layers: Option<&MapLayers>, parts: Parts, nav: Option<&Arc<NavLine>>| {
             let mut st = LayerStats::default();
             let shapes = paint(rect, |p| {
                 let mut c = ctx(p, &cam);
-                c.nav = nav;
+                c.nav = nav.map(at0);
                 st = draw_layers_or_route(&c, layers, cfg, parts);
             });
             (st, shapes)
@@ -2691,7 +2713,7 @@ mod tests {
         // Alpha of the HUD's fade applies to the whole route.
         let faded = paint(rect, |p| {
             let mut c = ctx(p, &cam);
-            c.nav = Some(&line);
+            c.nav = Some(at0(&line));
             c.a = 0.5;
             draw_layers_or_route(&c, None, &cfg, Parts::ALL);
         });
@@ -2703,11 +2725,11 @@ mod tests {
     #[test]
     fn the_route_is_hidden_in_a_race_and_after_arriving_and_the_pin_follows_the_destination() {
         use crate::nav::{Dest, DestSource, NavStatus, NavView, RoutePrefs};
-        let line = Arc::new(route(&[2; 4]));
+        let line = route(&[2; 4]);
         let dest = Dest { x: 1.0, z: 2.0, source: DestSource::Local, prefs: RoutePrefs::default() };
         let on = crate::maprender::cfg::NavRouteCfg::default();
         let view = |status: NavStatus, with_line: bool| NavView { status, dest: Some(dest.clone()), line: with_line.then(|| line.clone()), ..Default::default() };
-        let line_of = |v: &NavView, c: &crate::maprender::cfg::NavRouteCfg| route_line(v, c).map(|l| l.rev);
+        let line_of = |v: &NavView, c: &crate::maprender::cfg::NavRouteCfg| route_line(v, c).map(|r| r.line.rev);
         let dest_of = |v: &NavView, c: &crate::maprender::cfg::NavRouteCfg| route_dest(v, c).map(|d| (d.x, d.z));
         // Ok / Routing (it may still carry the previous line): drawn.
         for st in [NavStatus::Ok, NavStatus::Routing] {
@@ -2728,6 +2750,132 @@ mod tests {
         assert_eq!((line_of(&view(NavStatus::Ok, true), &off), dest_of(&view(NavStatus::Ok, true), &off)), (None, None));
     }
 
+    /// Live progress (D97): the 2D route starts at the car's exact position on the line, between
+    /// two vertices too, not at a vertex or a 150 m chunk; the pixels move with the progress, and
+    /// after a rewind (a smaller progress) the longer remainder is drawn.
+    #[test]
+    fn the_nav_route_starts_at_the_exact_progress_point_and_a_rewind_draws_more() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 500.0), 0.0, 700.0);
+        let line = route(&[2; 20]); // z 0..1000, a vertex every 50 m
+        let cfg = only_roads();
+        let fill = cfg.nav_route.color.color(1.0);
+        // The start (south end, the biggest screen y) and the end (north end) of the route's fill.
+        let ends = |at: NavProgress| {
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.nav = Some(NavRoute { line: &line, at });
+                draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+            });
+            let pts: Vec<Pos2> = shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { (!p.closed && solid(&p.stroke.color) == fill).then(|| p.points.clone()) } else { None }).flatten().collect();
+            let south = pts.iter().map(|q| q.y).fold(f32::MIN, f32::max);
+            let north = pts.iter().map(|q| q.y).fold(f32::MAX, f32::min);
+            (south, north)
+        };
+        let prog = |seg: u32, t: f32| NavProgress { seg, t, along_m: 50.0 * (seg as f32 + t) };
+        let y_of = |z: f32| cam.project(0.0, z).unwrap().y;
+        // the whole route, then four points inside one 50 m segment: the start follows the
+        // exact fraction (a vertex-level cut would give the same pixels for all of them)
+        let (s0, n0) = ends(prog(0, 0.0));
+        assert!((s0 - y_of(0.0)).abs() < 0.6 && (n0 - y_of(1000.0)).abs() < 0.6, "{s0} {n0}");
+        let ts = [0.0f32, 0.25, 0.5, 0.75];
+        let starts: Vec<f32> = ts.iter().map(|&t| ends(prog(7, t)).0).collect();
+        for (t, y) in ts.iter().zip(&starts) {
+            assert!((y - y_of(350.0 + 50.0 * t)).abs() < 0.6, "t {t}: starts at {y}, expected {}", y_of(350.0 + 50.0 * t));
+        }
+        assert!(starts.windows(2).all(|w| w[1] < w[0] - 3.0), "it moves with every fraction: {starts:?}");
+        assert!((ends(prog(7, 0.5)).1 - n0).abs() < 0.6, "the far end stays");
+        // a rewind: the progress goes back 300 m and the road behind the car is drawn again
+        let (back, _) = ends(prog(1, 0.5));
+        assert!((back - y_of(75.0)).abs() < 0.6 && back > starts[0] + 100.0, "{back} vs {}", starts[0]);
+        // driven to the end: nothing left
+        let done = paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.nav = Some(NavRoute { line: &line, at: prog(19, 1.0) });
+            draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+        });
+        assert!(done.is_empty(), "{} shapes", done.len());
+    }
+
+    /// The jump stretch the car is on is drawn from the car on: the dashed line shortens too.
+    #[test]
+    fn a_partly_driven_jump_stretch_is_cut_at_the_car() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 500.0), 0.0, 700.0);
+        let mut kinds = vec![2u8; 20];
+        kinds[9] = style::NAV_SEG_JUMP;
+        let line = route(&kinds);
+        let cfg = only_roads();
+        let fill = cfg.nav_route.color.color(1.0);
+        let dashes = |at: NavProgress| {
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.nav = Some(NavRoute { line: &line, at });
+                draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+            });
+            let lowest = shapes.iter().filter_map(|s| if let Shape::LineSegment { points, stroke } = &s.shape { (stroke.color == fill).then(|| points[0].y.max(points[1].y)) } else { None }).fold(f32::MIN, f32::max);
+            let runs = shapes.iter().filter(|s| matches!(&s.shape, Shape::Path(p) if !p.closed && solid(&p.stroke.color) == fill)).count();
+            (lowest, runs)
+        };
+        let (_, runs0) = dashes(NavProgress::default());
+        assert_eq!(runs0, 2);
+        // halfway over the jump (segment 9, z 450..500): the south road run is gone, the dashes
+        // start at z 475
+        let (lowest, runs) = dashes(NavProgress { seg: 9, t: 0.5, along_m: 475.0 });
+        assert_eq!(runs, 1, "only the road after the jump is left");
+        assert!(lowest <= cam.project(0.0, 475.0).unwrap().y + 1.0, "the dashes start at the car: {lowest}");
+    }
+
+    /// `NavLine::remaining` (the cut itself): the exact point, the vertices after it, the kind index.
+    #[test]
+    fn the_remaining_line_starts_at_the_interpolated_point() {
+        let line = route(&[2; 4]); // z 0, 50, 100, 150, 200
+        let at = |seg: u32, t: f32| NavProgress { seg, t, along_m: 0.0 };
+        assert_eq!(line.remaining(at(0, 0.0)), (line.pts.clone(), 0));
+        let (p, k) = line.remaining(at(1, 0.5));
+        assert_eq!((p.as_slice(), k), (&[[0.0, 75.0], [0.0, 100.0], [0.0, 150.0], [0.0, 200.0]][..], 1));
+        let (p, k) = line.remaining(at(1, 1.0));
+        assert_eq!((p.len(), k), (3, 2), "at a vertex: no zero-length first segment");
+        assert_eq!(line.remaining(at(3, 1.0)).0.len(), 1, "driven to the end: nothing left");
+        assert_eq!(line.remaining(at(99, 0.3)).0.len(), 1, "past the end is the end");
+        assert_eq!(route(&[]).remaining(at(0, 0.0)).0.len(), 1);
+    }
+
+    /// What the live cut costs per frame: `cargo test --release bench_nav_cut -- --ignored --nocapture`.
+    /// A 21 km route (1 050 points, as the island-crossing one): the cut itself, and the whole
+    /// route drawn (shape building) from the start and from the middle.
+    #[test]
+    #[ignore]
+    fn bench_nav_cut() {
+        let pts: Vec<[f32; 2]> = (0..=1050).map(|i| [20.0 * i as f32, 300.0 * (i as f32 * 0.05).sin()]).collect();
+        let line = Arc::new(NavLine { rev: 1, y: vec![0.0; pts.len()], seg_kind: vec![2; pts.len() - 1], pts });
+        let at = NavProgress { seg: 500, t: 0.37, along_m: 0.0 };
+        let n = 200_000;
+        let t = std::time::Instant::now();
+        let mut sink = 0usize;
+        for _ in 0..n {
+            sink += std::hint::black_box(&line).remaining(at).0.len();
+        }
+        println!("NavLine::remaining (1 050 pts): {:.2} us ({sink})", t.elapsed().as_secs_f64() * 1e6 / n as f64);
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0));
+        let cam = flat_cam(rect, (10_000.0, 0.0), 0.0, 25_000.0);
+        let cfg = only_roads();
+        for (name, at) in [("whole route", NavProgress::default()), ("from the middle", at)] {
+            let mut ts = vec![];
+            for _ in 0..40 {
+                let t = std::time::Instant::now();
+                paint(rect, |p| {
+                    let mut c = ctx(p, &cam);
+                    c.nav = Some(NavRoute { line: &line, at });
+                    draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+                });
+                ts.push(t.elapsed().as_secs_f64() * 1e3);
+            }
+            ts.sort_by(f64::total_cmp);
+            println!("2D route frame ({name}, whole island in view, incl. an egui pass): median {:.3} ms", ts[20]);
+        }
+    }
+
     /// D82 / D84: "race road only" hides the road layer in a race, not the navigation route.
     #[test]
     fn the_nav_route_is_drawn_with_race_road_only() {
@@ -2743,7 +2891,7 @@ mod tests {
         let shapes = paint(rect, |p| {
             let mut c = ctx(p, &cam);
             c.race_sel = &sel;
-            c.nav = Some(&line);
+            c.nav = Some(at0(&line));
             st = draw_layers_parts(&c, &layers, &cfg, Parts::ALL);
         });
         assert_eq!((st.chains, st.race_lines, st.nav_lines), (0, 1, 1), "no road pieces; the race road and the route");
@@ -2760,14 +2908,14 @@ mod tests {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(208.0, 136.0));
         let cam = Camera::from_cfg(&MapLayerConfig::hud().tilt, (0.0, 0.0), 0.0, 300.0, rect);
         let pts: Vec<[f32; 2]> = (0..70).map(|i| [0.0, -60.0 + 50.0 * i as f32]).collect();
-        let line = NavLine { rev: 1, y: vec![0.0; pts.len()], seg_kind: vec![2; pts.len() - 1], pts };
+        let line = Arc::new(NavLine { rev: 1, y: vec![0.0; pts.len()], seg_kind: vec![2; pts.len() - 1], pts });
         let widths = |taper: bool| {
             let mut cfg = only_roads();
             cfg.roads.on = false;
             cfg.tilt.taper = taper;
             let shapes = paint(rect, |p| {
                 let mut c = ctx(p, &cam);
-                c.nav = Some(&line);
+                c.nav = Some(at0(&line));
                 draw_layers_or_route(&c, None, &cfg, Parts::ALL);
             });
             let fill = cfg.nav_route.color.color(1.0);
@@ -2794,7 +2942,7 @@ mod tests {
         let cfg = only_roads();
         let shapes = paint(rect, |p| {
             let mut c = ctx(p, &cam);
-            c.nav = Some(&line);
+            c.nav = Some(at0(&line));
             draw_layers_or_route(&c, None, &cfg, Parts::ALL);
         });
         let fill = cfg.nav_route.color.color(1.0);
@@ -2815,7 +2963,7 @@ mod tests {
         let far = flat_cam(rect, (0.0, 500.0), 0.0, 7000.0);
         let shapes = paint(rect, |p| {
             let mut c = ctx(p, &far);
-            c.nav = Some(&line);
+            c.nav = Some(at0(&line));
             draw_layers_or_route(&c, None, &cfg, Parts::ALL);
         });
         let solid_jump = shapes.iter().filter(|s| matches!(&s.shape, Shape::LineSegment { stroke, .. } if stroke.color == fill)).count();
@@ -2824,16 +2972,16 @@ mod tests {
         let only = route(&[style::NAV_SEG_JUMP]);
         let shapes = paint(rect, |p| {
             let mut c = ctx(p, &cam);
-            c.nav = Some(&only);
+            c.nav = Some(at0(&only));
             draw_layers_or_route(&c, None, &cfg, Parts::ALL);
         });
         assert!(shapes.iter().all(|s| !matches!(s.shape, Shape::Path(_))));
         assert!(!shapes.is_empty());
         // Degenerate lines draw nothing.
-        for l in [route(&[]), NavLine { rev: 2, pts: vec![[0.0, 0.0]], y: vec![0.0], seg_kind: vec![] }] {
+        for l in [route(&[]), Arc::new(NavLine { rev: 2, pts: vec![[0.0, 0.0]], y: vec![0.0], seg_kind: vec![] })] {
             assert!(paint(rect, |p| {
                 let mut c = ctx(p, &cam);
-                c.nav = Some(&l);
+                c.nav = Some(at0(&l));
                 draw_layers_or_route(&c, None, &cfg, Parts::ALL);
             })
             .is_empty());

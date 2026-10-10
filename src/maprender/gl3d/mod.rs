@@ -86,7 +86,7 @@ use super::terrain::Terrain;
 use super::view::Camera;
 use super::MapTex;
 use crate::minimap::MapCalibration;
-use crate::nav::NavLine;
+use crate::nav::{NavLine, NavProgress};
 use scene::{Frame, Gl3d, NavFrame, RaceFrame};
 
 pub use marker::{Marker3d, Trail3d, TrailSeg, GROUND_BELOW_M};
@@ -223,6 +223,9 @@ pub struct Route3d {
     pub mesh: Arc<RoadMesh>,
     /// Colour and width factor.
     pub cfg: NavRouteCfg,
+    /// Where the car is on the line (`NavView::progress`): the shader draws the route from here
+    /// on. Not part of the mesh's cache key: it changes with every packet.
+    pub at: NavProgress,
 }
 
 /// The one route mesh the process holds: the HUD and the Dashboard map / Viewer draw the same
@@ -248,14 +251,15 @@ impl Route3d {
     /// why that is fine:** a route mesh is small. Measured on the real install
     /// (`tests::real_install_nav_route_mesh_cost`): the island-crossing route (node 1 to the
     /// farthest node, 21.3 km, 1 025 points) is 3 180 samples / 26 k triangles / 347 KB and builds in
-    /// **0.51 ms release (6.2 ms debug)**, an 11 km one 0.28 ms (3.4 ms debug), a lone jump 0.04 ms;
-    /// the cached lookup is ~60 ns. It happens once per `NavLine::rev`, i.e. a new route or the
-    /// next 150 m chunk of the followed one (every few seconds of driving), never per frame. The
+    /// **0.57 ms release (23 km route; ~7 ms debug)**, a 14.7 km one 0.54 ms, a lone jump 0.04 ms;
+    /// the cached lookup is ~0.1 us. It happens once per `NavLine::rev`, i.e. a new route (the
+    /// car's progress along it, `at`, is a uniform of the draw, not part of the key), never per
+    /// frame and not while driving. The
     /// off-thread `store::race_mesh` pattern (thread, generation counter, the old line shown for a
     /// frame after a change) pays for itself at 270 ms (all 170 race lines), not at half a
     /// millisecond. The bytes then go to the GPU in `Gl3dState::step`, which keeps to one heavy
-    /// upload per callback (a route chunk is 0.3 MB).
-    pub fn new(line: &Arc<NavLine>, terrain: &Terrain, cfg: NavRouteCfg) -> Option<Route3d> {
+    /// upload per callback (a route is 0.4 MB).
+    pub fn new(line: &Arc<NavLine>, at: NavProgress, terrain: &Terrain, cfg: NavRouteCfg) -> Option<Route3d> {
         if line.pts.len() < 2 {
             return None;
         }
@@ -272,7 +276,7 @@ impl Route3d {
                 mesh
             }
         };
-        Some(Route3d { line: line.clone(), mesh, cfg })
+        Some(Route3d { line: line.clone(), mesh, cfg, at })
     }
 }
 
@@ -332,12 +336,11 @@ pub fn add_scene(painter: &Painter, handle: &Gl3dHandle, scene: Scene3d) {
     painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
 }
 
-/// Give the map texture a mip chain for the 2D (flat / tilted) map (D98): queue this before the
+/// Make the map texture anisotropic for the 2D (flat / tilted) map (D98): queue this before the
 /// map image is drawn, as a paint callback of a 1-point rect at the painter's clip rect corner.
-/// Does nothing for a texture that has mipmaps (the overlay's) and builds them once for one that
-/// has not (the Dashboard's, `app.rs` uploads it with `mipmap_mode: None`); see
-/// [`scene::ensure_mips`].
-pub fn add_map_mips(painter: &Painter, id: egui::TextureId) {
+/// The texture must have been uploaded with mipmaps (both real uploads are); see
+/// [`scene::ensure_aniso`].
+pub fn add_map_aniso(painter: &Painter, id: egui::TextureId) {
     let clip = painter.clip_rect();
     if !clip.is_positive() {
         return;
@@ -346,7 +349,7 @@ pub fn add_map_mips(painter: &Painter, id: egui::TextureId) {
     let cb = egui_glow::CallbackFn::new(move |_, painter| {
         if let Some(t) = painter.texture(id) {
             // SAFETY: inside egui_glow's callback: the context is current, unit 0 is active.
-            unsafe { scene::ensure_mips(painter.gl(), t) };
+            unsafe { scene::ensure_aniso(painter.gl(), t) };
         }
     });
     painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
@@ -629,7 +632,7 @@ impl Gl3dState {
             roads: (sc.roads.on && g.roads.is_some()).then_some(&sc.roads),
             focus: sc.focus.as_ref().map(|f| &f.cfg),
             race: sc.race.as_ref().map(|r| RaceFrame { roads: &sc.roads, cfg: &r.cfg, marks: &r.draw.marks }),
-            nav: sc.route.as_ref().filter(|_| g.nav.is_some()).map(|r| NavFrame { roads: &sc.roads, cfg: &r.cfg }),
+            nav: sc.route.as_ref().filter(|_| g.nav.is_some()).map(|r| NavFrame { roads: &sc.roads, cfg: &r.cfg, cut: r.at.u() }),
             s: sc.s,
             trails: &sc.trails,
             sync_timing: self.opts.sync_timing,

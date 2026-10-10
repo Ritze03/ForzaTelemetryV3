@@ -8,13 +8,19 @@
 //!   therefore cannot make the car jump to the other pass. Only when the windowed nearest is
 //!   further than [`OFF_ROUTE_M`] is the whole polyline scanned once: a shortcut or a U-turn is
 //!   "on the route" if the global nearest is within [`OFF_ROUTE_M`].
-//! * **Along-route distance is monotone** inside the window (a reversing car does not add
-//!   distance back); only the global fallback may move it backwards.
+//! * **Progress is the car's exact projection** on the route (segment + fraction), updated every
+//!   packet and free to go **backwards**: a reversing car or a **rewind** (the game puts the car
+//!   back along the route) moves it back, so the road behind the car is shown again. A rewind
+//!   further back than the window is found by the global fallback (the car is on the route
+//!   again: not off route, no re-route). When the nearest point of the window is its very edge
+//!   the true one may lie beyond it, so the window is widened until it is not (see
+//!   [`Follower::locate`]).
 //! * **Off route** = further than the limit for [`OFF_ROUTE_S`] seconds of *packet time*
 //!   (`dt_ms` summed over packets while the game is driving), so a frame stall counts as one
 //!   capped step and a paused game counts nothing. After a route is adopted the check is
 //!   suppressed for [`REROUTE_SUPPRESS_S`] (hysteresis: the new route starts at the car's snap).
-//! * **The drawn start** advances in [`TRIM_STEP_M`] chunks (see [`Follower::advance_trim`]).
+//! * The drawn line is the whole route; where it starts is the progress ([`Progress::seg`] +
+//!   [`Progress::t`]), cut by the map per frame. (It used to be trimmed in 150 m chunks.)
 
 use std::sync::Arc;
 
@@ -33,8 +39,6 @@ pub const ARRIVE_CAR_M: f32 = 40.0;
 /// Segments scanned behind / ahead of the current one (~40 m back, ~1.6 km ahead on 20 m edges).
 const WINDOW_BACK: usize = 2;
 const WINDOW_FWD: usize = 80;
-/// The drawn line starts at most this far (along the route) behind the car.
-pub const TRIM_STEP_M: f32 = 150.0;
 
 /// What a [`Follower::update`] worked out.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,8 +50,10 @@ pub struct Progress {
     pub remaining_eta_s: f32,
     /// Horizontal distance from the car to the route.
     pub off_m: f32,
-    /// Index of the segment the car is on.
+    /// Index of the segment the car is on, and how far along it (0..=1): the projection of the
+    /// car on the route, exact to the packet.
     pub seg: usize,
+    pub t: f32,
     /// Remaining < [`ARRIVE_REMAINING_M`] and the car within [`ARRIVE_CAR_M`] of the end.
     pub arrived: bool,
     /// The car has been off the route for [`OFF_ROUTE_S`]: ask for a new route. Stays true on
@@ -72,8 +78,6 @@ pub struct Follower {
     /// until the car was first on the route (see [`Follower::new`]).
     limit_m: f32,
     on_route_seen: bool,
-    /// First vertex of the drawn line.
-    drawn_from: usize,
 }
 
 impl Follower {
@@ -94,8 +98,8 @@ impl Follower {
         }
         cum_m.push(m);
         cum_s.push(s);
-        let p = Progress { along_m: 0.0, remaining_m: m, remaining_eta_s: s, off_m: 0.0, seg: 0, arrived: false, reroute: false };
-        Follower { route, cum_m, cum_s, seg: 0, t: 0.0, p, off_ms: 0, suppress_ms: (REROUTE_SUPPRESS_S * 1000.0) as u32, limit_m: OFF_ROUTE_M + start_gap_m.max(0.0), on_route_seen: start_gap_m <= OFF_ROUTE_M, drawn_from: 0 }
+        let p = Progress { along_m: 0.0, remaining_m: m, remaining_eta_s: s, off_m: 0.0, seg: 0, t: 0.0, arrived: false, reroute: false };
+        Follower { route, cum_m, cum_s, seg: 0, t: 0.0, p, off_ms: 0, suppress_ms: (REROUTE_SUPPRESS_S * 1000.0) as u32, limit_m: OFF_ROUTE_M + start_gap_m.max(0.0), on_route_seen: start_gap_m <= OFF_ROUTE_M }
     }
 
     pub fn route(&self) -> &Arc<Route> {
@@ -109,11 +113,6 @@ impl Follower {
     /// The route's last point (the snapped destination).
     pub fn end(&self) -> [f32; 2] {
         *self.route.pts.last().unwrap_or(&[0.0, 0.0])
-    }
-
-    /// First vertex of the drawn (still to drive) line.
-    pub fn drawn_from(&self) -> usize {
-        self.drawn_from
     }
 
     /// One packet. `dt_ms` is the (capped) packet-time step; `driving` = false for paused /
@@ -131,29 +130,19 @@ impl Follower {
             return &self.p;
         }
 
-        let (lo, hi) = (self.seg.saturating_sub(WINDOW_BACK), (self.seg + WINDOW_FWD).min(nseg - 1));
-        let (mut seg, mut t, mut off) = self.nearest(x, z, lo, hi);
-        let mut global = false;
-        if off > OFF_ROUTE_M && (lo > 0 || hi < nseg - 1) {
-            let g = self.nearest(x, z, 0, nseg - 1);
-            if g.2 < off {
-                off = g.2; // the true distance to the route
-                if off <= OFF_ROUTE_M {
-                    (seg, t) = (g.0, g.1); // only a hit is adopted as the new position
-                    global = true;
-                }
-            }
-        }
-        let along = self.cum_m[seg] + t * self.route.seg_len[seg];
-        // Monotone inside the window; a global hit (shortcut, U-turn) may go anywhere.
-        if global || along >= self.p.along_m {
+        let (seg, t, off, found) = self.locate(x, z);
+        if found {
+            // No monotone rule: the projection is where the car is, also after it reversed or
+            // was rewound. (`found` = within OFF_ROUTE_M, so a car in a field keeps its position.)
             self.seg = seg;
             self.t = t;
+            let along = self.cum_m[seg] + t * self.route.seg_len[seg];
             let total = *self.cum_m.last().unwrap();
             self.p.along_m = along;
             self.p.remaining_m = (total - along).max(0.0);
             self.p.remaining_eta_s = ((*self.cum_s.last().unwrap()) - (self.cum_s[seg] + t * self.route.seg_time_s[seg])).max(0.0);
             self.p.seg = seg;
+            self.p.t = t;
         }
         self.p.off_m = off;
         if off <= OFF_ROUTE_M {
@@ -177,6 +166,41 @@ impl Follower {
         &self.p
     }
 
+    /// Where the car is on the route: `(segment, fraction, distance to the route, found)`;
+    /// `found` = the distance is within [`OFF_ROUTE_M`], so the position is to be adopted.
+    ///
+    /// 1. The window around the last position (`WINDOW_BACK` behind, `WINDOW_FWD` ahead) first:
+    ///    a route that passes near itself must not make the car jump to the other pass.
+    /// 2. If the window's nearest point is its **edge** (clamped to the first segment's start or
+    ///    the last one's end) the true nearest point may lie beyond, e.g. after a rewind of 30-90
+    ///    m: the window is widened (doubling) until the nearest point is inside it, so a short
+    ///    rewind is exact and not clamped to the window edge.
+    /// 3. If the window has nothing within [`OFF_ROUTE_M`] the whole route is scanned once (a
+    ///    shortcut, a U-turn, a **rewind** of hundreds of metres): a hit within the limit is "on
+    ///    the route" again, anywhere on it.
+    fn locate(&self, x: f32, z: f32) -> (usize, f32, f32, bool) {
+        let nseg = self.route.seg_len.len();
+        let (mut lo, mut hi) = (self.seg.saturating_sub(WINDOW_BACK), (self.seg + WINDOW_FWD).min(nseg - 1));
+        let (mut seg, mut t, mut off) = self.nearest(x, z, lo, hi);
+        let mut span = WINDOW_BACK.max(1) * 2;
+        while off <= OFF_ROUTE_M && ((lo > 0 && seg == lo && t <= 0.0) || (hi < nseg - 1 && seg == hi && t >= 1.0)) {
+            if seg == lo {
+                lo = lo.saturating_sub(span);
+            } else {
+                hi = (hi + span).min(nseg - 1);
+            }
+            span *= 2;
+            (seg, t, off) = self.nearest(x, z, lo, hi);
+        }
+        if off > OFF_ROUTE_M && (lo > 0 || hi < nseg - 1) {
+            let g = self.nearest(x, z, 0, nseg - 1);
+            if g.2 < off {
+                return (g.0, g.1, g.2, g.2 <= OFF_ROUTE_M);
+            }
+        }
+        (seg, t, off, off <= OFF_ROUTE_M)
+    }
+
     /// Nearest segment of `lo..=hi` to (x, z): `(segment, fraction along it, horizontal distance)`.
     /// Ties go to the earlier segment.
     fn nearest(&self, x: f32, z: f32, lo: usize, hi: usize) -> (usize, f32, f32) {
@@ -193,20 +217,6 @@ impl Follower {
             }
         }
         (best.0, best.1, best.2.sqrt())
-    }
-
-    /// Move the drawn start forward if the car is [`TRIM_STEP_M`] or more past it. Returns true
-    /// when it moved (the caller then publishes a new line). The new start is the current
-    /// segment's first vertex, so the line keeps at most one chunk of tail behind the car.
-    /// *Why chunks:* a new line `Arc` rebuilds the 3D deck mesh; trimming per packet would do
-    /// that 70 times a second.
-    pub fn advance_trim(&mut self) -> bool {
-        if self.p.seg > self.drawn_from && self.p.along_m - self.cum_m[self.drawn_from] >= TRIM_STEP_M {
-            self.drawn_from = self.p.seg;
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -232,7 +242,7 @@ pub(crate) mod tests {
     const DT: u32 = 100;
 
     #[test]
-    fn progress_follows_the_car_and_is_monotone() {
+    fn progress_follows_the_car_and_goes_back_with_it() {
         let mut f = Follower::new(straight(1000.0), 0.0);
         let p = *f.update(0.0, 0.0, DT, true);
         assert_eq!((p.along_m, p.remaining_m, p.seg), (0.0, 1000.0, 0));
@@ -242,10 +252,11 @@ pub(crate) mod tests {
         assert!((p.remaining_eta_s - 34.5).abs() < 1e-3, "eta {}", p.remaining_eta_s);
         assert_eq!(p.seg, 15);
         assert!((p.off_m - 3.0).abs() < 1e-4);
-        // a car that reverses a little does not give distance back
+        // a car that reverses a little is where it is: the progress follows it back (a rewind,
+        // below, is the same thing at a larger scale)
         let p = *f.update(300.0, 0.0, DT, true);
-        assert!((p.along_m - 310.0).abs() < 1e-3, "{p:?}");
-        assert!(p.off_m < 1e-4, "but it is still on the route");
+        assert!((p.along_m - 300.0).abs() < 1e-3, "{p:?}");
+        assert!(p.off_m < 1e-4);
     }
 
     #[test]
@@ -375,22 +386,88 @@ pub(crate) mod tests {
         assert!(!f.update(500.0, 10.0, DT, true).arrived);
     }
 
+    /// The progress is the exact projection: segment + fraction every step, half a metre at a
+    /// time, not in chunks of any kind (it used to be 150 m).
     #[test]
-    fn the_drawn_start_moves_in_150m_chunks() {
+    fn progress_is_continuous_along_a_segment() {
         let mut f = Follower::new(straight(1000.0), 0.0);
-        f.update(0.0, 0.0, DT, true);
-        assert!(!f.advance_trim());
-        let mut moves = vec![];
-        for x in (0..=1000).step_by(10) {
-            f.update(x as f32, 0.0, DT, true);
-            if f.advance_trim() {
-                moves.push((x, f.drawn_from()));
-            }
+        let mut last = -1.0f32;
+        for i in 0..=2000 {
+            let x = i as f32 * 0.5;
+            let p = *f.update(x, 0.0, DT, true);
+            assert!((p.along_m - x).abs() < 1e-2, "at {x}: {p:?}");
+            assert!(p.along_m >= last, "monotone while driving forward");
+            // (seg, t) is the same position
+            assert!(((p.seg as f32 + p.t) * 20.0 - x).abs() < 1e-2, "at {x}: {p:?}");
+            last = p.along_m;
         }
-        // 150 m past the drawn start (a vertex every 20 m): at 150 m the start moves to vertex 7
-        // (140 m), at 290 m to vertex 14 (280 m), ... never once per step
-        assert_eq!(moves[0], (150, 7));
-        assert_eq!(moves[1], (290, 14));
-        assert_eq!(moves.len(), 7, "{moves:?}");
+    }
+
+    /// A rewind puts the car back along the route: 10 m .. 1.5 km (inside the window, at its
+    /// edge, the widened window and the global scan). The progress goes back to exactly there,
+    /// the car is on the route (no off-route time, no re-route).
+    #[test]
+    fn a_rewind_reacquires_the_progress_behind_without_a_reroute() {
+        for back in [10.0f32, 30.0, 45.0, 70.0, 100.0, 300.0, 1500.0] {
+            let mut f = Follower::new(straight(4000.0), 0.0);
+            for _ in 0..40 {
+                f.update(2000.0, 0.0, DT, true); // suppression over, driving
+            }
+            assert!((f.progress().along_m - 2000.0).abs() < 1e-2);
+            // the rewind itself, a few metres beside the nav line
+            let p = *f.update(2000.0 - back, 4.0, DT, true);
+            assert!((p.along_m - (2000.0 - back)).abs() < 1e-2, "back {back}: {p:?}");
+            assert!(((p.seg as f32 + p.t) * 20.0 - (2000.0 - back)).abs() < 1e-2);
+            assert!((p.remaining_m - (2000.0 + back)).abs() < 1e-2, "back {back}: remaining grows again");
+            assert!(!p.reroute && p.off_m < 5.0, "{p:?}");
+            // and many packets later still no off-route time
+            for _ in 0..100 {
+                assert!(!f.update(2000.0 - back, 4.0, DT, true).reroute);
+            }
+            // driving on from there is followed normally
+            let p = *f.update(2000.0 - back + 55.0, 0.0, DT, true);
+            assert!((p.along_m - (2055.0 - back)).abs() < 1e-2, "{p:?}");
+        }
+    }
+
+    /// A rewind after 1.9 s off the route does not leave a half-spent clock.
+    #[test]
+    fn a_rewind_resets_the_off_route_clock() {
+        let mut f = Follower::new(straight(4000.0), 0.0);
+        for _ in 0..40 {
+            f.update(2000.0, 0.0, DT, true);
+        }
+        for _ in 0..19 {
+            assert!(!f.update(2000.0, 80.0, DT, true).reroute);
+        }
+        f.update(1700.0, 0.0, DT, true); // rewound onto the road
+        for _ in 0..19 {
+            assert!(!f.update(1700.0, 80.0, DT, true).reroute, "the clock started again from 0");
+        }
+    }
+
+    /// A loop route: the progress follows the car round it (the return pass is 400 m from the
+    /// outbound one), and a rewind back onto the outbound pass is found.
+    #[test]
+    fn a_loop_keeps_the_pass_the_car_is_on_and_a_rewind_finds_the_outbound_one() {
+        // east 1.2 km, north 400 m, back west 1.2 km
+        let mut pts: Vec<[f32; 2]> = (0..=60).map(|i| [20.0 * i as f32, 0.0]).collect();
+        pts.extend((1..=20).map(|i| [1200.0, 20.0 * i as f32]));
+        pts.extend((0..60).rev().map(|i| [20.0 * i as f32, 400.0]));
+        let mut f = Follower::new(route_of(pts), 0.0);
+        f.update(0.0, 0.0, DT, true);
+        let p = *f.update(600.0, 9.0, DT, true);
+        assert!((p.along_m - 600.0).abs() < 1e-2, "{p:?}");
+        for x in (700..=1200).step_by(50) {
+            f.update(x as f32, 0.0, DT, true);
+        }
+        for z in (20..=400).step_by(20) {
+            f.update(1200.0, z as f32, DT, true);
+        }
+        let p = *f.update(1100.0, 400.0, DT, true);
+        assert!(p.along_m > 1600.0, "on the return pass: {p:?}");
+        // a rewind to the outbound pass, 1100 m back along the route
+        let p = *f.update(1000.0, 3.0, DT, true);
+        assert!((p.along_m - 1000.0).abs() < 1e-2 && !p.reroute, "{p:?}");
     }
 }

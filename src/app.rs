@@ -1678,7 +1678,7 @@ impl eframe::App for ForzaApp {
                                     magnification: egui::TextureFilter::Linear,
                                     minification: egui::TextureFilter::Linear,
                                     wrap_mode: egui::TextureWrapMode::MirroredRepeat,
-                                    mipmap_mode: None,
+                                    mipmap_mode: Some(egui::TextureFilter::Linear),
                                 },
                             ));
                           }

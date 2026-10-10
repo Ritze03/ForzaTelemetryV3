@@ -503,7 +503,7 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     if cam3.is_none() {
         if let Some(tex) = image {
             #[cfg(any(target_os = "linux", target_os = "windows"))]
-            crate::maprender::gl3d::add_map_mips(p, tex.id);
+            crate::maprender::gl3d::add_map_aniso(p, tex.id);
             draw_base(
                 p,
                 &BaseParams {
@@ -583,8 +583,8 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 roads: lc.roads,
                 focus: focus.map(|focus| Focus3d { focus, cfg: lc.race_lines.focus }),
                 race,
-                // Phase L: the navigation route, its own small mesh (built once per line chunk).
-                route: route.and_then(|l| Route3d::new(l, &sc.terrain, lc.nav_route)),
+                // Phase L: the navigation route, its own small mesh (built once per route).
+                route: route.and_then(|r| Route3d::new(r.line, r.at, &sc.terrain, lc.nav_route)),
                 // D77: the trails at their recorded heights (through a tunnel: in it, seen through the hill).
                 trails: trails.iter().filter_map(|(t, c)| map_shared::trail_3d(t, *c, fade, at)).collect(),
             },
@@ -613,7 +613,7 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 icons: icons.as_deref(),
                 race_sel: picked.unwrap_or(&NO_SEL),
                 week: None,
-                nav: route.map(|l| &**l),
+                nav: route,
             },
             data,
             lc,

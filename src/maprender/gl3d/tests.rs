@@ -356,7 +356,7 @@ fn map_frame(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, pp
             let cam2 = Camera::from_cfg(&tilt(v.angle), v.car, v.yaw, v.zoom, v.rect);
             let outline = [v.rect.left_top(), v.rect.right_top(), v.rect.right_bottom(), v.rect.left_bottom()];
             let pc = p.with_clip_rect(v.rect);
-            add_map_mips(&pc, tex.id);
+            add_map_aniso(&pc, tex.id);
             draw_base(&pc, &BaseParams { cam: &cam2, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: true });
             let mut cfg = MapLayerConfig::default();
             cfg.pois.on = false;
@@ -1272,7 +1272,7 @@ fn nav_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn route3d(w: &World, line: &Arc<crate::nav::NavLine>) -> Route3d {
-    Route3d::new(line, &w.terrain, NavRouteCfg::default()).expect("a route mesh")
+    Route3d::new(line, Default::default(), &w.terrain, NavRouteCfg::default()).expect("a route mesh")
 }
 
 /// The default route colour (fuchsia): nothing else in the synthetic world is near it.
@@ -1443,9 +1443,10 @@ fn gl3d_nav_route_is_hidden_behind_hills_and_under_decks() {
     rig.finish(&Gl3dHandle::new());
 }
 
-/// L3: the route mesh is built once per `NavLine::rev` (a new route or the next 150 m chunk) and
-/// uploaded once per mesh: the same line over many frames builds and uploads nothing more, a new
-/// `rev` does exactly one of each, a changed look (colour, width) neither.
+/// L3: the route mesh is built once per `NavLine::rev` (a new route) and uploaded once per mesh:
+/// the same line over many frames builds and uploads nothing more, also while the car's progress
+/// moves (D97: it is a uniform), a new `rev` does exactly one of each, a changed look (colour,
+/// width) neither.
 #[test]
 #[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
 fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
@@ -1462,9 +1463,10 @@ fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
     let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
     let mk = |rev: u64, from: usize| Arc::new(crate::nav::NavLine { rev, pts: ch.pts[from..].to_vec(), y: ch.y[from..].iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - from - 1] });
     let builds0 = NAV_MESH_BUILDS.load(Relaxed);
+    let prog = std::cell::Cell::new(crate::nav::NavProgress::default());
     let mut frame = |line: &Arc<crate::nav::NavLine>, cfg: NavRouteCfg| {
         // (every frame goes through `Route3d::new`, as the call sites do per frame)
-        let r = Route3d::new(line, &w.terrain, cfg).unwrap();
+        let r = Route3d::new(line, prog.get(), &w.terrain, cfg).unwrap();
         let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
             thick(s);
             s.route = Some(r.clone());
@@ -1478,17 +1480,21 @@ fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
     }
     let first = gpu(&h).expect("the route is on the GPU");
     assert_eq!(NAV_MESH_BUILDS.load(Relaxed) - builds0, 1, "one build for twelve frames of one line");
-    for _ in 0..20 {
+    for i in 0..20 {
+        // the car drives on (and the last frames rewind): one uniform, not a mesh
+        let seg = if i < 14 { i } else { 20 - i };
+        prog.set(crate::nav::NavProgress { seg, t: 0.5, along_m: 0.0 });
         frame(&a, NavRouteCfg::default());
     }
     assert_eq!((NAV_MESH_BUILDS.load(Relaxed) - builds0, gpu(&h)), (1, Some(first)), "no rebuild, no re-upload while the line is the same");
+    prog.set(Default::default());
     // Colour and width are uniforms: no rebuild, no re-upload, and the picture changes.
     let before = frame(&a, NavRouteCfg::default());
     let green = NavRouteCfg { color: crate::maprender::cfg::Rgb([0, 255, 0]), width: 1.5, ..NavRouteCfg::default() };
     let after = frame(&a, green);
     assert_eq!((NAV_MESH_BUILDS.load(Relaxed) - builds0, gpu(&h)), (1, Some(first)));
     assert!(before.count_near([0, 0, 620, 420], route_rgb(), 30) > 300 && after.count_near([0, 0, 620, 420], [0, 255, 0], 30) > 300 && after.count_near([0, 0, 620, 420], route_rgb(), 30) == 0);
-    // The next chunk (a new rev): exactly one more build, and the GPU copy is replaced.
+    // Another route (a new rev): exactly one more build, and the GPU copy is replaced.
     let b = mk(900_002, 3);
     for _ in 0..6 {
         frame(&b, NavRouteCfg::default());
@@ -1503,6 +1509,95 @@ fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
     rig.finish(&h);
 }
 
+/// D97, live progress in 3D: the route mesh is the whole route and the shader draws it from the
+/// car's position on: pixels behind the cut are not route-coloured, ahead they are, the cut sits at
+/// the exact (sub-segment) position and moves with the fraction, and when the progress decreases
+/// (a rewind) the road behind is route-coloured again - with one mesh build for all of it.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_nav_route_is_cut_at_the_progress_and_comes_back_after_a_rewind() {
+    let _nav = nav_lock();
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    v.car = (0.0, -250.0);
+    let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
+    let line = Arc::new(crate::nav::NavLine { rev: 920_001, pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - 1] });
+    let cam = camera(&w, &v);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let builds0 = NAV_MESH_BUILDS.load(Relaxed);
+    let tol = 40;
+    // A frame at `at` (every frame goes through `Route3d::new`, as the call sites do).
+    let mut shot = |name: &str, at: crate::nav::NavProgress| {
+        let r = Route3d::new(&line, at, &w.terrain, NavRouteCfg::default()).unwrap();
+        let mut o = None;
+        for _ in 0..8 {
+            o = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                thick(s);
+                s.route = Some(r.clone());
+            }));
+        }
+        let o = o.unwrap();
+        assert_eq!(o.gl_error, 0);
+        o.save(&format!("nav_progress_{name}.png"));
+        o
+    };
+    let cut_x = |at: crate::nav::NavProgress| {
+        let (a, b) = (line.pts[at.seg as usize], line.pts[at.seg as usize + 1]);
+        cam.project(a[0] + (b[0] - a[0]) * at.t, a[1] + (b[1] - a[1]) * at.t).expect("on screen").x
+    };
+    // (leftmost, rightmost) x of the route's pixels, and their number, in a frame.
+    let extent = |o: &Out| {
+        let (mut lo, mut hi, mut n) = (usize::MAX, 0usize, 0usize);
+        for y in 0..o.h {
+            for x in 0..o.w {
+                let p = o.at(x, y);
+                let d: i32 = (0..3).map(|k| (p[k] as i32 - route_rgb()[k] as i32).abs()).sum();
+                if d <= tol {
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                    n += 1;
+                }
+            }
+        }
+        (lo, hi, n)
+    };
+    let at = |seg: u32, t: f32| crate::nav::NavProgress { seg, t, along_m: 0.0 };
+    // The whole route, then the car 22.5 segments along: the left part is gone, the right stays.
+    let whole = extent(&shot("start", at(0, 0.0)));
+    let mid = extent(&shot("mid", at(22, 0.5)));
+    let cx = cut_x(at(22, 0.5));
+    eprintln!("whole {whole:?}; progress 22.5 -> cut at x {cx:.1}: {mid:?}");
+    assert!(whole.2 > 600 && (whole.0 as f32) < cx - 100.0, "the whole route is on screen well left of the cut ({whole:?} vs {cx})");
+    assert!(mid.2 > 300 && mid.2 < whole.2, "part of it is left ({mid:?} of {whole:?})");
+    assert!((mid.0 as f32 - cx).abs() < 3.0, "nothing behind the cut: the first route pixel {} is at the cut {cx:.1}", mid.0);
+    assert!((mid.1 as f32 - whole.1 as f32).abs() < 2.0, "the far end stays");
+    // Within one segment the cut follows the fraction.
+    let xs: Vec<(f32, usize)> = [0.0f32, 0.25, 0.5, 0.75].iter().map(|&t| (cut_x(at(22, t)), extent(&shot("sub", at(22, t))).0)).collect();
+    eprintln!("sub-segment cuts (expected x, first route px): {xs:?}");
+    for (want, got) in &xs {
+        assert!((*got as f32 - want).abs() < 3.0, "the cut is at the exact fraction: {xs:?}");
+    }
+    assert!(xs.windows(2).all(|p| p[1].1 >= p[0].1 + 2), "and moves with it (2.5 px per quarter segment): {xs:?}");
+    // Further along the route: more is gone. Then a rewind (a smaller progress): the road
+    // behind the car is route-coloured again, all the way back.
+    let far = extent(&shot("far", at(35, 0.0)));
+    assert!(far.2 < mid.2 && (far.0 as f32 - cut_x(at(35, 0.0))).abs() < 3.0, "{far:?}");
+    let back = extent(&shot("rewound", at(8, 0.0)));
+    assert!(back.2 > mid.2 + 100 && (back.0 as f32 - cut_x(at(8, 0.0))).abs() < 3.0, "the rewound route is longer again: {back:?} vs {mid:?}");
+    let all = extent(&shot("rewound_all", at(0, 0.0)));
+    assert!((all.2 as i64 - whole.2 as i64).abs() < 20, "back at the start: the whole route again ({all:?} vs {whole:?})");
+    assert_eq!(NAV_MESH_BUILDS.load(Relaxed) - builds0, 1, "one mesh for all of it");
+    // Past the end: nothing of the route is left.
+    let gone = extent(&shot("done", at(45, 0.0)));
+    assert!(gone.2 < 30, "{gone:?}");
+    h.destroy(&rig.gl);
+    rig.finish(&Gl3dHandle::new());
+}
+
 /// The one mesh cache is shared by the maps and keyed on the line's rev and the terrain's (CPU only).
 #[test]
 fn route3d_builds_once_per_rev_and_terrain() {
@@ -1512,19 +1607,19 @@ fn route3d_builds_once_per_rev_and_terrain() {
     let line = |rev: u64, n: usize| Arc::new(crate::nav::NavLine { rev, pts: (0..n).map(|i| [10.0 * i as f32, -600.0]).collect(), y: vec![0.0; n], seg_kind: vec![2; n - 1] });
     let (a, b) = (line(700_001, 30), line(700_002, 30));
     let n0 = NAV_MESH_BUILDS.load(Relaxed);
-    let r1 = Route3d::new(&a, &w.terrain, NavRouteCfg::default()).unwrap();
-    let r2 = Route3d::new(&a, &w.terrain, NavRouteCfg { width: 2.0, ..NavRouteCfg::default() }).unwrap();
+    let r1 = Route3d::new(&a, Default::default(), &w.terrain, NavRouteCfg::default()).unwrap();
+    let r2 = Route3d::new(&a, Default::default(), &w.terrain, NavRouteCfg { width: 2.0, ..NavRouteCfg::default() }).unwrap();
     assert!(Arc::ptr_eq(&r1.mesh, &r2.mesh), "same rev: the cached mesh, whatever the look");
-    let r3 = Route3d::new(&b, &w.terrain, NavRouteCfg::default()).unwrap();
+    let r3 = Route3d::new(&b, Default::default(), &w.terrain, NavRouteCfg::default()).unwrap();
     assert!(!Arc::ptr_eq(&r1.mesh, &r3.mesh), "a new rev: a new mesh");
     assert_eq!(NAV_MESH_BUILDS.load(Relaxed) - n0, 2);
     // Another terrain (a new `rev`) rebuilds.
     let mut t2 = Terrain::synthetic();
     t2.rev += 1;
-    let r4 = Route3d::new(&b, &t2, NavRouteCfg::default()).unwrap();
+    let r4 = Route3d::new(&b, Default::default(), &t2, NavRouteCfg::default()).unwrap();
     assert!(!Arc::ptr_eq(&r3.mesh, &r4.mesh));
     // Fewer than two points: no route.
-    assert!(Route3d::new(&line(700_003, 1), &w.terrain, NavRouteCfg::default()).is_none());
+    assert!(Route3d::new(&line(700_003, 1), Default::default(), &w.terrain, NavRouteCfg::default()).is_none());
 }
 
 /// Real routes over the island (the user's road data, all filters on so a jump can be used):
@@ -1594,16 +1689,16 @@ fn real_install_nav_route_mesh_cost() {
         );
         assert!(!m.samples.is_empty());
         assert_eq!(jumps > 0, slot(crate::maprender::mesh3d::SLOT_JUMP) > 0, "{name}: jump stretches are in the jump slot");
-        // The trailing part a chunk later (a new `NavLine::rev` every 150 m): the same order of cost.
+        // A shorter route (a re-route from further along): the same order of cost.
         let cut = (150.0 / r.dist_m * r.pts.len() as f32) as usize;
         let t = std::time::Instant::now();
         let m2 = RoadMesh::nav_route(&r.pts[cut..], &r.y[cut..], &r.seg_kind[cut..], &w.terrain);
-        eprintln!("  next chunk ({} points): {:.2} ms, {} samples", r.pts.len() - cut, t.elapsed().as_secs_f64() * 1e3, m2.samples.len());
+        eprintln!("  shorter route ({} points): {:.2} ms, {} samples", r.pts.len() - cut, t.elapsed().as_secs_f64() * 1e3, m2.samples.len());
         // Cached: the same line again costs a lookup.
         let line = Arc::new(crate::nav::NavLine { rev: 800_000 + name.len() as u64, pts: r.pts.clone(), y: r.y.clone(), seg_kind: r.seg_kind.clone() });
-        let first = Route3d::new(&line, &w.terrain, NavRouteCfg::default()).unwrap();
+        let first = Route3d::new(&line, Default::default(), &w.terrain, NavRouteCfg::default()).unwrap();
         let t = std::time::Instant::now();
-        let again = Route3d::new(&line, &w.terrain, NavRouteCfg::default()).unwrap();
+        let again = Route3d::new(&line, Default::default(), &w.terrain, NavRouteCfg::default()).unwrap();
         eprintln!("  cached Route3d::new: {:?}", t.elapsed());
         assert!(Arc::ptr_eq(&first.mesh, &again.mesh));
     }
@@ -2849,7 +2944,8 @@ const REAL_SHIMMER_LIMITS: &[(&str, f64, f64)] = &[
 ];
 
 /// The 2D (egui) map, the same scenes, with the texture the Dashboard really has (no mipmaps): the
-/// limits hold because `add_map_mips` builds the chain. Before D98 (no mips): dashboard 0.19 / 3.2,
+/// limits hold because the texture is uploaded with mipmaps (`app.rs`, D97; D98 built the chain in `add_map_mips`
+/// while the upload still had none). Before D98 (no mips): dashboard 0.19 / 3.2,
 /// viewer 0.73 / 9.5, hud_x1 0.43 / 7.2; after: 0.16 / 0.81, 0.16 / 0.94, 0.35 / 3.5.
 const REAL_SHIMMER_2D_LIMITS: &[(&str, f64, f64)] = &[
     ("hud_city_500_x3", 0.1, 1.4),
@@ -2899,8 +2995,8 @@ fn gl3d_real_install_shimmer() {
 }
 
 /// The 2D path (egui meshes, `paint2d`) under the same measure: the tilted Dashboard map and a
-/// HUD, with the map texture mipmapped (the overlay's) and not (`app.rs` loads the Dashboard's with
-/// `mipmap_mode: None`).
+/// HUD, with the map texture as both real uploads make it (mipmapped by egui: the overlay's
+/// `OVERLAY_MAP_TEXTURE_OPTIONS`; the Dashboard's in `app.rs` has the same options since D97).
 #[test]
 #[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
 fn gl3d_real_install_shimmer_2d() {
@@ -2910,10 +3006,9 @@ fn gl3d_real_install_shimmer_2d() {
     };
     let Some(mut rig) = open(Flavour::Default, None, [1400, 960]) else { return };
     let mips = crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS;
-    let no_mips = TextureOptions { mipmap_mode: None, ..mips };
     let scenes = real_shimmer_scenes(&w);
     let mut failures = vec![];
-    for (label, opts) in [("mips", mips), ("no mips", no_mips)] {
+    for (label, opts) in [("mips", mips)] {
         let (_hold, tex) = rig.load_map(&w, opts);
         for (name, v, ppp, ss) in scenes.iter().filter(|s| s.0 != "hud_bridge_150_x3") {
             let mut v = v.clone();
@@ -3000,31 +3095,28 @@ fn gl3d_guard_drops_msaa_before_failing() {
     rig.finish(&h);
 }
 
-/// The 2D map's texture (egui uploads the Dashboard's without mipmaps) is made trilinear +
-/// anisotropic by `add_map_mips` (D98); a texture that has mips only gains the anisotropy.
+/// The 2D map's texture, uploaded like the real ones (mipmapped by egui: `app.rs` since D97, the
+/// overlay's always), is trilinear, and `add_map_aniso` makes it anisotropic (D98).
 #[test]
 #[ignore = "needs an EGL device"]
-fn gl3d_2d_map_gets_mipmaps() {
+fn gl3d_2d_map_is_trilinear_and_anisotropic() {
     let Some(mut rig) = open(Flavour::Default, None, [700, 460]) else { return };
     let w = world();
-    let plain = TextureOptions { mipmap_mode: None, ..crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS };
-    for (label, opts) in [("no mips", plain), ("mips", crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS)] {
-        let (_hold, tex) = rig.load_map(&w, opts);
-        let mut v = View::dashboard();
-        v.no_3d = true;
-        let h = Gl3dHandle::new();
-        let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|_| {});
-        assert_eq!(o.gl_error, 0, "{label}: GL error");
-        let gl = rig.gl.clone();
-        let t = rig.painter().texture(tex.id).expect("egui's texture");
-        // SAFETY: plain state queries on the current context.
-        let (f, a) = unsafe {
-            gl.bind_texture(glow::TEXTURE_2D, Some(t));
-            (gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32, gl.get_tex_parameter_f32(glow::TEXTURE_2D, 0x84FE))
-        };
-        assert_eq!(f, glow::LINEAR_MIPMAP_LINEAR, "{label}: minification filter");
-        let max = rig.hl.glow.supported_extensions().iter().any(|e| e.contains("anisotropic"));
-        assert!(!max || a > 1.0, "{label}: anisotropy {a}");
-    }
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let mut v = View::dashboard();
+    v.no_3d = true;
+    let h = Gl3dHandle::new();
+    let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|_| {});
+    assert_eq!(o.gl_error, 0, "GL error");
+    let gl = rig.gl.clone();
+    let t = rig.painter().texture(tex.id).expect("egui's texture");
+    // SAFETY: plain state queries on the current context.
+    let (f, a) = unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(t));
+        (gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32, gl.get_tex_parameter_f32(glow::TEXTURE_2D, 0x84FE))
+    };
+    assert_eq!(f, glow::LINEAR_MIPMAP_LINEAR, "minification filter");
+    let max = rig.hl.glow.supported_extensions().iter().any(|e| e.contains("anisotropic"));
+    assert!(!max || a > 1.0, "anisotropy {a}");
     rig.finish(&Gl3dHandle::new());
 }

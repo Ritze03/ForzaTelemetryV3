@@ -483,10 +483,9 @@ impl Map3d {
         self.handle.wants_underlay()
     }
 
-    /// The 2D map's image gets a mip chain (D98): `app.rs` uploads it without one, and a flat or
-    /// tilted map minified to a fraction of its size shimmered while it moved.
-    fn ensure_map_mips(&self, painter: &egui::Painter, id: egui::TextureId) {
-        crate::maprender::gl3d::add_map_mips(painter, id);
+    /// The 2D map's image gets anisotropic filtering (D98): a tilted map is minified unevenly.
+    fn ensure_map_aniso(&self, painter: &egui::Painter, id: egui::TextureId) {
+        crate::maprender::gl3d::add_map_aniso(painter, id);
     }
 
     /// Queue the 3D scene over `cam.rect` (which must carry a relief) and keep frames coming
@@ -502,7 +501,7 @@ impl Map3d {
         data: Option<&Arc<MapLayers>>,
         sel: &RaceSel,
         trails: Vec<crate::maprender::gl3d::Trail3d>,
-        route: Option<&Arc<crate::nav::NavLine>>,
+        route: Option<crate::maprender::paint2d::NavRoute<'_>>,
     ) {
         use crate::maprender::gl3d;
         let lc = sc.layers;
@@ -539,8 +538,9 @@ impl Map3d {
                 roads: lc.roads.clone(),
                 focus,
                 race,
-                // Phase L: the navigation route, its own small mesh (built once per line chunk).
-                route: route.and_then(|l| gl3d::Route3d::new(l, &relief.terrain, lc.nav_route)),
+                // Phase L: the navigation route, its own small mesh (built once per route; the
+                // car's progress on it is a uniform, D97).
+                route: route.and_then(|r| gl3d::Route3d::new(r.line, r.at, &relief.terrain, lc.nav_route)),
                 trails,
             },
         );
@@ -563,10 +563,10 @@ impl Map3d {
         true
     }
 
-    fn ensure_map_mips(&self, _: &egui::Painter, _: egui::TextureId) {}
+    fn ensure_map_aniso(&self, _: &egui::Painter, _: egui::TextureId) {}
 
     #[allow(clippy::too_many_arguments)]
-    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>, _: Option<&Arc<crate::nav::NavLine>>) {}
+    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>, _: Option<crate::maprender::paint2d::NavRoute<'_>>) {}
 
     fn add_marker(&self, _: &egui::Painter, _: &Camera, _: crate::maprender::gl3d::Marker3d, _: Vec<crate::maprender::gl3d::Marker3d>) {}
 }
@@ -815,7 +815,7 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     }
     let tex = crate::maprender::MapTex { id: texture.id(), orig_size: app.minimap_orig_size, winter: false };
     if lc.image.on && underlay {
-        app.map3d.ensure_map_mips(&painter, texture.id());
+        app.map3d.ensure_map_aniso(&painter, texture.id());
         crate::maprender::draw_base(&painter, &crate::maprender::BaseParams {
             cam: &cam,
             cal,
@@ -860,7 +860,7 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
             icons: icons.as_deref(),
             race_sel: sel,
             week: None,
-            nav: route.map(|l| &**l),
+            nav: route,
         };
         crate::maprender::paint2d::draw_layers_or_route(&cx, data.map(|d| &**d), lc, if over_3d { Parts::OVER_3D } else { Parts::ALL });
     };
