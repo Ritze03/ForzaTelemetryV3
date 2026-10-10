@@ -615,22 +615,24 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
             map_shared::draw_trail_in(&cv, tr, *c, fade, at, round);
         }
     }
-    // Teammates stay flat markers over the scene, but in 3D at their telemetry height (a tunnel:
-    // down at its road, `to_screen_at`); waypoints have no height on the wire: the terrain surface.
-    map_shared::draw_remotes_in(&cv, &coop.teammates, car, view.yaw, round);
-
-    if flat_own {
-        map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
-    }
-    // D77 / D78: the own car in 3D, at the telemetry position and height (in a tunnel: down at its
-    // road, not on the hill), a callback of its own so it stays on top of the POIs and race lines.
-    // Without a real position (paused, no race on) it stands on the terrain.
+    // D77 / D78 / D89: the cars in 3D, the own one and the teammates, at the telemetry positions
+    // and heights (in a tunnel: down at its road, not on the hill), ONE callback so they stay on
+    // top of the POIs and race lines. Without a real position (paused, no race on) the own car
+    // stands on the terrain. The teammates' names and edge pointers (egui) go over them.
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let (Some((sc, c3)), false) = (&three, flat_own) {
         use crate::maprender::gl3d::{add_marker, Marker3d, MarkerScene};
         let car_y = car_height(snap).map_or_else(|| sc.terrain.height(car.0, car.1), |y| y - 1.0);
-        let marker = Marker3d { pos: [car.0, car_y, car.1], yaw: snap.pkt.yaw, kind: lc.tilt.relief.marker, colour: own };
-        add_marker(&p.with_clip_rect(rect), &sc.gl3d, MarkerScene { cam: c3.clone(), marker, a: xf.a, s: xf.s, corner_radius: xf.l(fr.radius) });
+        let kind = lc.tilt.relief.marker;
+        let marker = Marker3d { pos: [car.0, car_y, car.1], yaw: snap.pkt.yaw, kind, colour: own };
+        let mates = map_shared::remote_markers_3d(&cv, &coop.teammates, kind, round);
+        add_marker(&p.with_clip_rect(rect), &sc.gl3d, MarkerScene { cam: c3.clone(), marker, mates, a: xf.a, s: xf.s, corner_radius: xf.l(fr.radius) });
+    }
+    // Names and edge pointers always; the arrows only while the flat map stands in for the scene.
+    map_shared::draw_remotes_in(&cv, &coop.teammates, car, view.yaw, round, flat_own);
+
+    if flat_own {
+        map_shared::draw_own_arrow(&cv, view.arrow_angle(snap.pkt.yaw), own);
     }
     for &(x, z, hue_deg) in &coop.waypoints {
         map_shared::draw_waypoint_in(&cv, (x, z), hue(hue_deg), car, now as f32, round);

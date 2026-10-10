@@ -540,10 +540,11 @@ impl Map3d {
         }
     }
 
-    /// Queue the own car over `cam.rect` (D77 / D78), after the vectors over the scene.
-    fn add_marker(&self, painter: &egui::Painter, cam: &Camera, marker: crate::maprender::gl3d::Marker3d) {
+    /// Queue the own car and the teammates over `cam.rect` (D77 / D78 / D89), after the vectors
+    /// over the scene.
+    fn add_marker(&self, painter: &egui::Painter, cam: &Camera, marker: crate::maprender::gl3d::Marker3d, mates: Vec<crate::maprender::gl3d::Marker3d>) {
         use crate::maprender::gl3d;
-        gl3d::add_marker(painter, &self.handle, gl3d::MarkerScene { cam: cam.clone(), marker, a: 1.0, s: 1.0, corner_radius: 0.0 });
+        gl3d::add_marker(painter, &self.handle, gl3d::MarkerScene { cam: cam.clone(), marker, mates, a: 1.0, s: 1.0, corner_radius: 0.0 });
     }
 }
 
@@ -556,7 +557,7 @@ impl Map3d {
     #[allow(clippy::too_many_arguments)]
     fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>) {}
 
-    fn add_marker(&self, _: &egui::Painter, _: &Camera, _: crate::maprender::gl3d::Marker3d) {}
+    fn add_marker(&self, _: &egui::Painter, _: &Camera, _: crate::maprender::gl3d::Marker3d, _: Vec<crate::maprender::gl3d::Marker3d>) {}
 }
 
 /// May a map go 3D on this platform? Windows only with the user's opt-in (`map_3d_windows`: its GL
@@ -926,7 +927,21 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
             })
         })
         .collect();
-    crate::hud::map_shared::draw_remotes(&cv, &mates, (car_x, car_z), yaw);
+    // D77 / D78 / D89: in 3D (scene ready) the own car and the teammates are GL models, one
+    // callback at the telemetry positions and heights (in a tunnel: down at its road), on top of
+    // the POIs and race lines like the flat arrows. Without a live position the own car stands on
+    // the terrain. The teammates' names and edge pointers are egui, drawn over the cars.
+    if !underlay {
+        if let Some(rel) = relief.as_ref().and_then(|r| r.relief.as_ref()) {
+            let live = app.telemetry.latest.as_ref().filter(|p| p.is_race_on != 0 && !p.is_paused());
+            let y = live.map_or_else(|| rel.terrain.height(car_x, car_z), |p| p.position_y);
+            let kind = lc.tilt.relief.marker;
+            let marker = crate::maprender::gl3d::Marker3d { pos: [car_x, y, car_z], yaw: app.minimap_cached_raw_yaw, kind, colour: local_col };
+            let mate_markers = crate::hud::map_shared::remote_markers_3d(&cv, &mates, kind, false);
+            app.map3d.add_marker(&painter, &cam, marker, mate_markers);
+        }
+    }
+    crate::hud::map_shared::draw_remotes(&cv, &mates, (car_x, car_z), yaw, underlay);
 
     // Local car indicator: triangle rotated to show heading relative to map orientation.
     // Uses the player's co-op colour (colour only, no name) when in a session, else white.
@@ -938,14 +953,6 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
             local_col,
             Stroke::new(1.5, Color32::BLACK),
         ));
-    } else if let Some(rel) = relief.as_ref().and_then(|r| r.relief.as_ref()) {
-        // D77 / D78: in 3D the GL car at the telemetry position and height (in a tunnel: down at
-        // its road), on top of the POIs and race lines like the flat arrow. Without a live
-        // position it stands on the terrain.
-        let live = app.telemetry.latest.as_ref().filter(|p| p.is_race_on != 0 && !p.is_paused());
-        let y = live.map_or_else(|| rel.terrain.height(car_x, car_z), |p| p.position_y);
-        let marker = crate::maprender::gl3d::Marker3d { pos: [car_x, y, car_z], yaw: app.minimap_cached_raw_yaw, kind: lc.tilt.relief.marker, colour: local_col };
-        app.map3d.add_marker(&painter, &cam, marker);
     }
 
     let time = ui.input(|i| i.time) as f32;

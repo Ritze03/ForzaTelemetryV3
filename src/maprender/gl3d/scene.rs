@@ -680,39 +680,33 @@ impl Gl3d {
         Ok(())
     }
 
-    /// The own-car marker (D77 / D78) into the own FBO, alone (transparent elsewhere), for a
-    /// composite of its own *after* the egui vectors over the scene (POIs, race lines), so it is on
-    /// top of them like the flat arrow was. It has a depth buffer of its own: always whole wherever
-    /// the car is (a tunnel, under a bridge) and correctly self-occluded. A dark hull (pushed out
-    /// along the smoothed normals, no depth) first gives it the flat arrow's outline. Puts the
-    /// caller's framebuffer, viewport and scissor back like [`Gl3d::render`].
-    pub fn render_marker(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, m: &Marker3d) -> Result<usize, String> {
+    /// The car markers (the own car D77 / D78, the co-op teammates D89) into the own FBO, alone
+    /// (transparent elsewhere), for a composite of its own *after* the egui vectors over the scene
+    /// (POIs, race lines), so they are on top of them like the flat arrow was. `markers` are drawn
+    /// in order, **the later one on top** (the call site puts the own car last): each gets a depth
+    /// buffer of its own (cleared in between), so it is always whole wherever it is (a tunnel,
+    /// under a bridge) and correctly self-occluded. A dark hull (pushed out along the smoothed
+    /// normals, no depth) first gives each the flat arrow's outline. One FBO clear, one composite,
+    /// whatever the number of markers: an extra marker costs 2 draws and a depth clear. Puts the
+    /// caller's framebuffer, viewport and scissor back like [`Gl3d::render`]. Returns the triangles
+    /// drawn and the draw calls made.
+    pub fn render_markers(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, markers: &[Marker3d]) -> Result<(usize, usize), String> {
         let Some(h) = self.heights.as_ref().map(|h| HeightTex { tex: h.tex, size: h.size, geo: h.geo, rev: 0 }) else { return Err("no terrain uploaded".into()) };
         let saved = Self::save(gl);
-        let r = self.render_marker_inner(gl, cam, ppp, size, s, m, &h);
+        let r = self.render_markers_inner(gl, cam, ppp, size, s, markers, &h);
         Self::restore(gl, &saved);
         r
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_marker_inner(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, m: &Marker3d, heights: &HeightTex) -> Result<usize, String> {
+    fn render_markers_inner(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, markers: &[Marker3d], heights: &HeightTex) -> Result<(usize, usize), String> {
         self.ensure_fbo(gl, size[0], size[1])?;
         let fbo = self.fbo.as_ref().map(|b| b.fbo).ok_or("no framebuffer")?;
         if self.models.is_none() {
             self.models = Some([ModelGpu::upload(gl, &marker::arrow_model())?, ModelGpu::upload(gl, &marker::sedan_model())?]);
         }
         let models = self.models.as_ref().expect("uploaded above");
-        let g = &models[match m.kind {
-            crate::maprender::cfg::MarkerStyle::Arrow => 0,
-            crate::maprender::cfg::MarkerStyle::Sedan => 1,
-        }];
-        // Points per metre at the marker: the camera's scale times the perspective there.
-        let k_persp = cam.project3(m.pos[0], m.pos[1], m.pos[2]).map_or(1.0, |(_, cz)| (cam.focal / cz).clamp(0.05, 4.0));
-        let ppm = cam.view.scale * k_persp;
-        let k = marker::model_scale(m.kind, ppm, s);
-        let grow = marker::OUTLINE_PT * s.max(0.1) / ppm.max(1e-6);
-        let (sy, cy) = m.yaw.sin_cos();
-        let c = m.colour;
+        let (mut tris, mut draws) = (0usize, 0usize);
         // SAFETY: GL state and draws on the current context with objects this struct owns.
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -726,30 +720,49 @@ impl Gl3d {
             let p = &self.marker;
             gl.use_program(Some(p.p));
             Self::cam_uniforms(gl, p, cam, ppp, heights);
-            gl.uniform_3_f32(p.u("uPos"), m.pos[0], m.pos[1] - marker::GROUND_BELOW_M, m.pos[2]);
-            gl.uniform_2_f32(p.u("uYaw"), sy, cy);
-            gl.uniform_3_f32(p.u("uColor"), c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
             gl.uniform_1_f32(p.u("uAlpha"), 1.0);
             gl.enable(glow::BLEND);
             gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
             gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
             gl.disable(glow::CULL_FACE);
-            gl.bind_vertex_array(Some(g.vao));
-            // The outline hull: no depth at all.
-            gl.disable(glow::DEPTH_TEST);
-            gl.uniform_2_f32(p.u("uK"), k, grow);
-            gl.uniform_1_f32(p.u("uHull"), 1.0);
-            gl.draw_arrays(glow::TRIANGLES, 0, g.count);
-            // The model over it, depth-tested against itself only.
-            gl.enable(glow::DEPTH_TEST);
-            gl.depth_func(glow::LESS);
-            gl.uniform_2_f32(p.u("uK"), k, 0.0);
-            gl.uniform_1_f32(p.u("uHull"), 0.0);
-            gl.draw_arrays(glow::TRIANGLES, 0, g.count);
-            gl.depth_func(glow::LEQUAL);
+            for (i, m) in markers.iter().enumerate() {
+                let g = &models[match m.kind {
+                    crate::maprender::cfg::MarkerStyle::Arrow => 0,
+                    crate::maprender::cfg::MarkerStyle::Sedan => 1,
+                }];
+                // Points per metre at the marker: the camera's scale times the perspective there.
+                let k_persp = cam.project3(m.pos[0], m.pos[1], m.pos[2]).map_or(1.0, |(_, cz)| (cam.focal / cz).clamp(0.05, 4.0));
+                let ppm = cam.view.scale * k_persp;
+                let k = marker::model_scale(m.kind, ppm, s);
+                let grow = marker::OUTLINE_PT * s.max(0.1) / ppm.max(1e-6);
+                let (sy, cy) = m.yaw.sin_cos();
+                let c = m.colour;
+                gl.uniform_3_f32(p.u("uPos"), m.pos[0], m.pos[1] - marker::GROUND_BELOW_M, m.pos[2]);
+                gl.uniform_2_f32(p.u("uYaw"), sy, cy);
+                gl.uniform_3_f32(p.u("uColor"), c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
+                gl.bind_vertex_array(Some(g.vao));
+                // The outline hull: no depth at all.
+                gl.disable(glow::DEPTH_TEST);
+                gl.uniform_2_f32(p.u("uK"), k, grow);
+                gl.uniform_1_f32(p.u("uHull"), 1.0);
+                gl.draw_arrays(glow::TRIANGLES, 0, g.count);
+                // The model over it, depth-tested against itself only (a fresh depth buffer per
+                // marker: the later marker is on top of the earlier ones, hull and all).
+                if i > 0 {
+                    gl.clear(glow::DEPTH_BUFFER_BIT);
+                }
+                gl.enable(glow::DEPTH_TEST);
+                gl.depth_func(glow::LESS);
+                gl.uniform_2_f32(p.u("uK"), k, 0.0);
+                gl.uniform_1_f32(p.u("uHull"), 0.0);
+                gl.draw_arrays(glow::TRIANGLES, 0, g.count);
+                gl.depth_func(glow::LEQUAL);
+                tris += g.count as usize / 3 * 2;
+                draws += 2;
+            }
             gl.bind_vertex_array(None);
         }
-        Ok(g.count as usize / 3 * 2)
+        Ok((tris, draws))
     }
 
     /// Draw the scene FBO into the framebuffer [`Gl3d::render`] restored: the viewport and scissor
