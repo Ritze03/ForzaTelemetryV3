@@ -1186,6 +1186,8 @@ fn render_3d_states() -> Result<(), String> {
         ("no_image", &no_image, &none),
         ("coop", &hills, &mates),
         ("coop_tunnel", &hills, &mates_tunnel),
+        ("coop_sedan", &hills_sedan, &mates),
+        ("coop_tunnel_sedan", &hills_sedan, &mates_tunnel),
         ("hills_trail", &hills, &hills_trail),
         ("hills_sedan", &hills_sedan, &hills_trail),
         ("bridge_sedan", &bridge_sedan, &none),
@@ -1209,7 +1211,7 @@ fn render_3d_states() -> Result<(), String> {
                     check(&mut failures, &img, &id, (cx, cy), bgc, "rounded corner stays clear");
                 }
                 // The own arrow above the scene, at the car's row (85 % down); the co-op colour in a session.
-                let own = if matches!(*name, "coop" | "coop_tunnel") {
+                let own = if matches!(*name, "coop" | "coop_tunnel" | "coop_sedan" | "coop_tunnel_sedan") {
                     let [r, g, b, _] = crate::ui::coop::hue_color(hills.coop_hue).to_array();
                     [r, g, b]
                 } else {
@@ -1217,6 +1219,21 @@ fn render_3d_states() -> Result<(), String> {
                 };
                 // (the 3D marker is a lit model: its top is the colour, near the car point)
                 check_near(&mut failures, &img, &id, (104, 114), 6, own, 10, "car marker over the scene");
+                // D89: a teammate is a 3D model in their colour (lit tops are the pure colour), the
+                // one in the tunnel down at the road.
+                if matches!(*name, "coop_tunnel" | "coop_tunnel_sedan") {
+                    for m in &mates_tunnel.teammates {
+                        let want = m.colour.to_array();
+                        let n = (10..10 + 208usize)
+                            .flat_map(|x| (10..10 + 136usize).map(move |y| (x, y)))
+                            .filter(|&(x, y)| px(&img, x, y).iter().zip(want).map(|(a, b)| a.abs_diff(b) as u32).sum::<u32>() <= 40)
+                            .count();
+                        println!("  {id}: teammate {} has {n} px of its colour", m.name);
+                        if n < 6 {
+                            failures.push(format!("{id}: teammate {} has only {n} px of its colour", m.name));
+                        }
+                    }
+                }
                 let (painted, total) = pill_coverage(&img, true);
                 println!("  {id}: map paints {painted}/{total} samples");
                 // (no image = backing colour only; the horizon view fades out above the far edge on purpose)

@@ -223,7 +223,7 @@ rotates the map. HUD plumbing: `HudSink::with_stick` stamps `HudSnapshot::look_s
 ## Shared drawing (`hud/map_shared.rs`)
 
 The Dashboard map and the HUD Minimap draw their markers with the same functions: `draw_own_arrow`,
-`draw_remotes` (teammate arrows, edge pointers, names, paused grey), `draw_trail` (+ `TrailFade`),
+`draw_remotes` (teammate arrows, edge pointers, names, paused grey; in 3D the arrow is the GL car, `remote_markers_3d`, D89), `draw_trail` (+ `TrailFade`),
 `draw_waypoint`, and `draw_compass` (in `hud/minimap.rs`). Each takes a `MapCanvas` (painter,
 `MapView`, centre, bounds rect, size factor `s`, fade alpha `a`): the Dashboard passes `s = 1`,
 `a = 1`, the HUD its design scale and show/hide fade. Trail recording (`Trail`, `trail_push`) is
@@ -645,8 +645,7 @@ before).
   and Tilted keep `draw_race_lines`). The call sites (`ui/map_scene.rs`, `hud/minimap.rs`) hand the
   scene the race lines whenever the mode draws any (`race_draw`), and the in-race focus only when
   *Other roads* is not `normal` (it no longer carries the race road). While the 3D scene is not
-  `Ready` (the underlay frames) the whole map is 2D, race lines included. `cfg::focus_wanted` is no
-  longer used by the call sites (the race road does not need the focus).
+  `Ready` (the underlay frames) the whole map is 2D, race lines included.
 - **"Race road only"** (D82, `OtherRoads::RaceOnly`, serde `"race_only"`): *Why (the user, 2026-10-09):*
   "Here should be a setting, to not draw anything from the normal road mesh and only draw the circuit
   using the 3d renderer". While the focus is on, nothing of the road layer is drawn: 2D skips
@@ -1149,7 +1148,7 @@ a tunnel they ran over the hill above it.
   (scaled up 5-10x at HUD zoom a tilted car would look odd, and yaw is what the arrow showed).
 - **Tunnel visibility (the "it flies" bug):** the marker is **its own paint callback**
   (`gl3d::add_marker(painter, handle, MarkerScene)`), queued where the flat arrow was drawn - after
-  the race lines, POIs and teammates - rendered into the renderer's FBO with a depth buffer of its
+  the race lines and POIs, one callback for the own car and all teammates (D89) - rendered into the renderer's FBO with a depth buffer of its
   own and composited like the scene. So it is always whole and on top, also deep in a tunnel or
   under a bridge (like the tunnels, which the scene draws without the depth test), and correctly
   self-occluded. *Why not inside the scene pass:* a callback composites where it is queued; the POIs,
@@ -1168,18 +1167,31 @@ a tunnel they ran over the hill above it.
 - **Flat in 2D, Tilted and the fallback.** The flat arrow and trails are drawn whenever the scene is
   not drawing (`wants_underlay`: Flat / Tilted, the frames before `Ready`, a failed context), so the
   failed-3D picture is still exactly the tilted 2D map.
-- **Teammates at their real height (D87):** a teammate's arrow, name and edge pointer are still egui
-  markers over the scene (upright, like the flat ones), but in 3D they are projected at the
-  teammate's telemetry height (`Remote::y`, `MapCanvas::to_screen_at`: `Camera::project3` at
-  `y - GROUND_BELOW_M`, road level like the own car) instead of the terrain surface point
-  (`Camera::project`). A teammate in a tunnel is therefore shown down at the tunnel, and like the
-  tunnel ribbons it stays visible (egui shapes have no depth test). A paused teammate uses the
-  height of its last known spot (`CoopSeen::y`, the HUD's `last_pos`). Flat / Tilted, and a
-  `None` height, are unchanged (`to_screen_at` falls back to `to_screen`). Teammates' trails were
-  already in the scene at their recorded heights. *Why:* the user: a teammate in a tunnel must not
-  show on the hill. *Why not GL models for teammates:* they would need a callback (3 draws + a
-  composite) per teammate, and the names and edge pointers stay egui anyway; the arrow stays the
-  flat one teammates always had, only its position gets the height.
+- **Teammates are the same 3D car as the own car (D89, builds on D87):** a teammate's body is the
+  GL arrow / sedan - whichever the map's *Car marker* picks (`ReliefCfg::marker`, no setting of its
+  own) - at the teammate's telemetry position, **height** and yaw, tinted with their co-op colour
+  (grey while paused, like the flat arrow), outlined, in a tunnel down at the road like the own car.
+  `map_shared::remote_markers_3d` turns the `Remote`s that are inside the map's bounds (the same
+  `within` test that decides arrow or edge pointer) into `Marker3d`s; they go into
+  `MarkerScene::mates`, so **the own car and every teammate are ONE callback**: `render_markers`
+  clears the FBO once, then per marker 2 draws (outline hull, model) with a depth clear between them
+  (later = on top: teammates first, the own car last), and one composite for all. **Cost per extra
+  teammate: 2 draw calls, ~7 uniform calls and one depth clear; no FBO clear, no composite, no
+  callback** (the harness asserts `draws` grows by exactly 4 for 2 teammates). The name label and the
+  edge pointer stay egui (`draw_remotes_in(.., flat_body = false)`: no arrow polygon, the label lifted
+  a little more to clear the model), drawn **after** the marker callback so a name is not under a
+  car. A paused teammate uses the height of its last known spot (`CoopSeen::y`, the HUD's
+  `last_pos`); a `None` height stands on the terrain. Flat / Tilted, and 3D while the scene is not
+  `Ready` (the underlay), keep the flat arrows (`flat_body = true`). The name label and the edge
+  pointer are still placed with D87's `MapCanvas::to_screen_at` (`Camera::project3` at
+  `y - GROUND_BELOW_M`), so they sit over the model, not on the hill. Teammates' trails were already in the
+  scene at their recorded heights. *Why (D89, the user, 2026-10-10):* "The 3d car model should also
+  be used for co-op players." *Why D87 did not do it then, and what changed:* a GL marker used to be
+  a callback of its own (3 draws + a composite + an FBO clear) per car, too much per teammate; the
+  marker pass now takes a list, so a teammate is two draws. *Why the same pass, not the scene
+  pass:* same reason as the own car (the POIs are egui shapes queued after the scene). *Why a
+  teammate also gets a depth clear and a hull of its own:* it must be whole and outlined like the own
+  car (a tunnel!), and the own car on top where they overlap.
 - **Waypoints stay on the terrain surface.** The co-op waypoint is one (x, z) per player on the wire
   (`coop.rs`) and a click in 3D picks the terrain under the pointer, so the terrain is where it
   was placed; there is no height to use, and the wire format is not changed for it.
@@ -1197,6 +1209,13 @@ exaggeration, the sizing rule, trail vertices carry the heights and the fade), t
 trail going in, HUD 1x / 3x and Viewer; the marker is there, whole, outlined; the tunnel trail
 shows; the sedan is 14 px tall at HUD 1x), and the HUD harness states `hills_trail`, `hills_sedan`,
 `bridge_sedan`, `tunnel`, `tunnel_sedan` (a tunnel through the big hill was added to its world).
+D89: the GL suite's `mates` section (both kinds: two teammates + the own car, `draws` = the own car's
++ exactly 4, each teammate's colour appears at its projected position, the own car on top of a
+teammate at the same spot; a teammate **in the tunnel** is at the tunnel point and not at the hill
+surface above it, Viewer + HUD 1x / 3x), `map_shared`'s `remote_markers_3d` unit test (inside the
+test of D87's tunnel teammate: height, yaw, colour, paused grey, no height = terrain, none for flat /
+tilted, none off the map, no egui arrow with `flat_body = false` but the name and the pointer kept)
+and the HUD harness states `coop_sedan`, `coop_tunnel_sedan`, `coop_tunnel` (teammate pixels checked).
 
 ### Configuration
 

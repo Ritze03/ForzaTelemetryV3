@@ -8,7 +8,7 @@
 //! scene     Gl3d: the GL objects of one context, render (FBO + depth) and composite
 //! clipmap   terrain: 7-level geometry clipmap, R16UI height texture
 //! roads     road buffers, the per-frame draw plan (tiles, LOD sets), the style table
-//! marker    the own-car marker (3D arrow / low-poly sedan) and the trail ribbons (D77 / D78)
+//! marker    the car markers - own car and co-op teammates (3D arrow / low-poly sedan) - and the trail ribbons (D77 / D78 / D89)
 //! racemark  the race lines' start / finish posts (D88)
 //! shaders   GLSL for desktop GL 3.3 core and OpenGL ES 3.0
 //! probe     what the context offers; the requirements
@@ -26,8 +26,9 @@
 //!     draw_base(&painter, &base_params_of(&cam_without_relief)); draw_layers(...);
 //! }
 //! gl3d::add_scene(&painter, &gl3d, Scene3d { cam: cam.clone(), mesh: store::road_mesh(..), map: Some(tex), ... });
-//! // then, over the 3D, as ever: draw_layers_parts(.., Parts::OVER_3D), teammates, then the own car
-//! // (D77: gl3d::add_marker(&painter, &gl3d, MarkerScene { .. }) - its own callback, on top), compass, border
+//! // then, over the 3D, as ever: draw_layers_parts(.., Parts::OVER_3D), then the cars
+//! // (D77 / D89: gl3d::add_marker(&painter, &gl3d, MarkerScene { .. }) - own car + teammates, one callback, on top),
+//! // the teammates' labels and pointers, compass, border
 //! // `gl3d.busy()` -> ask for another frame (the init is spread over a few);
 //! // at shutdown, context current: gl3d.destroy(&gl) (HUD: before painter.destroy()).
 //! ```
@@ -253,21 +254,27 @@ pub fn add_scene(painter: &Painter, handle: &Gl3dHandle, scene: Scene3d) {
     painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
 }
 
-/// The own car of one map in 3D (D77 / D78), for [`add_marker`].
+/// The car markers of one map in 3D, for [`add_marker`]: the own car (D77 / D78) and the co-op
+/// teammates (D89), all in one callback.
 #[derive(Clone)]
 pub struct MarkerScene {
     /// The same camera as the map's [`Scene3d`].
     pub cam: Camera,
+    /// The own car; drawn last, so on top of the teammates.
     pub marker: Marker3d,
+    /// The teammates, each in its own colour and with its own `kind` (the call sites give them the
+    /// own car's). Empty outside a session. They cost 2 draws each, not a callback each.
+    pub mates: Vec<Marker3d>,
     /// The fade alpha, size factor and rounded corners, as in the [`Scene3d`].
     pub a: f32,
     pub s: f32,
     pub corner_radius: f32,
 }
 
-/// Queue the own-car marker as a paint callback of its own over `m.cam.rect`: call it **after**
-/// the egui vectors over the scene (POIs, race lines, teammates), where the flat arrow was drawn,
-/// so the car stays on top of them. *Why not in the scene pass:* a callback is composited where it
+/// Queue the car markers (own car + teammates) as one paint callback over `m.cam.rect`: call it
+/// **after** the egui vectors over the scene (POIs, race lines), where the flat arrow was drawn,
+/// so the cars stay on top of them. The teammates' name labels and edge pointers (egui again) go
+/// after this call, over the cars. *Why not in the scene pass:* a callback is composited where it
 /// is queued, and the POIs and race lines are egui shapes queued after the scene; the car under a
 /// POI icon or the HUD's tint would be a regression from the flat arrow.
 ///
@@ -525,7 +532,7 @@ impl Gl3dState {
         Ok(uploaded)
     }
 
-    /// Draw the own car into the FBO and composite it. Only once the scene is `Ready` (the same
+    /// Draw the cars (own + teammates) into the FBO and composite them once. Only once the scene is `Ready` (the same
     /// context drew its terrain), else nothing. A GL error in the first frames fails the context
     /// like one in the scene would; later ones are logged.
     fn paint_marker(&mut self, info: &PaintCallbackInfo, painter: &egui_glow::Painter, m: &MarkerScene) {
@@ -542,13 +549,15 @@ impl Gl3dState {
         if size[0] <= 0 || size[1] <= 0 {
             return;
         }
+        // The teammates first, the own car last (on top).
+        let all: Vec<Marker3d> = m.mates.iter().copied().chain(std::iter::once(m.marker)).collect();
         let r = g
-            .render_marker(gl, &m.cam, info.pixels_per_point, size, m.s, &m.marker)
-            .and_then(|tris| g.composite(gl, size, m.corner_radius * info.pixels_per_point, m.a.clamp(0.0, 1.0)).map(|_| tris));
+            .render_markers(gl, &m.cam, info.pixels_per_point, size, m.s, &all)
+            .and_then(|n| g.composite(gl, size, m.corner_radius * info.pixels_per_point, m.a.clamp(0.0, 1.0)).map(|_| n));
         match r {
-            Ok(tris) => {
+            Ok((tris, draws)) => {
                 self.stats.last.triangles += tris;
-                self.stats.last.draws += 3;
+                self.stats.last.draws += draws + 1; // + the composite
             }
             Err(e) => {
                 self.fail(gl, e);

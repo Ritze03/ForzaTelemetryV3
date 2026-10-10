@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use egui::{pos2, vec2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
+use crate::maprender::gl3d::{Marker3d, GROUND_BELOW_M};
 use crate::maprender::Camera;
 use crate::minimap::Trail;
 
@@ -58,7 +59,7 @@ impl MapCanvas<'_> {
     /// teammates were still projected onto the terrain surface.
     pub fn to_screen_at(&self, wx: f32, wz: f32, y: Option<f32>) -> Pos2 {
         if let (Some(_), Some(y)) = (&self.cam.relief, y.filter(|y| y.is_finite())) {
-            let ground = y - crate::maprender::gl3d::GROUND_BELOW_M;
+            let ground = y - GROUND_BELOW_M;
             if let Some((p, _)) = self.cam.project3(wx, ground, wz) {
                 return p;
             }
@@ -248,28 +249,61 @@ fn distance_text(m: f32) -> String {
     }
 }
 
+/// The colour a teammate is drawn in: their co-op colour, grey while paused.
+fn remote_colour(r: &Remote) -> Color32 {
+    if r.paused {
+        crate::theme::steel(170)
+    } else {
+        r.colour
+    }
+}
+
+/// The teammates for the 3D scene (D89): one [`Marker3d`] of `kind` (the map's Car marker choice,
+/// the own car's) per teammate that [`draw_remotes_in`] would draw as an arrow on the map, i.e. the
+/// ones inside the bounds; the others have the edge pointer only. At the telemetry position,
+/// height and yaw (a teammate without a height stands on the terrain), in their colour (grey while
+/// paused). Empty for a flat / tilted camera. Hand the result to `MarkerScene::mates`, and draw the
+/// labels with `draw_remotes_in(.., flat_body = false)`.
+pub fn remote_markers_3d(cv: &MapCanvas, remotes: &[Remote], kind: crate::maprender::cfg::MarkerStyle, round: bool) -> Vec<Marker3d> {
+    let Some(rel) = cv.cam.relief.as_ref() else { return Vec::new() };
+    remotes
+        .iter()
+        .filter(|r| cv.within(cv.to_screen_at(r.x, r.z, r.y), 8.0 * cv.s, round))
+        .map(|r| {
+            let y = r.y.filter(|y| y.is_finite()).unwrap_or_else(|| rel.terrain.height(r.x, r.z) + GROUND_BELOW_M);
+            Marker3d { pos: [r.x, y, r.z], yaw: r.yaw, kind, colour: remote_colour(r) }
+        })
+        .collect()
+}
+
 /// Teammates relative to the car at `car` (world x, z): on the map a heading arrow with the
 /// name above (labels nudged apart), off the map a small pointer on the edge with the distance.
 /// Paused ones are grey with the pause glyph. `map_yaw` is the view's yaw (arrows turn by
-/// `yaw - map_yaw`).
-pub fn draw_remotes(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw: f32) {
-    draw_remotes_in(cv, remotes, car, map_yaw, false);
+/// `yaw - map_yaw`). `flat_body`: draw the arrow (flat / tilted maps, and 3D while the scene is
+/// not ready); `false` = the scene draws the body ([`remote_markers_3d`]) and only the name and the
+/// edge pointer are drawn here.
+pub fn draw_remotes(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw: f32, flat_body: bool) {
+    draw_remotes_in(cv, remotes, car, map_yaw, false, flat_body);
 }
 
 /// [`draw_remotes`]; with `round` the map's bounds are the circle inscribed in `cv.rect` (the
 /// pointers pin to the circle, not the box).
-pub fn draw_remotes_in(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw: f32, round: bool) {
+pub fn draw_remotes_in(cv: &MapCanvas, remotes: &[Remote], car: (f32, f32), map_yaw: f32, round: bool, flat_body: bool) {
     let s = cv.s;
     // Names are drawn in a second pass so labels of cars close together (racing side by
     // side) can be nudged apart instead of stacking illegibly.
     let mut labels: Vec<(Pos2, String, Color32)> = Vec::new();
     for r in remotes {
         let at = cv.to_screen_at(r.x, r.z, r.y);
-        let col = if r.paused { crate::theme::steel(170) } else { r.colour };
+        let col = remote_colour(r);
         if cv.within(at, 8.0 * s, round) {
-            arrow(cv, at, r.yaw - map_yaw, col);
+            if flat_body {
+                arrow(cv, at, r.yaw - map_yaw, col);
+            }
             let label = if r.paused { format!("{} {}", cv.pause_glyph, r.name) } else { r.name.clone() };
-            labels.push((pos2(at.x, at.y - 7.0 * s * 1.9), label, col));
+            // (a 3D model is at least 20 pt long and its nose points up the screen: the name sits higher)
+            let lift = if flat_body { 7.0 * 1.9 } else { 7.0 * 2.5 };
+            labels.push((pos2(at.x, at.y - lift * s), label, col));
         } else {
             // Off the map: clamp to the edge and point toward them.
             let c = cv.rect.center();
@@ -447,11 +481,11 @@ mod tests {
             .with_relief(Relief::new(terrain.clone(), 1.0, terrain.height(car.0, car.1)));
         let mate = |y: Option<f32>| Remote { id: "kai".into(), name: "Kai".into(), x: hx, z: hz, y, yaw: 0.0, colour: Color32::from_rgb(255, 128, 0), paused: false };
         let arrow_centre = |cam: &Camera, y: Option<f32>| -> Pos2 {
-            let shapes = with_canvas(cam, rect, false, |cv| draw_remotes(cv, &[mate(y)], car, 0.0));
+            let shapes = with_canvas(cam, rect, false, |cv| draw_remotes(cv, &[mate(y)], car, 0.0, true));
             let poly = shapes.iter().find_map(|s| if let egui::Shape::Path(p) = &s.shape { Some(p.points.clone()) } else { None }).expect("teammate arrow");
             (poly.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / poly.len() as f32).to_pos2()
         };
-        let want = |y: f32| cam3.project3(hx, y - crate::maprender::gl3d::GROUND_BELOW_M, hz).unwrap().0;
+        let want = |y: f32| cam3.project3(hx, y - GROUND_BELOW_M, hz).unwrap().0;
         let on_hill = cam3.project(hx, hz).unwrap();
         let in_tunnel = arrow_centre(&cam3, Some(tunnel_y));
         // The arrow's centroid is within a few px of the projected point.
@@ -466,6 +500,40 @@ mod tests {
             let (a, b) = (arrow_centre(cam, Some(tunnel_y)), arrow_centre(cam, None));
             assert!((a - b).length() < 1e-3, "2D / tilted unchanged: {a:?} vs {b:?}");
         }
+        // D89: in 3D the body is the scene's model. The marker is where the teammate is - the tunnel's
+        // height, not the hill's - heading its yaw, in its colour, of the map's Car marker kind, and
+        // the egui side draws no arrow (the name stays).
+        use crate::maprender::cfg::MarkerStyle;
+        let markers = |cam: &Camera, mates: &[Remote]| -> Vec<Marker3d> {
+            let mut out = Vec::new();
+            with_canvas(cam, rect, false, |cv| out = remote_markers_3d(cv, mates, MarkerStyle::Sedan, false));
+            out
+        };
+        let mut kai = mate(Some(tunnel_y));
+        kai.yaw = 1.25;
+        let m = markers(&cam3, std::slice::from_ref(&kai));
+        assert_eq!(m, vec![Marker3d { pos: [hx, tunnel_y, hz], yaw: 1.25, kind: MarkerStyle::Sedan, colour: Color32::from_rgb(255, 128, 0) }]);
+        // No height: standing on the terrain. Paused: grey, like the flat arrow.
+        let m = markers(&cam3, &[mate(None)]);
+        assert!((m[0].pos[1] - (top + GROUND_BELOW_M)).abs() < 1e-3, "{:?}", m[0].pos);
+        let mut paused = mate(Some(tunnel_y));
+        paused.paused = true;
+        assert_eq!(markers(&cam3, &[paused.clone()])[0].colour, crate::theme::steel(170));
+        // Flat / tilted cameras have no 3D markers; a teammate off the map has the pointer only.
+        assert!(markers(&tilted, &[mate(Some(tunnel_y))]).is_empty() && markers(&flat, &[mate(Some(tunnel_y))]).is_empty());
+        let mut far = mate(Some(tunnel_y));
+        far.x = car.0 + 50_000.0;
+        assert!(markers(&cam3, &[far.clone()]).is_empty());
+        // `flat_body = false`: no arrow polygon on the map, but the name is still painted; off the
+        // map the edge pointer (a polygon) is still drawn.
+        let polys = |cv_mates: &[Remote], flat_body: bool| {
+            with_canvas(&cam3, rect, false, |cv| draw_remotes(cv, cv_mates, car, 0.0, flat_body)).iter().filter(|s| matches!(s.shape, egui::Shape::Path(_))).count()
+        };
+        let texts = |flat_body: bool| with_canvas(&cam3, rect, false, |cv| draw_remotes(cv, &[mate(Some(tunnel_y))], car, 0.0, flat_body)).iter().filter(|s| matches!(s.shape, egui::Shape::Text(_))).count();
+        assert_eq!(polys(&[mate(Some(tunnel_y))], true), 1);
+        assert_eq!(polys(&[mate(Some(tunnel_y))], false), 0, "the 3D body replaces the egui arrow");
+        assert!(texts(false) > 0 && texts(false) == texts(true), "the name label is kept");
+        assert_eq!(polys(&[far], false), 1, "the edge pointer stays egui");
         // A waypoint at the same spot stays on the terrain surface in 3D.
         let shapes = with_canvas(&cam3, rect, false, |cv| draw_waypoint(cv, (hx, hz), Color32::WHITE, car, 0.0));
         let dot = shapes.iter().find_map(|s| if let egui::Shape::Circle(c) = &s.shape { Some(c.center) } else { None }).unwrap();

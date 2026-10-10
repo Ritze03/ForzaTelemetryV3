@@ -213,10 +213,10 @@ saved road types were ignored").
   and *Hide points of interest in a race*. *Race road only* draws nothing of the road network in a
   race, only the race road (the user: "a setting, to not draw anything from the normal road mesh and
   only draw the circuit using the 3d renderer"); with the Line style it hides the other roads
-  instead (`OtherRoads::effective`). *Why the 3D scene needs the focus even over Normal roads:* it
-  draws the race road only from the focus (`gl3d::Focus3d`), so `cfg::focus_wanted` hands it over
-  whenever the style is Road, not only when the other roads change (`map_scene` and
-  `hud::minimap` call sites, D82). Tooltip: applies only in the Current race mode while
+  instead (`OtherRoads::effective`). *The focus and the 3D scene:* since D88 every drawn race
+  line, the Line style and the start / finish marks are part of the GL scene (`gl3d::Race3d`) whatever
+  the focus is; the focus (`gl3d::Focus3d`) is handed over only when *Other roads* is not Normal, and
+  only drives the muting / hiding and *Race road only*. Tooltip: applies only in the Current race mode while
   the car is in a race and a line was detected. The rows are greyed in the other modes (the
   focus never applies there), the three muted-look rows unless *Muted* is chosen.
 - **View mode:** Flat / Tilted / 3D, then the tilt rows and (3D only) the relief options; see below.

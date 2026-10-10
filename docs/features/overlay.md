@@ -270,7 +270,8 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   while a co-op session runs, white otherwise (exactly the Dashboard's rule).
 - **Teammates:** arrow in their colour with the name above (labels nudged apart), a pointer
   clamped to the edge with the distance when off the map, grey + pause glyph at the last known
-  spot when paused. (The first HUD version skipped off-map and paused teammates.)
+  spot when paused. (The first HUD version skipped off-map and paused teammates.) In the 3D view the
+  arrow is the same 3D arrow / sedan as the own car, in their colour (D89, [minimap.md](minimap.md)).
 - **Trails:** each player's breadcrumb trail in their colour, fading by age or distance behind
   them, whichever first (`TrailFade`; `minimap::trail_push` records them). Teammates' trails only
   during a co-op session; **your own trail is drawn solo too, in white** (like the arrow), kept
@@ -327,9 +328,11 @@ Default stays **Tilted**; 3D is opt-in.
   paint callback over the pill (`gl3d::add_scene`, `corner_radius = Frame::radius * s`, 22 by default, the composite shader does
   the rounded mask and the HUD fade) → the **tint** (`MAP_TINT`, drawn *after* the scene because a
   callback is opaque and a tint under it would be invisible; it also dims the GL roads slightly) →
-  race lines and POIs (`draw_layers_parts(.., Parts::OVER_3D)`: egui, projected through the relief
-  camera so they sit on the terrain, **no occlusion by hills**, v1) → markers (`MapCanvas`, same
-  camera) → compass → border. The relief camera is the tilted one plus heights (`Camera::from_cfg_relief`,
+  POIs (`draw_layers_parts(.., Parts::OVER_3D)`: egui, projected through the relief camera so they
+  sit on the terrain, **no occlusion by hills**, v1; the race lines and their marks are in the GL
+  scene since D88, hidden by hills and overpasses) → the **cars** (own car and co-op teammates: one
+  `gl3d::add_marker` callback, D77 / D89) → the teammates' names and edge pointers and the waypoints
+  (`MapCanvas`, same camera) → compass → border. The relief camera is the tilted one plus heights (`Camera::from_cfg_relief`,
   D65): the car arrow sits at the same screen point as in Tilted; the car's height is the telemetry
   `position_y + 1 m` while driving, else the terrain under the car (`minimap::car_height`).
   The in-race focus (D66) is passed along: while the HUD's `RaceSel` has a focus line the scene

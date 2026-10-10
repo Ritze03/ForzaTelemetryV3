@@ -288,14 +288,16 @@ struct View {
     no_3d: bool,
     /// The own car (D77), queued after the scene with `add_marker`.
     marker: Option<Marker3d>,
+    /// The co-op teammates (D89), in the same callback as the own car.
+    mates: Vec<Marker3d>,
 }
 
 impl View {
     fn hud() -> View {
-        View { site: Site::Hud, rect: Rect::from_min_size(pos2(14.0, 14.0), vec2(208.0, 136.0)), car: (-60.0, -160.0), yaw: 0.6, zoom: 500.0, angle: 40.0, car_y: None, clip: None, no_3d: false, marker: None }
+        View { site: Site::Hud, rect: Rect::from_min_size(pos2(14.0, 14.0), vec2(208.0, 136.0)), car: (-60.0, -160.0), yaw: 0.6, zoom: 500.0, angle: 40.0, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] }
     }
     fn dashboard() -> View {
-        View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0)), car: (0.0, -250.0), yaw: 0.0, zoom: 800.0, angle: 50.0, car_y: None, clip: None, no_3d: false, marker: None }
+        View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0)), car: (0.0, -250.0), yaw: 0.0, zoom: 800.0, angle: 50.0, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] }
     }
 }
 
@@ -371,7 +373,7 @@ fn map_frame(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, pp
             add_scene(&pp, h, sc);
             // (egui vectors over the scene would go here, then the car on top of them)
             if let Some(marker) = v.marker {
-                add_marker(&pp, h, MarkerScene { cam: cam3, marker, a, s, corner_radius });
+                add_marker(&pp, h, MarkerScene { cam: cam3, marker, mates: v.mates.clone(), a, s, corner_radius });
             }
         }
         // Over the 3D: a marker at the car and the border.
@@ -512,6 +514,7 @@ fn suite(flavour: Flavour, device: Option<usize>, tag: &str) {
         eprintln!("[{tag}] PERF {name}: {} tri, {} draws, cpu {:.3} ms, gpu {:.3} ms (median of 30)", s.last.triangles, s.last.draws, median(cpu), median(gpu));
     }
     markers(&mut rig, &w, &h, tex, tag);
+    mates(&mut rig, &w, &h, tex, tag);
     rig.finish(&h);
 }
 
@@ -602,6 +605,97 @@ fn markers(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, tag: &str) {
     }
     eprintln!("[{tag}] sedan at HUD x1 heading up the screen: {} px tall on screen", y1.saturating_sub(y0));
     assert!(y1 > y0 && (6..=30).contains(&(y1 - y0)), "[{tag}] sedan screen size {}..{}", y0, y1);
+}
+
+// ── the co-op teammates in the same callback as the own car (D89) ───────────────────────────
+
+const MATE_A: Color32 = Color32::from_rgb(255, 215, 20);
+const MATE_B: Color32 = Color32::from_rgb(40, 255, 90);
+
+/// A Viewer-sized view centred on `car`, `own` as the own car and `mates` as teammates.
+fn mate_view(car: (f32, f32), own: Marker3d, mates: Vec<Marker3d>) -> View {
+    View { zoom: 300.0, yaw: 0.0, car, car_y: Some(own.pos[1] + 1.0), marker: Some(own), mates, ..View::dashboard() }
+}
+
+/// Teammates are drawn with the own car's model in their colours at their own positions and
+/// heights, in the one marker callback: 2 more draw calls each and nothing else (no extra callback,
+/// clear or composite); a teammate in a tunnel is down at the tunnel like the own car; the own car
+/// is on top of a teammate at the same spot.
+fn mates(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, tag: &str) {
+    let t = w.terrain.clone();
+    let ground = |x: f32, z: f32| t.height(x, z) + 0.45;
+    let near = |o: &Out, cam: &Camera, p: [f32; 3], c: Color32, r: f32, ppp: f32| -> usize {
+        let (at, _) = cam.project3(p[0], p[1], p[2]).expect("in front");
+        let b = [((at.x - r) * ppp).max(0.0) as usize, ((at.y - r) * ppp).max(0.0) as usize, ((at.x + r) * ppp) as usize, ((at.y + r) * ppp) as usize];
+        o.count_near(b, [c.r(), c.g(), c.b()], 70)
+    };
+    for kind in [MarkerStyle::Arrow, MarkerStyle::Sedan] {
+        let k = if kind == MarkerStyle::Arrow { "arrow" } else { "sedan" };
+        let car = (-60.0f32, -160.0f32);
+        let own = Marker3d { pos: [car.0, ground(car.0, car.1), car.1], yaw: 0.6, kind, colour: CAR };
+        let a = Marker3d { pos: [car.0 + 45.0, ground(car.0 + 45.0, car.1 + 30.0), car.1 + 30.0], yaw: 2.0, kind, colour: MATE_A };
+        let b = Marker3d { pos: [car.0 - 50.0, ground(car.0 - 50.0, car.1 - 40.0), car.1 - 40.0], yaw: 4.0, kind, colour: MATE_B };
+        let solo = mate_view(car, own, vec![]);
+        warm_up(rig, w, h, tex, &solo, 1.0);
+        let o0 = map_frame(rig, w, h, tex, &solo, 1.0, &|_| {});
+        let (draws0, tris0) = (h.stats().last.draws, h.stats().last.triangles);
+        let v = mate_view(car, own, vec![a, b]);
+        let o = map_frame(rig, w, h, tex, &v, 1.0, &|_| {});
+        let st = h.stats().last;
+        assert_eq!(o.gl_error, 0, "[{tag}] mates {k}: GL error 0x{:X}", o.gl_error);
+        assert!(o.fbo_restored);
+        o.save(&format!("{tag}_mates_{k}.png"));
+        // One callback: each teammate adds the hull and the model, nothing more.
+        assert_eq!(st.draws, draws0 + 4, "[{tag}] mates {k}: draws {} vs {} without teammates", st.draws, draws0);
+        assert!(st.triangles > tris0, "[{tag}] mates {k}: triangles");
+        let cam = camera(w, &v);
+        for (name, m) in [("A", a), ("B", b)] {
+            let n = near(&o, &cam, m.pos, m.colour, 40.0, 1.0);
+            let before = near(&o0, &cam, m.pos, m.colour, 40.0, 1.0);
+            eprintln!("[{tag}] mates {k} {name}: {n} px of its colour ({before} without it)");
+            // (the synthetic terrain has some yellowish pixels of its own: count what the teammate adds)
+            assert!(n >= before + 30, "[{tag}] mates {k} {name}: {n} px (solo frame: {before})");
+        }
+        // The own car is still there, whole.
+        assert!(near(&o, &cam, own.pos, CAR, 40.0, 1.0) >= 40, "[{tag}] mates {k}: own car");
+        // A teammate exactly under the own car: the own car is drawn on top of it.
+        let ou = map_frame(rig, w, h, tex, &mate_view(car, own, vec![Marker3d { colour: MATE_A, ..own }]), 1.0, &|_| {});
+        let (n_own, n_mate) = (near(&ou, &cam, own.pos, CAR, 40.0, 1.0), near(&ou, &cam, own.pos, MATE_A, 40.0, 1.0).saturating_sub(near(&o0, &cam, own.pos, MATE_A, 40.0, 1.0)));
+        assert!(n_own >= 40 && n_mate * 4 < n_own, "[{tag}] mates {k}: own car {n_own} px, the teammate under it {n_mate} px");
+    }
+    // A teammate in the tunnel under the big hill: drawn down at the tunnel's road, not on the hill
+    // above it. Also at HUD size (scaled up) and 3x.
+    let (tx, tz) = (-300.0f32, 210.0f32);
+    let ty = t.height(tx, tz).min(150.0) + 0.45;
+    assert!(t.height(tx, tz) > ty + 40.0, "the tunnel spot is deep under the hill");
+    for (site, ppp, zoom) in [("viewer", 1.0f32, 70.0f32), ("hud", 1.0, 500.0), ("hud", 3.0, 500.0)] {
+        // The own car is in the tunnel too, behind the teammate (the camera follows its height).
+        let car = (tx - if site == "hud" { 120.0 } else { 40.0 }, tz);
+        let own = Marker3d { pos: [car.0, ty, car.1], yaw: std::f32::consts::FRAC_PI_2, kind: MarkerStyle::Sedan, colour: CAR };
+        let mate = Marker3d { pos: [tx, ty, tz], yaw: std::f32::consts::FRAC_PI_2, kind: MarkerStyle::Sedan, colour: MATE_A };
+        let view = |mates: Vec<Marker3d>| View { marker: Some(own), mates, car, yaw: 0.35, zoom, angle: if site == "hud" { 40.0 } else { 50.0 }, car_y: Some(own.pos[1] + 1.0), ..if site == "hud" { View::hud() } else { View::dashboard() } };
+        let v = view(vec![mate]);
+        warm_up(rig, w, h, tex, &v, ppp);
+        let o = map_frame(rig, w, h, tex, &v, ppp, &|_| {});
+        let o0 = map_frame(rig, w, h, tex, &view(vec![]), ppp, &|_| {});
+        assert_eq!(o.gl_error, 0, "[{tag}] tunnel mate {site} x{ppp}: GL error 0x{:X}", o.gl_error);
+        o.save(&format!("{tag}_mates_tunnel_{site}_x{ppp}.png"));
+        let cam = camera(w, &v);
+        eprintln!("[{tag}] tunnel mate {site} x{ppp}: tunnel point {:?}, car {:?}, rect {:?}", cam.project3(tx, ty, tz).map(|p| p.0), cam.project3(car.0, own.pos[1], car.1).map(|p| p.0), v.rect);
+        let r = 24.0;
+        let added = |p: [f32; 3]| near(&o, &cam, p, MATE_A, r, ppp).saturating_sub(near(&o0, &cam, p, MATE_A, r, ppp));
+        let down = added(mate.pos);
+        // The same teammate drawn as if on the terrain surface above the tunnel.
+        let (hill, _) = cam.project3(tx, t.height(tx, tz), tz).expect("in front");
+        let (at, _) = cam.project3(tx, ty, tz).expect("in front");
+        let on_hill = added([tx, t.height(tx, tz), tz]);
+        eprintln!("[{tag}] tunnel mate {site} x{ppp}: {down} px at the tunnel, {on_hill} px at the hill surface ({} px apart)", (hill - at).length());
+        // (at HUD zoom the hill surface point is only a few px from the tunnel point: no negative check there)
+        let far = (hill - at).length() > r * 1.5;
+        assert!(site == "hud" || far, "[{tag}] the hill surface point is far from the tunnel point on screen");
+        assert!(down >= (18.0 * ppp * ppp) as usize, "[{tag}] tunnel mate {site} x{ppp}: only {down} px at the tunnel - hidden by the hill?");
+        assert!(!far || on_hill < down / 4, "[{tag}] tunnel mate {site} x{ppp}: {on_hill} px on the hill surface vs {down} in the tunnel");
+    }
 }
 
 #[test]
@@ -1232,7 +1326,7 @@ fn gl3d_real_install_scenes() {
 
     let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
     let hud = |car: (f32, f32), zoom: f32, yaw: f32| View { car, zoom, yaw, car_y: Some(t.height(car.0, car.1) + 1.0), ..View::hud() };
-    let big = |car: (f32, f32), zoom: f32, angle: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None };
+    let big = |car: (f32, f32), zoom: f32, angle: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] };
     let scenes: Vec<(&str, View, f32)> = vec![
         ("hud_bridge_150_x3", hud((bridge.0, bridge.1), 150.0, 0.4), 3.0),
         ("hud_mountain_500_x3", hud((peak.0, peak.1), 500.0, 0.0), 3.0),
@@ -1404,7 +1498,7 @@ fn gl3d_synthetic_joins() {
             draw_layers(&cx, &w.layers, &cfg);
         });
         o.save(&format!("synth_{tag}_{name}_2d.png"));
-        let v = View { site: Site::Dashboard, rect, car: (x, z - 30.0), yaw: 0.25, zoom: 70.0, angle: 55.0, car_y: Some(101.0), clip: None, no_3d: false, marker: None };
+        let v = View { site: Site::Dashboard, rect, car: (x, z - 30.0), yaw: 0.25, zoom: 70.0, angle: 55.0, car_y: Some(101.0), clip: None, no_3d: false, marker: None, mates: vec![] };
         let wide = |s: &mut Scene3d| {
             s.roads.max_px = 30.0;
             s.roads.casing_px = 3.0;
@@ -1484,7 +1578,7 @@ fn gl3d_real_install_joins() {
         }
         // 3D, the Dashboard at 50 degrees: a close-up (40 m) and the neighbourhood (150 m).
         for zoom in [40.0f32, 150.0] {
-            let v = View { site: Site::Dashboard, rect, car: (x, z), yaw: 0.3, zoom, angle: 50.0, car_y: Some(y + 1.0), clip: None, no_3d: false, marker: None };
+            let v = View { site: Site::Dashboard, rect, car: (x, z), yaw: 0.3, zoom, angle: 50.0, car_y: Some(y + 1.0), clip: None, no_3d: false, marker: None, mates: vec![] };
             let o = warm_up(&mut rig, &w, &h, tex, &v, 1.0);
             assert_eq!(o.gl_error, 0);
             o.save(&format!("join_{tag}_{name}_3d_{zoom:.0}.png"));
@@ -1584,7 +1678,7 @@ fn gl3d_real_install_race_roads() {
             let f = Focus3d { focus: focus.clone(), cfg: RaceFocusCfg { other_roads: mode, ..Default::default() } };
             let views = [
                 ("hud", View { car: (x, z), yaw, zoom: zoom.min(500.0), car_y: Some(y + 1.0), ..View::hud() }, 2.0f32),
-                ("dash", View { site: Site::Dashboard, rect, car: (x, z), yaw, zoom, angle: 50.0, car_y: Some(y + 1.0), clip: None, no_3d: false, marker: None }, 1.0),
+                ("dash", View { site: Site::Dashboard, rect, car: (x, z), yaw, zoom, angle: 50.0, car_y: Some(y + 1.0), clip: None, no_3d: false, marker: None, mates: vec![] }, 1.0),
             ];
             for (vn, v, ppp) in views {
                 let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
@@ -1650,7 +1744,7 @@ fn gl3d_real_install_all_race_lines() {
     for (name, route, zoom, angle) in [("road_3km", RouteStyle::Road, 3000.0f32, 50.0f32), ("line_3km", RouteStyle::Line, 3000.0, 50.0), ("road_300m", RouteStyle::Road, 300.0, 50.0), ("line_300m", RouteStyle::Line, 300.0, 50.0)] {
         let r = Race3d { draw: draw.clone(), mesh: Some(mesh.clone()), cfg: RaceCfg { route, ..cfg } };
         let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(880.0, 580.0));
-        let v = View { site: Site::Dashboard, rect, car: (mid[0], mid[1]), yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None };
+        let v = View { site: Site::Dashboard, rect, car: (mid[0], mid[1]), yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] };
         let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
         warm_up(&mut rig, &w, &h, tex, &v, 1.0);
         let mut o = None;

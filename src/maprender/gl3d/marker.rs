@@ -1,4 +1,4 @@
-//! The own-car marker and the trails in the 3D scene (D77 / D78): two small models built in code
+//! The car markers - the own car and the co-op teammates (D89) - and the trails in the 3D scene (D77 / D78): two small models built in code
 //! (no asset files) - a 3D arrow and a low-poly sedan - and the trail ribbons, all placed at the
 //! telemetry position *and height*, so in a tunnel they are at the road down there and on a
 //! bridge on its deck, never on the hill surface above.
@@ -28,7 +28,9 @@
 //!
 //! # Visibility (the tunnel case)
 //!
-//! The marker is drawn **last, after the depth buffer is cleared**: always whole and on top
+//! The markers are drawn **last, after the depth buffer is cleared**, all in one pass (teammates
+//! first, the own car last = on top; each marker clears the depth buffer, so a later one is over an
+//! earlier one): each always whole and on top
 //! (like the tunnels, which are drawn without the depth test), still correctly self-occluded.
 //! First a dark hull (the model pushed out ~1 px along its smoothed normals, no depth) for
 //! the outline the flat arrow had, then the model over it. The trails are depth-tested twice: the
@@ -41,7 +43,7 @@ use egui_glow::glow::{self, HasContext};
 use super::as_bytes;
 use crate::maprender::cfg::MarkerStyle;
 
-/// The own car in the scene. `pos` is the telemetry position (x, y, z; y = the car's height in
+/// One car in the scene (the own car, or a teammate: D89). `pos` is the telemetry position (x, y, z; y = the car's height in
 /// metres, *not* the terrain's), `yaw` the telemetry yaw (0 = north, clockwise: forward is
 /// `(sin yaw, cos yaw)` in (x, z)).
 #[derive(Clone, Copy, Debug, PartialEq)]
