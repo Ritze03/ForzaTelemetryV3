@@ -537,11 +537,17 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     // The 3D scene, over the plate (and, until it is Ready, over the 2D underlay).
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Some((sc, c3)) = &three {
-        use crate::maprender::gl3d::{add_scene, Focus3d, Scene3d};
+        use crate::maprender::gl3d::{add_scene, Focus3d, Race3d, Scene3d};
         let focus = data.zip(picked).and_then(|(d, rs)| {
             let focusing = rs.focus_line().is_some_and(|l| l < d.races.lines.len());
-            // Also for a race road over normal roads: 3D draws it only from the focus (D80, D82).
-            (focusing && crate::maprender::cfg::focus_wanted(&lc.race_lines)).then(|| rs.road_focus(d)).flatten()
+            // Other roads muted, hidden or gone; the race lines do not depend on it (D88).
+            (focusing && lc.race_lines.focus.other_roads != crate::maprender::cfg::OtherRoads::Normal).then(|| rs.road_focus(d)).flatten()
+        });
+        // Every race line the mode draws is part of the scene (D88), so terrain and overpasses
+        // hide it like the roads; its mesh builds on its own thread.
+        let race = data.zip(picked).and_then(|(d, rs)| rs.race_draw(d, &lc.race_lines)).map(|draw| {
+            let mesh = crate::maprender::store::race_mesh(&draw, &sc.terrain);
+            Race3d { draw, mesh, cfg: lc.race_lines }
         });
         add_scene(
             &p.with_clip_rect(rect),
@@ -561,6 +567,7 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 relief: lc.tilt.relief,
                 roads: lc.roads,
                 focus: focus.map(|focus| Focus3d { focus, cfg: lc.race_lines.focus }),
+                race,
                 // D77: the trails at their recorded heights (through a tunnel: in it, seen through the hill).
                 trails: trails.iter().filter_map(|(t, c)| map_shared::trail_3d(t, *c, fade, at)).collect(),
             },

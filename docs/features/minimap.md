@@ -590,8 +590,10 @@ before).
   on and that road's casing shows as its edge. Drawn after all roads, so it lies on top; where a side road
   meets it, the race road's casing runs across the side road's end (it is the road on top, like an
   overpass). Every picked line is drawn this way in 2D (also `nearest` / `near` / `all`).
-- **3D** (`mesh3d::RoadMesh::race_road`, `gl3d::scene::Gl3d::sync_race`): its own small road mesh,
-  built by the same code as the roads (`race_road_layer` puts the line into a `RoadLayer`): 8 m samples,
+- **3D** (`mesh3d::RoadMesh::race_roads`, `store::race_mesh`, `gl3d::scene::Gl3d::sync_race`): every
+  line the race-line mode draws is one small road mesh (D88; D80 had only the in-race focus line),
+  built by the same code as the roads (`race_road_layer` puts each line into a `RoadLayer`, the
+  layers are merged): 8 m samples,
   the deck, mitred joins, round caps at the shown extent's ends, a closed circuit ends on its first point
   so it closes in one mitre. Heights are the line's own (`RaceLine.y`, the AI's driving line: on the
   bridge, in the tunnel, across the field; `uMode` forced to node heights). Stretches 4 m or more under
@@ -601,25 +603,50 @@ before).
   the same two passes (casing, fill), depth-tested against terrain and roads with a depth bias above
   every road fill (`RACE_BIAS` 0.0042 casing, +0.00008 fill; the trails stay above at 0.0044): it sits on
   the road it overlaps without z-fighting, and a road really above it (an overpass) still covers it.
-  The 3D scene only gets the race through the in-race focus: `RoadFocus::race: Option<RaceRoad>` (points,
-  heights, closed, colour) is built with the focus (`RaceSel::road_focus`, from the config of the last
-  `update`), so it follows the drawn extent (D76) and is rebuilt when that changes; the mesh is rebuilt
-  when the focus `Arc` changes. Cost: route 5555 (85 km) 14 342 samples, 114 k triangles, 5.3 ms release
-  (median routes 0.1-0.4 ms), on the GL thread once per extent change.
+  *What the scene gets (D88):* `RaceSel::race_draw(layers, &RaceCfg) -> Option<Arc<RaceDraw>>` =
+  the lines (`RaceRoad`: points, heights, closed; the shown extent of D76 in `current`, every
+  picked line in `nearest` / `near`, all 170 in `all`) plus the start / finish `RaceMark`s, **cached
+  per drawn set** (key: race data, mode, sorted line indices, the extent counter), so a frame that
+  changes nothing returns the same `Arc`. It does not depend on the in-race focus any more
+  (`RoadFocus::race` is gone), nor on the look: colour, style, width and alpha are
+  `Scene3d::race: Option<Race3d { draw, mesh, cfg: RaceCfg }>` and go straight into the style table, so
+  changing them rebuilds nothing. The mesh is built **off the UI thread** by `store::race_mesh(draw,
+  terrain)` (thread `map-race-mesh`, same contract as `road_mesh`: the newest finished mesh is served
+  while a new one builds, so a new pick shows the old lines for a moment instead of a blank; the
+  renderer re-uploads when the `Arc` changes, never in the same callback as another heavy upload).
+  Cost: route 5555 (85 km) 14 342 samples, 114 k triangles, 5.3 ms release; mode `all` (170 lines,
+  ~1 000 km): see "Race lines in the scene: cost" below.
+  *Line style (`route = "line"`) in 3D:* the same mesh with `race_table` in its thin form: a
+  ribbon of constant screen width `width_px x s x ppp` (the road shader's fixed-width form of the
+  width rule: metres 0 makes the clamp return `min`), alpha `RaceCfg::alpha`, no casing, deck
+  thickness 0 (a 4 px line must not have walls). *Why the road shader and not the trail
+  ribbons:* one mesh, one plan (tiles are culled per frame), the same depth bias and tunnel pass as
+  the race road, and the heights and joins come for free; 170 lines would be ~170 k segments of
+  streamed trail vertices every frame.
+  *Marks (D88, `gl3d::racemark`):* **posts**, drawn with the trail ribbon program (`draw_race_marks`):
+  a vertical ribbon on the line at its own height (`RaceMark::y`, 0 = the terrain), constant screen
+  width (5 pt, dark outline 8 pt) and a height of 18 pt *at the car's distance* (it shrinks with
+  the perspective like the icons). A sprint start is green (`style::START_DOT`), a circuit start and a
+  sprint finish are chequered (white / dark / white cells). Depth-tested with a bias a little above
+  the race road's fill (`RACE_BIAS_MARK` 0.0045), **no ghost pass** (a trail is "seen through" a
+  hill, a mark is not); a mark whose line is 4 m or more under the terrain is drawn without the depth
+  test, like a tunnel. *Why posts, not flat bars across the road:* from the tilted camera a bar on the
+  road is a hairline and has to be as wide as the road; a post is a few vertices and reads at any
+  angle and zoom. Built per frame (the size follows the zoom): a few hundred marks at most.
   *Occlusion (D88; the user, 2026-10-10: "occlusion should work for the race circuit aswel"):* the race
-  road is hidden behind hills and under decks above it exactly like the road ribbons: its open stretches
-  are depth-tested and only its tunnel stretches (>= 4 m under the terrain, by the AI line's own height)
-  show through, as the road tunnels do. Guarded by
+  lines (both styles) and their marks are hidden behind hills and under decks above them exactly like
+  the road ribbons: their open stretches are depth-tested and only tunnel stretches (>= 4 m under the
+  terrain, by the AI line's own height) show through, as the road tunnels do. Guarded by
   `gl3d::tests::gl3d_race_road_is_hidden_behind_hills` (a race road behind the big hill is not drawn, the
-  same road seen from the other side is; a road along the elevated highway is covered by the deck).
-  *What is still not occluded:* whatever `paint2d` draws with egui over the 3D has no depth test (K6):
-  the start / finish marks, the **Line** style, and the race roads of the modes `nearest` / `near` / `all`
-  (only the picked focus line of an in-race `current` is the scene's, see below).
-- **Over the 3D view** `paint2d` draws only the marks of the focus line (the race road is the scene's).
-  The call sites (`ui/map_scene.rs`, `hud/minimap.rs`) hand the scene the focus only when *Other roads*
-  is not `normal`; with `normal` the scene has no race road, so `paint2d` draws the race road with egui
-  over the 3D (flat, as the race lines were). Lines of the other modes (`nearest` / `near` / `all`) are
-  drawn that way over 3D too.
+  same road seen from the other side is; a road along the elevated highway is covered by the deck) and
+  `gl3d_race_lines_and_marks_are_hidden_behind_hills` (non-focus lines of the Road style, the thin
+  Line style and the posts: 0 pixels behind the hill, drawn in plain view).
+- **Over the 3D view** `paint2d` draws **no race line and no mark** (`Parts::OVER_3D` = POIs only; 2D
+  and Tilted keep `draw_race_lines`). The call sites (`ui/map_scene.rs`, `hud/minimap.rs`) hand the
+  scene the race lines whenever the mode draws any (`race_draw`), and the in-race focus only when
+  *Other roads* is not `normal` (it no longer carries the race road). While the 3D scene is not
+  `Ready` (the underlay frames) the whole map is 2D, race lines included. `cfg::focus_wanted` is no
+  longer used by the call sites (the race road does not need the focus).
 - **"Race road only"** (D82, `OtherRoads::RaceOnly`, serde `"race_only"`): *Why (the user, 2026-10-09):*
   "Here should be a setting, to not draw anything from the normal road mesh and only draw the circuit
   using the 3d renderer". While the focus is on, nothing of the road layer is drawn: 2D skips
@@ -627,6 +654,15 @@ before).
   road. With `route = "line"` it falls back to `hidden` (`OtherRoads::effective`). Outside a race
   everything is normal. (The Map-tab dropdown entry comes with #211; until then the label reuses
   "Hidden".)
+
+**Race lines in the scene: cost (D88).** Real install, release, mode `all` (170 lines, 1 033 km, 297
+marks; `gl3d::tests::gl3d_real_install_all_race_lines`): `race_draw` 0.3 ms (the point copies); the race
+mesh 269 ms on the `map-race-mesh` thread (174 821 samples, 1.38 M + 0.06 M triangles near + far set,
+19.6 MB of vertices) - which is why it is off the UI thread - then one upload on the GL thread; a
+frame draws ~308 k triangles in all (terrain + the plan's visible tiles; ~0.06 ms GPU time on the
+EGL test device) at a 3 km zoom and the same at 300 m. A single route / a
+few picked lines (`current`, `nearest`, `near`) build in 0.1-6 ms. The mesh is rebuilt only when the
+drawn set changes (see `RaceSel::race_draw`), never for a change of colour, width or style.
 
 ### In-race focus (D66): other roads muted, POIs hidden
 
@@ -873,8 +909,8 @@ radius, `ReliefCfg`, `RoadsCfg`, the optional in-race `Focus3d`), `add_scene(&Pa
 Scene3d)`, `Gl3dOptions` (requirements and test switches), `last_failure()`. Since D77 also
 `Scene3d::trails` (`Trail3d` / `TrailSeg`) and `add_marker(&Painter, &Gl3dHandle, MarkerScene)` with
 `Marker3d` (the own car, a callback of its own; see "3D: the own car and the trails in the scene"). The 2D-side step in
-`paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (race lines + POIs,
-no roads; `draw_layers` = `Parts::ALL`), POIs and the culling boxes go through `Camera::project` /
+`paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (POIs only: roads
+and, since D88, race lines are the scene's; `draw_layers` = `Parts::ALL`), POIs and the culling boxes go through `Camera::project` /
 `k_at` / `footprint` (identical to the plane maths without a relief), `MapCanvas::to_screen`
 (`hud/map_shared.rs`) goes through `Camera::project`, so waypoints (and teammates without a height) sit on the
 terrain (teammates with a telemetry height: `to_screen_at`, see "Teammates at their real height"). In 3D the egui lines of `draw_layers` keep a constant width (`tapered` returns factor 1 for a
@@ -993,8 +1029,8 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
   the terrain there (a node-height road no longer dips to 0 at such a node; test
   `orphan_nodes_without_a_height_take_the_terrain_not_zero`).
 
-**Defaults used** (design 9.3): sea flat at y 100, POIs / markers / race lines over the 3D in egui
-without occlusion (a POI behind a ridge still shows: K6), exaggeration 1.0, shading 0.35, deck 3 m.
+**Defaults used** (design 9.3): sea flat at y 100, POIs / markers over the 3D in egui
+without occlusion (the race lines are in the scene since D88) (a POI behind a ridge still shows: K6), exaggeration 1.0, shading 0.35, deck 3 m.
 
 **Measured** before D81 (two road passes since, about twice the road triangles and draws, GPU
 +0.004..0.012 ms: see Performance) (RX 7900 XTX, Mesa 26.2.4, release, `GL_TIME_ELAPSED` around terrain + roads, median of
@@ -1048,9 +1084,9 @@ Windows; K3 / K4 keep 3D opt-in there.
    mixing the two would put the arrow off its road.
 3. `gl3d::add_scene` with `corner_radius 0`, `a = s = 1`, the Viewer's / Dashboard's own `RoadsCfg`,
    `ReliefCfg`, `ImageLook`; the mesh from `store::road_mesh` only when roads are on; the in-race focus
-   exactly when the 2D path applies it. Always called while 3D is wanted, also during the underlay
+   exactly when the 2D path applies it, plus `race_draw` + `store::race_mesh` for the race lines (D88). Always called while 3D is wanted, also during the underlay
    frames (the GL objects are created inside the callback).
-4. Over it `draw_layers_parts(.., Parts::OVER_3D)` (race lines, POIs), then the markers and compass.
+4. Over it `draw_layers_parts(.., Parts::OVER_3D)` (POIs; the race lines are in the scene, D88), then the markers and compass.
 5. `Gl3dHandle::busy()` -> `request_repaint()` (the init is staged over a few frames).
 
 **Ownership.** `ForzaApp::map3d: Map3d` holds the *one* `Gl3dHandle` of the window's GL context. The
