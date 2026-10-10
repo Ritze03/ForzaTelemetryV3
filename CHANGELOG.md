@@ -15,6 +15,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **First-run setup guide**: on the first launch a step-by-step guide leads you through the setup: find the game install, check the input permissions (Linux), test window detection, then enter the Data Out values in Forza (with a screenshot, your listen port and a live "packets arriving?" check), and finally a short tour of the Mini-Settings and the hotkeys. You can skip it and re-open it any time from Setup → Getting started. Existing installs do not see it on update.
 
 ### Fixed
+- **3D map: race lines stay behind hills** — race lines in every mode, the thin line style and the start / finish marks are now hidden behind hills and overpasses like the roads, instead of showing through them.
 - **3D map: teammates in tunnels** — in the 3D map view, co-op teammates are now drawn at their real position and height, so a teammate driving through a tunnel shows down at the tunnel road instead of on top of the hill. Waypoints stay on the ground where you placed them.
 - **3D map: hills stay put** — hills and mountain ridges no longer pop or shift while driving; the terrain detail levels now blend smoothly into each other.
 - **Jump lines on the HUD minimap** are cut to the minimap's shape like the roads, instead of poking out of a rounded corner.
