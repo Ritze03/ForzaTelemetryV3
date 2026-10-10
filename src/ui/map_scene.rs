@@ -483,6 +483,12 @@ impl Map3d {
         self.handle.wants_underlay()
     }
 
+    /// The 2D map's image gets a mip chain (D98): `app.rs` uploads it without one, and a flat or
+    /// tilted map minified to a fraction of its size shimmered while it moved.
+    fn ensure_map_mips(&self, painter: &egui::Painter, id: egui::TextureId) {
+        crate::maprender::gl3d::add_map_mips(painter, id);
+    }
+
     /// Queue the 3D scene over `cam.rect` (which must carry a relief) and keep frames coming
     /// while the staged init runs.
     #[allow(clippy::too_many_arguments)]
@@ -556,6 +562,8 @@ impl Map3d {
     fn wants_underlay(&self) -> bool {
         true
     }
+
+    fn ensure_map_mips(&self, _: &egui::Painter, _: egui::TextureId) {}
 
     #[allow(clippy::too_many_arguments)]
     fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>, _: Option<&Arc<crate::nav::NavLine>>) {}
@@ -807,6 +815,7 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     }
     let tex = crate::maprender::MapTex { id: texture.id(), orig_size: app.minimap_orig_size, winter: false };
     if lc.image.on && underlay {
+        app.map3d.ensure_map_mips(&painter, texture.id());
         crate::maprender::draw_base(&painter, &crate::maprender::BaseParams {
             cam: &cam,
             cal,

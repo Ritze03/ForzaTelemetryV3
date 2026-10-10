@@ -167,6 +167,10 @@ pub struct Gl3dOptions {
     pub sync_timing: bool,
     /// Test hook: feed the terrain shader garbage, as a driver that cannot compile it would.
     pub break_shader: bool,
+    /// Samples per pixel of the scene framebuffer (D98: multisampling, resolved by a blit into the
+    /// texture the composite reads); 0 or 1 = none. Capped by the GPU's `GL_MAX_SAMPLES` and
+    /// by the view's size (see `Gl3d::samples_for`); dropped first by the slow-GPU guard.
+    pub msaa: u32,
 }
 
 impl Default for Gl3dOptions {
@@ -179,6 +183,7 @@ impl Default for Gl3dOptions {
             cull: true,
             sync_timing: false,
             break_shader: false,
+            msaa: 4,
         }
     }
 }
@@ -327,6 +332,26 @@ pub fn add_scene(painter: &Painter, handle: &Gl3dHandle, scene: Scene3d) {
     painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
 }
 
+/// Give the map texture a mip chain for the 2D (flat / tilted) map (D98): queue this before the
+/// map image is drawn, as a paint callback of a 1-point rect at the painter's clip rect corner.
+/// Does nothing for a texture that has mipmaps (the overlay's) and builds them once for one that
+/// has not (the Dashboard's, `app.rs` uploads it with `mipmap_mode: None`); see
+/// [`scene::ensure_mips`].
+pub fn add_map_mips(painter: &Painter, id: egui::TextureId) {
+    let clip = painter.clip_rect();
+    if !clip.is_positive() {
+        return;
+    }
+    let rect = egui::Rect::from_min_size(clip.min, egui::vec2(1.0, 1.0));
+    let cb = egui_glow::CallbackFn::new(move |_, painter| {
+        if let Some(t) = painter.texture(id) {
+            // SAFETY: inside egui_glow's callback: the context is current, unit 0 is active.
+            unsafe { scene::ensure_mips(painter.gl(), t) };
+        }
+    });
+    painter.add(Shape::Callback(PaintCallback { rect, callback: Arc::new(cb) }));
+}
+
 /// The car markers of one map in 3D, for [`add_marker`]: the own car (D77 / D78) and the co-op
 /// teammates (D89), all in one callback.
 #[derive(Clone)]
@@ -444,6 +469,11 @@ impl Gl3dHandle {
     /// What the context offered, once probed.
     pub fn caps(&self) -> Option<Caps> {
         self.lock().gl3d.as_ref().map(|g| g.caps.clone())
+    }
+
+    /// Samples per pixel of the scene framebuffer now (0 = none); the debug line, tests.
+    pub fn samples(&self) -> i32 {
+        self.lock().gl3d.as_ref().map_or(0, |g| g.samples())
     }
 
     /// Free every GL object and go back to `Untried`. The context must be current: the HUD's
@@ -666,6 +696,14 @@ impl Gl3dState {
         let slow = self.guard.feed(ms, Instant::now(), limit_ms, Duration::from_secs_f32(secs));
         self.stats.ema_ms = self.guard.ema;
         if slow {
+            // Multisampling is the first thing to go (D98): a GPU too slow for it may still do the
+            // plain picture. The verdict is given afresh on that.
+            if let Some(g) = self.gl3d.as_mut().filter(|g| g.samples() > 0) {
+                eprintln!("3D map: {:.1} ms a frame, switching multisampling off", self.guard.ema);
+                g.drop_msaa(gl);
+                self.guard = Guard { skip: 5, ..Guard::default() };
+                return;
+            }
             self.fail(gl, "3D is too slow on this GPU".to_string());
         }
     }
@@ -681,11 +719,12 @@ impl Gl3dState {
         self.last_log = Some(now);
         let (s, st) = (self.stats.last, self.stats);
         eprintln!(
-            "3D map: {:?} {}x{} px (ppp {}) | {} tri, {} draws, tiles {} near / {} far | cpu {:.2} ms, gpu {} | ema {:.2} ms | frame {}",
+            "3D map: {:?} {}x{} px (ppp {}) x{} | {} tri, {} draws, tiles {} near / {} far | cpu {:.2} ms, gpu {} | ema {:.2} ms | frame {}",
             self.status,
             size[0],
             size[1],
             info.pixels_per_point,
+            self.gl3d.as_ref().map_or(0, |g| g.samples()).max(1),
             s.triangles,
             s.draws,
             s.tiles_near,

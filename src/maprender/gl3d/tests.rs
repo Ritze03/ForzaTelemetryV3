@@ -274,6 +274,7 @@ enum Site {
     Dashboard,
 }
 
+#[derive(Clone)]
 struct View {
     site: Site,
     rect: Rect,
@@ -355,6 +356,7 @@ fn map_frame(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, pp
             let cam2 = Camera::from_cfg(&tilt(v.angle), v.car, v.yaw, v.zoom, v.rect);
             let outline = [v.rect.left_top(), v.rect.right_top(), v.rect.right_bottom(), v.rect.left_bottom()];
             let pc = p.with_clip_rect(v.rect);
+            add_map_mips(&pc, tex.id);
             draw_base(&pc, &BaseParams { cam: &cam2, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: true });
             let mut cfg = MapLayerConfig::default();
             cfg.pois.on = false;
@@ -935,7 +937,7 @@ fn gl3d_flat_world_equals_the_tilted_2d_map() {
     eprintln!("flat world, 3D vs tilted 2D base: mean abs error {mae:.2} / 255 over {} px", n / 3);
     assert!(mae < 6.0, "the flat 3D map differs from the tilted 2D one by {mae:.2}/255");
 
-    // A road along x at z = 0, 3 px wide: its pixels centre on Camera::project of its centreline.
+    // A road along x at z = 0, 8 px wide: its pixels centre on Camera::project of its centreline.
     let mut roads = RoadLayer::default();
     roads.by_type[1].push(Chain::new(vec![[-300.0, 0.0], [300.0, 0.0]], vec![100.0, 100.0]));
     let layers = Arc::new(MapLayers { rev: 1, roads: Arc::new(roads), ..Default::default() });
@@ -946,8 +948,10 @@ fn gl3d_flat_world_equals_the_tilted_2d_map() {
     let cam = camera(&one, &v);
     let on = |s: &mut Scene3d| {
         s.relief.shading = 0.0;
-        s.roads.min_px = 3.0;
-        s.roads.max_px = 3.0;
+        // (wide: the ribbon's edges are feathered since D98, so a road a few px tall has few pixels
+        // of its exact colour; the centroid of the road-coloured pixels is what is compared)
+        s.roads.min_px = 8.0;
+        s.roads.max_px = 8.0;
         s.roads.casing_px = 0.0;
         s.roads.styles.road.casing = false;
     };
@@ -1216,7 +1220,7 @@ fn gl3d_race_lines_and_marks_are_hidden_behind_hills() {
     // (name, lines, marks, cfg, the colour that is counted)
     let cases: Vec<(&str, Vec<RaceRoad>, Vec<RaceMark>, RaceCfg, [u8; 3])> = vec![
         ("road_all", vec![line(440.0), line(480.0)], vec![], base, base.color.0),
-        ("thin_line", vec![line(440.0), line(480.0)], vec![], RaceCfg { route: RouteStyle::Line, width_px: 6.0, alpha: 1.0, ..base }, base.color.0),
+        ("thin_line", vec![line(440.0), line(480.0)], vec![], RaceCfg { route: RouteStyle::Line, width_px: 14.0, alpha: 1.0, ..base }, base.color.0),
         ("marks", vec![], posts, base, [mark_colour[0], mark_colour[1], mark_colour[2]]),
     ];
     for (name, lines, marks, cfg, colour) in cases {
@@ -1637,7 +1641,8 @@ fn gl3d_real_install_nav_route() {
                     s.roads.casing_px = 1.0;
                 }
             });
-            let n = o.count_near([0, 0, 620, 420], route_rgb(), 30);
+            // (the HUD's route is a hairline with soft edges since D98: a looser colour match there)
+            let n = o.count_near([0, 0, 620, 420], route_rgb(), if vname == "hud" { 110 } else { 30 });
             eprintln!("real route {name} ({vname}): {n} route px");
             assert!(n > if vname == "hud" { 3 } else { 60 }, "{name} {vname}: the route is on screen ({n})"); // (the HUD map is small and its roads hairlines at this zoom)
         }
@@ -1743,7 +1748,9 @@ fn gl3d_real_install_scenes() {
     let centre = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
     eprintln!("scenes: bridge at ({:.0}, {:.0}) {:.0} m above ground; highest road ({:.0}, {:.0}) at {:.0} m; densest 200 m cell ({:.0}, {:.0}) with {n} samples; island centre ({:.0}, {:.0})", bridge.0, bridge.1, bridge.2, peak.0, peak.1, peak.2, city.0, city.1, centre.0, centre.1);
 
-    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
+    // GL3D_MSAA=0 measures the scene without multisampling (the cost of D98's MSAA).
+    let msaa = std::env::var("GL3D_MSAA").ok().and_then(|m| m.parse().ok()).unwrap_or(4);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, msaa, ..Default::default() });
     let hud = |car: (f32, f32), zoom: f32, yaw: f32| View { car, zoom, yaw, car_y: Some(t.height(car.0, car.1) + 1.0), ..View::hud() };
     let big = |car: (f32, f32), zoom: f32, angle: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] };
     let scenes: Vec<(&str, View, f32)> = vec![
@@ -2517,6 +2524,507 @@ fn gl3d_translucent_roads_are_one_layer() {
         let r = inside(&v, 1.0);
         let opaque_fill = solid.count_near([r[0], r[1], r[2], r[3]], fill, 6);
         assert!(opaque_fill > 300, "{name}: opacity 1 draws the fill's own colour ({opaque_fill} px)");
+    }
+    rig.finish(&Gl3dHandle::new());
+}
+
+// ── shimmer (D98): crawling edges and sparkle while the map moves ─────────────────────────────
+//
+// Two numbers per scene, from a short path of sub-pixel steps:
+//
+// * **aliasing error**: how far each frame is from the picture an ideal anti-aliaser gives (the
+//   same view at `ss` x the pixel density, box-filtered down: "the reference"), mean absolute
+//   difference of the worst channel in levels, and the share of pixels off by more than
+//   `SHIMMER_LEVEL`. An aliased edge or a sparkling texel is off by up to the contrast.
+// * **temporal shimmer**: the second temporal difference |I(t-1) - 2 I(t) + I(t+1)|. For a picture
+//   moving by a fraction of a pixel per frame it is small; an edge that flips from one pixel value
+//   to the other shows as +-contrast in two consecutive frames. (Not zero even for the reference:
+//   a thin line's coverage has kinks as it crosses the pixel grid.)
+
+#[derive(Clone, Copy, Debug)]
+struct Shimmer {
+    /// Mean of the measure over the inner area, in levels (0..255).
+    mean: f64,
+    /// Share (%) of pixel-frames over `SHIMMER_LEVEL` levels.
+    pct: f64,
+}
+
+const SHIMMER_LEVEL: i32 = 24;
+
+fn level(a: [u8; 4], b: [u8; 4]) -> i32 {
+    (0..3).map(|k| (a[k] as i32 - b[k] as i32).abs()).max().unwrap()
+}
+
+fn second_difference(f: &[Out], r: [usize; 4]) -> (Shimmer, Vec<u8>) {
+    let (mut sum, mut over, mut n) = (0u64, 0usize, 0usize);
+    let mut map = vec![0u8; (r[2] - r[0]) * (r[3] - r[1])];
+    for t in 1..f.len() - 1 {
+        for y in r[1]..r[3] {
+            for x in r[0]..r[2] {
+                let (a, b, c) = (f[t - 1].at(x, y), f[t].at(x, y), f[t + 1].at(x, y));
+                let d = (0..3).map(|k| (a[k] as i32 - 2 * b[k] as i32 + c[k] as i32).abs()).max().unwrap();
+                sum += d as u64;
+                over += (d > SHIMMER_LEVEL) as usize;
+                n += 1;
+                let m = &mut map[(y - r[1]) * (r[2] - r[0]) + (x - r[0])];
+                *m = (*m).max(d.min(255) as u8);
+            }
+        }
+    }
+    (Shimmer { mean: sum as f64 / n as f64, pct: 100.0 * over as f64 / n as f64 }, map)
+}
+
+/// The error of `f` against the reference frames `r`, over the box `b`.
+fn aliasing_error(f: &[Out], reference: &[Out], b: [usize; 4]) -> Shimmer {
+    let (mut sum, mut over, mut n) = (0u64, 0usize, 0usize);
+    for (o, rf) in f.iter().zip(reference) {
+        for y in b[1]..b[3] {
+            for x in b[0]..b[2] {
+                let d = level(o.at(x, y), rf.at(x, y));
+                sum += d as u64;
+                over += (d > SHIMMER_LEVEL) as usize;
+                n += 1;
+            }
+        }
+    }
+    Shimmer { mean: sum as f64 / n as f64, pct: 100.0 * over as f64 / n as f64 }
+}
+
+/// `o` averaged over `ss` x `ss` blocks.
+fn box_down(o: &Out, ss: usize) -> Out {
+    let (w, h) = (o.w / ss, o.h / ss);
+    let mut px = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            for k in 0..4 {
+                let mut sum = 0u32;
+                for j in 0..ss {
+                    for i in 0..ss {
+                        sum += o.px[((y * ss + j) * o.w + x * ss + i) * 4 + k] as u32;
+                    }
+                }
+                px[(y * w + x) * 4 + k] = ((sum + (ss * ss / 2) as u32) / (ss * ss) as u32) as u8;
+            }
+        }
+    }
+    Out { px, w, h, gl_error: o.gl_error, fbo_restored: o.fbo_restored }
+}
+
+/// A view moved along its heading and sideways by `fwd` / `side` metres and turned by `dyaw`.
+fn moved(v: &View, fwd: f32, side: f32, dyaw: f32) -> View {
+    let (s, c) = v.yaw.sin_cos();
+    let mut m = v.clone();
+    m.car = (v.car.0 + s * fwd + c * side, v.car.1 + c * fwd - s * side);
+    m.yaw = v.yaw + dyaw;
+    m
+}
+
+/// Where a shimmer run goes: forward / sideways (px of the ground at the car per frame) and the
+/// turn (radians per frame).
+#[derive(Clone, Copy)]
+struct Path {
+    fwd: f32,
+    side: f32,
+    turn: f32,
+}
+
+/// Driving at about 0.1 px a frame (a slow crawl: edge and texture flips show as +-contrast
+/// where a smooth picture changes by a tenth of it) and turning by 0.016 degrees a frame.
+const DRIVE: Path = Path { fwd: 0.1, side: 0.06, turn: 0.0 };
+const TURN: Path = Path { fwd: 0.0, side: 0.0, turn: 0.016 * std::f32::consts::PI / 180.0 };
+/// A fast drive: 0.3 px a frame (the HUD at 500 m, ~150 km/h).
+const FAST: Path = Path { fwd: 0.3, side: 0.1, turn: 0.0 };
+
+/// `n` frames of `v` along `path`, each at `ss` x the pixel density and box-filtered down.
+#[allow(clippy::too_many_arguments)]
+fn series(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, ppp: f32, path: Path, n: usize, tweak: &dyn Fn(&mut Scene3d), ss: usize) -> (Vec<Out>, Option<f64>) {
+    let scale = camera(w, v).view.scale * ppp;
+    let (fwd, side) = (path.fwd / scale, path.side / scale);
+    let mut frames = vec![];
+    let mut gpu = vec![];
+    for i in 0..n {
+        let mut m = moved(v, fwd * i as f32, side * i as f32, path.turn * i as f32);
+        if v.car_y.is_some() {
+            m.car_y = Some(w.terrain.height(m.car.0, m.car.1) + 1.0);
+        }
+        let o = map_frame(rig, w, h, tex, &m, ppp * ss as f32, tweak);
+        assert_eq!(o.gl_error, 0, "GL error 0x{:X}", o.gl_error);
+        gpu.extend(h.stats().last.gpu_ms);
+        frames.push(if ss > 1 { box_down(&o, ss) } else { o });
+    }
+    (frames, if gpu.is_empty() { None } else { Some(median(gpu)) })
+}
+
+/// What one configuration of one scene measured.
+#[derive(Clone, Copy, Debug)]
+struct Report {
+    /// Aliasing error against the reference, over the drive.
+    err: Shimmer,
+    /// Temporal shimmer: the drive, the fast drive, the turn.
+    drive: Shimmer,
+    fast: Shimmer,
+    turn: Shimmer,
+    gpu_ms: Option<f64>,
+}
+
+fn save_d2(name: &str, frames: &[Out], r: [usize; 4]) {
+    let (_, map) = second_difference(frames, r);
+    let (rw, rh) = (r[2] - r[0], r[3] - r[1]);
+    let px: Vec<u8> = map.iter().flat_map(|&d| [d.saturating_mul(4), d.saturating_mul(4), d.saturating_mul(4), 255]).collect();
+    let img = image::RgbaImage::from_raw(rw as u32, rh as u32, px).expect("size");
+    let dir = png_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = img.save(dir.join(format!("shimmer_{name}_d2.png")));
+}
+
+/// Measure one scene with each of `samples` (0 = no multisampling) and print a line per
+/// configuration. `ss` = the reference's pixel density factor (1 = no reference, no error).
+#[allow(clippy::too_many_arguments)]
+fn shimmer_scene(rig: &mut Rig, w: &World, tex: MapTex, name: &str, v: &View, ppp: f32, ss: usize, samples: &[u32], n: usize, png: bool, tweak: &dyn Fn(&mut Scene3d), label: &str) -> Vec<(u32, Report)> {
+    let r = inside(v, ppp);
+    let mk = |msaa: u32| Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, msaa, ..Default::default() });
+    // The reference: 4 samples at ss x the density.
+    let reference = (ss > 1).then(|| {
+        let h = mk(4);
+        let _ = warm_up(rig, w, &h, tex, v, ppp * ss as f32);
+        let (f, _) = series(rig, w, &h, tex, v, ppp, DRIVE, n, tweak, ss);
+        h.destroy(&rig.gl);
+        let d = second_difference(&f, r).0;
+        let per: f64 = (1..f.len()).map(|t| diff_share(&f[t - 1], &f[t], r).1).sum::<f64>() / (f.len() - 1) as f64;
+        eprintln!("SHIMMER[{label}] {name:<18} REF ss{ss}: d2 drive {:.3} / {:.3} %, frame-to-frame {per:.2} % over 24", d.mean, d.pct);
+        f
+    });
+    let mut out = vec![];
+    for &msaa in samples {
+        let h = mk(msaa);
+        let _ = warm_up(rig, w, &h, tex, v, ppp);
+        let (f, gpu_ms) = series(rig, w, &h, tex, v, ppp, DRIVE, n, tweak, 1);
+        let (ff, _) = series(rig, w, &h, tex, v, ppp, FAST, n, tweak, 1);
+        let (tf, _) = series(rig, w, &h, tex, v, ppp, TURN, n, tweak, 1);
+        let rep = Report {
+            err: reference.as_ref().map_or(Shimmer { mean: f64::NAN, pct: f64::NAN }, |rf| aliasing_error(&f, rf, r)),
+            drive: second_difference(&f, r).0,
+            fast: second_difference(&ff, r).0,
+            turn: second_difference(&tf, r).0,
+            gpu_ms,
+        };
+        eprintln!(
+            "SHIMMER[{label}] {name:<18} msaa {msaa} (got {}): err {:.2} / {:.2} % | d2 drive {:.3} / {:.3} %, fast {:.3} / {:.3} %, turn {:.3} / {:.3} % | gpu {}",
+            h.samples(),
+            rep.err.mean,
+            rep.err.pct,
+            rep.drive.mean,
+            rep.drive.pct,
+            rep.fast.mean,
+            rep.fast.pct,
+            rep.turn.mean,
+            rep.turn.pct,
+            gpu_ms.map_or("n/a".into(), |g| format!("{g:.3} ms"))
+        );
+        if std::env::var_os("SHIMMER_FRAMES").is_some() {
+            let per: Vec<String> = (1..f.len()).map(|t| format!("{:.2}", diff_share(&f[t - 1], &f[t], r).1)).collect();
+            eprintln!("  frame-to-frame % of pixels changed by >24: {}", per.join(" "));
+        }
+        if png && std::env::var_os("SHIMMER_ALL").is_some() {
+            for (k, o) in f.iter().enumerate() {
+                o.save(&format!("seq_{name}_msaa{msaa}_{k:02}.png"));
+            }
+        }
+        if png {
+            f[n / 2].save(&format!("shimmer_{name}_msaa{msaa}.png"));
+            save_d2(&format!("{name}_msaa{msaa}"), &f, r);
+            if let Some(rf) = reference.as_ref().filter(|_| msaa == *samples.last().unwrap()) {
+                rf[n / 2].save(&format!("shimmer_{name}_ref.png"));
+            }
+        }
+        h.destroy(&rig.gl);
+        out.push((msaa, rep));
+    }
+    out
+}
+
+fn synthetic_shimmer_scenes(w: &World) -> Vec<(&'static str, View, f32, usize)> {
+    let t = &w.terrain;
+    let at = |car: (f32, f32)| Some(t.height(car.0, car.1) + 1.0);
+    let hud = |zoom: f32| View { zoom, car: (-200.0, -280.0), yaw: 0.0, car_y: at((-200.0, -280.0)), ..View::hud() };
+    let car = |kind: MarkerStyle| {
+        let mut v = hud(150.0);
+        let c = v.car;
+        v.marker = Some(Marker3d { pos: [c.0, t.height(c.0, c.1), c.1], yaw: 0.6, kind, colour: CAR });
+        v
+    };
+    vec![
+        ("hud_x3_arrow", car(MarkerStyle::Arrow), 3.0, 2),
+        ("hud_x3_sedan", car(MarkerStyle::Sedan), 3.0, 2),
+        ("hud_x3_500", hud(500.0), 3.0, 2),
+        ("hud_x1_500", hud(500.0), 1.0, 4),
+        ("dashboard_800", View { car_y: at((0.0, -250.0)), ..View::dashboard() }, 1.0, 2),
+        ("viewer_3000", View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 340.0)), car: (0.0, -200.0), yaw: 0.3, zoom: 3000.0, angle: 55.0, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] }, 1.0, 2),
+    ]
+}
+
+/// The shimmer limits of the synthetic scenes (% of pixel-frames whose second temporal difference
+/// exceeds `SHIMMER_LEVEL`) for the drive (0.1 px a frame) and the fast drive (0.3 px), with the
+/// production settings. Measured after D98 / before it (original shader, no multisampling):
+/// hud_x1 0.34 / 2.8 (2.4 / 7.8), hud_x3 0.07 / 1.2 (0.79 / 2.7), dashboard 0.08 / 0.76 (0.61 / 2.1),
+/// viewer 0.001 / 0.02 (0.13 / 0.45), arrow 0.04 / 0.6, sedan 0.07 / 0.7; the limits keep ~40 % of
+/// room for another GPU's sample positions.
+const SHIMMER_LIMITS: &[(&str, f64, f64)] = &[
+    ("hud_x1_500", 0.8, 4.5),
+    ("hud_x3_500", 0.3, 1.9),
+    ("dashboard_800", 0.3, 1.3),
+    ("viewer_3000", 0.05, 0.15),
+    ("hud_x3_arrow", 0.12, 0.9),
+    ("hud_x3_sedan", 0.12, 1.0),
+];
+
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_shimmer_synthetic() {
+    let Some(mut rig) = open(Flavour::Default, None, [1400, 960]) else { return };
+    eprintln!("{}", rig.info());
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let mut failures = vec![];
+    for (name, v, ppp, ss) in synthetic_shimmer_scenes(&w) {
+        let all = shimmer_scene(&mut rig, &w, tex, name, &v, ppp, ss, &[0, 4], 16, true, &|_| {}, "all");
+        shimmer_scene(&mut rig, &w, tex, name, &v, ppp, ss, &[0, 4], 16, false, &|s| { s.mesh = None; s.roads.on = false; }, "terrain");
+        let (_, plain) = all[0];
+        let (_, aa) = all[1];
+        let Some(&(_, drive, fast)) = SHIMMER_LIMITS.iter().find(|l| l.0 == name) else { continue };
+        if aa.drive.pct > drive || aa.fast.pct > fast {
+            failures.push(format!("{name}: {:.3} % / {:.3} % of pixel-frames shimmer (drive / fast), limits {drive} / {fast}", aa.drive.pct, aa.fast.pct));
+        }
+        // Multisampling must pay for itself where the picture has geometry edges (not the Viewer,
+        // whose roads are all sub-pixel lines the shader anti-aliases).
+        if name != "viewer_3000" && aa.drive.pct > 0.75 * plain.drive.pct {
+            failures.push(format!("{name}: 4x multisampling leaves {:.3} % of the drive shimmering against {:.3} % without", aa.drive.pct, plain.drive.pct));
+        }
+    }
+    rig.finish(&Gl3dHandle::new());
+    assert!(failures.is_empty(), "shimmer regressions:\n{}", failures.join("\n"));
+}
+
+/// The scenes of `gl3d_real_install_scenes` on the real island (HUD driving, Dashboard, Viewer),
+/// with the reference factor each can afford in the rig.
+fn real_shimmer_scenes(w: &World) -> Vec<(&'static str, View, f32, usize)> {
+    let t = &w.terrain;
+    let mut bridge = (0.0f32, 0.0f32, 0.0f32);
+    for ch in &w.layers.roads.by_type[RoadType::Highway.index() as usize] {
+        for (p, &y) in ch.pts.iter().zip(&ch.y) {
+            let ex = y - t.height(p[0], p[1]);
+            if ex > bridge.2 && ex < 60.0 {
+                bridge = (p[0], p[1], ex);
+            }
+        }
+    }
+    let mut cells = std::collections::HashMap::<(i32, i32), u32>::new();
+    for s in &w.mesh.samples {
+        *cells.entry(((s.x / 200.0).floor() as i32, (s.z / 200.0).floor() as i32)).or_default() += 1;
+    }
+    let (&(cx, cz), _) = cells.iter().max_by_key(|(_, &n)| n).unwrap();
+    let city = (cx as f32 * 200.0 + 100.0, cz as f32 * 200.0 + 100.0);
+    let hud = |car: (f32, f32), zoom: f32, yaw: f32| View { car, zoom, yaw, car_y: Some(t.height(car.0, car.1) + 1.0), ..View::hud() };
+    let big = |car: (f32, f32), zoom: f32, w_: f32, h_: f32| View { site: Site::Dashboard, rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(w_, h_)), car, yaw: 0.0, zoom, angle: 55.0, car_y: None, clip: None, no_3d: false, marker: None, mates: vec![] };
+    vec![
+        ("hud_city_500_x3", hud(city, 500.0, 0.8), 3.0, 2),
+        ("hud_city_500_x1", hud(city, 500.0, 0.8), 1.0, 4),
+        ("hud_bridge_150_x3", hud((bridge.0, bridge.1), 150.0, 0.4), 3.0, 2),
+        ("dashboard_city_1500", big(city, 1500.0, 600.0, 400.0), 1.0, 2),
+        ("viewer_city_3000", big(city, 3000.0, 640.0, 360.0), 1.0, 2),
+    ]
+}
+
+/// Shimmer limits on the real island (% of pixel-frames over `SHIMMER_LEVEL` levels: drive 0.1 px a
+/// frame, fast 0.3 px), 3D with the production settings. Before D98 (original shader, no MSAA) ->
+/// after: hud_city_x3 1.2 / 3.2 -> 0.64 / 1.9, hud_city_x1 3.5 / 9.7 -> 1.4 / 4.4, hud_bridge_x3
+/// 0.63 / 2.0 -> 0.48 / 1.5, dashboard_city 1.9 / 5.4 -> 0.50 / 1.5, viewer_city 2.2 / 6.1 -> 0.38 /
+/// 1.1; the ideal picture has 0.07-0.32 / (not measured fast). Limits: ~35 % over "after".
+const REAL_SHIMMER_LIMITS: &[(&str, f64, f64)] = &[
+    ("hud_city_500_x3", 0.9, 2.6),
+    ("hud_city_500_x1", 1.9, 5.9),
+    ("hud_bridge_150_x3", 0.7, 2.1),
+    ("dashboard_city_1500", 0.7, 2.1),
+    ("viewer_city_3000", 0.55, 1.5),
+];
+
+/// The 2D (egui) map, the same scenes, with the texture the Dashboard really has (no mipmaps): the
+/// limits hold because `add_map_mips` builds the chain. Before D98 (no mips): dashboard 0.19 / 3.2,
+/// viewer 0.73 / 9.5, hud_x1 0.43 / 7.2; after: 0.16 / 0.81, 0.16 / 0.94, 0.35 / 3.5.
+const REAL_SHIMMER_2D_LIMITS: &[(&str, f64, f64)] = &[
+    ("hud_city_500_x3", 0.1, 1.4),
+    ("hud_city_500_x1", 0.5, 4.8),
+    ("dashboard_city_1500", 0.25, 1.1),
+    ("viewer_city_3000", 0.25, 1.3),
+];
+
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_shimmer() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_shimmer: no FH6 install");
+        return;
+    };
+    let Some(mut rig) = open(Flavour::Default, None, [1400, 960]) else { return };
+    eprintln!("{}", rig.info());
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    // SHIMMER_ONLY=<name part> picks scenes; SHIMMER_QUICK=1 only the all-layers run with 4 samples.
+    let only = std::env::var("SHIMMER_ONLY").ok();
+    let quick = std::env::var_os("SHIMMER_QUICK").is_some();
+    let mut failures = vec![];
+    for (name, v, ppp, ss) in real_shimmer_scenes(&w) {
+        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+            continue;
+        }
+        let var = std::env::var("SHIMMER_TWEAK").unwrap_or_default();
+        let tw = |s: &mut Scene3d| match var.as_str() {
+            "nodeck" => s.relief.deck_m = 0.0,
+            "drape" => s.relief.road_height = crate::maprender::cfg::RoadHeight::Terrain,
+            "nocasing" => s.roads.casing_px = 0.0,
+            _ => {}
+        };
+        let all = shimmer_scene(&mut rig, &w, tex, name, &v, ppp, ss, if quick { &[4] } else { &[0, 4] }, 16, true, &tw, "all");
+        if let (Some(&(_, drive, fast)), true) = (REAL_SHIMMER_LIMITS.iter().find(|l| l.0 == name), var.is_empty()) {
+            let (_, aa) = all.last().expect("a run");
+            if aa.drive.pct > drive || aa.fast.pct > fast {
+                failures.push(format!("{name}: {:.3} % / {:.3} % of pixel-frames shimmer (drive / fast), limits {drive} / {fast}", aa.drive.pct, aa.fast.pct));
+            }
+        }
+        if !quick {
+            shimmer_scene(&mut rig, &w, tex, name, &v, ppp, ss, &[0, 4], 16, false, &|s| { s.mesh = None; s.roads.on = false; }, "terrain");
+        }
+    }
+    rig.finish(&Gl3dHandle::new());
+    assert!(failures.is_empty(), "shimmer regressions:\n{}", failures.join("\n"));
+}
+
+/// The 2D path (egui meshes, `paint2d`) under the same measure: the tilted Dashboard map and a
+/// HUD, with the map texture mipmapped (the overlay's) and not (`app.rs` loads the Dashboard's with
+/// `mipmap_mode: None`).
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_shimmer_2d() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_shimmer_2d: no FH6 install");
+        return;
+    };
+    let Some(mut rig) = open(Flavour::Default, None, [1400, 960]) else { return };
+    let mips = crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS;
+    let no_mips = TextureOptions { mipmap_mode: None, ..mips };
+    let scenes = real_shimmer_scenes(&w);
+    let mut failures = vec![];
+    for (label, opts) in [("mips", mips), ("no mips", no_mips)] {
+        let (_hold, tex) = rig.load_map(&w, opts);
+        for (name, v, ppp, ss) in scenes.iter().filter(|s| s.0 != "hud_bridge_150_x3") {
+            let mut v = v.clone();
+            v.no_3d = true;
+            let h = Gl3dHandle::new();
+            let r = inside(&v, *ppp);
+            let (reference, _) = series(&mut rig, &w, &h, tex, &v, *ppp, DRIVE, 16, &|_| {}, *ss);
+            let (f, _) = series(&mut rig, &w, &h, tex, &v, *ppp, DRIVE, 16, &|_| {}, 1);
+            let (ff, _) = series(&mut rig, &w, &h, tex, &v, *ppp, FAST, 16, &|_| {}, 1);
+            let err = aliasing_error(&f, &reference, r);
+            let (d, df) = (second_difference(&f, r).0, second_difference(&ff, r).0);
+            let dr = second_difference(&reference, r).0;
+            eprintln!(
+                "SHIMMER2D[{label}] {name:<20} err {:.2} / {:.2} % | d2 drive {:.3} / {:.3} %, fast {:.3} / {:.3} % | ref d2 {:.3} / {:.3} %",
+                err.mean, err.pct, d.mean, d.pct, df.mean, df.pct, dr.mean, dr.pct
+            );
+            f[8].save(&format!("shimmer2d_{}_{name}.png", label.replace(' ', "_")));
+            if let Some(&(_, drive, fast)) = REAL_SHIMMER_2D_LIMITS.iter().find(|l| l.0 == *name) {
+                if d.pct > drive || df.pct > fast {
+                    failures.push(format!("2D [{label}] {name}: {:.3} % / {:.3} % of pixel-frames shimmer (drive / fast), limits {drive} / {fast}", d.pct, df.pct));
+                }
+            }
+        }
+    }
+    rig.finish(&Gl3dHandle::new());
+    assert!(failures.is_empty(), "2D shimmer regressions:\n{}", failures.join("\n"));
+}
+
+/// What the production default gives: multisampling on (when the GPU has it), resolved so the
+/// composite reads a finished picture, and the picture is clean (the same GL checks as every scene).
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_msaa_is_on_by_default_and_the_picture_is_resolved() {
+    let Some(mut rig) = open(Flavour::Default, None, [700, 460]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let car_y = Some(w.terrain.height(-200.0, -280.0) + 1.0);
+    let v = View { zoom: 500.0, car: (-200.0, -280.0), yaw: 0.0, car_y, ..View::hud() };
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let o = warm_up(&mut rig, &w, &h, tex, &v, 3.0);
+    let max = h.caps().map_or(0, |c| c.max_samples);
+    eprintln!("MSAA: {} samples of {max} offered", h.samples());
+    assert_eq!(h.samples(), if max >= 2 { 4.min(max) } else { 0 }, "samples");
+    // Road colours are on screen: the resolve delivered the multisampled colour.
+    let r = inside(&v, 3.0);
+    let road = rgb(RoadsCfg::default().styles.road.color);
+    assert!(o.count_near([r[0], r[1], r[2], r[3]], road, 40) > 50, "no road colour in the resolved picture");
+    // MSAA off: a plain FBO, the same picture class.
+    let h0 = Gl3dHandle::with_options(Gl3dOptions { guard: None, msaa: 0, ..Default::default() });
+    let _ = warm_up(&mut rig, &w, &h0, tex, &v, 3.0);
+    assert_eq!(h0.samples(), 0);
+    h0.destroy(&rig.gl);
+    rig.finish(&h);
+}
+
+/// The slow-GPU guard drops multisampling before it gives up on 3D (D98): an impossible limit
+/// first switches the samples off, and only a second verdict fails the scene.
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_guard_drops_msaa_before_failing() {
+    let Some(mut rig) = open(Flavour::Default, None, [700, 460]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let v = View { car_y: Some(101.0), ..View::hud() };
+    // 0 ms for 0.05 s: every frame is "too slow".
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: Some((0.0, 0.05)), ..Default::default() });
+    let mut seen = vec![];
+    for _ in 0..400 {
+        let _ = map_frame(&mut rig, &w, &h, tex, &v, 3.0, &|_| {});
+        seen.push((h.samples(), h.status().failure().is_some()));
+        if h.status().failure().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let max = h.caps().map_or(0, |c| c.max_samples);
+    eprintln!("guard run: {} frames, last {:?}", seen.len(), seen.last());
+    if max >= 2 {
+        let first_plain = seen.iter().position(|s| s.0 == 0 && !s.1);
+        let failed = seen.iter().position(|s| s.1);
+        assert!(first_plain.is_some(), "multisampling was never dropped: {seen:?}");
+        assert!(failed.is_some_and(|f| f > first_plain.unwrap()), "3D must fail only after the samples are dropped");
+    }
+    rig.finish(&h);
+}
+
+/// The 2D map's texture (egui uploads the Dashboard's without mipmaps) is made trilinear +
+/// anisotropic by `add_map_mips` (D98); a texture that has mips only gains the anisotropy.
+#[test]
+#[ignore = "needs an EGL device"]
+fn gl3d_2d_map_gets_mipmaps() {
+    let Some(mut rig) = open(Flavour::Default, None, [700, 460]) else { return };
+    let w = world();
+    let plain = TextureOptions { mipmap_mode: None, ..crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS };
+    for (label, opts) in [("no mips", plain), ("mips", crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS)] {
+        let (_hold, tex) = rig.load_map(&w, opts);
+        let mut v = View::dashboard();
+        v.no_3d = true;
+        let h = Gl3dHandle::new();
+        let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|_| {});
+        assert_eq!(o.gl_error, 0, "{label}: GL error");
+        let gl = rig.gl.clone();
+        let t = rig.painter().texture(tex.id).expect("egui's texture");
+        // SAFETY: plain state queries on the current context.
+        let (f, a) = unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, Some(t));
+            (gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32, gl.get_tex_parameter_f32(glow::TEXTURE_2D, 0x84FE))
+        };
+        assert_eq!(f, glow::LINEAR_MIPMAP_LINEAR, "{label}: minification filter");
+        let max = rig.hl.glow.supported_extensions().iter().any(|e| e.contains("anisotropic"));
+        assert!(!max || a > 1.0, "{label}: anisotropy {a}");
     }
     rig.finish(&Gl3dHandle::new());
 }

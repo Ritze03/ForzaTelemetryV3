@@ -16,6 +16,8 @@ pub struct Caps {
     pub es: bool,
     pub max_texture: i32,
     pub max_renderbuffer: i32,
+    /// `GL_MAX_SAMPLES`: the most samples a multisampled renderbuffer may have (4 at least in GL 3.3 / ES 3.0).
+    pub max_samples: i32,
     /// Anisotropic filtering (extension) and its maximum, if present.
     pub aniso: Option<f32>,
     /// `GL_TIME_ELAPSED` queries (desktop 3.3+; the ES extension is not used).
@@ -29,13 +31,14 @@ pub fn probe(gl: &glow::Context, opts: &Gl3dOptions) -> Result<Caps, String> {
     let v = gl.version();
     let (major, minor) = (v.major, v.minor);
     // SAFETY: plain state queries on the current context.
-    let (version, renderer, max_texture, max_renderbuffer, vtex) = unsafe {
+    let (version, renderer, max_texture, max_renderbuffer, vtex, max_samples) = unsafe {
         (
             gl.get_parameter_string(glow::VERSION),
             gl.get_parameter_string(glow::RENDERER),
             gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE),
             gl.get_parameter_i32(glow::MAX_RENDERBUFFER_SIZE),
             gl.get_parameter_i32(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS),
+            gl.get_parameter_i32(glow::MAX_SAMPLES),
         )
     };
     let need = if v.is_embedded { opts.min_es } else { opts.min_gl };
@@ -58,7 +61,7 @@ pub fn probe(gl: &glow::Context, opts: &Gl3dOptions) -> Result<Caps, String> {
         .then(|| unsafe { gl.get_parameter_f32(MAX_TEXTURE_MAX_ANISOTROPY) }.min(16.0))
         .filter(|a| *a >= 1.0);
     let timer = !v.is_embedded && (major, minor) >= (3, 3);
-    Ok(Caps { version, renderer, es: v.is_embedded, max_texture, max_renderbuffer, aniso, timer })
+    Ok(Caps { version, renderer, es: v.is_embedded, max_texture, max_renderbuffer, max_samples, aniso, timer })
 }
 
 /// `GL_MAX_TEXTURE_MAX_ANISOTROPY` / `GL_TEXTURE_MAX_ANISOTROPY` (EXT and ARB share the values).
