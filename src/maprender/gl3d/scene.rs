@@ -103,6 +103,9 @@ struct Fbo {
     fbo: glow::Framebuffer,
     tex: glow::Texture,
     depth: glow::Renderbuffer,
+    /// A second depth buffer of the same size, swapped in for the tunnel pass (D95): the tunnels
+    /// are drawn over everything, so they need a depth of their own to sort among themselves.
+    depth_tunnel: glow::Renderbuffer,
     size: [i32; 2],
 }
 
@@ -281,6 +284,7 @@ impl Gl3d {
                 gl.delete_framebuffer(old.fbo);
                 gl.delete_texture(old.tex);
                 gl.delete_renderbuffer(old.depth);
+                gl.delete_renderbuffer(old.depth_tunnel);
             }
         }
         // SAFETY: plain GL object creation on the current context; the caller restores the
@@ -296,20 +300,24 @@ impl Gl3d {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
             let depth = gl.create_renderbuffer()?;
             gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
-            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, w, h);
+            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH24_STENCIL8, w, h);
+            let depth_tunnel = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth_tunnel));
+            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH24_STENCIL8, w, h);
             let fbo = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
-            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(depth));
+            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(depth));
             gl.active_texture(glow::TEXTURE0);
             let st = gl.check_framebuffer_status(glow::FRAMEBUFFER);
             if st != glow::FRAMEBUFFER_COMPLETE {
                 gl.delete_framebuffer(fbo);
                 gl.delete_texture(tex);
                 gl.delete_renderbuffer(depth);
+                gl.delete_renderbuffer(depth_tunnel);
                 return Err(format!("the scene framebuffer is incomplete (0x{st:X})"));
             }
-            self.fbo = Some(Fbo { fbo, tex, depth, size: [w, h] });
+            self.fbo = Some(Fbo { fbo, tex, depth, depth_tunnel, size: [w, h] });
         }
         Ok(())
     }
@@ -494,8 +502,7 @@ impl Gl3d {
             // D82: "race road only" draws nothing of the road mesh while the race road is there.
             let race_only = f.race.is_some_and(|r| r.cfg.route == RouteStyle::Road) && self.race.is_some() && f.focus.is_some_and(|c| c.other_roads == OtherRoads::RaceOnly);
             if let (Some(rc), Some(r), false) = (f.roads, self.roads.as_ref(), race_only) {
-                let table = roads::style_table(rc, f.focus, f.cam.view.scale, f.s, f.ppp);
-                self.draw_roads(gl, f, &heights, &table, r, None, &mut st);
+                let table = roads::style_table(rc, f.focus, f.cam.view.scale, f.s, f.ppp);                self.draw_roads(gl, f, &heights, &table, r, None, &mut st);
             }
             // ── the race lines (D80 / D88): after every road, over them where nothing is in front
             // of them: their open stretches are depth-tested like the roads' (hidden behind hills
@@ -586,6 +593,7 @@ impl Gl3d {
                 st.draws += 1;
             };
             // Two passes (D81): every casing, then every fill over them (`shaders::ROAD_VS`).
+            // (pass 2 = the translucent roads' one ribbon, at the fill's depth step)
             let pass = |which: f32| {
                 gl.uniform_1_f32(p.u("uPass"), which);
                 let (base, rank) = match race {
@@ -595,6 +603,32 @@ impl Gl3d {
                 };
                 gl.uniform_2_f32(p.u("uBias"), base, rank);
             };
+            // The translucent roads (D95), blended once where they are nearest: their depth first
+            // (colour masked), then their colour where the depth is that nearest one (`LEQUAL`,
+            // the same program with the same uniforms gives the same depth twice). Two surfaces
+            // at the very same depth (two coplanar roads at a junction; 24 bits do not tell
+            // them apart) would both pass, so the first to pass also marks the pixel in the
+            // stencil, and no other is drawn there. The stencil is this pass's own: cleared
+            // before it (the previous road mesh's pass left its marks).
+            let translucent = |draws: &[roads::Draw], st: &mut RenderStats| {
+                pass(2.0);
+                gl.color_mask(false, false, false, false);
+                gl.depth_mask(true);
+                for d in draws {
+                    draw(d, st);
+                }
+                gl.color_mask(true, true, true, true);
+                gl.stencil_mask(0xFF);
+                gl.clear_stencil(0);
+                gl.clear(glow::STENCIL_BUFFER_BIT);
+                gl.enable(glow::STENCIL_TEST);
+                gl.stencil_func(glow::EQUAL, 0, 0xFF);
+                gl.stencil_op(glow::KEEP, glow::KEEP, glow::INCR);
+                for d in draws {
+                    draw(d, st);
+                }
+                gl.disable(glow::STENCIL_TEST);
+            };
             // (the roads' tunnel pass before a race road pass left the depth test off)
             gl.enable(glow::DEPTH_TEST);
             for which in [0.0, 1.0] {
@@ -603,12 +637,34 @@ impl Gl3d {
                     draw(d, st);
                 }
             }
-            // Tunnels are underground: drawn last, over everything, without the depth test.
-            gl.disable(glow::DEPTH_TEST);
-            for which in [0.0, 1.0] {
-                pass(which);
-                for d in &plan.tunnel {
-                    draw(d, st);
+            if table.translucent(false) {
+                translucent(&plan.normal, st);
+            }
+            // Tunnels are underground: drawn last, over everything. Opaque ones without the depth
+            // test, in draw order, as ever; with a translucent road among them, in a depth buffer
+            // of their own (cleared, so still over everything) so that their overlaps blend once.
+            if !plan.tunnel.is_empty() {
+                let own_depth = table.translucent(true).then(|| self.fbo.as_ref().map(|b| b.depth_tunnel)).flatten();
+                if let Some(d) = own_depth {
+                    gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(d));
+                    gl.depth_mask(true);
+                    gl.clear_depth_f32(1.0);
+                    gl.clear(glow::DEPTH_BUFFER_BIT);
+                } else {
+                    // (no own depth: this is the frame's, and the test off means no depth writes)
+                    gl.disable(glow::DEPTH_TEST);
+                }
+                for which in [0.0, 1.0] {
+                    pass(which);
+                    for d in &plan.tunnel {
+                        draw(d, st);
+                    }
+                }
+                if own_depth.is_some() {
+                    translucent(&plan.tunnel, st);
+                    if let Some(b) = self.fbo.as_ref() {
+                        gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(b.depth));
+                    }
                 }
             }
             gl.disable(glow::CULL_FACE);
@@ -861,6 +917,7 @@ impl Gl3d {
                 gl.delete_framebuffer(f.fbo);
                 gl.delete_texture(f.tex);
                 gl.delete_renderbuffer(f.depth);
+                gl.delete_renderbuffer(f.depth_tunnel);
             }
         }
         self.clip.destroy(gl);

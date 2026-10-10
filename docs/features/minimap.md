@@ -325,7 +325,7 @@ Order on the Dashboard: base image, then **`draw_layers_parts`** (roads by type,
 start / finish marks, the **navigation route** (D84, below), POIs), then trails, teammates, own arrow, waypoints,
 the navigation destination pin, compass.
 
-- **CPU `Painter`, no baking.** One `Shape::line` per visible chain, every type's casing first, then
+- **CPU `Painter`, no baking.** One `Shape::line` per visible chain (a type with opacity below 1: triangle strips, see "Road opacity (D95)" below), every type's casing first, then
   every type's fill (D81; chain ends mitred or round-capped, overpasses outlined, see "Road joins and
   junctions" below), chains culled by their bbox against the view's world box (`Camera::world_aabb`), vertices
   thinned to >= 2 px apart on screen (`view::thin` keeps the first and last point and is idempotent).
@@ -480,6 +480,103 @@ crossing not). PNGs (`--ignored`, `GL3D_PNG_DIR`, `JOIN_TAG=before|after`): `gl3
 scenes above in flat 2D and 3D, plus the 4-way with an arm hidden) and `gl3d_real_install_joins` (a city
 crossing and T, a highway junction, an L-corner, a type change, a shallow Y of the real island, 2D at
 120 / 400 m and 3D at 40 / 150 m).
+
+### Road opacity (D95): a translucent road is see-through, not darker
+
+**The bug:** a road type's *opacity* (`RoadTypeStyle::alpha`, Map tab -> Roads -> By type) only gave
+the *fill* its alpha. The casing under it (the dark outline, +1.4 px wide) was drawn at the separate
+global *Outline opacity* (`casing_alpha`, 1.0), so a translucent fill lay over an opaque dark
+casing: the road got *darker*, not see-through, and only a hair-thin rim showed the map. Both
+renderers did it (2D lines: casing line then fill line; 3D: casing pass then fill pass, depth-tested
+`LEQUAL`, so the fill blended over the casing).
+
+**The rule now:** a type with alpha below 1 (`paint2d::OPAQUE_ALPHA` 0.99, `gl3d::roads::OPAQUE_ALPHA`
+0.999) is drawn as **one surface**: fill and casing both at the type's alpha (the casing's is
+`casing_alpha x alpha`, so *Outline opacity* still scales it), covering every pixel at most once.
+Alpha 1 takes exactly the paths of before (egui lines; the two 3D passes), so nothing changes for an
+opaque type. A type's casing never shows through its own fill, and two pieces of a type that meet do
+not blend twice. The tunnel keeps its see-through rule (drawn over everything, default alpha 0.85).
+
+- **2D / Tilted (`paint2d::strip`, `casing_strips`, `fill_strip`):** a translucent type is not drawn
+  with egui lines but with triangle strips along the same projected, thinned, tapered pieces: the
+  casing as **two bands** beside the fill (in the casing pass, so "every casing before any fill" of
+  D81 still holds) and a solid fill as one **strip** (in the fill pass, in type order). Every strip has
+  the 1 px fade egui's lines have at its edges (`1 / pixels_per_point`); the band's inner fade is the
+  complement of the fill's, so the two add up to one layer. Corners are mitred like the 3D mesh
+  (`mesh3d::MITER_MAX`). *Joins:* an opaque line runs 1 px on into the next piece at a join and a wedge
+  fills the outer corner; for a ribbon both would overlap (a darker 1-2 px band across the road at
+  every join), so the piece ends exactly on the corner's bisector instead and the next piece starts on
+  the same two points. The 1 px extension is replaced by a marker point 0.01 px out
+  (`RIBBON_MARK_PX`) that only carries the bisector's direction to `strip`. Dead ends and junction
+  ends are square (a translucent round cap would overlap the road it meets; a translucent fill never
+  had caps, `fill_caps`), overpass outlines are skipped (they need an opaque fill, as before). A dashed
+  fill (trail, jump) keeps its dashes over the casing bands and leaves the gaps empty: the map shows
+  through, where an opaque dashed road shows its casing in the gaps. Jump lines do the same with their
+  single segment. Muted roads (D66) have no casing and plain ends already: unchanged.
+  *Why strips and not "casing only where the fill is not":* egui has no clip masks or layers, so a
+  casing can only be kept out from under the fill by not drawing it there, which is what the two bands
+  are. *Why one shared fade (not a hard band edge):* a hard inner edge leaves a one-pixel light seam
+  where the band meets egui's feathered fill.
+  *Not covered (egui has no layers):* two translucent *different* roads, or the same type crossing
+  without a shared node, still overlap and blend twice where they cross; so does a junction of three
+  or more arms of one type (the arms' square ends overlap in the node's quadrants: at alpha 0.5 those
+  pixels are 0.75 of the fill, a lighter patch about one road width across; the GL test
+  `gl3d_translucent_roads_are_one_layer` pins "at most two layers" there). *Why not fixed:* trimming the
+  arms and filling the hub needs the arms' angles and widths at the node, which the 2D path does not have
+  (`Joins` only knows degree-2 nodes), and a convex hub of the arms' corners fills the wedge between
+  arms that are close together. The 3D map has none of this (below). Also not
+  covered: the HUD's show/hide fade (`LayerCtx::a`) still multiplies an opaque road's casing and fill,
+  so for the fraction of a second it runs the road is slightly darker in the middle of the fade.
+- **3D (`ROAD_VS` / `ROAD_FS` pass 2, `scene::Gl3d::draw_roads`):** the road shader's third pass,
+  `uPass = 2`, draws every road whose alpha (after the in-race focus: a muted road's alpha is
+  `mute_alpha`) is below 1; passes 0 and 1 hide those (`trans != transPass` -> alpha 0) and draw the
+  opaque ones as before. A translucent cased road is **one ribbon at the casing's full width** (the
+  deck and walls with it): the fragment shader makes `vInner = fill width / casing width` of it the
+  fill colour and the rest the casing colour with a 1 px anti-aliased seam (a mix of two colours at the
+  same alpha, never two layers); a dashed fill leaves its gaps empty. An uncased one is its plain fill
+  ribbon. Between roads the pass draws **depth first with the colour masked, then in colour with the
+  depth test `LEQUAL`**: of the translucent surfaces that overlap (a road's top and its walls, two roads
+  at a junction, the casing of one road under the fill of another) only the nearest is blended.
+  Two coplanar surfaces (the arms of a junction at one height) can have the same 24-bit depth, so the
+  first to pass also writes the **stencil** (`EQUAL 0`, `INCR`) and no other is drawn there; the stencil
+  is cleared before each such pass (the scene's depth buffers are `DEPTH24_STENCIL8` for this).
+  The pass uses the fill pass's depth bias. The pass is drawn only when the style table has a
+  translucent slot in the range (`StyleTable::translucent`: in the normal range any slot but the
+  tunnel's, in the tunnel range the tunnel's; the in-race muted look when `mute_alpha` < 1). The untyped
+  slot 0 (grey, alpha 0.6) is always translucent, so the pass always runs; it only touches that slot's
+  vertices.
+  **Tunnels** (a range of their own per tile, drawn last without the depth test) with a translucent
+  tunnel (the default 0.85, the race road's tunnel stretches) are drawn into a **second depth buffer**
+  (`Fbo::depth_tunnel`, swapped in as the framebuffer's depth attachment and cleared, then swapped
+  back): still over everything (nothing in it but tunnels), but now depth-sorted among themselves, so
+  their casing, fill and crossing tunnels blend once. An opaque tunnel keeps the old no-depth-test
+  draw in draw order. The race road, the thin race line (`RaceCfg::alpha`, 0.85) and the navigation
+  route go through the same `draw_roads`, so their tunnel stretches (and the thin line) are covered too.
+  *Why depth + stencil and not draw-order sorting:* the roads are static GPU meshes drawn per tile in
+  one go; there is no per-frame CPU ordering to hang a back-to-front sort on, and "nearest wins" is
+  what a map wants (the highest rank on top at a junction, as with opaque roads).
+- **Measured** (release, real install, RX 7900 XTX, `cargo test --release gl3d_real_install_scenes
+  -- --ignored --nocapture`, "PERF opacity" lines, median of 20 frames; draws are the whole scene's):
+  the default style (only the tunnel at 0.85, plus the untyped slot) costs +0.007 ... +0.015 ms of GPU
+  over every type opaque (HUD city 500 m x3 0.048 -> 0.057 ms, Dashboard city 1.5 km 0.107 -> 0.122 ms,
+  Viewer island 8 km 0.070 -> 0.085 ms) and within the CPU noise (~+0.05 ms; +4 ... +76 draws of 31 ... 750); with
+  every type at 0.5 the same (the tiles' triangles are drawn twice more, the terrain dominates the
+  triangle count). 2D (`cargo test --release bench_ -- --ignored --nocapture`, build + tessellate, ms):
+  opaque Dashboard 900 x 600 at 5 km 0.74 + 1.23 (unchanged), with every type at 0.5 3.4 + 1.8
+  (the ribbons: 3 strips of 4 columns per piece instead of 2 lines); at 1.5 km 1.3 + 0.6; HUD tilted
+  at 300 m 0.35 + 0.09. That is the worst case, every road type translucent in the busiest part of the
+  island; one translucent type costs about its share of the roads' vertices (not measured on its
+  own). The default (opaque types, the tunnels' 0.85) draws the same lines as before, ribbons
+  only where tunnels are.
+- **Tests:** `paint2d::tests::a_translucent_road_is_see_through_everywhere_not_darker` (a software
+  composite of the tessellated shapes over a known background: the fill is `alpha` of its colour, the
+  casing beside it `alpha` of its colour, nothing darker where the pieces of one road meet or
+  bend, for a road at 0.5 and the tunnel at 0.85; fails against the old lines),
+  `an_opaque_road_type_is_still_egui_lines`; GL (`--ignored`): `gl3d_translucent_roads_are_one_layer`
+  (a four-way of road ends and an X of two crossing tunnels over the known map at 0.5 and 0.25: the fill
+  share is `alpha` everywhere, never more, the casing is `alpha` of the casing colour, the opaque
+  frame still has the fill's own colour; the same scene in flat 2D through the real painter, where only
+  the junction square may be two layers). The PNGs (`GL3D_PNG_DIR`) are `translucent_{road,tunnel}_*`.
 
 ### Race lines and the "current race" guess
 
@@ -1005,7 +1102,7 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
   casing at fill + `casing_px`, then every fill over them, see "Road joins and junctions"), so it
   tapers by construction. Dashes (trail, jump) are in **metres** along the chain, converted from the 2D
   pixel pattern at the car's scale (so they foreshorten with the road). **Tunnels** are a second range
-  per tile, drawn last with the depth test off (underground, as the editor page). In-race focus
+  per tile, drawn last over everything (underground, as the editor page): with the depth test off, or with a translucent tunnel (default 0.85) in a depth buffer of their own, see "Road opacity (D95)" above. In-race focus
   (D66): a 1-byte-per-vertex attribute rebuilt (`RoadMesh::build_rel`) only when the `Arc<RoadFocus>`
   changes; muted roads take the mute colour / alpha / width factor without casing or dashes, hidden
   ones get alpha 0 (never a moved vertex: it would drag the triangle it shares with a visible sample

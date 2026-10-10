@@ -146,6 +146,15 @@ void main() {
 /// The fill pass leaves a cased road's deck to the casing pass (its bottom vertices stay up, so
 /// walls and underside collapse); a road without a casing (the untyped slot, muted roads) is drawn
 /// wholly in the fill pass. Hidden roads get alpha 0 in both.
+///
+/// **Translucent roads (D95, `uPass` 2):** a road whose alpha is below 1 (a type's opacity, the
+/// muted look, the race line) is not drawn by those two passes (they hide it) but as one ribbon
+/// in a pass of its own: a cased one at its full width in one go, the fill's colour inside and
+/// the casing's colour round it, both at the road's alpha (`vFill`, `vInner`: the fill's share of
+/// the half width), so no casing lies under the fill to show through it. The host draws this
+/// pass twice, depth only first and then in colour with the depth test on `LEQUAL`, so of all
+/// the overlapping translucent surfaces (the casing and fill of one road, two roads at a
+/// junction, a deck's walls under its top) only the nearest is blended, once.
 pub const ROAD_VS: &str = r#"
 layout(location = 0) in vec3 aPos;     // x, z, node height
 layout(location = 1) in vec2 aTan;     // tangent x the mitre factor (mesh3d::Sample)
@@ -162,9 +171,11 @@ uniform vec4 uRW;          // metres, min_px, max_px, casing_px  (px of the view
 uniform vec4 uFocus;       // mode (0 none, 1 muted, 2 hidden), muted alpha, muted width factor, 0
 uniform vec3 uMuteRgb;
 uniform vec2 uBias;        // depth bias toward the eye: base, per draw rank (fractions of the depth)
-uniform float uPass;       // 0 = casing, 1 = fill
+uniform float uPass;       // 0 = casing, 1 = fill (opaque roads), 2 = translucent roads (D95)
 uniform float uCasingAlpha;
 out vec4 vCol;
+out vec4 vFill;            // translucent cased road: the fill's colour and alpha (vCol is the casing's)
+out float vInner;          // ... and the fill's share of the ribbon's half width (0 = a plain ribbon)
 out vec4 vDash;
 out float vCamZ;
 out float vShade;
@@ -192,34 +203,48 @@ void main() {
     rgb = uMuteRgb; alpha = uFocus.x > 1.5 ? 0.0 : uFocus.y; wf = wf * uFocus.z; casingA = 0.0; dash = vec2(0.0);
   }
   if (alpha <= 0.0) casingA = 0.0;      // a road switched off or hidden has no casing either
+  // Translucent roads (alpha < 1 after the focus) are the third pass's; the other two hide them.
+  bool trans = alpha < 0.999;
+  bool transPass = uPass > 1.5;
   float ppm = uCam.x * uCam.y / max(cz0, 1.0);          // px per metre at this depth
   float wpx = max(clamp(ppm * uRW.x, uRW.y, uRW.z) * wf, 0.7);
   bool cased = casingA > 0.0;
   bool casingPass = uPass < 0.5;
   float px = wpx;
-  if (casingPass) {
+  float inner = 0.0;
+  vec4 fillCol = vec4(rgb, alpha);
+  if (transPass && cased) {
+    // One ribbon: the casing's width, the fill's share of it marked for the fragment shader.
+    px = wpx + uRW.w;
+    inner = wpx / px;
+    rgb = sb.rgb;
+    alpha = alpha * uCasingAlpha;
+  } else if (casingPass) {
     px = wpx + uRW.w;
     rgb = sb.rgb;
     alpha = cased ? uCasingAlpha : 0.0;
     dash = vec2(0.0);
   }
+  if (trans != transPass) { alpha = 0.0; fillCol.a = 0.0; }
   float hw = 0.5 * px / ppm;                             // half width, metres
   // A cap's centre vertex sits on the point itself (mesh3d::push_vertices).
   float side = aFlags.w == 1u ? 0.0 : ((aFlags.x == 1u) ? 1.0 : -1.0);
   vec3 p = base + vec3(-aTan.y, 0.0, aTan.x) * side * hw;
-  bool deck = !(cased && !casingPass);                   // the casing pass drew this road's deck
+  bool deck = transPass || !(cased && !casingPass);      // the casing pass drew this road's deck
   if (aFlags.y == 1u && deck) p.y -= uThick / uExag;
   // ... so the fill pass drops a cased road's walls and underside (collapsed onto the top, they
   // would still be drawn over it where back faces are not culled).
   vBot = (!deck && aFlags.y == 1u) ? 1.0 : 0.0;
   vCol = vec4(rgb, alpha);
+  vFill = fillCol;
+  vInner = inner;
   vDash = vec4(dash, 0.0, 0.0);
   vShade = aFlags.y == 1u ? 0.72 : 1.0;
   vS = aS;
   vSide = side;
   // The fill's edge over its casing is anti-aliased in the fragment shader (no MSAA here); the
   // deck's own edges are geometry, as before.
-  vAA = (cased && !casingPass) ? 1.0 : 0.0;
+  vAA = (cased && !casingPass && !transPass) ? 1.0 : 0.0;
   vec4 c = projectW(p);
   // Toward the eye along the view ray (same screen position): beats the coarse terrain levels
   // that sit above the exact bilinear surface the road follows, ranks overlapping types, and
@@ -233,6 +258,8 @@ void main() {
 
 pub const ROAD_FS: &str = r#"
 in vec4 vCol;
+in vec4 vFill;
+in float vInner;
 in vec4 vDash;
 in float vCamZ;
 in float vShade;
@@ -243,9 +270,23 @@ in float vBot;
 out vec4 oC;
 void main() {
   if (vBot > 0.0) discard;
-  if (vDash.x > 0.0 && mod(vS, vDash.x + vDash.y) > vDash.x) discard;
+  bool gap = vDash.x > 0.0 && mod(vS, vDash.x + vDash.y) > vDash.x;
+  float fade = farFade(vCamZ);
+  if (vInner > 0.0) {
+    // A translucent cased road (D95): the fill's colour inside, the casing's round it, the seam
+    // anti-aliased by a mix, never two layers. The deck's walls and underside are all casing.
+    // A dashed fill leaves its gaps empty (the map shows through).
+    float f = vShade > 0.99 ? clamp((vInner - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0) : 0.0;
+    float fa = gap ? 0.0 : vFill.a * f;
+    float a = (vCol.a * (1.0 - f) + fa) * fade;
+    if (a < 0.004) discard;
+    vec3 c = (vCol.rgb * (vCol.a * (1.0 - f)) + vFill.rgb * fa) * vShade * fade;
+    oC = vec4(c, a);
+    return;
+  }
+  if (gap) discard;
   vec3 c = vCol.rgb * vShade;
-  float al = vCol.a * farFade(vCamZ);
+  float al = vCol.a * fade;
   if (vAA > 0.5) al *= clamp((1.0 - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0);
   if (al < 0.004) discard;
   oC = vec4(c * al, al);

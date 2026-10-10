@@ -632,6 +632,116 @@ fn mitre_wedge(din: Vec2, dout: Vec2) -> Option<(Vec2, Vec2)> {
     (m.is_finite() && f <= super::mesh3d::MITER_MAX).then_some((n_in, m * f))
 }
 
+/// A road type with an alpha below this is drawn as a translucent ribbon (D95, [`strip`]) instead
+/// of egui lines. The same threshold as for the round caps on the fill.
+const OPAQUE_ALPHA: f32 = 0.99;
+
+/// How far (px) a join's marker point lies beyond the node in a ribbon's line. A ribbon end at a
+/// join is cut along the corner's bisector, not 1 px past it like a line's: the marker only tells
+/// [`strip`] the bisector's direction ([`Self::road_piece`] puts it there as the line's 1 px
+/// extension, which a translucent line must not have: it would show as a darker band where two
+/// pieces overlap).
+const RIBBON_MARK_PX: f32 = 0.01;
+
+/// A translucent ribbon along `pts` (D95), appended to `mesh`: the cross-section `cols` is
+/// `(offset in px to the left of the line, colour)`, left to right in increasing order, and every
+/// pair of neighbouring columns is a strip of triangles with the colour interpolated. *Why a mesh
+/// and not egui lines:* a translucent line over a casing line shows the casing through it, and
+/// two lines meeting at a join overlap and blend twice; here the casing bands, the fill and the
+/// feathered edges are one surface that covers each pixel once, so the road is as transparent as
+/// its alpha says, and a join between two pieces is one cross-section both share.
+///
+/// Corners are mitred like the 3D mesh (the offset follows the bisector, at most
+/// [`super::mesh3d::MITER_MAX`] times as far). A first or last point closer than `2 *
+/// RIBBON_MARK_PX` to its neighbour is a join marker (see [`RIBBON_MARK_PX`]): the end
+/// cross-section is cut along the bisector it points along.
+fn strip(pts: &[Pos2], cols: &[(f32, Color32)], mesh: &mut Mesh) {
+    let mut p: Vec<Pos2> = pts.to_vec();
+    p.dedup_by(|a, b| (*a - *b).length() < 1e-4);
+    // The join markers.
+    let (mut t0, mut t1) = (None, None);
+    if p.len() >= 3 && (p[1] - p[0]).length() <= 2.0 * RIBBON_MARK_PX {
+        t0 = Some((p[1] - p[0]).normalized());
+        p.remove(0);
+    }
+    let n = p.len();
+    if n >= 3 && (p[n - 1] - p[n - 2]).length() <= 2.0 * RIBBON_MARK_PX {
+        t1 = Some((p[n - 1] - p[n - 2]).normalized());
+        p.pop();
+    }
+    let n = p.len();
+    if n < 2 || cols.len() < 2 {
+        return;
+    }
+    let dirs: Vec<Vec2> = p.windows(2).map(|w| (w[1] - w[0]).normalized()).collect();
+    if dirs.iter().any(|d| !d.is_finite()) {
+        return;
+    }
+    // The offset vector per unit of offset at each point: the mitre.
+    let miter = |m: Vec2, along: Vec2| {
+        // `m` is the unit normal of the cross-section, `along` the segment it belongs to.
+        let m = if m.dot(along.rot90()) < 0.0 { -m } else { m };
+        m * (1.0 / m.dot(along.rot90()).max(1.0 / super::mesh3d::MITER_MAX))
+    };
+    let base = mesh.vertices.len() as u32;
+    mesh.vertices.reserve(n * cols.len());
+    mesh.indices.reserve((n - 1) * (cols.len() - 1) * 6);
+    for i in 0..n {
+        let off = if i == 0 {
+            match t0 {
+                Some(t) => miter(t.rot90(), dirs[0]),
+                None => dirs[0].rot90(),
+            }
+        } else if i == n - 1 {
+            match t1 {
+                Some(t) => miter(t.rot90(), dirs[n - 2]),
+                None => dirs[n - 2].rot90(),
+            }
+        } else {
+            let (na, nb) = (dirs[i - 1].rot90(), dirs[i].rot90());
+            let m = (na + nb).normalized();
+            if m.is_finite() {
+                miter(m, dirs[i - 1])
+            } else {
+                na
+            }
+        };
+        for &(o, color) in cols {
+            mesh.vertices.push(Vertex { pos: p[i] + off * o, uv: egui::epaint::WHITE_UV, color });
+        }
+    }
+    let nc = cols.len() as u32;
+    for i in 0..(n as u32 - 1) {
+        for j in 0..nc - 1 {
+            let (a, b) = (base + i * nc + j, base + (i + 1) * nc + j);
+            mesh.indices.extend([a, a + 1, b, a + 1, b + 1, b]);
+        }
+    }
+}
+
+/// The two bands of a translucent road's casing (D95): on each side of the fill, from the fill's
+/// edge `hf` to the casing's `hc` (half widths, px), `col` in between and the same 1 pixel
+/// (`feather`) fade at both edges as egui's lines have, so that the fill's own fade (egui's, or
+/// [`fill_strip`]'s) and the band's inner fade add up to one layer.
+fn casing_strips(pts: &[Pos2], hf: f32, hc: f32, feather: f32, col: Color32, mesh: &mut Mesh) {
+    let h = 0.5 * feather;
+    let o3 = (hf - h).max(0.0);
+    let o2 = (hf + h).max(o3);
+    let o1 = (hc - h).max(o2);
+    let o0 = (hc + h).max(o1);
+    let t = Color32::TRANSPARENT;
+    strip(pts, &[(-o0, t), (-o1, col), (-o2, col), (-o3, t)], mesh);
+    strip(pts, &[(o3, t), (o2, col), (o1, col), (o0, t)], mesh);
+}
+
+/// A translucent road's fill: `hf` half width, faded over `feather` px at its edges.
+fn fill_strip(pts: &[Pos2], hf: f32, feather: f32, col: Color32, mesh: &mut Mesh) {
+    let h = 0.5 * feather;
+    let (i, o) = ((hf - h).max(0.0), hf + h);
+    let t = Color32::TRANSPARENT;
+    strip(pts, &[(-o, t), (-i, col), (i, col), (o, t)], mesh);
+}
+
 /// Which roads one [`road_pass`] draws, and how.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
@@ -801,6 +911,10 @@ struct SlotLines {
     /// Round caps on the fill too: only for a solid, opaque fill (a translucent cap would
     /// darken where it meets its own line; a dashed line ending in a gap would get a dot).
     fill_caps: bool,
+    /// A translucent type (D95): its casing is two bands beside the fill and its solid fill a
+    /// ribbon, [`strip`], instead of lines, so nothing lies under or over anything else of the
+    /// road. Its ends are plain (no caps or wedges: a cap would overlap the road it meets).
+    ribbon: bool,
     /// (taper factor, line).
     pieces: Vec<(f32, Vec<Pos2>)>,
     /// (taper factor, what) of the round caps and mitre wedges.
@@ -841,6 +955,10 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
         let casing_px = c.casing_px * cx.s;
         // A join's line runs on past the node (D81), never further than half its widest stroke.
         let ext_px = 0.5 * (w + if casing.is_some() { casing_px } else { 0.0 });
+        // A translucent type is a ribbon (D95): its casing as bands, its solid fill a strip, the
+        // join of two pieces cut along the bisector. An uncased dashed one stays dashes.
+        let ribbon = !muted && alpha < OPAQUE_ALPHA && (casing.is_some() || dash == DashStyle::None || !dashes);
+        let ext_px = if ribbon { RIBBON_MARK_PX } else { ext_px };
         // How this pass closes a chain end (muted roads: translucent, no casing: plain ends).
         let end_px = |e: End| match e {
             _ if muted => EndPx::Butt,
@@ -892,8 +1010,10 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
                 (cx.taper_k(at.y, taper), d)
             })
             .collect();
-        let fill_caps = alpha >= 0.99 && (dash == DashStyle::None || !dashes);
-        slots.push(SlotLines { slot, color: cx.c(color, alpha), w, dash, casing: casing.map(|cc| (cx.c(cc, c.casing_alpha), casing_px)), fill_caps, pieces, caps });
+        let fill_caps = alpha >= OPAQUE_ALPHA && (dash == DashStyle::None || !dashes);
+        // (the casing of a ribbon has the road's alpha too: the band is all there is of it)
+        let casing_alpha = if ribbon { c.casing_alpha * alpha } else { c.casing_alpha };
+        slots.push(SlotLines { slot, color: cx.c(color, alpha), w, dash, casing: casing.map(|cc| (cx.c(cc, casing_alpha), casing_px)), fill_caps, ribbon, pieces, caps });
     }
 
     // Width of a piece: the full width at the car's row (k = 1), thinner towards the horizon.
@@ -901,8 +1021,18 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
     // Every casing first, then every fill (D81): outlines run round the union of the roads and
     // never across another road's fill at a junction. Roads that only cross (an overpass) get
     // their outline back below.
+    let feather = 1.0 / cx.p.ctx().pixels_per_point();
     for sl in &slots {
         let Some((col, extra)) = sl.casing else { continue };
+        if sl.ribbon {
+            let mut mesh = Mesh::default();
+            for (k, l) in &sl.pieces {
+                let w = wk(sl.w, *k);
+                casing_strips(l, 0.5 * w, 0.5 * (w + extra * k), feather, col, &mut mesh);
+            }
+            cx.p.add(Shape::mesh(mesh));
+            continue;
+        }
         for (k, l) in &sl.pieces {
             cx.p.add(Shape::line(l.clone(), Stroke::new(wk(sl.w, *k) + extra * k, col)));
         }
@@ -914,16 +1044,21 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
         for &(k, d) in sl.caps.iter().filter(|_| sl.fill_caps) {
             cx.deco(d, 0.5 * wk(sl.w, k), sl.color);
         }
+        let mut mesh = Mesh::default();
         for (k, l) in std::mem::take(&mut sl.pieces) {
             let stroke = Stroke::new(wk(sl.w, k), sl.color);
             match style::dash_pattern(sl.dash, stroke.width).filter(|_| dashes) {
                 Some((d, g)) => {
                     cx.p.extend(Shape::dashed_line(&l, stroke, d, g));
                 }
+                None if sl.ribbon => fill_strip(&l, 0.5 * stroke.width, feather, sl.color, &mut mesh),
                 None => {
                     cx.p.add(Shape::line(l, stroke));
                 }
             }
+        }
+        if !mesh.is_empty() {
+            cx.p.add(Shape::mesh(mesh));
         }
     }
 
@@ -960,11 +1095,26 @@ fn road_pass(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, focus: Opt
                 }
             }
         }
+        // A translucent jump line (D95): the casing as two bands beside it, a solid fill a strip.
+        let jribbon = jalpha < OPAQUE_ALPHA;
+        let feather = 1.0 / cx.p.ctx().pixels_per_point();
         if jcasing {
-            cx.p.add(Shape::line_segment(seg, Stroke::new(w + 1.8 * cx.s * k, cx.c(js.casing_color, c.casing_alpha))));
+            let extra = 1.8 * cx.s * k;
+            if jribbon {
+                let mut mesh = Mesh::default();
+                casing_strips(&seg, 0.5 * w, 0.5 * (w + extra), feather, cx.c(js.casing_color, c.casing_alpha * jalpha), &mut mesh);
+                cx.p.add(Shape::mesh(mesh));
+            } else {
+                cx.p.add(Shape::line_segment(seg, Stroke::new(w + extra, cx.c(js.casing_color, c.casing_alpha))));
+            }
         }
         let stroke = Stroke::new(w, cx.c(jcol, jalpha));
         match jdash {
+            super::cfg::DashStyle::None if jribbon => {
+                let mut mesh = Mesh::default();
+                fill_strip(&seg, 0.5 * w, feather, stroke.color, &mut mesh);
+                cx.p.add(Shape::mesh(mesh));
+            }
             super::cfg::DashStyle::None => {
                 cx.p.add(Shape::line_segment(seg, stroke));
             }
@@ -1741,6 +1891,140 @@ mod tests {
             let inside = (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0);
             (inside && cross(a.pos, b.pos, c.pos).abs() > 1e-6).then_some(a.color)
         })
+    }
+
+    /// The shapes tessellated with egui's feathering and composited source-over (premultiplied,
+    /// the way the GL blend does it) onto an opaque `bg`, one RGB triple per pixel centre of
+    /// `rect` (1 px = 1 pt). Only vertex colours are used (every road shape is untextured).
+    fn composite(shapes: &[ClippedShape], rect: Rect, bg: [u8; 3]) -> Vec<[f32; 3]> {
+        let opts = egui::epaint::TessellationOptions::default();
+        let mut t = egui::epaint::Tessellator::new(1.0, opts, [1, 1], vec![]);
+        let mut mesh = Mesh::default();
+        for s in shapes {
+            t.tessellate_shape(s.shape.clone(), &mut mesh);
+        }
+        let (w, h) = (rect.width() as usize, rect.height() as usize);
+        let mut px = vec![[bg[0] as f32, bg[1] as f32, bg[2] as f32]; w * h];
+        let edge = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        for tri in mesh.indices.chunks(3) {
+            let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| mesh.vertices[i as usize]);
+            let area = edge(a.pos, b.pos, c.pos);
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            let (lo, hi) = (a.pos.min(b.pos).min(c.pos), a.pos.max(b.pos).max(c.pos));
+            for y in (lo.y.floor().max(0.0) as usize)..=(hi.y.ceil() as usize).min(h - 1) {
+                for x in (lo.x.floor().max(0.0) as usize)..=(hi.x.ceil() as usize).min(w - 1) {
+                    // (nudged off the pixel centre so a shared edge belongs to one triangle only, as on a GPU)
+                    let p = pos2(x as f32 + 0.5001, y as f32 + 0.50031);
+                    let (wa, wb, wc) = (edge(b.pos, c.pos, p) / area, edge(c.pos, a.pos, p) / area, edge(a.pos, b.pos, p) / area);
+                    if wa < 0.0 || wb < 0.0 || wc < 0.0 {
+                        continue;
+                    }
+                    let col = |k: usize| wa * a.color.to_array()[k] as f32 + wb * b.color.to_array()[k] as f32 + wc * c.color.to_array()[k] as f32;
+                    let al = col(3) / 255.0;
+                    for k in 0..3 {
+                        px[y * w + x][k] = col(k) + px[y * w + x][k] * (1.0 - al);
+                    }
+                }
+            }
+        }
+        px
+    }
+
+    /// A road type at alpha 0.5 is half see-through all over: the fill is 50 % of its colour over
+    /// the map, the casing beside it 50 % of the casing colour, and where a casing used to lie
+    /// under the fill (the bug of D95: the fill only darkened the opaque casing) there is nothing
+    /// extra. Also across the join of two chains and at a bend, where the pieces used to overlap
+    /// by a pixel, and for the tunnel's default 0.85.
+    #[test]
+    fn a_translucent_road_is_see_through_everywhere_not_darker() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 50.0); // 2 px per metre: 10 px roads
+        let bg = [30u8, 120, 40];
+        for (alpha, ty) in [(0.5f32, RoadType::Road), (0.85, RoadType::Tunnel)] {
+            let mut cfg = only_roads();
+            let st = match ty {
+                RoadType::Tunnel => &mut cfg.roads.styles.tunnel,
+                _ => &mut cfg.roads.styles.road,
+            };
+            st.alpha = alpha;
+            let (fill, casing) = (st.color.0, st.casing_color.0);
+            cfg.roads.casing_px = 6.0; // 3 px each side: wide enough to have a flat middle
+            let a = (alpha * 255.0f32).round() / 255.0; // the alpha as egui stores it
+            let blend = |c: [u8; 3]| [0, 1, 2].map(|k| c[k] as f32 * a + bg[k] as f32 * (1.0 - a));
+            let (e_fill, e_cas) = (blend(fill), blend(casing));
+            let near = |p: [f32; 3], e: [f32; 3], tol: f32| (0..3).all(|k| (p[k] - e[k]).abs() <= tol);
+            let w = style::line_px(style::road_base_px(&cfg.roads, cam.scale()), cfg.roads.styles.get(ty).unwrap().width);
+            let (hf, hc) = (0.5 * w, 0.5 * (w + cfg.roads.casing_px));
+            let c = rect.center();
+            // One chain; the same road as two chains meeting at the middle node; a 90 degree bend.
+            let straight = layers_of(&[(ty, &[[-70.0, 0.0], [70.0, 0.0]], 10.0)]);
+            let joined = layers_of(&[(ty, &[[-70.0, 0.0], [0.0, 0.0]], 10.0), (ty, &[[0.0, 0.0], [70.0, 0.0]], 10.0)]);
+            let bend = layers_of(&[(ty, &[[-70.0, 0.0], [0.0, 0.0]], 10.0), (ty, &[[0.0, 0.0], [0.0, 70.0]], 10.0)]);
+            for (name, layers) in [("straight", &straight), ("joined", &joined), ("bend", &bend)] {
+                let shapes = paint(rect, |p| {
+                    draw_layers(&ctx(p, &cam), layers, &cfg);
+                });
+                let img = composite(&shapes, rect, bg);
+                let at = |x: f32, y: f32| img[(y as usize) * 200 + x as usize];
+                // Across the road, at the middle (the join / the corner is there) and 40 px west of it.
+                for x in [c.x - 40.0, c.x] {
+                    if name == "bend" && x == c.x {
+                        continue; // (the corner: checked below)
+                    }
+                    for dy in -12..=11 {
+                        // (pixel row c.y + dy, its centre 0.5 below its top edge)
+                        let (y, d) = (c.y + dy as f32, (dy as f32 + 0.5).abs());
+                        let p = at(x, y);
+                        if d <= hf - 1.0 {
+                            assert!(near(p, e_fill, 2.0), "{name} alpha {alpha}: fill at dy {dy}: {p:?} vs {e_fill:?}");
+                        } else if d >= hf + 1.0 && d <= hc - 1.0 {
+                            assert!(near(p, e_cas, 2.0), "{name} alpha {alpha}: casing at dy {dy}: {p:?} vs {e_cas:?}");
+                        } else if d >= hc + 1.0 {
+                            assert!(near(p, bg.map(f32::from), 0.5), "{name} alpha {alpha}: map at dy {dy}: {p:?}");
+                        }
+                    }
+                }
+                // Anywhere near the join / corner no pixel is covered more than once: the share of
+                // the fill colour (in the channel where fill and map differ most) is at most the alpha.
+                let k = (0..3).max_by_key(|&k| (fill[k] as i32 - bg[k] as i32).abs()).unwrap();
+                for y in (c.y as i32 - 14)..(c.y as i32 + 14) {
+                    for x in (c.x as i32 - 14)..(c.x as i32 + 14) {
+                        let p = at(x as f32, y as f32);
+                        let r = (p[k] - bg[k] as f32) / (fill[k] as f32 - bg[k] as f32);
+                        assert!(r <= a + 0.02, "{name} alpha {alpha}: ({x}, {y}) is covered {r} > {a}: {p:?}");
+                    }
+                }
+            }
+            // The bend's outer corner is filled (mitred) and its fill is a single layer there.
+            let shapes = paint(rect, |p| {
+                draw_layers(&ctx(p, &cam), &bend, &cfg);
+            });
+            let img = composite(&shapes, rect, bg);
+            let p = img[(c.y as usize - 1) * 200 + c.x as usize - 1]; // just inside the corner of the fill
+            assert!(near(p, e_fill, 2.0), "bend corner {p:?} vs {e_fill:?}");
+        }
+    }
+
+    /// Opacity 1 is what it was: lines, no ribbons (nothing of D95 in the shapes).
+    #[test]
+    fn an_opaque_road_type_is_still_egui_lines() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+        let cam = flat_cam(rect, (0.0, 0.0), 0.0, 50.0);
+        let layers = layers_of(&[(RoadType::Road, &[[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]], 10.0)]);
+        let shapes = paint(rect, |p| {
+            draw_layers(&ctx(p, &cam), &layers, &only_roads());
+        });
+        assert!(shapes.iter().all(|s| !matches!(s.shape, Shape::Mesh(_))), "{shapes:?}");
+        // ... and at 0.5 the casing and the fill are meshes, nothing is left of the lines.
+        let mut cfg = only_roads();
+        cfg.roads.styles.road.alpha = 0.5;
+        let shapes = paint(rect, |p| {
+            draw_layers(&ctx(p, &cam), &layers, &cfg);
+        });
+        assert_eq!(shapes.iter().filter(|s| matches!(s.shape, Shape::Mesh(_))).count(), 2, "{shapes:?}");
+        assert!(path_points(&shapes).is_empty());
     }
 
     /// Junctions: every casing is drawn before every fill (so no outline crosses a road at a
@@ -2597,6 +2881,12 @@ mod tests {
             }
             let cam = Camera::from_cfg(&cfg.tilt, car, 0.6, zoom, rect);
             let atlas = layers.icons.as_ref().map(|i| IconAtlas::from_poi_icons(TextureId::Managed(1), i));
+            // D95: every road type opaque, then at 0.5 (the translucent ribbons).
+            for alpha in [1.0f32, 0.5] {
+            let styles = &mut cfg.roads.styles;
+            for t in [&mut styles.road, &mut styles.highway, &mut styles.offroad, &mut styles.other, &mut styles.trail, &mut styles.crosscountry, &mut styles.tunnel, &mut styles.jump] {
+                t.alpha = alpha;
+            }
             let (mut t_build, mut t_tess) = (Vec::new(), Vec::new());
             let mut st = LayerStats::default();
             for _ in 0..40 {
@@ -2614,7 +2904,8 @@ mod tests {
                 t_tess.push(t1.elapsed().as_secs_f64() * 1e3);
                 std::hint::black_box(prims);
             }
-            eprintln!("{label}: build {:.2} ms + tessellate {:.2} ms ({st:?})", med(t_build), med(t_tess));
+            eprintln!("{label} [road opacity {alpha}]: build {:.2} ms + tessellate {:.2} ms ({st:?})", med(t_build), med(t_tess));
+            }
         }
     }
 
