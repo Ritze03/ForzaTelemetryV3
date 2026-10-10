@@ -12,6 +12,12 @@ use crate::gamedata::nav::Nav;
 use crate::gamedata::roadtypes::{EdgeKey, RoadType, RoadTypes};
 use crate::maprender::mesh3d::known_y;
 
+/// Half-width (m) of the window the road's winding is averaged over.
+pub const WIND_HALF_M: f32 = 400.0;
+/// The winding is divided by at least this many metres, so the end of a short or cut-off road
+/// does not read as winding on the strength of one corner.
+pub const WIND_MIN_M: f32 = 600.0;
+
 /// Snap grid cell size (m): a few 20 m edges per cell, a 120 m search touches ~4 x 4 cells.
 pub const GRID_CELL_M: f32 = 128.0;
 
@@ -28,6 +34,9 @@ pub struct Edge {
     pub kind: u8,
     /// The road's own winding at this edge, rad per metre (see [`RouteGraph::build`]).
     pub curv: f32,
+    /// The winding of the road *around* this edge (heading change per metre over a window of
+    /// +-[`WIND_HALF_M`] along the same polyline), rad per metre; 0 for added links and jumps.
+    pub wind: f32,
 }
 
 impl Edge {
@@ -103,6 +112,47 @@ fn turn(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
     (u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1]).abs()
 }
 
+/// The winding (rad per m) around each edge of a polyline: the heading changes at the vertices
+/// within [`WIND_HALF_M`] of the edge's middle, over the length of that window (at least
+/// [`WIND_MIN_M`]). Symmetric in the direction of travel. Unknown nodes count as no turn.
+fn polyline_winding(pts: impl Iterator<Item = Option<[f32; 3]>>) -> Vec<f32> {
+    let pts: Vec<Option<[f32; 3]>> = pts.collect();
+    let n = pts.len();
+    if n < 2 {
+        return vec![];
+    }
+    let mut cum = vec![0.0f32; n];
+    for i in 1..n {
+        let d = match (pts[i - 1], pts[i]) {
+            (Some(a), Some(b)) => (b[0] - a[0]).hypot(b[1] - a[1]),
+            _ => 0.0,
+        };
+        cum[i] = cum[i - 1] + d;
+    }
+    let total = cum[n - 1];
+    let turns: Vec<f32> = (0..n)
+        .map(|i| match (i.checked_sub(1).and_then(|j| pts[j]), pts[i], pts.get(i + 1).copied().flatten()) {
+            (Some(a), Some(b), Some(c)) => turn(a, b, c),
+            _ => 0.0,
+        })
+        .collect();
+    // prefix sums of the turns, so each window is two lookups
+    let mut pre = vec![0.0f32; n + 1];
+    for i in 0..n {
+        pre[i + 1] = pre[i] + turns[i];
+    }
+    (0..n - 1)
+        .map(|i| {
+            let mid = (cum[i] + cum[i + 1]) / 2.0;
+            let (lo, hi) = (mid - WIND_HALF_M, mid + WIND_HALF_M);
+            let first = cum.partition_point(|&c| c < lo);
+            let end = cum.partition_point(|&c| c <= hi);
+            let covered = hi.min(total) - lo.max(0.0);
+            (pre[end] - pre[first.min(end)]) / covered.max(WIND_MIN_M)
+        })
+        .collect()
+}
+
 /// 3D length when both heights are known, else the 2D one.
 fn edge_len(p: [f32; 3], q: [f32; 3]) -> f32 {
     let d2 = (q[0] - p[0]).hypot(q[1] - p[1]);
@@ -129,6 +179,14 @@ impl RouteGraph {
     ///    *Why:* it is the road's own winding, independent of which route uses it, so the cost
     ///    needs no per-route state (an edge-based search on directed edges would be needed
     ///    otherwise).
+    /// 4b. `wind` = the heading changes at the vertices within +-[`WIND_HALF_M`] of the edge's
+    ///    middle along the same polyline, over the covered length (at least [`WIND_MIN_M`]).
+    ///    *Why:* the cost wants "is this a touge?", which no single edge can say: the straight
+    ///    pieces between hairpins read as straight. A polyline in the nav data is a whole road
+    ///    (1544 on the island, not one per junction), so windowing along it follows the road
+    ///    through its junctions. Symmetric, hence direction-independent; added links, jumps and
+    ///    polyline ends are not special (an end just has a half window, and the minimum length
+    ///    keeps one corner on a short road from reading as winding). ~1 ms extra at build.
     /// 5. The snap grid holds every edge except turnarounds and jumps.
     pub fn build(nav: &Nav, rt: &RoadTypes, pos: &HashMap<u32, [f32; 3]>) -> RouteGraph {
         let mut ids: Vec<u32> = pos.keys().copied().collect();
@@ -143,7 +201,7 @@ impl RouteGraph {
         let mut seen: HashSet<EdgeKey> = HashSet::new();
 
         // `first` = the endpoint a jump takes off from unless `jump_from` says otherwise.
-        let push = |edges: &mut Vec<Edge>, first: u32, second: u32, key: EdgeKey, kind: u8, curv_turns: f32| {
+        let push = |edges: &mut Vec<Edge>, first: u32, second: u32, key: EdgeKey, kind: u8, curv_turns: f32, wind: f32| {
             let (Some(ia), Some(ib)) = (index(first), index(second)) else { return };
             if ia == ib {
                 return;
@@ -158,10 +216,11 @@ impl RouteGraph {
             }
             let len = edge_len(p[a as usize], p[b as usize]);
             let curv = if len > 1e-3 { curv_turns / 2.0 / len } else { 0.0 };
-            edges.push(Edge { a, b, len, kind, curv });
+            edges.push(Edge { a, b, len, kind, curv, wind });
         };
 
         for pl in &nav.polys {
+            let winds = polyline_winding(pl.iter().map(|v| index(v.id).map(|n| p[n as usize])));
             for i in 0..pl.len().saturating_sub(1) {
                 let key = EdgeKey::new(pl[i].id, pl[i + 1].id);
                 if removed.contains(&key) || !seen.insert(key) {
@@ -180,11 +239,11 @@ impl RouteGraph {
                         turns += turn(x, y, z);
                     }
                 }
-                push(&mut edges, pl[i].id, pl[i + 1].id, key, kind, turns);
+                push(&mut edges, pl[i].id, pl[i + 1].id, key, kind, turns, winds[i]);
             }
         }
         for l in &rt.added {
-            push(&mut edges, l.a, l.b, EdgeKey::new(l.a, l.b), l.ty.map_or(0, |t| t.index()), 0.0);
+            push(&mut edges, l.a, l.b, EdgeKey::new(l.a, l.b), l.ty.map_or(0, |t| t.index()), 0.0, 0.0);
         }
 
         // CSR adjacency + snap grid.

@@ -114,7 +114,7 @@ impl RouteGraph {
         let mut heap: BinaryHeap<Reverse<(u32, u32, u32)>> = BinaryHeap::new();
 
         let (fe, te) = (&self.edges[from.edge as usize], &self.edges[to.edge as usize]);
-        let (f_per_m, t_per_m) = (cm.per_m(fe.kind, fe.curv), cm.per_m(te.kind, te.curv));
+        let (f_per_m, t_per_m) = (cm.per_m(fe.kind, fe.curv, fe.wind), cm.per_m(te.kind, te.curv, te.wind));
         for (node, cost) in [(fe.a, fe.len * from.t * f_per_m), (fe.b, fe.len * (1.0 - from.t) * f_per_m)] {
             if cost < g[node as usize] {
                 g[node as usize] = cost;
@@ -145,7 +145,7 @@ impl RouteGraph {
                 if !cm.allows(e.kind) {
                     continue;
                 }
-                let ng = gu + cm.cost(e.kind, e.curv, e.len);
+                let ng = gu + cm.cost(e.kind, e.curv, e.wind, e.len);
                 if ng < g[v as usize] {
                     g[v as usize] = ng;
                     prev[v as usize] = arc;
