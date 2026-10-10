@@ -256,20 +256,32 @@ pub fn style_table(roads: &RoadsCfg, focus: Option<&RaceFocusCfg>, scale: f32, s
     t
 }
 
-/// The style table of the race road's own mesh (D80, `RoadMesh::race_road`): every slot in the
-/// race colour (opaque; its tunnel stretches at the road tunnels' alpha), solid, cased in the
-/// `Road` type's casing colour, [`style::RACE_ROAD_WIDTH`] wide under the roads' width rule; no
-/// focus muting, one rank.
-pub fn race_table(roads: &RoadsCfg, color: crate::maprender::cfg::Rgb, scale: f32, s: f32, ppp: f32) -> StyleTable {
+/// The style table of the race lines' own mesh (D80 / D88, `RoadMesh::race_roads`), for either
+/// style of `race.route`:
+///
+/// * **Road**: every slot in the race colour (opaque; its tunnel stretches at the road tunnels'
+///   alpha), solid, cased in the `Road` type's casing colour, [`style::RACE_ROAD_WIDTH`] wide
+///   under the roads' width rule;
+/// * **Line**: the thin line of before (`width_px`, `alpha`, no casing) as a ribbon of constant
+///   screen width: the fixed-width form of the width rule (metres 0 makes the clamp return
+///   `min`), which is how the road shader turns pixels into metres per vertex.
+///
+/// No focus muting, one rank.
+pub fn race_table(roads: &RoadsCfg, race: &crate::maprender::cfg::RaceCfg, scale: f32, s: f32, ppp: f32) -> StyleTable {
     let mut t = style_table(roads, None, scale, s, ppp);
-    let c = rgb(color);
-    let casing = rgb(roads.styles.road.casing_color);
+    let c = rgb(race.color);
     let tunnel_alpha = roads.styles.tunnel.alpha.clamp(0.3, 1.0);
+    let line = race.route == crate::maprender::cfg::RouteStyle::Line;
+    let (open_alpha, casing) = if line { (race.alpha.clamp(0.0, 1.0), [0.0; 3]) } else { (1.0, rgb(roads.styles.road.casing_color)) };
     for slot in 0..SLOTS {
-        let alpha = if slot == crate::maprender::mesh3d::SLOT_TUNNEL as usize { tunnel_alpha } else { 1.0 };
+        let alpha = if slot == crate::maprender::mesh3d::SLOT_TUNNEL as usize { tunnel_alpha.min(open_alpha) } else { open_alpha };
         t.a[slot] = [c[0], c[1], c[2], alpha];
-        t.b[slot] = [casing[0], casing[1], casing[2], style::RACE_ROAD_WIDTH];
-        t.c[slot] = [0.0, 0.0, 1.0, 0.0];
+        t.b[slot] = [casing[0], casing[1], casing[2], if line { 1.0 } else { style::RACE_ROAD_WIDTH }];
+        t.c[slot] = [0.0, 0.0, if line { 0.0 } else { 1.0 }, 0.0];
+    }
+    if line {
+        let w = (race.width_px * ppp * s).max(style::MIN_LINE_PX * ppp);
+        t.rw = [0.0, w, w, 0.0];
     }
     t
 }

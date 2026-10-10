@@ -15,8 +15,11 @@
 //! Once certain, the route is **locked** for the rest of the race (through lap wraps; given up only
 //! after [`LOCK_DROP_M`] off it, a race end or a mode change).
 //!
-//! **Race road (D80).** With `RouteStyle::Road` the focus also carries what is drawn of the line as
-//! a [`RaceRoad`] (points, heights, colour): the 3D scene builds its race road mesh from it.
+//! **Race lines in the 3D scene (D80, D88).** [`RaceSel::race_draw`] hands the 3D scene everything
+//! the current race-line mode draws as a [`RaceDraw`] (every picked line, or all 170 in `All`, as
+//! [`RaceRoad`]s with their own heights, plus the start / finish [`RaceMark`]s), cached per drawn
+//! set; the scene builds one race mesh from it and the marks as GL geometry, so terrain and
+//! overpasses hide them like the roads. Independent of the in-race focus below.
 //!
 //! **In-race focus (D66).** The same selection also says which *roads* belong to the race, so the
 //! renderer can mute or hide the rest (`cfg::RaceFocusCfg`). The focus is on only when the mode is
@@ -31,7 +34,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::cfg::{RaceCfg, RaceLineMode, Rgb, RouteStyle};
+use super::cfg::{RaceCfg, RaceLineMode};
 use super::data::{MapLayers, RaceLayer, RoadLayer, N_TYPES};
 use super::mesh3d::known_y;
 use super::view::bbox_hits;
@@ -123,9 +126,8 @@ pub struct RaceSel {
     /// The road focus of the drawn extent. A `Mutex` (not a `RefCell`) so the selector can be
     /// shared by `&` with the renderer and still be a `static` in tests.
     cache: Mutex<Option<(FocusKey, Arc<RoadFocus>)>>,
-    /// The race road's colours (circuit, sprint) when race lines are drawn as roads (D80,
-    /// `RouteStyle::Road`), from the config of the last `update`; `None` = drawn as a line.
-    route_cols: Option<Rgb>,
+    /// What the 3D scene draws of the race lines, for the drawn set it was built for.
+    draw_cache: Mutex<Option<(DrawKey, Arc<RaceDraw>)>>,
     /// The route the selector is certain of (D80 fix): kept for the rest of the race, through
     /// lap wraps and past routes that share its start (see [`LOCK_DROP_M`]).
     locked: Option<usize>,
@@ -434,31 +436,77 @@ impl RaceSel {
     pub fn road_focus(&self, layers: &MapLayers) -> Option<Arc<RoadFocus>> {
         let li = self.focus_line()?;
         let line = layers.races.lines.get(li)?;
-        let colour = self.route_cols;
-        let key: FocusKey = (layers.rev, Arc::as_ptr(&layers.roads) as usize, Arc::as_ptr(&layers.races) as usize, li, self.shown_gen, colour.map(|c| c.0));
+        let key: FocusKey = (layers.rev, Arc::as_ptr(&layers.roads) as usize, Arc::as_ptr(&layers.races) as usize, li, self.shown_gen);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((k, f)) = cache.as_ref() {
             if *k == key {
                 return Some(f.clone());
             }
         }
-        let mut f = match self.span(li) {
+        let f = match self.span(li) {
             Some(sp) if li < layers.races.cum.len() => {
                 let (pts, half, y) = Poly::new(&layers.races, li).slice(sp.s0, sp.s1);
-                let mut f = RoadFocus::build_pts(&layers.roads, &pts, &half, &y, false);
-                f.race = colour.map(|color| RaceRoad { pts, y, closed: false, color });
-                f
+                RoadFocus::build_pts(&layers.roads, &pts, &half, &y, false)
             }
-            _ => {
-                let mut f = RoadFocus::build(&layers.roads, line);
-                f.race = colour.map(|color| RaceRoad { pts: line.pts.clone(), y: line.y.clone(), closed: line.closed, color });
-                f
-            }
+            _ => RoadFocus::build(&layers.roads, line),
         };
-        f.race = f.race.take().filter(|r| r.pts.len() >= 2);
         let f = Arc::new(f);
         *cache = Some((key, f.clone()));
         Some(f)
+    }
+
+    /// Everything the 3D scene draws of the race lines in the current mode (D88): `All` = every
+    /// line whole, otherwise the picked ones (`Current` with the shown extent of D76), each with
+    /// the marks that belong with it. Cached per drawn set, so the scene's race mesh is rebuilt
+    /// only when the set changes (a new pick, a new extent, new race data), never per frame.
+    /// `None` = nothing to draw (mode `Off`, no pick, no race data).
+    pub fn race_draw(&self, layers: &MapLayers, cfg: &RaceCfg) -> Option<Arc<RaceDraw>> {
+        let all = cfg.mode == RaceLineMode::All;
+        let lines = &layers.races.lines;
+        let mut idx: Vec<usize> = if all { (0..lines.len()).collect() } else { self.picked.iter().copied().filter(|&i| i < lines.len()).collect() };
+        if cfg.mode == RaceLineMode::Off || idx.is_empty() {
+            return None;
+        }
+        idx.sort_unstable();
+        let gen = if cfg.mode == RaceLineMode::Current { self.shown_gen } else { 0 };
+        let key: DrawKey = (layers.rev, Arc::as_ptr(&layers.races) as usize, cfg.mode, idx, gen);
+        let mut cache = self.draw_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((k, d)) = cache.as_ref() {
+            if *k == key {
+                return Some(d.clone());
+            }
+        }
+        let mut d = RaceDraw::default();
+        for &i in &key.3 {
+            let l = &lines[i];
+            // An uncertain current race (D76): only the part all candidate routes share, no finish.
+            let span = if all { None } else { self.span(i).filter(|_| i < layers.races.cum.len()) };
+            let road = match span {
+                Some(sp) => {
+                    let (pts, _, y) = Poly::new(&layers.races, i).slice(sp.s0, sp.s1);
+                    RaceRoad { pts, y, closed: false }
+                }
+                None => RaceRoad { pts: l.pts.clone(), y: l.y.clone(), closed: l.closed },
+            };
+            let (start, finish) = (span.is_none_or(|sp| sp.start), span.is_none());
+            let mut mark = |i: Option<usize>, kind| {
+                if let Some(p) = i.and_then(|i| l.pts.get(i)) {
+                    d.marks.push(RaceMark { at: *p, y: i.and_then(|i| l.y.get(i)).copied().unwrap_or(0.0), kind });
+                }
+            };
+            if start {
+                mark(Some(0), if l.circuit { MarkKind::Chequered } else { MarkKind::SprintStart });
+            }
+            if finish && !l.circuit {
+                mark(l.pts.len().checked_sub(1), MarkKind::Chequered);
+            }
+            if road.pts.len() >= 2 {
+                d.lines.push(road);
+            }
+        }
+        let d = Arc::new(d);
+        *cache = Some((key, d.clone()));
+        Some(d)
     }
 
     /// A selector with a fixed pick, for tests of the renderer.
@@ -657,7 +705,6 @@ impl RaceSel {
         }
         self.key = key;
         self.focus_on = cfg.mode == RaceLineMode::Current && in_race && !self.picked.is_empty();
-        self.route_cols = (cfg.route == RouteStyle::Road).then_some(cfg.color);
         self
     }
 }
@@ -779,13 +826,9 @@ pub struct RoadFocus {
     /// Road segments looked at / found relevant (diagnostics, tests).
     pub segments: usize,
     pub relevant_segments: usize,
-    /// D80: what is drawn of the race line as a road of its own (`RouteStyle::Road`), for the 3D
-    /// scene, which gets the race only through this focus (`gl3d::Focus3d`); `None` for
-    /// `RouteStyle::Line`. Built with the focus, so it follows the drawn extent (D76).
-    pub race: Option<RaceRoad>,
 }
 
-/// The race line drawn as a road (D80): the drawn extent's points and heights and its colour.
+/// One race line (or the drawn extent of it, D76) for the 3D scene (D80): points and heights.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RaceRoad {
     pub pts: Vec<[f32; 2]>,
@@ -794,8 +837,33 @@ pub struct RaceRoad {
     pub y: Vec<f32>,
     /// A whole closed circuit: the road closes on itself (no ends).
     pub closed: bool,
-    /// The race colour (`RaceCfg::color`), drawn opaque.
-    pub color: Rgb,
+}
+
+/// Which mark: the sprint's start (green dot in 2D) or a chequered flag (a circuit's start, a
+/// sprint's finish).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    SprintStart,
+    Chequered,
+}
+
+/// A start / finish mark at a line's end, for the 3D scene (D88).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RaceMark {
+    /// x, z.
+    pub at: [f32; 2],
+    /// The line's own height there (0 = unknown, the scene takes the terrain).
+    pub y: f32,
+    pub kind: MarkKind,
+}
+
+/// What the 3D scene draws of the race lines in the current mode (D88), see
+/// [`RaceSel::race_draw`]. Colour, width and the style are the config's, not part of this: only
+/// a change of the drawn set (not of the look) makes a new one.
+#[derive(Debug, Default)]
+pub struct RaceDraw {
+    pub lines: Vec<RaceRoad>,
+    pub marks: Vec<RaceMark>,
 }
 
 impl RoadFocus {
@@ -860,7 +928,9 @@ impl RoadFocus {
 
 /// What [`RaceSel::road_focus`] cached for: the road data (rev and the `Arc`'s identity, so a
 /// rebuild is noticed), the race layer and the line.
-type FocusKey = (u64, usize, usize, usize, u32, Option<[u8; 3]>);
+type FocusKey = (u64, usize, usize, usize, u32);
+/// (`MapLayers::rev`, race layer identity, mode, drawn line indices sorted, `shown_gen` in `Current`).
+type DrawKey = (u64, usize, RaceLineMode, Vec<usize>, u32);
 
 /// A straight line along +z at x = `x`, from z = 0 to 1000, 5 m spacing, half-width 6 m (tests,
 /// here and in `paint2d`).
@@ -1221,27 +1291,38 @@ mod tests {
         }
     }
 
-    /// D80: the focus carries the race road of what is drawn (the shared part while uncertain,
-    /// the whole route once certain) in the route's colour, and none for `RouteStyle::Line`.
+    /// D88: `race_draw` hands the 3D scene what is drawn: the shared part while uncertain (start
+    /// mark only), the whole route once certain (both marks), every line in `All`, nothing in
+    /// `Off`; the same `Arc` while the drawn set is unchanged.
     #[test]
-    fn the_focus_carries_the_race_road_of_the_drawn_extent() {
+    fn race_draw_carries_the_lines_and_marks_of_the_drawn_extent() {
         let layer = fork_layer();
         let layers = MapLayers { rev: 1, roads: Arc::new(RoadLayer::default()), races: Arc::new(RaceLayer::new(layer.lines.clone())), ..Default::default() };
+        let cfg = RaceCfg::default();
         let mut sel = RaceSel::default();
+        assert!(sel.race_draw(&layers, &cfg).is_none(), "nothing picked");
         drive_line(&mut sel, &layers.races, 0, 20.0, 200.0, 0.0, |_, _| {});
-        let f = sel.road_focus(&layers).expect("focus");
-        let r = f.race.as_ref().expect("a race road");
+        let d = sel.race_draw(&layers, &cfg).expect("draw");
+        assert_eq!(d.lines.len(), 1);
+        let r = &d.lines[0];
         let len: f32 = r.pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
         assert!((len - 400.0).abs() < 8.0 && !r.closed && r.y.len() == r.pts.len(), "the shared 400 m: {len}");
-        assert_eq!(r.color, RaceCfg::default().color);
-        // Certain on route 1: the whole line.
+        assert_eq!(d.marks.len(), 1, "the start mark, no finish while uncertain");
+        assert!(Arc::ptr_eq(&d, &sel.race_draw(&layers, &cfg).unwrap()), "cached while the extent is unchanged");
+        // Certain on route 1: the whole line, both marks.
         drive_line(&mut sel, &layers.races, 0, 202.0, 520.0, 0.0, |_, _| {});
-        let f = sel.road_focus(&layers).expect("focus");
-        assert_eq!(f.race.as_ref().map(|r| r.pts.len()), Some(layers.races.lines[0].pts.len()));
-        // The thin line instead: no race road.
-        let line_cfg = RaceCfg { mode: RaceLineMode::Current, route: RouteStyle::Line, ..RaceCfg::default() };
-        sel.update(&layers.races, &line_cfg, Poly::new(&layers.races, 0).at(530.0).0.into(), 0.0, true);
-        assert!(sel.road_focus(&layers).expect("focus").race.is_none());
+        let d2 = sel.race_draw(&layers, &cfg).expect("draw");
+        assert!(!Arc::ptr_eq(&d, &d2));
+        assert_eq!(d2.lines[0].pts.len(), layers.races.lines[0].pts.len());
+        assert_eq!(d2.marks.len(), 2);
+        // The look (style, colour) is not part of the set: no rebuild.
+        let line_cfg = RaceCfg { route: crate::maprender::cfg::RouteStyle::Line, ..cfg };
+        assert!(Arc::ptr_eq(&d2, &sel.race_draw(&layers, &line_cfg).unwrap()));
+        // All: every line whole; Off: none.
+        let all = RaceCfg { mode: RaceLineMode::All, ..cfg };
+        let d3 = RaceSel::default().race_draw(&layers, &all).expect("all");
+        assert_eq!(d3.lines.len(), layers.races.lines.len());
+        assert!(RaceSel::default().race_draw(&layers, &RaceCfg { mode: RaceLineMode::Off, ..cfg }).is_none());
     }
 
     #[test]

@@ -9,6 +9,7 @@
 //! clipmap   terrain: 7-level geometry clipmap, R16UI height texture
 //! roads     road buffers, the per-frame draw plan (tiles, LOD sets), the style table
 //! marker    the own-car marker (3D arrow / low-poly sedan) and the trail ribbons (D77 / D78)
+//! racemark  the race lines' start / finish posts (D88)
 //! shaders   GLSL for desktop GL 3.3 core and OpenGL ES 3.0
 //! probe     what the context offers; the requirements
 //! ```
@@ -60,6 +61,7 @@
 mod clipmap;
 mod marker;
 mod probe;
+mod racemark;
 mod roads;
 mod scene;
 mod shaders;
@@ -72,14 +74,14 @@ use std::time::{Duration, Instant};
 use egui::{PaintCallback, PaintCallbackInfo, Painter, Shape};
 use egui_glow::glow::{self, HasContext};
 
-use super::cfg::{RaceFocusCfg, ReliefCfg, RoadsCfg};
+use super::cfg::{RaceCfg, RaceFocusCfg, ReliefCfg, RoadsCfg};
 use super::mesh3d::RoadMesh;
 use super::paint2d::ImageLook;
-use super::racesel::RoadFocus;
+use super::racesel::{RaceDraw, RoadFocus};
 use super::view::Camera;
 use super::MapTex;
 use crate::minimap::MapCalibration;
-use scene::{Frame, Gl3d};
+use scene::{Frame, Gl3d, RaceFrame};
 
 pub use marker::{Marker3d, Trail3d, TrailSeg, GROUND_BELOW_M};
 pub use probe::Caps;
@@ -185,6 +187,19 @@ pub struct Focus3d {
     pub cfg: RaceFocusCfg,
 }
 
+/// The race lines the map draws (D80 / D88): the same scene geometry for every style and mode.
+#[derive(Clone)]
+pub struct Race3d {
+    /// What to draw (`RaceSel::race_draw`): the marks come from here, the lines through `mesh`.
+    pub draw: Arc<RaceDraw>,
+    /// The lines of `draw` as one mesh (`store::race_mesh`: the newest finished one, built
+    /// off-thread; `None` while the first builds). The GPU copy is replaced when this `Arc`
+    /// changes.
+    pub mesh: Option<Arc<RoadMesh>>,
+    /// Style (road / line), colour, line width and alpha, marks on.
+    pub cfg: RaceCfg,
+}
+
 /// Everything one frame of one map needs. Built per frame by the call site (cheap: `Arc`s and
 /// `Copy` configs), moved into the paint callback.
 #[derive(Clone)]
@@ -216,6 +231,8 @@ pub struct Scene3d {
     pub roads: RoadsCfg,
     /// The in-race focus, when a race line is picked.
     pub focus: Option<Focus3d>,
+    /// The race lines of the current mode, hidden behind hills and decks like the roads (D88).
+    pub race: Option<Race3d>,
     /// Breadcrumb trails at their recorded heights (D77), drawn after the roads.
     pub trails: Vec<Trail3d>,
 }
@@ -472,7 +489,12 @@ impl Gl3dState {
             }
         }
         g.sync_focus(gl, sc.focus.as_ref().map(|f| &f.focus));
-        g.sync_race(gl, sc.focus.as_ref().map(|f| &f.focus), &relief.terrain)?;
+        let race_mesh = sc.race.as_ref().and_then(|r| r.mesh.as_ref());
+        if uploaded && !g.race_is(race_mesh) {
+            self.busy = true; // one heavy upload per callback: the race lines next frame
+        } else {
+            uploaded |= g.sync_race(gl, race_mesh)?;
+        }
         let ppp = info.pixels_per_point;
         let map = sc.map.and_then(|m| painter.texture(m.id).map(|t| (t, m.orig_size)));
         let frame = Frame {
@@ -490,7 +512,7 @@ impl Gl3dState {
             relief: sc.relief.sane(),
             roads: (sc.roads.on && g.roads.is_some()).then_some(&sc.roads),
             focus: sc.focus.as_ref().map(|f| &f.cfg),
-            race: g.race.as_ref().and_then(|(f, _)| f.race.as_ref()).map(|r| (&sc.roads, r.color)),
+            race: sc.race.as_ref().map(|r| RaceFrame { roads: &sc.roads, cfg: &r.cfg, marks: &r.draw.marks }),
             s: sc.s,
             trails: &sc.trails,
             sync_timing: self.opts.sync_timing,

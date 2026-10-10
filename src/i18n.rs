@@ -882,6 +882,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Tracers fade out with whichever comes first — age or distance behind the player."
             => "Spuren blenden aus – je nachdem, was zuerst eintritt: Alter oder Distanz hinter dem Spieler.",
         "Show player list on map" => "Spielerliste auf der Karte anzeigen",
+        "Show Dashboard map" => "Dashboard-Karte anzeigen",
+        "Whether the Dashboard has its Map module. The Viewer on this tab is always there."
+            => "Ob das Dashboard sein Karten-Modul hat. Der Viewer in diesem Tab ist immer da.",
         "Columns" => "Spalten",
         "Distance" => "Distanz",
         "Car class" => "Fahrzeugklasse",

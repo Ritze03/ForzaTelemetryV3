@@ -598,8 +598,22 @@ impl RoadMesh {
     /// them like the road tunnels (last, without the depth test: seen through the hill); the rest
     /// is slot [`SLOT_RACE`]. A closed circuit closes on itself (one mitred join, no ends).
     /// A few hundred samples per km; the 85 km route 5555 builds in a few ms.
+    #[cfg(test)]
     pub fn race_road(r: &RaceRoad, terrain: &Terrain) -> RoadMesh {
-        RoadMesh::build(&race_road_layer(r, terrain), terrain, 0)
+        RoadMesh::race_roads(std::slice::from_ref(r), terrain)
+    }
+
+    /// Several race lines as one mesh (D88: every line the race-line mode draws, up to all 170 =
+    /// ~1 000 km, is one mesh, one upload, one draw plan).
+    pub fn race_roads(lines: &[RaceRoad], terrain: &Terrain) -> RoadMesh {
+        let mut layer = RoadLayer::default();
+        for r in lines {
+            let l = race_road_layer(r, terrain);
+            for (slot, chains) in l.by_type.into_iter().enumerate() {
+                layer.by_type[slot].extend(chains);
+            }
+        }
+        RoadMesh::build(&layer, terrain, 0)
     }
 
     /// Fill `idx_near` / `idx_far` and the tiles' ranges from the pieces.
@@ -1491,7 +1505,7 @@ mod tests {
         // West to east through the big hill at (-300, 200), 150 m high inside it.
         let pts: Vec<[f32; 2]> = (0..=90).map(|i| [-800.0 + i as f32 * 10.0, 205.0]).collect();
         let y: Vec<f32> = pts.iter().map(|p| t.height(p[0], p[1]).min(150.0) + 0.5).collect();
-        let r = RaceRoad { pts: pts.clone(), y: y.clone(), closed: false, color: crate::maprender::cfg::Rgb::hex(0xfb7185) };
+        let r = RaceRoad { pts: pts.clone(), y: y.clone(), closed: false };
         let l = race_road_layer(&r, &t);
         let (open, tun) = (&l.by_type[SLOT_RACE as usize], &l.by_type[SLOT_TUNNEL as usize]);
         assert_eq!((open.len(), tun.len()), (2, 1), "open, tunnel, open");
@@ -1511,7 +1525,7 @@ mod tests {
             [300.0 + 200.0 * a.cos(), -300.0 + 200.0 * a.sin()]
         }).collect();
         let ys: Vec<f32> = sq.iter().map(|p| t.height(p[0], p[1]) + 0.5).collect();
-        let ring = RaceRoad { pts: sq, y: ys, closed: true, color: crate::maprender::cfg::Rgb::hex(0x38bdf8) };
+        let ring = RaceRoad { pts: sq, y: ys, closed: true };
         let m = RoadMesh::race_road(&ring, &t);
         assert_eq!(m.pieces.iter().map(|p| p.caps.count_ones()).sum::<u32>(), 0, "a loop has no ends");
         let l = race_road_layer(&ring, &t);

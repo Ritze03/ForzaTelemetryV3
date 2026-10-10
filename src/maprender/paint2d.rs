@@ -287,12 +287,13 @@ pub struct LayerStats {
     pub muted: usize,
 }
 
-/// Which parts of [`draw_layers_parts`] to draw. In the 3D view (phase K) the roads and jump
-/// lines are the GL scene's ([`super::gl3d`]); the race lines and POIs are still drawn here, with
-/// egui, **over** the 3D (`Camera::project` follows the terrain, `k_at` sizes the icons), so
-/// the 3D call sites pass [`Parts::OVER_3D`]. *Why not in GL:* the same code, icons, fonts, clip
-/// and per-category rules as the 2D maps; the cost is that nothing hides them behind a ridge
-/// (v1, design 2.1E).
+/// Which parts of [`draw_layers_parts`] to draw. In the 3D view (phase K) the roads, jump lines
+/// and, since D88, the race lines with their start / finish marks are the GL scene's
+/// ([`super::gl3d`], depth-tested: terrain and overpasses hide them); the POIs are still drawn
+/// here, with egui, **over** the 3D (`Camera::project` follows the terrain, `k_at` sizes the
+/// icons), so the 3D call sites pass [`Parts::OVER_3D`]. *Why the POIs stay:* the same code,
+/// icons, fonts, clip and per-category rules as the 2D maps; the cost is that nothing hides them
+/// behind a ridge (v1, design 2.1E; limit K6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Parts {
     pub roads: bool,
@@ -303,9 +304,9 @@ pub struct Parts {
 impl Parts {
     /// Everything (what [`draw_layers`] draws).
     pub const ALL: Parts = Parts { roads: true, race_lines: true, pois: true };
-    /// What stays on egui when the GL scene draws the roads.
+    /// What stays on egui when the GL scene draws the roads and the race lines.
     #[allow(dead_code)] // phase K: the 3D call sites (K3, K4)
-    pub const OVER_3D: Parts = Parts { roads: false, race_lines: true, pois: true };
+    pub const OVER_3D: Parts = Parts { roads: false, race_lines: false, pois: true };
 }
 
 /// Vector layers over the base image: roads (bottom to top: `style::ROAD_DRAW_ORDER`), jump
@@ -328,11 +329,7 @@ pub fn draw_layers_parts(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig
         draw_roads(cx, layers, cfg, other, focus.as_deref(), &mut st);
     }
     if parts.race_lines && rc.mode != RaceLineMode::Off {
-        // Over the 3D scene (D80) the focus line's race road is the GL scene's: it gets it with the
-        // focus, which the call sites hand over (`cfg::focus_wanted`) whenever the race is a road.
-        let in_gl = !parts.roads && focusing && rc.route == RouteStyle::Road;
-        let skip = if in_gl { cx.race_sel.focus_line() } else { None };
-        draw_race_lines(cx, layers, cfg, skip, &mut st);
+        draw_race_lines(cx, layers, cfg, &mut st);
     }
     if parts.pois && cfg.pois.on && !(focusing && cfg.race_lines.focus.hide_pois) {
         draw_pois(cx, layers, cfg, &mut st);
@@ -951,8 +948,8 @@ const RACE_ALL_BUDGET: usize = 40_000;
 /// The race lines (`RouteStyle::Line`: thin lines) or race roads (`RouteStyle::Road`, D80: the
 /// road look along the line — every casing, then every fill, round ends, in the race colour,
 /// opaque, [`style::RACE_ROAD_WIDTH`] on the roads' width rule), then the start / finish marks.
-/// `skip` = a line whose race road the 3D scene draws (only its marks are drawn here).
-fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, skip: Option<usize>, st: &mut LayerStats) {
+/// Not over the 3D scene (D88): that has them all in GL (`Parts::OVER_3D`).
+fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: &mut LayerStats) {
     let rc = &cfg.race_lines;
     let taper = cfg.tilt.taper;
     let road = rc.route == RouteStyle::Road;
@@ -974,10 +971,6 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, skip
         let span = if rc.mode == RaceLineMode::All { None } else { cx.race_sel.span(i).filter(|_| i < layers.races.cum.len()) };
         if rc.marks {
             marks.push((i, span.is_none_or(|sp| sp.start), span.is_none()));
-        }
-        if skip == Some(i) {
-            st.race_lines += 1;
-            continue;
         }
         pieces.clear();
         let sliced;
@@ -2150,7 +2143,7 @@ mod tests {
 
     /// D80: `RouteStyle::Road` (the default) draws the race line as a road: its casing under its
     /// fill (the road width rule, x RACE_ROAD_WIDTH), round ends, opaque race colour; over the 3D
-    /// scene the focus line's road is the GL scene's, so only its marks are left here.
+    /// scene (D88) the GL scene has all of it (lines and marks), so nothing of it is drawn here.
     #[test]
     fn the_race_line_is_drawn_as_a_road() {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
@@ -2183,16 +2176,14 @@ mod tests {
         assert_eq!((strokes[0].1, strokes[1].1), (casing, fill), "casing first, then the opaque race colour");
         let base = style::road_base_px(&cfg.roads, cam.scale());
         assert!((strokes[1].0 - style::line_px(base, style::RACE_ROAD_WIDTH)).abs() < 1e-3 && strokes[0].0 > strokes[1].0, "{strokes:?}");
-        // Over the 3D scene with the other roads muted (the scene has the focus): marks only.
+        // Over the 3D scene (D88) the race lines and their marks are the GL scene's, whatever the
+        // style or the other roads: nothing here.
         let (st, shapes) = run(&cfg, Parts::OVER_3D);
-        assert_eq!((st.race_lines, shapes.len()), (1, 1 + 10));
-        // ... and with the other roads Normal too (D82: the call sites hand over the focus whenever
-        // the race is a road, `cfg::focus_wanted`): the scene draws the race road, marks only here.
+        assert_eq!((st.race_lines, shapes.len()), (0, 0));
         cfg.race_lines.focus.other_roads = OtherRoads::Normal;
-        assert_eq!(run(&cfg, Parts::OVER_3D).1.len(), 1 + 10);
-        // A thin line has no road in the scene: drawn here.
+        assert_eq!(run(&cfg, Parts::OVER_3D).1.len(), 0);
         cfg.race_lines.route = RouteStyle::Line;
-        assert!(run(&cfg, Parts::OVER_3D).1.len() > 1 + 10);
+        assert_eq!(run(&cfg, Parts::OVER_3D).1.len(), 0);
     }
 
     /// D82: "race road only" draws no road of the road layer in a race (2D), only the race road;
