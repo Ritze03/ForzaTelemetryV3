@@ -96,6 +96,10 @@ filters, `c` = their curve slider 0..1, `ts` = setter's unix ms.
 - **API:** `CoopState::set_destination((x, z), hue, filters, curve)` / `clear_destination()` (no-op
   outside a session), `destination() -> Option<SharedDest>` and `destination_seq()` on both
   `CoopState` and `CoopReader` (the listener / overlay threads poll the seq).
+- **cloudflared exits without a URL** (missing / broken binary, offline): when its output pipe
+  closes before a `trycloudflare.com` URL was seen, the host goes to *Server up (LAN only — no
+  tunnel)* with the error *cloudflared exited without a tunnel*, `connecting` off, and the tab drops
+  the "Starting tunnel…" spinner (it showed forever before; the LAN address still works).
 - The Cloudflare client **flushes its `Hello`** right after writing it. *Why:* tungstenite's `write`
   only buffers (up to 128 KiB) and `read` does not flush it, and the host gives up on a connection
   that sends no `Hello` within 10 s; before this fix a client that joined with the game not running

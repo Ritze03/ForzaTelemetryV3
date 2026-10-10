@@ -42,6 +42,8 @@ pub struct NavState {
     resend: bool,
     /// When this co-op session came up, to share a destination set before joining.
     join: JoinWatch,
+    /// The room's destination last frame (in a session), to notice a teammate clearing ours.
+    room_seen: Option<crate::coop::SharedDest>,
 }
 
 /// Shares a destination that existed before the session (set earlier, or saved from the last
@@ -167,13 +169,35 @@ pub fn sync(app: &mut ForzaApp, ctx: &egui::Context) {
         room_event(app, RoomEvent::PrefsChanged, &v);
     }
     let session = app.coop.role() != crate::coop::Role::Off;
-    let up = session && !app.nav_ui.join.done && !app.coop.is_connecting() && {
+    // A host's room exists at once (its tunnel may still be starting); a client is up once
+    // connected and welcomed.
+    let host = app.coop.role() == crate::coop::Role::Host;
+    let up = session && !app.nav_ui.join.done && (host || !app.coop.is_connecting()) && {
         let me = app.coop.my_id();
         app.coop.roster().iter().any(|p| p.id == me)
     };
     if join_due(&mut app.nav_ui.join, session, up, std::time::Instant::now()) {
         room_event(app, RoomEvent::Joined, &v);
     }
+    let room = if session { app.coop.destination() } else { None };
+    let prev = std::mem::replace(&mut app.nav_ui.room_seen, room.clone());
+    if room.is_none() && session {
+        let by = app.coop.cleared_by();
+        if cleared_by_teammate(prev.as_ref(), by.as_deref(), &app.coop.my_id(), app.config.nav.destination) {
+            app.config.nav.destination = None;
+            push_inputs(app);
+        }
+    }
+}
+
+/// The room's destination was this player's own (`prev`, last frame) and a teammate has just
+/// cleared it for everyone (`cleared_by`, the clearer, while the room has none): the own copy of
+/// it (`local`, the saved destination the share came from) goes too, or "Clear for everyone"
+/// would leave the setter navigating there. Not when this player took it back themselves
+/// (sharing switched off: the clearer is them) or the session ended (no clearer).
+fn cleared_by_teammate(prev: Option<&crate::coop::SharedDest>, cleared_by: Option<&str>, my_id: &str, local: Option<[f32; 2]>) -> bool {
+    let Some(p) = prev else { return false };
+    p.setter_id == my_id && cleared_by.is_some_and(|by| by != my_id) && local == Some([p.x, p.z])
 }
 
 /// Before the config is saved at exit: an arrival the UI has not seen yet (the window was
@@ -725,6 +749,19 @@ mod tests {
         assert_eq!(room_op(RoomEvent::Joined, &cfg(true, Some(p)), &ctx(true, false, true)), None, "the room's stays");
         assert_eq!(room_op(RoomEvent::Joined, &cfg(false, Some(p)), &ctx(false, false, false)), None, "sharing off");
         assert_eq!(room_op(RoomEvent::Joined, &cfg(true, None), &ctx(false, false, false)), None, "nothing to share");
+    }
+
+    #[test]
+    fn a_teammate_clearing_my_shared_destination_clears_my_copy() {
+        let mine = crate::coop::SharedDest { setter_id: "me".into(), setter_name: "Me".into(), x: 1.0, z: 2.0, hue: 0.0, filter_bits: 1, curve: 0.0, ts: 5 };
+        let theirs = crate::coop::SharedDest { setter_id: "mate".into(), ..mine.clone() };
+        let local = Some([1.0, 2.0]);
+        assert!(cleared_by_teammate(Some(&mine), Some("mate"), "me", local));
+        assert!(!cleared_by_teammate(Some(&mine), Some("me"), "me", local), "taken back by me (sharing off): keep my own");
+        assert!(!cleared_by_teammate(Some(&mine), None, "me", local), "session over: keep it");
+        assert!(!cleared_by_teammate(Some(&theirs), Some("mate"), "me", local), "a teammate's: my own stays underneath");
+        assert!(!cleared_by_teammate(Some(&mine), Some("mate"), "me", Some([9.0, 9.0])), "I have another one by now");
+        assert!(!cleared_by_teammate(None, Some("mate"), "me", local));
     }
 
     #[test]

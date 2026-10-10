@@ -535,6 +535,14 @@ impl CoopState {
         self.inner.lock().unwrap().dest_view()
     }
 
+    /// While the room's destination is cleared: the id of the player who cleared it (`None` while
+    /// one is set, or nothing was set / cleared in this session). The Navigation tab uses it to
+    /// drop this player's own copy of a destination a teammate cleared for everyone.
+    pub fn cleared_by(&self) -> Option<String> {
+        let i = self.inner.lock().unwrap();
+        i.dest.as_ref().filter(|d| d.pos.is_none()).map(|d| d.setter_id.clone())
+    }
+
     /// Change counter of the shared destination ([`CoopReader::destination_seq`]).
     #[allow(dead_code)]
     pub fn destination_seq(&self) -> u64 {
@@ -1325,6 +1333,14 @@ fn spawn_tunnel(
                     g.status = "Tunnel ready".into();
                     g.connecting = false;
                 }
+            }
+            // The pipe closed (cloudflared exited) before it printed a URL: the LAN server is
+            // still up, so say so instead of "Starting tunnel…" forever.
+            let mut g = inner.lock().unwrap();
+            if !stop.load(Ordering::Relaxed) && g.role == Role::Host && g.words.is_none() && g.connecting {
+                g.error = Some("cloudflared exited without a tunnel".into());
+                g.status = "Server up (LAN only — no tunnel)".into();
+                g.connecting = false;
             }
         });
     }

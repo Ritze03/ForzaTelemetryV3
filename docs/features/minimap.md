@@ -1074,8 +1074,8 @@ llvmpipe draw the same pictures (ES has no timer query). On llvmpipe (6 cores, r
 ~16 ms, roads ~10 ms, one step per frame.
 
 **Tests** (`gl3d/tests.rs`, headless EGL through `overlay::gl::Headless::new_with(Flavour, device)`;
-GL tests are `#[ignore]`, run `GL3D_PNG_DIR=dir cargo test gl3d -- --ignored --test-threads=1
---nocapture`, GLES 3.0 needs `MESA_GLES_VERSION_OVERRIDE=3.0` in the environment of its own
+GL tests are `#[ignore]`, run `GL3D_PNG_DIR=dir cargo test gl3d -- --ignored
+--nocapture` (parallel-safe, see the geomorph note), GLES 3.0 needs `MESA_GLES_VERSION_OVERRIDE=3.0` in the environment of its own
 process, `GL3D_DEVICE=<n>` runs the real-scene test on another EGL device): `gl3d_default_gl`,
 `gl3d_gles30`, `gl3d_llvmpipe` (HUD at ppp 1 / 1.5, Dashboard, roads of every type by colour, markers
 over the 3D, rounded mask, `get_error() == 0`, target FBO restored, PNGs),
