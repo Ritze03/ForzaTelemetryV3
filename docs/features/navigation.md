@@ -55,7 +55,7 @@ and `MapLayers::rev` tells the router when to recompute.
   every id with a position (38 597 on the project data: 38 473 nav + 124 user points); edges =
   each polyline's consecutive pairs minus `removed` (a pair in two polylines is one edge) plus the
   `added` links between known points (39 600 edges).
-* `Edge { a, b, len, kind, curv }`: `len` is 3D when both heights are known (`mesh3d::known_y`
+* `Edge { a, b, len, kind, curv, wind }`: `len` is 3D when both heights are known (`mesh3d::known_y`
   rule, 0 = unknown), else 2D; `kind` = `RoadType::index` (0 = unset).
 * **Directedness:** every edge has two arcs (`edge << 1 | dir`, CSR adjacency), except a Jump:
   exactly one arc, take-off -> landing (take-off = `jump_from[edge]` if it is an endpoint, else
@@ -65,6 +65,19 @@ and `MapLayers::rev` tells the router when to recompute.
   index `i`; turns only inside the same polyline, polyline ends and added links get 0.
   *Why:* it is the road's own winding, independent of which route uses it, so the cost needs no
   per-route state (an edge-based search over directed edges would be needed otherwise).
+* **Chain winding** `wind` = the heading changes at the vertices within +-400 m (`WIND_HALF_M`) of the
+  edge's middle along the same polyline, divided by the covered length (at least 600 m,
+  `WIND_MIN_M`); added links and jumps 0. A polyline in the nav data is a whole road (1544 on the
+  island, not one per junction), so the window follows the road through its junctions. Symmetric,
+  so direction-independent like `curv`; a polyline end just has a half window, and the 600 m floor
+  keeps one corner on a short road from reading as winding. Build cost: the graph builds in ~19 ms
+  (release) instead of ~16 ms. *Why:* `curv` alone cannot say "this is a touge": the straights
+  between hairpins read as straight, so the bonus was patchy and the route kept preferring a
+  shorter, straighter road to the whole pass (D96 follow-up, the user: "More Curves isnt aggressive
+  enough, since it still kinda avoids some Touge routes"). Smoothing the curvature over a window
+  gives the whole stretch the bonus, and the relief was not needed for it (see Touge below).
+  *Why polyline windows and not "chains between degree-2 nodes":* the touge roads have side
+  junctions every few hundred metres, which would cut a chain into pieces too short to average over.
 * The snap grid (128 m cells) holds every edge except turnarounds and jumps.
 
 ### Filters (`RouteFilters::allows(kind)`)
@@ -93,22 +106,96 @@ constants live in `nav/cfg.rs` (`BIT_ROAD` ... `BITS_MASK`) and are pinned by a 
 Per metre of an arc (`s` = slider, 0 = fastest):
 
 ```
-cost_per_m(kind, curv, s) = ((1-s)/speed[kind] + s/V_REF) * (1 - BETA * s * min(curv/KAPPA, 1))
+cost_per_m(kind, curv, wind, s) = ((1-s)/speed[kind] + s/V_REF)
+                                * (kind == Highway ? (1-s)*HW_FAST + s*HW_AVOID : 1)
+                                * (1 - BETA * s * min(max(curv/KAPPA, wind/KAPPA_WIND), 1))
 ```
 
-`V_REF` = 22 m/s, `KAPPA` = 0.02 rad/m (about the 95th percentile of the island's edges),
-`BETA` = 0.5. Assumed speeds (m/s): highway 40 (144 km/h), tunnel 25, road 22 (79 km/h), jump 30,
-dirt 17, cross-country 12, trail 11, other / unset 16.
+`V_REF` = 22 m/s, `KAPPA` = 0.01 rad/m (about the 80th percentile of the island's road and dirt
+edges), `KAPPA_WIND` = 0.008 rad/m, `BETA` = 0.95, `HW_FAST` = 0.4, `HW_AVOID` = 1.5. The stronger
+of the edge's own curvature and the road's winding around it counts (max, not sum, so the bonus
+stays within `BETA` and the A* bound below holds). Assumed speeds (m/s): highway 40
+(144 km/h), tunnel 25, road 22 (79 km/h), jump 30, dirt 17, cross-country 12, trail 11, other /
+unset 16. **This is the search objective only:** `eta_s` is plain length / assumed speed, so the
+preference factors never leak into the time shown (a test pins it).
 
 *Why these speeds:* no real speed data exists (D84), so plausible driving speeds that rank the types
 sensibly; the ETA uses the same numbers and is shown as approximate ("~9 min").
-*Why two ingredients for the slider:* (a) the speed term blends towards one uniform speed so
-highways stop being attractive, (b) a bonus up to 50 % for winding edges. A curvature bonus alone
-changed almost nothing (mean curvature 2.58 -> 2.78 mrad/m at `BETA` 0.6) because highways dominate
-the time. Measured by the scout on 40 random pairs 4+ km apart (road+highway+tunnel+other+dirt):
-`s` 0 / 0.5 / 1 gives 12.7 / 11.7 / 11.6 km, 8.1 / 8.3 / 8.8 min, mean curvature 2.4 / 2.8 / 3.1
-mrad/m, highway share 30 / 19 / 9 %: at the curvy end +30 % winding for +8 % time. `BETA` is the
-one tuning constant (0.8 gave 3.21 mrad/m at 8.74 min); a `const`, not UI.
+
+*Why three ingredients (D96, retuned 2026-10-10):* the user: "The highway is pretty much always the
+fastest mean of travel. For the PREFERENCE 'Faster Roads', it should be (at least almost) always
+used. More Curves isn't aggressive enough, since it still kinda avoids some Touge routes."
+
+* **(a) Speed blend** (unchanged): towards one uniform speed, so at `s = 1` a highway is no faster.
+* **(b) Highway factor** `(1-s)*HW_FAST + s*HW_AVOID`. *Why:* by assumed speed alone a highway beats
+  a local road only 1.8x per metre, so a somewhat shorter local road often won and the route skipped
+  the highway. `HW_FAST` = 0.4 makes a highway metre 2.5x cheaper than its speed says (a
+  *preference*, not a speed: the ETA stays honest, which is why the shown ETA of an `s = 0` route is
+  now a little above the true optimum). `HW_AVOID` = 1.5 makes it 50 % dearer than any other
+  straight road at `s = 1`, so the curvy end does not pick up highway on trips the bonus left
+  undecided. **No short-trip threshold:** the factor is multiplicative, so a highway is taken only
+  while the road-equivalent length of the highway route (ramps full price, highway metres at 0.22)
+  beats the local alternative; a trip with no highway nearby cannot detour absurdly to reach one
+  (short trips of 0.3-2 km: 2.65 -> 2.72 km mean route, 14.0 -> 14.6 % highway).
+* **(c) Winding bonus** up to 95 % (was 50 %, 90 % in #233), from an edge's own curvature >= 10
+  mrad/m (was 20) **or** a road winding >= 8 mrad/m around it (`wind`, see Graph). *Why:* a hairpin
+  edge is 15-50 mrad/m (p90 15.6, p95 23.9, p99 47.6; p75 6.8), so the old 50 % at 20 mrad/m left a
+  2x shorter straight road competitive with a hairpin pass; #233's per-edge version still gave the
+  straights between the hairpins nothing. *Why `KAPPA_WIND` = 8 mrad/m:* the 20 most winding
+  chains average 6.9-13.9 and the p75 *edge* is 6.8, but averaged over 800 m an ordinary country
+  road sits at 3-4 mrad/m (not measured separately), so 8 saturates on a real touge and not on a bendy
+  road. Swept at +-250 m window and `BETA` 0.9, `KAPPA_WIND` 4 / 6 / 8 / 10 / 12 mrad/m gave 29 / 32 / 34 /
+  31 / 28 touge trips of 152 (a higher value stops saturating on the touge itself). *Why
+  `BETA` 0.95 now:* with the window the full bonus reaches the straights between the hairpins, and
+  the extra 5 % (cost x 0.05 instead of 0.10) is worth 34 -> 43 touge trips for ETA x1.19 -> x1.23
+  (0.97 gave the same 43).
+
+**Measured** (`cargo test --release pref_eval -- --ignored --nocapture`, FH6 install of 2026-10,
+project road-type data, default filters, 80 fixed-seed node pairs 3-25 km apart; "of near-800 / near-1500"
+= trips with a highway edge within 800 m / 1.5 km of both ends that drive >= 500 m of highway; 14 and
+36 such trips; `wind` = summed heading change per metre of the route polyline, `tight` = share of its
+length turning faster than 20 mrad/m). Each cell is `before D96 -> #233 -> chain winding (now)`:
+
+| `s` | km | ETA min | highway share | hw used, near-800 | near-1500 | wind mrad/m | tight % |
+|---|---|---|---|---|---|---|---|
+| 0 | 12.74 -> 14.83 -> 14.83 | 8.31 -> 8.82 -> 8.82 | 27.8 -> 40.9 -> 40.9 % | 12 -> 13 -> 13 of 14 | 24 -> 27 -> 27 of 36 | 3.68 -> 3.43 -> 3.43 | 3.5 -> 3.2 -> 3.2 |
+| 0.25 | 12.05 -> 12.87 -> 12.78 | 8.41 -> 8.32 -> 8.34 | 18.6 -> 29.2 -> 28.5 % | 12 -> 12 -> 12 | 22 -> 25 -> 24 | 3.95 -> 3.71 -> 3.80 | 3.7 -> 3.6 -> 3.8 |
+| 0.5 | 11.81 -> 11.79 -> 11.85 | 8.57 -> 8.65 -> 8.85 | 14.1 -> 13.5 -> 12.9 % | 11 -> 10 -> 10 | 19 -> 18 -> 18 | 4.20 -> 4.45 -> 4.71 | 4.1 -> 4.4 -> 5.0 |
+| 0.75 | 11.73 -> 11.79 -> 12.22 | 8.70 -> 9.07 -> 9.62 | 12.2 -> 7.4 -> 5.7 % | 10 -> 8 -> 8 | 18 -> 15 -> 14 | 4.38 -> 4.81 -> 5.25 | 4.4 -> 5.0 -> 5.9 |
+| 1 | 11.75 -> 11.99 -> 13.09 | 9.03 -> 9.47 -> 10.57 | 8.3 -> 4.7 -> 3.9 % | 9 -> 8 -> 8 | 16 -> 14 -> 14 | 4.70 -> 5.08 -> 5.85 | 4.9 -> 5.3 -> 7.0 |
+
+`s = 0` is bit-for-bit #233 (the winding bonus is multiplied by `s`), so the highway behaviour did
+not move. At `s = 1` the route winds +71 % more than `s = 0` (#233: +48 %) for a mean ETA x1.23 per trip
+(x1.09 in #233) and 0.96x the distance (the winding roads are shorter than the highway detours they
+replace). Query time 0.8-1.3 ms mean per 3-25 km query (release), as before (0.8-1.0).
+*Why `HW_FAST` = 0.4 and not stronger* (#233): sweeping it (1.0 / 0.5 / 0.4 / 0.25 / 0.1) gave
+24 / 27 / 27 / 29 / 32 of the 36 near-1500 trips on a highway, but also mean routes of 12.7 / 14.1 / 14.8 /
+15.8 / 17.7 km (ETA 8.3 / 8.6 / 8.8 / 9.2 / 9.9 min), with 0.1 sending a 10 km trip over 36 km; the
+remaining trips have no highway that leads their way, so more discount only buys detours. 0.4 is the
+knee: the user asked for "(at least almost) always", not "at any price". `HW_AVOID` 2.0 instead of
+1.5 changed nothing at `s = 1` (touge 34 -> 34, highway share 4.0 -> 3.8 %) and lowered `s = 0.5`'s
+highway use, so it stays 1.5.
+
+**Touge** (hairpin / mountain-pass roads): `chains()` in `nav/tests.rs` cuts the network at junctions
+into road chains; the touge set is the 20 most winding chains >= 1 km with >= 60 m of up and down
+(by mean `curv`, 6.9-13.9 mrad/m, e.g. a 5.1 km pass with 444 m of relief). End-to-end between the
+chain's two ends (`touge_trips`), 5 of the 20 are contested (`s = 0` drives around them instead).
+Chains driven (> 90 % of their length) at `s` 0 / 0.5 / 1: before D96 (per-edge, 50 %) 15 / 16 / 17
+of 20; #233 15 / 17 / 18; now 15 / 18 / 19. Of the 5 contested, `s = 1` takes 3 in #233 and **4 now**
+(the 1.5 km dirt chain at (-4900,-1227) that lost to a 0.41 km shortcut is driven now: it is 8.1
+mrad/m on average, but the straights between its bends only got the bonus once `wind` smoothed them). The 5th, the 3.7 km chain at
+(5314,1493) -> (6081,2240), still loses to a 2.46 km parallel road that winds 6.9 mrad/m against the
+chain's 8.9 (both reach `KAPPA_WIND`, so both get the full bonus and the shorter wins; sweeping
+`KAPPA_WIND` up to 12 mrad/m did not change it). A route 1.5x as long for a 29 % windier road is a defensible choice, so it is left.
+Trips starting and ending 0.5-2 km beyond a touge's ends (`touge_uptake`, 152 trips over the 20
+chains) drive it at `s` 0 / 0.5 / 1: 8 / 9 / 11 before D96, 8 / 10 / 15 in #233, **8 / 15 / 43 now**
+(window +-250 m with 400 m floor and `BETA` 0.9 gave 32; +-400 m / `BETA` 0.9 34-36; `BETA` 0.95
+39-43). *The ceiling #233 hit was the per-edge curvature, not the constants:* raising `BETA` to
+0.95 or lowering `KAPPA` to 0.005 there only reached 16 of 152, and a climb-grade term (weight 0.1)
+15 against 13; smoothing the winding along the road moved it to 32-43. Relief was not added to
+`wind`: the chain winding alone passes the target, and a grade term did not help before. The
+trips that still do not drive a touge (109 of 152) were not investigated one by one; a through-trip
+that only grazes the pass and a parallel road of the same winding are the likely reasons.
 
 ### Search (`search.rs`)
 
@@ -118,9 +205,11 @@ one tuning constant (0.8 gave 3.21 mrad/m at 8.74 min); a `const`, not UI.
   Exact for the 20 m edges and still right for the long added links (max 762 m). If both points are
   on one edge the direct piece is compared against the best detour (a long link may lose to one).
 * **A\*** over node indices (binary heap, lazy deletion). Heuristic = straight 2D distance times
-  `CostModel::heuristic`'s factor `((1-s)/vmax + s/V_REF) * (1 - BETA*s)`, with `vmax` the fastest
-  *enabled* kind. Admissible and consistent: every arc costs at least its 2D chord times that
-  factor (3D length >= 2D chord, speed <= vmax, curvature factor >= `1 - BETA*s` > 0). Dijkstra is
+  `CostModel::heuristic`'s factor `min over enabled kinds of base[kind] * (1 - BETA*s)` (`base` =
+  the speed blend times the highway factor). Admissible and consistent: every arc costs at least its
+  2D chord times that factor (3D length >= 2D chord, `base` >= its minimum, curvature factor >=
+  `1 - BETA*s` > 0); the highway discount lowers the bound, which is why it is `min`, not a speed.
+  The weaker bound (2.5x at `s = 0`, 20x at `s = 1`) did not slow the search measurably (0.8-1.3 ms per 3-25 km query). Dijkstra is
   the same code with `h = 0` (`search(..., astar = false)`, tests only); a test checks A* cost ==
   Dijkstra cost on ~390 random pairs over random filters and slider values.
 * Two n-sized vectors are allocated per query (~0.3 MB); a reusable scratch is the next step if a
@@ -147,7 +236,8 @@ one tuning constant (0.8 gave 3.21 mrad/m at 8.74 min); a `const`, not UI.
 
 Graph build (`node_positions` + `RouteGraph::build`, on the `map-layers` loader thread): **~30 ms
 release** (2 + 28 ms), ~140 ms debug. One route across the island (node 1 to the node farthest
-away, 11.5 km straight, 21 km driven, default filters): **1.7 ms release, 11 ms debug**, so no
+away, 11.5 km straight, 21-23 km driven, default filters): **1.3-1.7 ms release, 11 ms debug** (the D96
+retune of the cost did not change it: 1.39 ms before, 1.28 ms after, at `s` 0), so no
 precomputation or contraction hierarchies are needed. The real-install test (`real_install_graph`) pins graph counts
 (38 597 nodes / 39 600 edges), the per-type edge counts, connectivity (all types but turnaround:
 38 594 nodes in one component; road+tunnel only: 21 719; road+tunnel+highway: 27 251), the 18 jumps
@@ -243,6 +333,14 @@ reply dropped, paused packets, local arrival, shared overrides local / falls bac
 shared arrival, prefs-only change. Plus `ThreadPlanner` with a scripted graph source (waits for a
 loading graph, missing install, replaced graph, latest request wins). Real install: the L1 test
 `real_install_graph` (skips without `FH6_INSTALL_DIR`). The ignored `tick_cost` prints the per-packet cost.
+Chain winding: `winding_is_the_roads_around_the_edge_not_the_edges_own` (a straight edge next to a
+zig-zag reads it, far away reads 0, reversing the polyline changes nothing),
+`a_short_road_with_one_corner_is_not_winding` (the 600 m floor), and the `cost.rs` tests (`wind`
+gives the same bonus as `curv`, max not sum, bounded for the A* heuristic).
+The ignored route-preference evaluation (D96, need `FH6_INSTALL_DIR`; run with `cargo test --release
+<name> -- --ignored --nocapture`): `pref_eval` (the table in the cost section), `touge_chains` (edge
+winding percentiles and the most winding chains), `touge_trips`, `touge_uptake`, and `touge_png`
+(`PNG_DIR=<dir>` draws the contested touge trips, blue = `s` 0, red = `s` 1, the chain in yellow).
 
 
 ## 3. Drawing on the maps (`maprender/`, `hud/`, `overlay/`, `ui/map_scene.rs`, L3)
