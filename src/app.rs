@@ -2789,6 +2789,8 @@ impl eframe::App for ForzaApp {
         if let Some(view) = self.listener.view_now() {
             self.adopt_listener_view(view);
         }
+        // Likewise an arrival noticed while the window was covered: no frame took it over yet.
+        crate::ui::nav_tab::take_arrival_now(self);
         self.config.save();
         // The listener thread owns the per-car calibrations — let it flush them and stop.
         self.listener.shutdown();

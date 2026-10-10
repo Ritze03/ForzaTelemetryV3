@@ -1162,6 +1162,9 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
             std::thread::sleep(Duration::from_millis(500));
             continue 'reconnect;
         }
+        // Push it out now: the host waits at most 10 s for Hello, and without telemetry (game
+        // not running) nothing else would flush it. A would-block is left to the loop's flush.
+        let _ = ws.flush();
 
         let (tx, rx) = mpsc::sync_channel::<Message>(256);
         {
@@ -1899,11 +1902,10 @@ mod tests {
             let url = format!("ws://127.0.0.1:{port}");
             std::thread::spawn(move || client_loop(url, "Guest".into(), 50.0, g, stop));
         }
-        // The client writes Hello without flushing; any outgoing frame pushes it out (in the app
-        // that is the first telemetry packet), so send a waypoint to stand in for it.
+        // Hello is flushed on its own: no telemetry / waypoint is needed for the host to welcome
+        // the client (the host gives up after 10 s without one).
         let st = CoopState { inner: guest.clone(), stop: stop.clone(), port: 0 };
         wait_for("client connects", || guest.lock().unwrap().client_out.is_some());
-        st.set_waypoint(Some((0.0, 0.0)), 50.0);
         // Late-join resend, taken over by the client path with the host's id.
         wait_for("client adopts the host's destination", || guest.lock().unwrap().dest_view().is_some());
         let d = guest.lock().unwrap().dest_view().unwrap();

@@ -994,6 +994,9 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
   `gl3d_terrain_levels_do_not_pop` (synthetic) and `gl3d_real_install_terrain_levels_do_not_pop`
   assert the worst-frame share stays below 0.01 % / 0.05 %; the `#[cfg(test)]` hook `clipmap::LOD_CAR`
   makes `scene.rs` place the levels for another car position to render the "previous frame".
+  `clipmap::LOD_CAR` (the pop tests' stale-levels override) is thread-local so the gl3d tests are
+  safe to run in parallel; tests that build nav routes take `NAV_LOCK` because `Route3d::new`
+  caches one mesh process-wide.
 - **Roads** (`roads.rs`, shaders): static GPU ribbons from K1's `RoadMesh`; heights, deck, width,
   colour, dashes and focus are all uniforms / per-vertex shader work, so no setting re-uploads
   anything. Node heights vs terrain drape is one uniform, cross-country always draped, jump lines

@@ -96,8 +96,11 @@ filters, `c` = their curve slider 0..1, `ts` = setter's unix ms.
 - **API:** `CoopState::set_destination((x, z), hue, filters, curve)` / `clear_destination()` (no-op
   outside a session), `destination() -> Option<SharedDest>` and `destination_seq()` on both
   `CoopState` and `CoopReader` (the listener / overlay threads poll the seq).
-- *Note (pre-existing):* the Cloudflare client writes its `Hello` without flushing; it goes out with
-  the first outgoing frame (in the app: the first telemetry packet).
+- The Cloudflare client **flushes its `Hello`** right after writing it. *Why:* tungstenite's `write`
+  only buffers (up to 128 KiB) and `read` does not flush it, and the host gives up on a connection
+  that sends no `Hello` within 10 s; before this fix a client that joined with the game not running
+  (no telemetry to push the buffer out) was dropped and reconnected every ~10 s. Test:
+  `coop::tests::real_client_loop_adopts_and_sends_dest` gets its `Welcome` with no other frame sent.
 
 ## Trystero transport
 

@@ -421,6 +421,7 @@ One pure function, `map_tab::click_action(pane, click, shift, armed, in_session)
 |---|---|---|
 | left click | **set destination** | waypoint (only in a co-op session); **set destination** if Shift is held or the *Set destination* button is armed |
 | right click | nothing | clear waypoint (in a session); while armed: just disarm |
+| *Clear route* button | (the ROUTE card's) | shown while there is a destination; reads *Clear for everyone* (with a tooltip) while the destination is the room's, as on the tab |
 | Esc | - | disarms |
 
 The destination point is `map_scene::pick(&cam, pos)` (2D / tilted / 3D terrain ray-march), the same
@@ -444,7 +445,9 @@ and a profile switch keeps the live destination but takes the profile's filters)
 
 `nav_tab::sync` runs once per frame in `ForzaApp::update` before any tab draws:
 
-1. **Arrival:** `take_arrival(seen, view.local_cleared_seq, nav::local_destination(), &mut cfg.nav.destination)`:
+1. **Arrival:** `take_arrival(seen, view.local_cleared_seq, nav::local_destination(), &mut cfg.nav.destination)`
+   (also run by `take_arrival_now` in `on_exit` before the final save: an arrival while the game
+   covered the window has had no UI frame to take it over):
    when the navigator counted an arrival, the saved destination is cleared **once** (the counter
    moves once per arrival; `seen` starts at 0 and the counter at 0, so a destination loaded at
    startup is never cleared by the first frame). If the navigator holds a destination again (a click
@@ -479,12 +482,19 @@ calls `CoopState::set_destination` / `clear_destination`, which do nothing outsi
 * **Receiving** needs no UI: the listener thread hands the room's destination to the tracker (section
   5); the tab only displays it. A teammate's destination overrides this player's own while
   *Follow shared destinations* is on; the own one and the own filters are back when it ends.
-* A destination set *before* joining a session is not sent on joining; set it again or toggle
-  *Share my destination*. A click while a teammate's destination is followed and sharing is off sets
+* **Joined** with a destination already set (set before the session, or saved from the last run):
+  sent once per session, 3 s (`JOIN_GRACE`) after the session is up and this player is in the roster,
+  **only if the room has no destination by then** (`JoinWatch` / `join_due`, `RoomEvent::Joined`).
+  *Why the wait and the condition:* a late joiner receives the room's destination right after the
+  handshake; a saved destination from yesterday must not replace the group's current one (one slot,
+  last write wins), and the joiner then follows the room's instead. A host starting a session with a
+  destination shares it (the room is empty). A reconnect does not repeat it.
+* A click while a teammate's destination is followed and sharing is off sets
   the own destination but the teammate's keeps winning (one slot, last write wins; Clear first).
 
 Tests: `ui::nav_tab::tests` (bridge: startup does not clear, arrival clears once, same-frame click is
-kept, only changed inputs are pushed; `room_op` table incl. outside a session; formatting; the split;
+kept, only changed inputs are pushed; `room_op` table incl. outside a session and the join share;
+`join_due` once per session after the grace; formatting; the split;
 the four cards stay inside the pane at 240 / 280 / 360 px in English and German over every status incl.
 a shared destination with a very long name; read-only followed filters), `ui::map_tab::tests`
 (`clicks_on_the_maps_do_what_each_map_promises`, `viewer_controls_stay_inside_the_tab` with the new
