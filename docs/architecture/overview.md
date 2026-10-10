@@ -381,6 +381,7 @@ might produce.
 | `dashboard.rs` | The draggable/resizable widget grid (largest UI file). See [[dashboard]]. |
 | `overlay_tab.rs` | Overlay tab: the HUD overlay's settings page (General, Monitor Detection, drag-and-drop 3×3 Layout, per-module cards). Also hosts the module selector (`page_selector_with`) and `module_card` the Map tab reuses. See [[overlay]]. |
 | `map_tab.rs` | Map tab (D67): the full-size viewer (drag / wheel / follow) and the settings mode with the Minimap · Dashboard map & Viewer · Map data pages. See [[map-tab]]. |
+| `nav_tab.rs` | Navigation tab (phase L): the left pane of cards (route status, road types, preference slider, co-op), the map pane (`map_tab::map_pane`), the config <-> navigator bridge (`sync`, `set_destination`, `clear_destination`) and the co-op sharing rule (`room_op`). See [[navigation]]. |
 | `map_scene.rs` | The map scene the Dashboard Map widget and the viewer both draw (`draw`, `texture_or_status`), and their temporary pan / zoom state with the reset-when-driving rule (`ManualView`, `DriveGate`, D72). |
 | `map_data.rs` | The Map data page (road-type map editor card), moved from `settings.rs`. See [[map-editor]]. |
 | `backfire.rs` | Backfire tab controls (`show_backfire`). |
@@ -398,6 +399,7 @@ might produce.
 
 - **Navigation (route, destination, re-route, shared destination)** → `nav/` ([[navigation]]); the
   per-packet hook is in `listeners/worker.rs:run` (`nav.tick`), the readers call `nav::view()`.
+- **Navigation tab, setting a destination (Navigation map, Viewer button / Shift+click), the config <-> navigator bridge, sharing with the co-op room** → `ui/nav_tab.rs`; the click rule `map_tab::click_action`; `AppConfig.nav` (`nav::NavConfig`). See [[navigation]].
 - **Add / change a dashboard widget** → `ui/dashboard.rs` (render), plus
   `config.rs:WidgetKind` + `default_widget_layout` (register it) and a mini-settings
   sub-tab in `app.rs` (`DashboardSubTab` + its match arm). See [[dashboard]].

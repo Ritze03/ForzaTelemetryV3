@@ -1,8 +1,7 @@
 # Navigation
 
 Route from the car to a clicked destination over the game's road network (phase L, decisions
-D83-D85, D92). This page documents what exists; sections marked **(not built yet)** are filled
-in by the later tasks (tab L5).
+D83-D85, D92). This page documents what exists.
 
 Decisions the user settled (do not re-open): filters **Road, Highway, Dirt (= offroad), Trail,
 Cross-country, Jumps** and one slider **faster roads <-> more curves** (D83); the route goes from
@@ -19,7 +18,7 @@ runtime (worker thread, listener hook); `maprender` only consumes its result.
 
 | File | What |
 |---|---|
-| `cfg.rs` | `RouteFilters` (the six checkboxes, `to_bits` / `from_bits`), `RoutePrefs { filters, curves }`, `NavConfig` (the persisted settings, `AppConfig.nav` comes with L5) |
+| `cfg.rs` | `RouteFilters` (the six checkboxes, `to_bits` / `from_bits`), `RoutePrefs { filters, curves }`, `NavConfig` (the persisted settings, `AppConfig.nav`) |
 | `graph.rs` | `RouteGraph::build(nav, road_types, node_positions)`, `Edge`, the snap grid |
 | `cost.rs` | assumed speeds, `CostModel` (cost per arc, A* heuristic factor) |
 | `snap.rs` | `RouteGraph::snap`, `Snap` |
@@ -344,9 +343,9 @@ dot on the edge (the circle's edge on the round Minimap) with the distance, like
 HUD: `overlay.map_layers.nav_route`; Dashboard map and Viewer share `minimap_layers.nav_route`
 (D73); `OverlayConfig::effective` copies `map_layers` wholesale under "Use Dashboard map settings".
 `serde(default)`: a config from before has none and gets the defaults (on, fuchsia). It is also a
-`LayerCategory::NavRoute` for "Copy to ..." (`MapLayerConfig::copy_category`). **The card and its
-copy row are L5's** (the exhaustive destructuring in `maprender::ui::layers_ui` has `nav_route: _`
-until then).
+`LayerCategory::NavRoute` for "Copy to ..." (`MapLayerConfig::copy_category`). The **Navigation route**
+card (On, Colour, Width, Copy to...) is in `maprender::ui::layers_ui` on the Minimap and Dashboard
+map & Viewer pages (L5).
 
 ### Tests
 
@@ -363,7 +362,134 @@ change), in all three GL flavours (`suite`), real-install routes (`gl3d_real_ins
 render_3d_states -- --ignored`): route + pin in 3D, shared ring, tilted, flat, hidden in a race and
 when switched off, and through `Renderer::frame_at` with `nav_fn`.
 
-## 4. Navigation tab and Viewer destination **(not built yet, L5)**
+## 4. Navigation tab and Viewer destination (`src/ui/nav_tab.rs`, `src/ui/map_tab.rs`, L5)
+
+`Tab::Navigation` sits between Map and Power Curve (icon `icons::NAVIGATION`, fa-location-arrow
+`U+F124`, checked present in the bundled Nerd Font; title "Navigation"). No Mini-Settings page.
+
+### Layout (Panes rule)
+
+Two panes with an 8 px gap (`nav_tab::split`): the **left pane** is `min(360 px, 40 % of the tab)`
+wide, one vertical `ScrollArea` of four `theme::card`s (spacing zeroed, the card owns the gap), clipped
+to its rect; the **right pane** is the map, filling the rest, also clipped. (`theme::columns` is
+equal halves only, hence the manual rect pair.) No helper text under options: explanations are
+tooltips (D21).
+
+1. **ROUTE**: status line (dot colour + text, `status_text`: *Click the map to set a destination* /
+   *Waiting for the car's position* / *Calculating…* / *On route* / *No road near the car* / *No road near
+   the destination* / *No route with these road types* / *No road data (needs your Forza Horizon 6
+   install)* / *Paused during a race* / *Arrived*), *Set by <name>* with the setter's colour dot while a
+   shared destination is navigated, **Distance** and **Time** (remaining; `~12.4 km` / `~7.7 mi`
+   when the app's `use_mph` is on, `~9 min`, `~1 h 05 min`; `–` without a route), and **Clear route**
+   (`danger_button`, enabled with a destination; **Clear for everyone** while a shared one is active,
+   tooltip says so). A saved destination the navigator has not published yet reads *Calculating…*
+   (`PaneIn::pending`), not the idle hint.
+2. **ROAD TYPES**: Road, Highway, Dirt, Trail, Cross-country, Jumps (`RouteFilters`). Tooltips carry
+   the detail: Road also covers roads of another or unknown type, tunnels are driven when Road *or*
+   Highway is on, turnaround crossovers are never used; Jumps are one-way and risky.
+3. **PREFERENCE**: one slider, end labels *Faster roads* / *More curves*, no numbers (tooltip says how
+   the route is chosen). Stored as `curves` 0..1.
+4. **CO-OP**: *Share my destination* and *Follow shared destinations* (the two `NavConfig` switches),
+   and a line with who set the room's destination (*Shared destination set by <name>* / *you* /
+   *No shared destination*). Greyed with a status line *Not in a co-op session* outside a session.
+
+**Filters while following a teammate's destination** (D85) are **read-only and show the setter's**
+(`PaneIn::followed()` = the navigator's destination is `Shared` and was not set by this player; the
+cards then draw `dest.prefs`, the same filters / slider the navigator routes with). Own settings are
+untouched underneath and are shown again when the shared destination ends. *Why read-only rather
+than "edit and ignore":* the route really is computed with the setter's values; showing editable
+controls that do nothing would lie. A destination this player shared themselves comes back from the
+room as "shared" too, but it is theirs (`RoomInfo::mine`), so their controls stay editable.
+
+### The map pane
+
+`map_tab::map_pane(ui, app, rect, MapPane)` is the Map tab viewer's code made reusable (input, scene
+via `map_scene::draw`, clicks, buttons); the viewer calls it with `MapPane::Viewer`, this tab with
+`MapPane::Navigation` and its own `MapTabState` (`app.nav_ui.map`: pan / zoom / race selection, not
+shared with the viewer). **It draws with the Dashboard map & Viewer settings** (D73: layers, view
+mode incl. 3D, north-up, allow pan and zoom): the tab has none of its own, and its **Settings**
+button opens that page of the Map tab. *Why:* one map look everywhere, and the user wanted every map
+setting on the Map tab (D79). Pan / zoom is the Viewer's (drag, wheel, *Follow car* while manual).
+A faint hint pill *Click the map to set a destination* shows at the bottom while there is none (not
+on a map narrower than 520 px).
+
+### Clicks: how they are disambiguated
+
+One pure function, `map_tab::click_action(pane, click, shift, armed, in_session)`:
+
+| | Navigation tab | Viewer |
+|---|---|---|
+| left click | **set destination** | waypoint (only in a co-op session); **set destination** if Shift is held or the *Set destination* button is armed |
+| right click | nothing | clear waypoint (in a session); while armed: just disarm |
+| Esc | - | disarms |
+
+The destination point is `map_scene::pick(&cam, pos)` (2D / tilted / 3D terrain ray-march), the same
+as a waypoint. A drag is a pan, not a click (egui). Armed state is `MapTabState::dest_armed` (viewer
+only, not saved); armed shows a primary-coloured button and a crosshair cursor. The Dashboard map
+widget has no click handling for destinations (D84 names the tab and the Viewer only).
+
+### Config and the bridge to the navigator
+
+`AppConfig.nav: NavConfig` (`serde(default)`; lenient parse resets only the bad field, e.g.
+`nav.curves`; in `EXPORT_EXCLUDE`: the destination is personal, so presets / exports never carry it,
+and a profile switch keeps the live destination but takes the profile's filters).
+
+| key | default |
+|---|---|
+| `nav.filters.{road, highway, dirt}` | `true` |
+| `nav.filters.{trail, cross_country, jumps}` | `false` (D92) |
+| `nav.curves` | `0.0` (fastest roads) |
+| `nav.destination` | `null` (world `[x, z]`; **saved**, so a trip survives a restart) |
+| `nav.share_destination`, `nav.follow_shared` | `true`, `true` |
+
+`nav_tab::sync` runs once per frame in `ForzaApp::update` before any tab draws:
+
+1. **Arrival:** `take_arrival(seen, view.local_cleared_seq, nav::local_destination(), &mut cfg.nav.destination)`:
+   when the navigator counted an arrival, the saved destination is cleared **once** (the counter
+   moves once per arrival; `seen` starts at 0 and the counter at 0, so a destination loaded at
+   startup is never cleared by the first frame). If the navigator holds a destination again (a click
+   in the same frame as the arrival) the saved one stays. This is how the destination does not come
+   back after a restart.
+2. **Push:** `diff(pushed, wanted(cfg))` hands the navigator only what changed (`set_destination`,
+   `set_prefs`, `set_follow_shared`; all of it on the first frame, the saved destination included).
+   Pushing only on change (instead of every frame) avoids re-setting a destination the navigator has
+   just cleared on arrival, in the gap before step 1 sees it. A NaN slider is clamped so it never
+   looks "changed".
+
+`nav_tab::set_destination(app, pos)` (a click) and `clear_destination(app)` (the Clear buttons) write
+the config, push at once and do the co-op part below.
+
+### Co-op behaviour as built (D85, D92)
+
+The decision is the pure `room_op(event, nav_cfg, ctx) -> Option<RoomOp>` (tested as a table; the
+adapter `room_event` fills `RoomCtx` from `CoopState::destination()` / `my_id()` / `nav::view()` and
+calls `CoopState::set_destination` / `clear_destination`, which do nothing outside a session):
+
+* **Set** (a click): sent to the room when *Share my destination* is on, with the player colour
+  (`coop_hue`), `filters.to_bits()` and `curves`.
+* **Clear**: clears the room's when the destination being cleared is a shared one: followed (anyone's,
+  also with sharing off: anyone may clear it for everyone), or this player's own while sharing. A
+  teammate's destination that is not followed (`follow_shared` off) is left alone.
+* **Share switched on** with a destination: sends it. **Switched off**: takes this player's own out of
+  the room (a teammate's stays).
+* **Filters / slider changed** while this player's own destination is in the room: sent again (the
+  navigator routes a shared destination, even one's own, with the room's copy of the filters, so
+  without the resend the new filters would not apply). Debounced to the pointer release
+  (`NavState::resend`), so a slider drag sends one message.
+* **Receiving** needs no UI: the listener thread hands the room's destination to the tracker (section
+  5); the tab only displays it. A teammate's destination overrides this player's own while
+  *Follow shared destinations* is on; the own one and the own filters are back when it ends.
+* A destination set *before* joining a session is not sent on joining; set it again or toggle
+  *Share my destination*. A click while a teammate's destination is followed and sharing is off sets
+  the own destination but the teammate's keeps winning (one slot, last write wins; Clear first).
+
+Tests: `ui::nav_tab::tests` (bridge: startup does not clear, arrival clears once, same-frame click is
+kept, only changed inputs are pushed; `room_op` table incl. outside a session; formatting; the split;
+the four cards stay inside the pane at 240 / 280 / 360 px in English and German over every status incl.
+a shared destination with a very long name; read-only followed filters), `ui::map_tab::tests`
+(`clicks_on_the_maps_do_what_each_map_promises`, `viewer_controls_stay_inside_the_tab` with the new
+buttons), `config::tests` (NavConfig defaults, partial / bad nav, not exported, profile keeps the
+destination), `maprender::ui::tests` (Copy to… incl. the Navigation route card).
 
 ## 5. Co-op shared destination (wire format in L4a; adoption in L2)
 

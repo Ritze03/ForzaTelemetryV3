@@ -18,6 +18,7 @@ pub const BIT_TRAIL: u8 = 8;
 pub const BIT_CROSS_COUNTRY: u8 = 16;
 pub const BIT_JUMPS: u8 = 32;
 /// Bits 6-7 are reserved.
+#[cfg_attr(not(test), allow(dead_code))] // documents the layout; a test pins it to `coop::DEST_FILTER_MASK`
 pub const BITS_MASK: u8 = 0x3F;
 
 /// Which road types the route may use. `Copy` and `serde(default)` (an old or partial config
@@ -46,8 +47,10 @@ impl Default for RouteFilters {
 
 impl RouteFilters {
     /// Everything on (tests, "no filtering").
+    #[cfg(test)]
     pub const ALL: RouteFilters = RouteFilters { road: true, highway: true, dirt: true, trail: true, cross_country: true, jumps: true };
     /// Nothing on: no edge may be used.
+    #[cfg(test)]
     pub const NONE: RouteFilters = RouteFilters { road: false, highway: false, dirt: false, trail: false, cross_country: false, jumps: false };
 
     /// The wire / one-byte form (D85 `Dest.f`): road 1, highway 2, dirt 4, trail 8,

@@ -27,7 +27,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use super::cfg::{RouteFilters, RoutePrefs};
 use super::follow::{Follower, OFF_ROUTE_M};
@@ -597,6 +599,7 @@ impl<P: Planner> Tracker<P> {
 
     /// Whether anything needs per-packet work (a destination exists). The idle cost of the whole
     /// tracker is [`tick`](Self::tick)'s first atomic load.
+    #[cfg(test)]
     pub fn active(&self) -> bool {
         self.active.is_some()
     }

@@ -4,6 +4,7 @@
 pub const DASHBOARD:  &str = "\u{F0E4}"; // fa-dashboard (speedometer)
 pub const OVERLAY:    &str = "\u{F108}"; // fa-desktop   (Overlay tab: a HUD over the game screen)
 pub const MAP:        &str = "\u{F279}"; // fa-map       (Map tab: viewer + map settings)
+pub const NAVIGATION: &str = "\u{F124}"; // fa-location-arrow (Navigation tab; the destination toggle)
 pub const BOLT:       &str = "\u{F06D}"; // fa-fire      (Backfire)
 pub const STOP:       &str = "\u{F04D}"; // fa-stop      (deceleration)
 pub const LINE_CHART: &str = "\u{F201}"; // fa-line-chart (power curve)
