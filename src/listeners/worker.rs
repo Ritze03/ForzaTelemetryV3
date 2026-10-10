@@ -83,6 +83,12 @@ const FOCUS_FACTS_TTL: Duration = Duration::from_secs(1);
 /// packets instead of minutes of stale telemetry (and the queue can't grow without bound).
 pub const UI_BACKLOG_CAP: usize = 200;
 
+/// Largest packet-time step the navigator counts for one packet (ms): a stalled loop or the
+/// first packet after a long gap is one step of this, not seconds spent "off the route".
+const NAV_DT_CAP_MS: u128 = 250;
+/// How often the co-op shared destination is looked at (one lock of the co-op state).
+const NAV_COOP_POLL_MS: u64 = 100;
+
 /// Everything the UI displays out of the listener thread.
 #[derive(Clone, Default)]
 pub struct ListenerView {
@@ -365,6 +371,14 @@ fn run(ctx: Ctx) {
     let mut driving_car: Option<i32> = None;
     // Co-Op: (class, PI) of the last race-on packet, restored into paused packets.
     let mut coop_car = (-1, 0);
+    // Navigation (`nav`): progress / off-route / re-route per packet, here and not in the UI
+    // because the UI loop stops while the game covers the window. The route itself is computed
+    // on the `nav-route` thread; while no destination exists a tick is one atomic load.
+    let mut nav = crate::nav::Tracker::global();
+    let nav_start = Instant::now();
+    let mut nav_prev_pkt: Option<Instant> = None;
+    let mut nav_coop_seq = u64::MAX;
+    let mut nav_coop_next = 0_u64;
 
     loop {
         // ── UI → listener: config + focus facts ────────────────────────────
@@ -476,6 +490,7 @@ fn run(ctx: Ctx) {
         // the idle wait, packet or no packet.
         let poll = if notifier.has_fresh() { Duration::from_millis(1) } else { IDLE_POLL };
         let mut got_packet = false;
+        let mut nav_sample = None;
         match udp.recv_timeout(poll) {
             Ok(pkt) => {
                 got_packet = true;
@@ -493,6 +508,17 @@ fn run(ctx: Ctx) {
                 // Same pause rule as the HUD (includes race-on).
                 driving_car = (!hud_paused(&pkt, cfg.experimental_pause_detection) && pkt.car_ordinal != 0)
                     .then_some(pkt.car_ordinal);
+                let nav_now = Instant::now();
+                let dt_ms = nav_prev_pkt.map_or(0, |t| nav_now.duration_since(t).as_millis().min(NAV_DT_CAP_MS) as u32);
+                nav_prev_pkt = Some(nav_now);
+                nav_sample = Some(crate::nav::CarSample {
+                    x: pkt.position_x,
+                    y: pkt.position_y,
+                    z: pkt.position_z,
+                    dt_ms,
+                    driving: driving_car.is_some(),
+                    in_race,
+                });
                 if pkt.car_ordinal != 0 && pkt.car_ordinal != last_car_ordinal {
                     last_car_ordinal = pkt.car_ordinal;
                     dsg.reset_calibration();
@@ -561,6 +587,26 @@ fn run(ctx: Ctx) {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break, // app dropped its sender
         }
+
+        // ── Navigation: the room's shared destination, then the tracker (packet or idle tick) ──
+        let nav_now = nav_start.elapsed().as_millis() as u64;
+        if nav_now >= nav_coop_next {
+            nav_coop_next = nav_now + NAV_COOP_POLL_MS;
+            let seq = coop.destination_seq();
+            if seq != nav_coop_seq {
+                nav_coop_seq = seq;
+                nav.set_shared(nav_now, coop.destination().map(|d| crate::nav::SharedIn {
+                    x: d.x,
+                    z: d.z,
+                    hue: d.hue,
+                    filter_bits: d.filters(),
+                    curve: d.curve,
+                    ts: d.ts,
+                    setter: d.setter_name,
+                }));
+            }
+        }
+        nav.tick(nav_now, nav_sample.as_ref());
 
         // ── D26: queue what changed (hotkeys and UI settings alike). ──
         notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dsg.gear1_seq, dynamic_max_rpm, driving_car, hud_clock());

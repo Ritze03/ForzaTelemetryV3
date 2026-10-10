@@ -2,7 +2,7 @@
 
 Route from the car to a clicked destination over the game's road network (phase L, decisions
 D83-D85, D92). This page documents what exists; sections marked **(not built yet)** are filled
-in by the later tasks (runtime L2, drawing L3, tab L5, co-op L4a).
+in by the later tasks (drawing L3, tab L5).
 
 Decisions the user settled (do not re-open): filters **Road, Highway, Dirt (= offroad), Trail,
 Cross-country, Jumps** and one slider **faster roads <-> more curves** (D83); the route goes from
@@ -155,13 +155,117 @@ precomputation or contraction hierarchies are needed. The real-install test (`re
 (each: one arc, out of the take-off only; take-off -> landing routable) and a timed route across
 the island. It skips without an install; set `FH6_INSTALL_DIR` to the game folder.
 
-## 2. Runtime: progress, re-route, arrival **(not built yet, L2)**
+## 2. Runtime: progress, re-route, arrival (`src/nav/follow.rs`, `src/nav/state.rs`, L2)
+
+Keeps a live route from the car to the destination: computed off-thread, followed per packet,
+re-routed when the driver leaves it, hidden in races, following a co-op shared destination.
+No drawing and no UI here: readers call `nav::view()`, the UI calls the setters.
+
+### Threads and data flow
+
+```
+ UI thread     --set_destination / set_prefs / set_follow_shared--> Shared.inputs (+ atomic inputs_seq)
+ listener      --Tracker::tick(now, sample)-----------------------> (progress, debounce, race, publish)
+ listener      --Tracker::set_shared(coop dest)  (every 100 ms: destination_seq compare)
+ Tracker       --Request--> `nav-route` thread --Reply--> Tracker      (stale generation dropped)
+ any thread    <-- nav::view() = Shared.view (one lock + a clone)
+```
+
+* **The tracker runs on the listener thread** (`listeners/worker.rs:run`, once per loop iteration
+  after the packet match, so it also runs on the 200 ms idle timeout), **not** on the UI thread.
+  *Why:* the UI frame loop stops while the game covers the window, which is exactly when the HUD
+  minimap is the only map in use; this is the same reason `coop.push_local` lives there. The result
+  is a **process-global** (`nav::view()`), like `maprender::store`, not a `HudSnapshot` field.
+* **The route is computed on the `nav-route` thread** (`ThreadPlanner`; started by the first
+  destination, Condvar-woken, one request at a time, a newer request replaces one not started yet).
+  *Why not on the listener thread:* the packet loop sends the gearbox's key presses and must never
+  block (2-6 ms per route, more for an unreachable query over the whole island, and the graph may
+  still be loading).
+* **The graph** comes from `maprender::store::layers().data.route_graph` via `StoreSource`, called
+  on the `nav-route` thread as soon as a destination exists (HUD-only use, no map layer on): that
+  loads the layers at startup when a saved destination exists. The store's doc comment says so; the
+  call costs the UI nothing (own `map-layers` loader thread, one short lock). While the graph is
+  still `Loading` the worker retries every 250 ms; no install / failed load is the status
+  `NoRoadData`. While a destination exists the worker looks at the store once a second; a different
+  graph `Arc` (editor Save, season change, install found / gone) re-routes (`graph_changed`).
+* **Per-packet cost:** with no destination one atomic load (about 5 ns, release); following a 20 km
+  route about 0.8 us (windowed scan of 83 segments), plus the view lock only when something a reader
+  sees changed (remaining distance at 1 m, ETA at 1 s, status, line). Measured by the ignored test
+  `tick_cost` (`cargo test --release tick_cost -- --nocapture --ignored`).
+
+### Inputs (the API the UI calls)
+
+`nav::set_destination(Option<[x, z]>)` (this player's own), `nav::set_prefs(RoutePrefs)` (their
+filters + slider), `nav::set_follow_shared(bool)`, `nav::local_destination()`. All idempotent (the
+same value again is not a change; the tab may call them every frame). The shared destination is
+not set by the UI: the listener thread polls `CoopReader::destination_seq()` every 100 ms and hands
+a `SharedIn` to `Tracker::set_shared`. Persisting the destination is the config's business
+(`NavConfig.destination`); at startup the app calls `set_destination(cfg.nav.destination)` once.
+
+### `nav::view()` -> `NavView`
+
+`{ rev, status, dest: Option<Dest>, line: Option<Arc<NavLine>>, remaining_m, total_m, eta_s,
+local_cleared_seq }`. `NavLine { rev, pts, y, seg_kind }` is the part still to drive (`seg_kind` 7 =
+jump). `Dest { x, z, source: Local | Shared { setter, hue }, prefs }`. `NavStatus`: `Idle`,
+`WaitingForCar` (destination, no driving packet yet), `Routing` (a previous line may still be shown),
+`Ok`, `NoRoadNear(Car | Destination)`, `Unreachable`, `NoRoadData`, `PausedRace`, `Arrived`.
+`NavView::rev` changes on any published change; `NavLine::rev` only when the line itself is new
+(the key for the 3D deck mesh). `local_cleared_seq` increments when a local destination was cleared
+by arriving: the UI clears `AppConfig.nav.destination` when it sees it change.
+
+### Rules
+
+| Rule | Value | Why |
+|---|---|---|
+| Debounce of a destination / prefs change | 200 ms | a slider drag or two quick clicks make one request |
+| Spacing of *automatic* requests (off route, graph replaced, retry) | >= 3 s | no storm if the car keeps leaving the route; a user change is not held back |
+| Off route | > 50 m for >= 2 s of **packet time** | `dt_ms` summed over driving packets, each capped at 250 ms by the worker: a stalled loop or the first packet after a pause is one capped step, a paused game counts nothing |
+| After a route is adopted | off-route check suppressed 3 s | the new route starts at the car's snap |
+| Route starts far from the car (car in a field, snap up to 300 m) | off-route limit is 50 m + that gap until the car was first within 50 m of the route | otherwise a car 120 m from the road is "off route" at once and re-routes every 3 s forever |
+| `NoRoadNear(Car)` / `Unreachable` | retried every >= 3 s **while the car has moved >= 25 m** since the request | fast travel into a field recovers, a parked car does not poll; `NoRoadNear(Destination)` / `NoRoadData` are only retried on a changed input or graph |
+| Progress | windowed scan (2 back, 80 ahead), global scan if the window's nearest is > 50 m | a route passing near itself (loop, overpass) cannot make the car jump to the other pass; a shortcut / U-turn within 50 m of the route is "on route" |
+| Along-route distance | monotone inside the window | a reversing car does not add distance back; only the global fallback may move it backwards |
+| Remaining ETA | sum of the remaining `seg_time_s` | same assumed speeds as the route (approximate by design, D84) |
+| Arrival | remaining < 25 m **and** car within 40 m of the route's end | the end is the snapped destination (it can be up to 300 m from the clicked point) |
+| Drawn line | trimmed in 150 m chunks; new `Arc<NavLine>` (new `rev`) per chunk and per new route | the 3D deck mesh is rebuilt when the `Arc` changes (the `gl3d::scene::sync_race` pattern, "a few ms, once per change, never per frame"); trimming per packet would rebuild it 70x a second. 2D and 3D agree to within 150 m of tail |
+| Race (race position != 0) | `PausedRace`, line hidden, nothing requested; on the way out a new route from wherever the race ended (D92) | the race is already a road-styled line in the same slot (D80), a second coloured road on top fights it, and the destination is irrelevant mid-race. A destination change during a race is held until it ends |
+| Prefs-only change | old line stays (and is followed) until the new route arrives | no blinking while the slider is dragged; a new destination drops the line at once |
+| Arrival, local | destination cleared (inputs + `local_cleared_seq`), `Arrived` until the next destination | D84: no prompt; this is where a later HUD notification hooks in |
+| Arrival, shared | only marked arrived locally (by the shared destination's `ts`), `Arrived` with `dest` still the room's; the same destination re-sent (late-joiner resend) does not bring it back, a new one does; if a local destination exists it takes over | the destination stays for the other players; this player's route is hidden until a new one arrives |
+
+### Tests
+
+`follow.rs` (pure): progress / monotone, window vs global scan, the 50 m / 2 s rule incl. the 3 s
+suppression and hysteresis, capped steps, paused packets, far-start gap, arrival, degenerate route,
+150 m chunks. `state.rs` (a recording `FakePlanner`, explicit clock): idle asks for nothing,
+waits for a car, debounce, stale reply dropped, 150 m republish with no rev per packet, off-route
+re-route, 3 s spacing, `NoRoadNear(Car)` retries, error -> status, race pause / resume / in-flight
+reply dropped, paused packets, local arrival, shared overrides local / falls back / opt-out,
+shared arrival, prefs-only change. Plus `ThreadPlanner` with a scripted graph source (waits for a
+loading graph, missing install, replaced graph, latest request wins). Real install: the L1 test
+`real_install_graph` (skips without `FH6_INSTALL_DIR`). The ignored `tick_cost` prints the per-packet cost.
+
 
 ## 3. Drawing on the maps **(not built yet, L3)**
 
 ## 4. Navigation tab and Viewer destination **(not built yet, L5)**
 
-## 5. Co-op shared destination **(wire format in L4a; adoption in L2)**
+## 5. Co-op shared destination (wire format in L4a; adoption in L2)
+
+The wire format is `Control::Dest` (`docs/features/coop.md`). The receiving half lives in the
+tracker: the listener thread polls `CoopReader::destination_seq()` every 100 ms (a compare under
+the co-op mutex that `push_local` takes per packet anyway), and on a change hands
+`destination()` as a `SharedIn` to `Tracker::set_shared` (`nav` itself does not import `coop`).
+
+* A shared destination **overrides the local one** while `follow_shared` is on and this player has
+  not arrived at it; it is routed with the **setter's** filters (`RouteFilters::from_bits(f)`,
+  unknown bits ignored) and curve, so a group routes over the same roads. *Why:* D85, an incoming
+  destination replaces a local one (last write wins, one slot), and no route geometry travels.
+* The local destination and the user's own filters are untouched and apply again when the shared
+  one is cleared (or `follow_shared` is switched off); there is no stack.
+* Identity of a shared destination is the setter's `ts`: a resend of the same one (late joiner)
+  changes nothing, even after the arrival.
+* The setter's display name / hue are in `NavView::dest.source` for the tab and the pin ring.
 
 ## Known limits
 
