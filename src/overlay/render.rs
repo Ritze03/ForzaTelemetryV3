@@ -45,6 +45,11 @@ pub struct Renderer {
     /// in synthetic ones, like `layers_fn`.
     terrain_fn: fn() -> TerrainStatus,
     mesh_fn: fn(&Arc<MapLayers>, &Arc<Terrain>) -> Option<Arc<RoadMesh>>,
+    /// Where the navigation route and destination come from (phase L): the process-wide
+    /// `nav::view()`, read here on the overlay thread every frame (never through the
+    /// `HudSnapshot`: the UI loop stops while the game covers the window); the PNG harness swaps in
+    /// a synthetic view, like `layers_fn`.
+    nav_fn: fn() -> crate::nav::NavView,
 }
 
 impl Renderer {
@@ -67,6 +72,7 @@ impl Renderer {
             gl3d: Gl3dHandle::new(),
             terrain_fn: crate::maprender::store::terrain,
             mesh_fn: crate::maprender::store::road_mesh,
+            nav_fn: crate::nav::view,
         })
     }
 
@@ -88,7 +94,7 @@ impl Renderer {
             self.gl3d.destroy(self.painter.gl());
         }
         let (hud, map, coop, layer, icons, layers_fn) = (&mut self.hud, &mut self.map, &self.coop, &mut self.layer, &mut self.icons, self.layers_fn);
-        let (gl3d, terrain_fn, mesh_fn) = (&self.gl3d, self.terrain_fn, self.mesh_fn);
+        let (gl3d, terrain_fn, mesh_fn, nav_fn) = (&self.gl3d, self.terrain_fn, self.mesh_fn, self.nav_fn);
         // The 3D inputs that are still on their way (terrain loading, road mesh building): poll
         // them with frames, since nothing else would wake the overlay for them.
         let mut waiting3d = false;
@@ -119,6 +125,9 @@ impl Renderer {
                 hud.set_layers(None);
                 hud.set_icons(icons.ensure(ctx, None));
             }
+            // The navigation route and destination (phase L): one lock + an `Arc` clone, only while
+            // the minimap shows it. The route needs no layer data, so it is read in any case.
+            hud.set_nav(if snap.cfg.minimap_on && snap.cfg.map_layers.nav_route.on { nav_fn() } else { Default::default() });
             // 3D: the terrain is requested only now (the store loads it lazily), the mesh needs
             // the layers. Anything missing = the 2D map (tilted: `Camera::from_cfg` ignores the
             // relief) while it loads, which is also the fallback for no install / an error.

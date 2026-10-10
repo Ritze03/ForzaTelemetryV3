@@ -2,7 +2,7 @@
 
 Route from the car to a clicked destination over the game's road network (phase L, decisions
 D83-D85, D92). This page documents what exists; sections marked **(not built yet)** are filled
-in by the later tasks (drawing L3, tab L5).
+in by the later tasks (tab L5).
 
 Decisions the user settled (do not re-open): filters **Road, Highway, Dirt (= offroad), Trail,
 Cross-country, Jumps** and one slider **faster roads <-> more curves** (D83); the route goes from
@@ -246,7 +246,122 @@ loading graph, missing install, replaced graph, latest request wins). Real insta
 `real_install_graph` (skips without `FH6_INSTALL_DIR`). The ignored `tick_cost` prints the per-packet cost.
 
 
-## 3. Drawing on the maps **(not built yet, L3)**
+## 3. Drawing on the maps (`maprender/`, `hud/`, `overlay/`, `ui/map_scene.rs`, L3)
+
+The route is drawn on **all three maps** (HUD Minimap, Dashboard map, Map-tab Viewer) in **all view
+modes** (Flat, Tilted, 3D) as a **road of its own**, like the race road (D80, D84): a casing (the
+`Road` type's casing colour and `casing_px`) under a fill in the route colour, opaque, round ends,
+width = the roads' width rule x `style::NAV_ROUTE_WIDTH` (1.5, a little wider than a highway, so it
+covers the road it runs on and that road's casing shows as its edge) x `NavRouteCfg::width`. The
+destination is a **pin** (egui, in every mode).
+
+*Why a road of its own and not recoloured nav roads:* the same reason as the race road (D80): the
+route is its own polyline with its own heights, it can leave the road network at the ends (the
+snap, up to 300 m), and the road mesh is per type and rebuilt on every editor Save. *Why 1.5 =
+the race road's width:* they never show together (the route is hidden in a race, D92).
+
+### How the route reaches each map
+
+| Map | Thread | Read |
+|---|---|---|
+| HUD Minimap | overlay thread | `overlay::render::Renderer::frame_at` calls `nav_fn()` (= `nav::view()`; the PNG harness swaps in a synthetic one, like `layers_fn`) once per frame **only while the minimap shows the route** (`minimap_on && map_layers.nav_route.on`), then `Hud::set_nav` -> `MapAnim::set_nav`. **No `HudSnapshot` field** (it would have to be forwarded by the UI thread, which stops while the game covers the window). |
+| Dashboard map, Viewer | UI thread | `ui::map_scene::draw` calls `nav::view()` itself (one lock and an `Arc` clone per frame). |
+
+Both then filter the view the same way (`paint2d::route_line` / `route_dest`): nothing when
+`nav_route.on` is off on that map, nothing in a race (`PausedRace`, where the runtime already sends
+no line: the belt to its braces) or after `Arrived`; the **pin** also stands while there is no route
+yet or it failed (`WaitingForCar`, `Routing`, `Unreachable`, `NoRoadNear`, `NoRoadData`: it says
+where the click went) but not when `Idle`. `Routing` keeps drawing the previous line (the runtime
+still carries it). The route needs **no `MapLayers`**: with every layer switched off (or still
+loading) `paint2d::draw_layers_or_route(.., None, ..)` draws the route alone.
+
+### 2D and tilted (`paint2d.rs`)
+
+`draw_race_lines`' road branch was factored into `draw_road_polylines(cx, cfg, factor, taper,
+&[RoadItem])` (every casing under every fill, tapered pieces, round ends); the race road and
+`draw_nav_route` both call it. `LayerCtx::nav: Option<&NavLine>` carries the line, `Parts::nav` the
+switch (`ALL` has it; **`OVER_3D` does not**: in the 3D view the GL scene draws the route; while the
+scene is not `Ready`, the underlay frames use `Parts::ALL` and draw it flat, like the roads).
+**Layer order (bottom to top):** roads, jump lines, race lines, **navigation route**, POIs, then
+trails, teammates, the own arrow, waypoints, **the destination pin**, compass. *Why this order:*
+the route is a road, so it lies over the roads and the race lines; the POIs and markers stay
+readable above it, and the car arrow is not covered by its own route. **"Race road only" (D82)
+does not hide the route** (it hides the road layer, and the route is not part of it).
+
+**Jumps (`seg_kind` 7):** the line is split at them; the road runs on each side are separate
+polylines, and the jump stretch is a **dashed take-off -> landing line** with a casing, like the jump
+lines (4 / 3 design px on / off, solid below 0.02 px/m), width factor `style::NAV_JUMP_WIDTH` (1.0).
+*Why:* the gap is 130-760 m of air; a deck laid over it would look like a road that is not there.
+
+### 3D (`gl3d/`)
+
+* **Mesh:** `RoadMesh::nav_route(pts, y, seg_kind, terrain)` = the race road's builder
+  (`race_road_layer`: 8 m samples, deck, mitred joins, round caps at the ends, **stretches 4 m or
+  more under the terrain in the tunnel slot**) per run between jumps, and each jump stretch as a jump
+  line (the jump slot: a taut string over the ground, no deck across the gap). `y` 0 = unknown = the
+  terrain. Heights are the route's own (the graph's node heights).
+* **Scene:** `Scene3d::route: Option<Route3d { line, mesh, cfg }>`, independent of the race lines and
+  the in-race focus. The GPU copy (`Gl3d::nav`, `sync_nav`) is replaced when the mesh `Arc` changes,
+  under the same "one heavy upload per callback" rule as the race mesh.
+* **Pass:** after the roads and the race lines, before the trails: `draw_roads` with `roads::nav_table`
+  (every slot in the route colour, the `Road` casing, `NAV_ROUTE_WIDTH` x `width`; the jump slot
+  dashed) and a depth bias a step above the race road's (`NAV_BIAS` 0.0043, fill +0.00008; trails
+  0.0044). **Depth-tested like the race road:** hills and decks in front hide it, only the tunnel
+  stretches go through (last, without the depth test, at the tunnel alpha).
+* **Build thread:** the mesh is built **on the calling thread** (UI / overlay thread) by
+  `Route3d::new`, once per `NavLine::rev` and terrain (one process-wide single-slot cache,
+  shared by the HUD and the Dashboard, behind a mutex that is held during the build so two maps
+  do not build the same line twice). *Why not off-thread like `store::race_mesh`:* measured on the
+  real install, release (`gl3d::tests::real_install_nav_route_mesh_cost`): the island-crossing
+  route (node 1 to the farthest node, 21.3 km, 3 180 samples, 26 k triangles, 347 KB) builds in
+  **0.51 ms** (6.2 ms debug), an 11 km route 0.28 ms, a lone jump 0.04 ms; a cache hit costs 60 ns.
+  It happens a new route or every 150 m chunk (every few seconds of driving), never per frame. An
+  off-thread build (thread, generation counter, the previous line shown for a frame after a change)
+  pays at 270 ms (all 170 race lines), not at half a millisecond. A panic in the builder is caught
+  (no route, not a dead overlay thread).
+* **Pin in 3D:** egui, over the scene, its tip placed by the 3D camera at the **terrain's height**
+  at the clicked point (`MapCanvas::to_screen` -> `Camera::project`), the same call the waypoint
+  uses. *Why egui and not GL:* a pin is a screen-space marker (upright, constant size) and nothing
+  should hide it behind a ridge: it is where you are going.
+
+### The pin (`hud::map_shared::draw_destination`)
+
+A teardrop with its tip on the point, head 13 px above it (design px x `s`), the route colour with
+a white centre and a black outline, the distance from the car above it. A destination a teammate
+shared (D85) has a **ring in the setter's hue** round the head. *Why the fill is always the route
+colour and the hue only a ring (the D85 "your call"):* the pin and the route read as one thing,
+and the ring says whose it is without making a green pin lead a fuchsia route. Off the map it is a
+dot on the edge (the circle's edge on the round Minimap) with the distance, like the waypoint.
+
+### Config (`MapLayerConfig::nav_route: NavRouteCfg`, per map)
+
+| Field | Default | Meaning |
+|---|---|---|
+| `on` | `true` | draw the route and the pin on this map |
+| `color` | `#d946ef` (fuchsia) | fill of the route and the pin. *Why:* used by no road type that is drawn (the turnaround has it but is never drawn, D52) and clear of the race colours (orange, pink), road `#38bdf8`, highway, offroad, tunnel and the jump line |
+| `width` | `1.0` | factor on the route's width, clamped to 0.5..3 (`width_factor`) |
+
+HUD: `overlay.map_layers.nav_route`; Dashboard map and Viewer share `minimap_layers.nav_route`
+(D73); `OverlayConfig::effective` copies `map_layers` wholesale under "Use Dashboard map settings".
+`serde(default)`: a config from before has none and gets the defaults (on, fuchsia). It is also a
+`LayerCategory::NavRoute` for "Copy to ..." (`MapLayerConfig::copy_category`). **The card and its
+copy row are L5's** (the exhaustive destructuring in `maprender::ui::layers_ui` has `nav_route: _`
+until then).
+
+### Tests
+
+`paint2d`: route drawn as a road over the roads (casing, fill, round ends, width rule, config colour
+and width, HUD fade alpha), not in `Parts::OVER_3D`, hidden with `on = false`, drawn without layer
+data, drawn with "Race road only", tapered in a tilted view, jump stretches dashed with no road over
+the gap, degenerate lines; `route_line` / `route_dest` per `NavStatus`. `mesh3d`: tunnel / jump /
+cap structure of the route mesh. `map_shared`: the pin projects through the camera onto the terrain
+in 3D. `gl3d` (headless GL, `#[ignore]`, `cargo test gl3d -- --ignored --test-threads=1`): over the
+road it runs on, with race road only, through a hill (tunnel), a dashed jump, hidden behind a hill
+and under a deck, mesh rebuilt only when `rev` changes and uploaded once (and unaffected by a colour
+change), in all three GL flavours (`suite`), real-install routes (`gl3d_real_install_nav_route`,
+`real_install_nav_route_mesh_cost`, need `FH6_INSTALL_DIR`). HUD PNG harness (`cargo test
+render_3d_states -- --ignored`): route + pin in 3D, shared ring, tilted, flat, hidden in a race and
+when switched off, and through `Renderer::frame_at` with `nav_fn`.
 
 ## 4. Navigation tab and Viewer destination **(not built yet, L5)**
 

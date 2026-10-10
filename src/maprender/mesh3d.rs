@@ -346,6 +346,37 @@ pub fn race_road_layer(r: &RaceRoad, terrain: &Terrain) -> RoadLayer {
     l
 }
 
+/// The navigation route as a road layer ([`RoadMesh::nav_route`]): one race-road layer per run of
+/// non-jump segments, merged, and the jump segments as `RoadLayer::jumps`.
+pub fn nav_route_layer(pts: &[[f32; 2]], y: &[f32], seg_kind: &[u8], terrain: &Terrain) -> RoadLayer {
+    let mut layer = RoadLayer::default();
+    let n = pts.len();
+    if n < 2 {
+        return layer;
+    }
+    let yat = |i: usize| y.get(i).copied().unwrap_or(0.0);
+    let run = |layer: &mut RoadLayer, a: usize, b: usize| {
+        let r = RaceRoad { pts: pts[a..=b].to_vec(), y: (a..=b).map(yat).collect(), closed: false };
+        for (slot, chains) in race_road_layer(&r, terrain).by_type.into_iter().enumerate() {
+            layer.by_type[slot].extend(chains);
+        }
+    };
+    let mut start = 0usize;
+    for i in 0..n - 1 {
+        if seg_kind.get(i) == Some(&SLOT_JUMP) {
+            if i > start {
+                run(&mut layer, start, i);
+            }
+            layer.jumps.push([pts[i][0], pts[i][1], yat(i), pts[i + 1][0], pts[i + 1][1], yat(i + 1)]);
+            start = i + 1;
+        }
+    }
+    if start + 1 < n {
+        run(&mut layer, start, n - 1);
+    }
+    layer
+}
+
 /// A dense chain point before it is split into pieces.
 #[derive(Clone, Copy)]
 struct Dense {
@@ -614,6 +645,16 @@ impl RoadMesh {
             }
         }
         RoadMesh::build(&layer, terrain, 0)
+    }
+
+    /// The navigation route (phase L, D84) as a road of its own: the race road's builder
+    /// ([`race_road_layer`]: 8 m samples, deck, mitred joins, round caps at the ends, stretches 4 m
+    /// or more under the terrain in the tunnel slot) for every run between jumps, and each jump
+    /// stretch (`seg_kind` [`SLOT_JUMP`]) as a jump line in the jump slot: a taut string over the
+    /// ground between take-off and landing, no deck laid over the gap. `y` 0 = unknown (the terrain).
+    /// A route is small (a 20 km one is ~2 500 samples): see `gl3d::Route3d` for when it is built.
+    pub fn nav_route(pts: &[[f32; 2]], y: &[f32], seg_kind: &[u8], terrain: &Terrain) -> RoadMesh {
+        RoadMesh::build(&nav_route_layer(pts, y, seg_kind, terrain), terrain, 0)
     }
 
     /// Fill `idx_near` / `idx_far` and the tiles' ranges from the pieces.
@@ -1494,6 +1535,40 @@ mod tests {
         assert_eq!(rel.len(), m.vertex_count());
         let ones = rel.iter().filter(|&&b| b == 1).count();
         assert!(ones > 0 && ones < rel.len() / 2, "relevant vertices {ones} of {}", rel.len());
+    }
+
+    /// Phase L: the navigation route's mesh is the race road's builder per run (open stretches in
+    /// the road slot, a stretch 4 m or more under the hill in the tunnel slot), and a jump stretch
+    /// is a jump line (the jump slot) - samples along the gap on a taut string, no deck of the road
+    /// slot across it.
+    #[test]
+    fn the_nav_route_mesh_splits_tunnels_and_jumps() {
+        let t = Terrain::synthetic();
+        // West to east through the big hill at (-300, 200), 150 m high inside it, then a gap, then more road.
+        let mut pts: Vec<[f32; 2]> = (0..=60).map(|i| [-800.0 + i as f32 * 10.0, 205.0]).collect(); // x -800..-200
+        let mut y: Vec<f32> = pts.iter().map(|p| t.height(p[0], p[1]).min(150.0) + 0.5).collect();
+        let jump_at = pts.len() - 1;
+        pts.extend((0..=10).map(|i| [100.0 + i as f32 * 10.0, 205.0])); // the landing side, x 100..200
+        y.extend(pts[jump_at + 1..].iter().map(|p| t.height(p[0], p[1]) + 0.5));
+        let mut kinds = vec![2u8; pts.len() - 1];
+        kinds[jump_at] = SLOT_JUMP;
+        let m = RoadMesh::nav_route(&pts, &y, &kinds, &t);
+        let count = |slot: u8| m.samples.iter().filter(|s| s.slot == slot).count();
+        assert!(count(SLOT_RACE) > 0 && count(SLOT_TUNNEL) > 0, "open and tunnel stretches");
+        assert!(count(SLOT_JUMP) > 100, "the 300 m gap is a jump line sampled every 2 m: {}", count(SLOT_JUMP));
+        // No road-slot sample inside the gap (x -200..100): that would be a deck over it.
+        assert!(m.samples.iter().filter(|s| s.slot != SLOT_JUMP).all(|s| s.x < -199.0 || s.x > 99.0), "a deck over the gap");
+        // The jump runs from the take-off to the landing.
+        let j: Vec<&Sample> = m.samples.iter().filter(|s| s.slot == SLOT_JUMP).collect();
+        assert!(j.iter().all(|s| s.x >= -200.5 && s.x <= 100.5));
+        // Round caps: the two ends of the route and the two road ends at the gap; none in the middle.
+        assert_eq!(m.pieces.iter().map(|p| p.caps.count_ones()).sum::<u32>(), 4);
+        // Unknown heights (0) fall back to the terrain: no sample is below the ground by more than the lift.
+        let flat = RoadMesh::nav_route(&[[0.0, -600.0], [100.0, -600.0], [200.0, -600.0]], &[0.0; 3], &[2, 2], &t);
+        assert!(flat.samples.iter().all(|s| (s.y_node - t.height(s.x, s.z)).abs() < 0.01), "node height 0 = unknown = terrain");
+        // Degenerate input builds an empty mesh.
+        assert!(RoadMesh::nav_route(&[[0.0, 0.0]], &[0.0], &[], &t).samples.is_empty());
+        assert!(RoadMesh::nav_route(&[], &[], &[], &t).samples.is_empty());
     }
 
     /// D80: the race road's own mesh: open stretches in the race slot, a stretch under the hill

@@ -108,6 +108,14 @@ impl Hud {
         self.map_anim.set_layers(layers);
     }
 
+    /// The navigation state the Minimap draws its route and destination pin from (phase L):
+    /// `nav::view()`, read by the overlay renderer once per frame on the overlay thread - not part
+    /// of the `HudSnapshot`, which the UI thread would have to forward (and it stops while the game
+    /// covers the window). A setter for the same reason as [`Hud::set_layers`].
+    pub fn set_nav(&mut self, view: crate::nav::NavView) {
+        self.map_anim.set_nav(view);
+    }
+
     /// The Minimap's POI icons, uploaded into the overlay's own egui context
     /// (`maprender::icontex::IconTex`).
     pub fn set_icons(&mut self, icons: Option<std::sync::Arc<crate::maprender::paint2d::IconAtlas>>) {

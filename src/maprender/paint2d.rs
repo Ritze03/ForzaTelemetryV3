@@ -1,5 +1,5 @@
 //! The 2D renderer, egui `Painter` output: the base image ([`draw_base`]) and the vector layers
-//! ([`draw_layers`]: roads, jump lines, race lines, POIs). Both maps call these two functions
+//! ([`draw_layers_parts`]: roads, jump lines, race lines, the navigation route, POIs). Both maps call these two functions
 //! with different parameters (D61).
 //!
 //! Approach (measured in the design scout, `docs/features/minimap.md`): one `Shape::line` per
@@ -26,6 +26,7 @@ use crate::gamedata::icons::{PoiIcons, RaceClass};
 use crate::gamedata::poi::{week_index_now, Poi, PoiKind};
 use crate::gamedata::roadtypes::RoadType;
 use crate::minimap::MapCalibration;
+use crate::nav::NavLine;
 
 // ── base image ───────────────────────────────────────────────────────────────────────────────
 
@@ -272,6 +273,9 @@ pub struct LayerCtx<'a> {
     pub race_sel: &'a RaceSel,
     /// The game week for the current treasure chest (`poi::week_index_at`); `None` = now.
     pub week: Option<i64>,
+    /// The navigation route to draw (phase L; `NavView::line`, already filtered by [`route_line`]);
+    /// `None` = none. Drawn by [`Parts::nav`] with `cfg.nav_route`'s look.
+    pub nav: Option<&'a NavLine>,
 }
 
 /// What a [`draw_layers`] call drew (tests, perf numbers).
@@ -281,14 +285,17 @@ pub struct LayerStats {
     pub vertices: usize,
     pub pois: usize,
     pub race_lines: usize,
+    /// Pieces of the navigation route drawn: its road runs (one item) and each jump stretch.
+    pub nav_lines: usize,
     /// Gate lines drawn (speed zones, trailblazers, drift zones, speed traps).
     pub gates: usize,
     /// Road chains / runs / jump lines drawn muted (in-race focus), already counted in `chains`.
     pub muted: usize,
 }
 
-/// Which parts of [`draw_layers_parts`] to draw. In the 3D view (phase K) the roads, jump lines
-/// and, since D88, the race lines with their start / finish marks are the GL scene's
+/// Which parts of [`draw_layers_parts`] to draw. In the 3D view (phase K) the roads, jump lines,
+/// since D88 the race lines with their start / finish marks and since phase L the navigation
+/// route are the GL scene's
 /// ([`super::gl3d`], depth-tested: terrain and overpasses hide them); the POIs are still drawn
 /// here, with egui, **over** the 3D (`Camera::project` follows the terrain, `k_at` sizes the
 /// icons), so the 3D call sites pass [`Parts::OVER_3D`]. *Why the POIs stay:* the same code,
@@ -298,19 +305,24 @@ pub struct LayerStats {
 pub struct Parts {
     pub roads: bool,
     pub race_lines: bool,
+    /// The navigation route (phase L). In the 3D view it is the GL scene's too (its own mesh and
+    /// pass), so the 3D call sites leave it off.
+    pub nav: bool,
     pub pois: bool,
 }
 
 impl Parts {
     /// Everything (what [`draw_layers`] draws).
-    pub const ALL: Parts = Parts { roads: true, race_lines: true, pois: true };
+    pub const ALL: Parts = Parts { roads: true, race_lines: true, nav: true, pois: true };
     /// What stays on egui when the GL scene draws the roads and the race lines.
     #[allow(dead_code)] // phase K: the 3D call sites (K3, K4)
-    pub const OVER_3D: Parts = Parts { roads: false, race_lines: false, pois: true };
+    pub const OVER_3D: Parts = Parts { roads: false, race_lines: false, nav: false, pois: true };
 }
 
 /// Vector layers over the base image: roads (bottom to top: `style::ROAD_DRAW_ORDER`), jump
-/// lines, race lines with start / finish marks, POIs. Each part is skipped when its switch is off.
+/// lines, race lines with start / finish marks, the navigation route, POIs. Each part is skipped when
+/// its switch is off. (The call sites use [`draw_layers_or_route`]; this is the tests' shorthand.)
+#[cfg(test)]
 pub fn draw_layers(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig) -> LayerStats {
     draw_layers_parts(cx, layers, cfg, Parts::ALL)
 }
@@ -331,10 +343,31 @@ pub fn draw_layers_parts(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig
     if parts.race_lines && rc.mode != RaceLineMode::Off {
         draw_race_lines(cx, layers, cfg, &mut st);
     }
+    // Over the roads and the race lines, under the POIs (D84; "race road only" hides roads, not this).
+    if parts.nav {
+        draw_nav_route(cx, cfg, &mut st);
+    }
     if parts.pois && cfg.pois.on && !(focusing && cfg.race_lines.focus.hide_pois) {
         draw_pois(cx, layers, cfg, &mut st);
     }
     st
+}
+
+/// [`draw_layers_parts`] for a map whose layer data may be missing (every layer switched off, no
+/// install, still loading): the navigation route does not need the data (it is its own polyline),
+/// so with `None` only that is drawn. *Why:* the user who switched roads and POIs off on the HUD
+/// still wants the route they asked for.
+pub fn draw_layers_or_route(cx: &LayerCtx, layers: Option<&MapLayers>, cfg: &MapLayerConfig, parts: Parts) -> LayerStats {
+    match layers {
+        Some(l) => draw_layers_parts(cx, l, cfg, parts),
+        None => {
+            let mut st = LayerStats::default();
+            if parts.nav {
+                draw_nav_route(cx, cfg, &mut st);
+            }
+            st
+        }
+    }
 }
 
 impl LayerCtx<'_> {
@@ -959,7 +992,7 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: 
     let (mut scratch, mut pieces) = (Vec::new(), Vec::new());
     let mut budget = RACE_ALL_BUDGET;
     // Race roads: (colour, tapered pieces, round ends), drawn after the loop.
-    let mut roads: Vec<(Color32, Vec<(f32, Vec<Pos2>)>, Vec<Pos2>)> = Vec::new();
+    let mut roads: Vec<RoadItem> = Vec::new();
     let mut marks: Vec<(usize, bool, bool)> = Vec::new();
     for i in idx {
         let l = &lines[i];
@@ -1001,33 +1034,135 @@ fn draw_race_lines(cx: &LayerCtx, layers: &MapLayers, cfg: &MapLayerConfig, st: 
             }
         }
     }
-    if !roads.is_empty() {
-        let c = &cfg.roads;
-        let w = style::line_px(style::road_base_px(c, cx.cam.scale() / cx.s) * cx.s, style::RACE_ROAD_WIDTH);
-        let extra = c.casing_px * cx.s;
-        let casing = cx.c(c.styles.road.casing_color, c.casing_alpha);
-        let wk = |k: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
-        // Every casing under every fill, as the roads (D81): two race roads crossing or a circuit
-        // crossing itself join like a junction.
-        for (fill, pass) in [(false, 0), (true, 1)] {
-            for (col, pcs, ends) in &roads {
-                let col = if fill { *col } else { casing };
-                for (k, l) in pcs {
-                    cx.p.add(Shape::line(l.clone(), Stroke::new(wk(*k) + if fill { 0.0 } else { extra * k }, col)));
-                }
-                for &at in ends {
-                    let k = cx.taper_k(at.y, taper);
-                    let r = 0.5 * (wk(k) + if pass == 0 { extra * k } else { 0.0 });
-                    if r >= DECO_MIN_R && cx.visible(at, r) && cx.fits(at, r) {
-                        cx.p.circle_filled(at, r, col);
-                    }
+    draw_road_polylines(cx, cfg, style::RACE_ROAD_WIDTH, taper, &roads);
+    for (i, start, finish) in marks {
+        draw_race_marks(cx, &lines[i], start, finish);
+    }
+}
+
+/// One road of its own to draw ([`draw_road_polylines`]): the fill colour, its projected pieces
+/// with their taper factor, and the screen points that get a round end.
+type RoadItem = (Color32, Vec<(f32, Vec<Pos2>)>, Vec<Pos2>);
+
+/// The "road of its own" look shared by the race road (D80) and the navigation route (phase L):
+/// every casing (the `Road` type's casing colour and `casing_px`) under every fill, the fill
+/// opaque in the item's colour, round ends, width = the roads' width rule x `factor`. *Why every
+/// casing under every fill:* as the roads (D81), two such roads crossing, or one crossing itself,
+/// join like a junction instead of one outlining the other.
+fn draw_road_polylines(cx: &LayerCtx, cfg: &MapLayerConfig, factor: f32, taper: bool, items: &[RoadItem]) {
+    if items.is_empty() {
+        return;
+    }
+    let c = &cfg.roads;
+    let w = style::line_px(style::road_base_px(c, cx.cam.scale() / cx.s) * cx.s, factor);
+    let extra = c.casing_px * cx.s;
+    let casing = cx.c(c.styles.road.casing_color, c.casing_alpha);
+    let wk = |k: f32| if k == 1.0 { w } else { (w * k).max(style::MIN_LINE_PX) };
+    for (fill, pass) in [(false, 0), (true, 1)] {
+        for (col, pcs, ends) in items {
+            let col = if fill { *col } else { casing };
+            for (k, l) in pcs {
+                cx.p.add(Shape::line(l.clone(), Stroke::new(wk(*k) + if fill { 0.0 } else { extra * k }, col)));
+            }
+            for &at in ends {
+                let k = cx.taper_k(at.y, taper);
+                let r = 0.5 * (wk(k) + if pass == 0 { extra * k } else { 0.0 });
+                if r >= DECO_MIN_R && cx.visible(at, r) && cx.fits(at, r) {
+                    cx.p.circle_filled(at, r, col);
                 }
             }
         }
     }
-    for (i, start, finish) in marks {
-        draw_race_marks(cx, &lines[i], start, finish);
+}
+
+/// The navigation route (phase L, D84): the part still to drive as a road of its own in
+/// `cfg.nav_route.color` ([`draw_road_polylines`]), over the roads and the race lines, under the
+/// POIs and the markers. Its jump stretches (`seg_kind` [`style::NAV_SEG_JUMP`]) are not roads: a
+/// dashed take-off -> landing line like the jump lines, with the same casing, so no deck is laid
+/// over the gap. Not over the 3D scene (`Parts::OVER_3D`): that has the route in GL.
+fn draw_nav_route(cx: &LayerCtx, cfg: &MapLayerConfig, st: &mut LayerStats) {
+    let nc = &cfg.nav_route;
+    let Some(line) = cx.nav.filter(|l| nc.on && l.pts.len() >= 2) else { return };
+    let (taper, factor) = (cfg.tilt.taper, nc.width_factor());
+    let pts = &line.pts;
+    let jump = |i: usize| line.seg_kind.get(i) == Some(&style::NAV_SEG_JUMP);
+    // Split at the jumps: road runs (>= 2 points) and the jump segments between them.
+    let mut runs: Vec<&[[f32; 2]]> = Vec::new();
+    let mut jumps: Vec<[[f32; 2]; 2]> = Vec::new();
+    let mut start = 0usize;
+    for i in 0..pts.len() - 1 {
+        if jump(i) {
+            if i > start {
+                runs.push(&pts[start..=i]);
+            }
+            jumps.push([pts[i], pts[i + 1]]);
+            start = i + 1;
+        }
     }
+    if start + 1 < pts.len() {
+        runs.push(&pts[start..]);
+    }
+    let (mut scratch, mut pieces, mut ends) = (Vec::new(), Vec::new(), Vec::new());
+    for run in &runs {
+        cx.polyline(run, false, &mut pieces, &mut scratch);
+        ends.extend([run.first(), run.last()].into_iter().flatten().filter_map(|q| cx.cam.project(q[0], q[1])));
+    }
+    let n: usize = pieces.iter().map(Vec::len).sum();
+    if !pieces.is_empty() {
+        st.nav_lines += 1;
+        st.vertices += n;
+        let item = (cx.c(nc.color, 1.0), cx.tapered(pieces, taper), ends);
+        draw_road_polylines(cx, cfg, style::NAV_ROUTE_WIDTH * factor, taper, &[item]);
+    }
+    // Jump stretches: casing, then the dashed (or, zoomed far out, solid) fill.
+    let c = &cfg.roads;
+    let base = style::road_base_px(c, cx.cam.scale() / cx.s) * cx.s;
+    let dashes = cx.cam.scale() / cx.s >= style::DASH_MIN_PX_PER_M;
+    for [a, b] in jumps {
+        let (Some(pa), Some(pb)) = (cx.cam.project(a[0], a[1]), cx.cam.project(b[0], b[1])) else { continue };
+        let mut seg = [pa, pb];
+        if let Some(cc) = &cx.corner_clip {
+            if !(cc.safe.contains(pa) && cc.safe.contains(pb)) {
+                match clip_segment_convex(pa, pb, cc.poly) {
+                    Some((ca, cb)) => seg = [ca, cb],
+                    None => continue,
+                }
+            }
+        }
+        st.nav_lines += 1;
+        let k = cx.taper_k((pa.y + pb.y) * 0.5, taper);
+        let w = (style::line_px(base, style::NAV_JUMP_WIDTH * factor) * k).max(style::MIN_LINE_PX);
+        cx.p.add(Shape::line_segment(seg, Stroke::new(w + c.casing_px * cx.s * k, cx.c(c.styles.road.casing_color, c.casing_alpha))));
+        let stroke = Stroke::new(w, cx.c(nc.color, 1.0));
+        if dashes {
+            cx.p.extend(Shape::dashed_line(&seg, stroke, 4.0 * cx.s * k.max(0.4), 3.0 * cx.s * k.max(0.4)));
+        } else {
+            cx.p.add(Shape::line_segment(seg, stroke));
+        }
+    }
+}
+
+/// The part of the navigation `view` a map draws, or `None`: the route switched off on this map
+/// (`cfg.on`), or hidden because the car is in a race (`PausedRace`; the runtime sends no line
+/// then, this is the belt to its braces) or has arrived. *Why a function and not the call sites'
+/// own filter:* three call sites (HUD, Dashboard, Viewer) and the GL scene must agree.
+pub fn route_line<'a>(view: &'a crate::nav::NavView, cfg: &crate::maprender::cfg::NavRouteCfg) -> Option<&'a std::sync::Arc<crate::nav::NavLine>> {
+    use crate::nav::NavStatus;
+    if !cfg.on || matches!(view.status, NavStatus::PausedRace | NavStatus::Arrived) {
+        return None;
+    }
+    view.line.as_ref()
+}
+
+/// The destination a map pins ([`crate::hud::map_shared::draw_destination`]): any destination
+/// that exists, also while the route is being computed or failed (the pin says where the click
+/// went), but not in a race or after arriving, and not with the route switched off on this map.
+pub fn route_dest<'a>(view: &'a crate::nav::NavView, cfg: &crate::maprender::cfg::NavRouteCfg) -> Option<&'a crate::nav::Dest> {
+    use crate::nav::NavStatus;
+    if !cfg.on || matches!(view.status, NavStatus::PausedRace | NavStatus::Arrived | NavStatus::Idle) {
+        return None;
+    }
+    view.dest.as_ref()
 }
 
 /// `start` / `finish`: which of the two marks belong with what is drawn of the line.
@@ -1276,7 +1411,7 @@ mod tests {
     static NO_SEL: std::sync::LazyLock<RaceSel> = std::sync::LazyLock::new(RaceSel::default);
 
     fn ctx<'a>(p: &'a Painter, cam: &'a Camera) -> LayerCtx<'a> {
-        LayerCtx { p, cam, s: 1.0, a: 1.0, car: (0.0, 0.0), corner_clip: None, icons: None, race_sel: &NO_SEL, week: Some(68) }
+        LayerCtx { p, cam, s: 1.0, a: 1.0, car: (0.0, 0.0), corner_clip: None, icons: None, race_sel: &NO_SEL, week: Some(68), nav: None }
     }
 
     #[test]
@@ -2210,6 +2345,215 @@ mod tests {
         assert_eq!(run(&cfg, &RaceSel::fixed(vec![0], false)).chains, 5, "not in a race: every road");
         cfg.race_lines.route = RouteStyle::Line;
         assert_eq!(run(&cfg, &RaceSel::fixed(vec![0], true)).chains, 2, "with the line: Hidden (the corridor's road + jump)");
+    }
+
+    // ── the navigation route (phase L) ───────────────────────────────────────────────────────
+
+    /// A straight route north from the origin to z = 1000 (every 50 m), `kinds` per segment.
+    fn route(kinds: &[u8]) -> NavLine {
+        let pts: Vec<[f32; 2]> = (0..=kinds.len()).map(|i| [0.0, 50.0 * i as f32]).collect();
+        NavLine { rev: 1, y: vec![0.0; pts.len()], pts, seg_kind: kinds.to_vec() }
+    }
+
+    /// (width, colour) of the open polylines drawn, in draw order.
+    fn strokes(shapes: &[ClippedShape]) -> Vec<(f32, Color32)> {
+        shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { (!p.closed).then(|| (p.stroke.width, solid(&p.stroke.color))) } else { None }).collect()
+    }
+
+    #[test]
+    fn the_nav_route_is_drawn_as_a_road_over_the_roads_and_not_over_the_3d_scene() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 500.0), 0.0, 700.0);
+        let layers = layers_with(vec![[0.0, 0.0], [0.0, 1000.0]], RoadType::Road);
+        let line = route(&[2; 20]);
+        let mut cfg = only_roads();
+        let run = |cfg: &MapLayerConfig, layers: Option<&MapLayers>, parts: Parts, nav: Option<&NavLine>| {
+            let mut st = LayerStats::default();
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.nav = nav;
+                st = draw_layers_or_route(&c, layers, cfg, parts);
+            });
+            (st, shapes)
+        };
+        let (st0, base) = run(&cfg, Some(&layers), Parts::ALL, None);
+        let (st, shapes) = run(&cfg, Some(&layers), Parts::ALL, Some(&line));
+        assert_eq!((st0.nav_lines, st.nav_lines), (0, 1));
+        // The road's casing + fill first, then the route's casing and its fuchsia fill (opaque), then 2 x 2 round ends.
+        let s = strokes(&shapes);
+        let fill = cfg.nav_route.color.color(1.0);
+        let casing = cfg.roads.styles.road.casing_color.color(cfg.roads.casing_alpha);
+        assert_eq!(s.len(), 4, "{s:?}");
+        assert_eq!((s[2].1, s[3].1), (casing, fill), "the route's casing, then its fill, over the road: {s:?}");
+        assert_eq!(shapes.len(), base.len() + 2 + 4, "casing + fill + two round ends each");
+        let w = style::line_px(style::road_base_px(&cfg.roads, cam.scale()), style::NAV_ROUTE_WIDTH);
+        assert!((s[3].0 - w).abs() < 1e-3 && s[2].0 > s[3].0, "the road rule x NAV_ROUTE_WIDTH, the casing wider: {s:?}");
+        // The width factor of the config scales it; the colour is the config's.
+        cfg.nav_route.width = 2.0;
+        cfg.nav_route.color = Rgb::hex(0x00ff00);
+        let s2 = strokes(&run(&cfg, Some(&layers), Parts::ALL, Some(&line)).1);
+        assert!((s2[3].0 - style::line_px(style::road_base_px(&cfg.roads, cam.scale()), style::NAV_ROUTE_WIDTH * 2.0)).abs() < 1e-3);
+        assert_eq!(s2[3].1, Color32::from_rgb(0, 255, 0));
+        cfg.nav_route = Default::default();
+        // Switched off on this map, no line, or over the 3D scene (GL draws it there): nothing.
+        cfg.nav_route.on = false;
+        assert_eq!(run(&cfg, Some(&layers), Parts::ALL, Some(&line)).1.len(), base.len());
+        cfg.nav_route.on = true;
+        assert_eq!(run(&cfg, Some(&layers), Parts::OVER_3D, Some(&line)).1.len(), 0, "OVER_3D: roads, race lines and the route are the scene's");
+        // The layer data is not needed: with none (every layer off, still loading) the route is all there is.
+        let (st, bare) = run(&cfg, None, Parts::ALL, Some(&line));
+        assert_eq!((st.nav_lines, bare.len()), (1, 2 + 4));
+        assert_eq!(run(&cfg, None, Parts::OVER_3D, Some(&line)).1.len(), 0);
+        // Alpha of the HUD's fade applies to the whole route.
+        let faded = paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.nav = Some(&line);
+            c.a = 0.5;
+            draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+        });
+        assert_eq!(strokes(&faded)[1].1, cfg.nav_route.color.color(0.5));
+    }
+
+    /// `route_line` / `route_dest`: what a map draws of a `NavView` (the runtime sends no line in a
+    /// race; the belt to its braces is here).
+    #[test]
+    fn the_route_is_hidden_in_a_race_and_after_arriving_and_the_pin_follows_the_destination() {
+        use crate::nav::{Dest, DestSource, NavStatus, NavView, RoutePrefs};
+        let line = Arc::new(route(&[2; 4]));
+        let dest = Dest { x: 1.0, z: 2.0, source: DestSource::Local, prefs: RoutePrefs::default() };
+        let on = crate::maprender::cfg::NavRouteCfg::default();
+        let view = |status: NavStatus, with_line: bool| NavView { status, dest: Some(dest.clone()), line: with_line.then(|| line.clone()), ..Default::default() };
+        let line_of = |v: &NavView, c: &crate::maprender::cfg::NavRouteCfg| route_line(v, c).map(|l| l.rev);
+        let dest_of = |v: &NavView, c: &crate::maprender::cfg::NavRouteCfg| route_dest(v, c).map(|d| (d.x, d.z));
+        // Ok / Routing (it may still carry the previous line): drawn.
+        for st in [NavStatus::Ok, NavStatus::Routing] {
+            assert_eq!(line_of(&view(st, true), &on), Some(1), "{st:?}");
+            assert_eq!(dest_of(&view(st, true), &on), Some((1.0, 2.0)));
+        }
+        // The pin stands while there is no route yet or it failed: it says where the click went.
+        for st in [NavStatus::WaitingForCar, NavStatus::Unreachable, NavStatus::NoRoadData, NavStatus::NoRoadNear(crate::nav::Endpoint::Car)] {
+            assert_eq!((line_of(&view(st, false), &on), dest_of(&view(st, false), &on)), (None, Some((1.0, 2.0))), "{st:?}");
+        }
+        // In a race: neither, even if a line were still attached. Arrived: neither. Idle: no pin.
+        for st in [NavStatus::PausedRace, NavStatus::Arrived] {
+            assert_eq!((line_of(&view(st, true), &on), dest_of(&view(st, true), &on)), (None, None), "{st:?}");
+        }
+        assert_eq!(dest_of(&view(NavStatus::Idle, false), &on), None);
+        // Off on this map: neither.
+        let off = crate::maprender::cfg::NavRouteCfg { on: false, ..on };
+        assert_eq!((line_of(&view(NavStatus::Ok, true), &off), dest_of(&view(NavStatus::Ok, true), &off)), (None, None));
+    }
+
+    /// D82 / D84: "race road only" hides the road layer in a race, not the navigation route.
+    #[test]
+    fn the_nav_route_is_drawn_with_race_road_only() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 300.0), 0.0, 1500.0);
+        let layers = focus_layers();
+        let line = route(&[2; 20]);
+        let mut cfg = MapLayerConfig::default();
+        cfg.pois.on = false;
+        cfg.race_lines.focus.other_roads = OtherRoads::RaceOnly;
+        let sel = RaceSel::fixed(vec![0], true);
+        let mut st = LayerStats::default();
+        let shapes = paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.race_sel = &sel;
+            c.nav = Some(&line);
+            st = draw_layers_parts(&c, &layers, &cfg, Parts::ALL);
+        });
+        assert_eq!((st.chains, st.race_lines, st.nav_lines), (0, 1, 1), "no road pieces; the race road and the route");
+        let fill = cfg.nav_route.color.color(1.0);
+        assert_eq!(strokes(&shapes).iter().filter(|(_, c)| *c == fill).count(), 1, "the route's fill is there");
+        // Order: the route over the race road (it is drawn after it).
+        let s = strokes(&shapes);
+        assert_eq!(s.last().map(|x| x.1), Some(fill), "{s:?}");
+    }
+
+    /// Tilted: the route's width tapers towards the horizon like the roads'.
+    #[test]
+    fn the_nav_route_tapers_in_a_tilted_view() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(208.0, 136.0));
+        let cam = Camera::from_cfg(&MapLayerConfig::hud().tilt, (0.0, 0.0), 0.0, 300.0, rect);
+        let pts: Vec<[f32; 2]> = (0..70).map(|i| [0.0, -60.0 + 50.0 * i as f32]).collect();
+        let line = NavLine { rev: 1, y: vec![0.0; pts.len()], seg_kind: vec![2; pts.len() - 1], pts };
+        let widths = |taper: bool| {
+            let mut cfg = only_roads();
+            cfg.roads.on = false;
+            cfg.tilt.taper = taper;
+            let shapes = paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.nav = Some(&line);
+                draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+            });
+            let fill = cfg.nav_route.color.color(1.0);
+            let mut w: Vec<f32> = strokes(&shapes).into_iter().filter(|(_, c)| *c == fill).map(|(w, _)| w).collect();
+            w.sort_by(f32::total_cmp);
+            w
+        };
+        let (t, plain) = (widths(true), widths(false));
+        assert!(t.len() >= 3, "{t:?}");
+        assert!(t.last().unwrap() / t[0] > 1.8, "near end much wider than the far end: {t:?}");
+        assert_eq!(plain.len(), 1);
+    }
+
+    /// A jump stretch is a dashed take-off -> landing line, never a deck laid over the gap: the road
+    /// runs on both sides are separate polylines, the gap has the dashes.
+    #[test]
+    fn a_jump_stretch_of_the_route_is_dashed_and_not_a_road_over_the_gap() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 600.0));
+        let cam = flat_cam(rect, (0.0, 500.0), 0.0, 700.0);
+        // 20 segments of 50 m, segment 9 (z 450..500) is the jump.
+        let mut kinds = vec![2u8; 20];
+        kinds[9] = style::NAV_SEG_JUMP;
+        let line = route(&kinds);
+        let cfg = only_roads();
+        let shapes = paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.nav = Some(&line);
+            draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+        });
+        let fill = cfg.nav_route.color.color(1.0);
+        let runs: Vec<Vec<Pos2>> = shapes.iter().filter_map(|s| if let Shape::Path(p) = &s.shape { (!p.closed && solid(&p.stroke.color) == fill).then(|| p.points.clone()) } else { None }).collect();
+        assert_eq!(runs.len(), 2, "two road runs, one each side of the jump");
+        let (gap_a, gap_b) = (cam.project(0.0, 450.0).unwrap(), cam.project(0.0, 500.0).unwrap());
+        // (north is up on screen: smaller y)
+        let (south, north) = if runs[0][0].y > runs[1][0].y { (&runs[0], &runs[1]) } else { (&runs[1], &runs[0]) };
+        assert!(south.iter().all(|q| q.y >= gap_a.y - 2.5), "the south run ends at the take-off");
+        assert!(north.iter().all(|q| q.y <= gap_b.y + 2.5), "the north run starts at the landing");
+        // The gap: a solid casing segment and several dash segments in the route colour between the two.
+        let segs: Vec<(Pos2, Pos2, Color32)> = shapes.iter().filter_map(|s| if let Shape::LineSegment { points, stroke } = &s.shape { Some((points[0], points[1], stroke.color)) } else { None }).collect();
+        let dashes = segs.iter().filter(|(a, b, c)| *c == fill && a.y <= gap_a.y + 1.0 && b.y >= gap_b.y - 1.0).count();
+        assert!(dashes >= 3, "{} dash segments over a {:.0} px gap", dashes, (gap_a - gap_b).length());
+        let casing = cfg.roads.styles.road.casing_color.color(cfg.roads.casing_alpha);
+        assert_eq!(segs.iter().filter(|(_, _, c)| *c == casing).count(), 1, "one casing under the dashes");
+        // Zoomed far out the dashes are sub-pixel: solid.
+        let far = flat_cam(rect, (0.0, 500.0), 0.0, 7000.0);
+        let shapes = paint(rect, |p| {
+            let mut c = ctx(p, &far);
+            c.nav = Some(&line);
+            draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+        });
+        let solid_jump = shapes.iter().filter(|s| matches!(&s.shape, Shape::LineSegment { stroke, .. } if stroke.color == fill)).count();
+        assert_eq!(solid_jump, 1, "one solid segment");
+        // A route that is only a jump has no road run.
+        let only = route(&[style::NAV_SEG_JUMP]);
+        let shapes = paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.nav = Some(&only);
+            draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+        });
+        assert!(shapes.iter().all(|s| !matches!(s.shape, Shape::Path(_))));
+        assert!(!shapes.is_empty());
+        // Degenerate lines draw nothing.
+        for l in [route(&[]), NavLine { rev: 2, pts: vec![[0.0, 0.0]], y: vec![0.0], seg_kind: vec![] }] {
+            assert!(paint(rect, |p| {
+                let mut c = ctx(p, &cam);
+                c.nav = Some(&l);
+                draw_layers_or_route(&c, None, &cfg, Parts::ALL);
+            })
+            .is_empty());
+        }
     }
 
     /// Frame cost on the real data: `cargo test --release bench_ -- --ignored --nocapture`.

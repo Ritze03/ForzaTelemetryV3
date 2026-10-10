@@ -901,6 +901,35 @@ fn render_spec_states() -> Result<(), String> {
 /// The calibration of [`world_map`]: 512 px over the synthetic terrain's 2048 m square.
 const WORLD_CAL: MapCalibration = MapCalibration { px_per_m: 0.25, origin_x: -1024.0, origin_z: 1024.0 };
 
+/// What the harness's `nav_fn` says (see `synth_nav`).
+static NAV_VIEW: OnceLock<crate::nav::NavView> = OnceLock::new();
+
+fn synth_nav() -> crate::nav::NavView {
+    NAV_VIEW.get().cloned().unwrap_or_default()
+}
+
+/// A navigation view over the synthetic world (phase L): a route from the car at (-120, -40)
+/// heading `yaw` over the big hill, 340 m long with unknown heights (so it follows the terrain), and
+/// the local destination at its end (on the hill's slope).
+fn synth_nav_view(terrain: &Terrain, yaw: f32) -> crate::nav::NavView {
+    use crate::nav::{Dest, DestSource, NavLine, NavStatus, NavView};
+    let _ = terrain;
+    // (the car heads along `yaw` from north: x = sin, z = cos)
+    let dir = (yaw.sin(), yaw.cos());
+    let pts: Vec<[f32; 2]> = (0..=17).map(|i| [-120.0 + dir.0 * 20.0 * i as f32, -40.0 + dir.1 * 20.0 * i as f32]).collect();
+    let end = *pts.last().expect("points");
+    let line = NavLine { rev: 1, y: vec![0.0; pts.len()], seg_kind: vec![2; pts.len() - 1], pts };
+    NavView {
+        rev: 1,
+        status: NavStatus::Ok,
+        dest: Some(Dest { x: end[0], z: end[1], source: DestSource::Local, prefs: Default::default() }),
+        line: Some(Arc::new(line)),
+        remaining_m: 340.0,
+        total_m: 340.0,
+        ..Default::default()
+    }
+}
+
 fn synth_terrain() -> Arc<Terrain> {
     static T: OnceLock<Arc<Terrain>> = OnceLock::new();
     T.get_or_init(|| Arc::new(Terrain::synthetic())).clone()
@@ -1030,13 +1059,15 @@ struct Rig3d<'a> {
     layers: Arc<MapLayers>,
     atlas: Option<Arc<IconAtlas>>,
     map: MapTex,
+    /// What `nav::view()` would say (phase L): the route and destination drawn on the map.
+    nav: crate::nav::NavView,
 }
 
 impl Rig3d<'_> {
     /// One frame of the Minimap on a `GAME_BG` tile at scale `s` and fade `a`; `scene` = through the
     /// 3D renderer, else the 2D map.
     fn frame(&mut self, snap: &HudSnapshot, mates: &CoopLayer, s: f32, a: f32, scene: bool) -> ColorImage {
-        let (h, terrain, mesh, layers, atlas, map) = (self.h.clone(), self.terrain.clone(), self.mesh.clone(), self.layers.clone(), self.atlas.clone(), self.map);
+        let (h, terrain, mesh, layers, atlas, map, nav) = (self.h.clone(), self.terrain.clone(), self.mesh.clone(), self.layers.clone(), self.atlas.clone(), self.map, self.nav.clone());
         let size = minimap::size(&snap.cfg);
         let px = [((size.x + 20.0) * s).round() as u32, ((size.y + 20.0) * s).round() as u32];
         let r = &mut *self.r;
@@ -1044,6 +1075,7 @@ impl Rig3d<'_> {
             let mut anim = MapAnim::default();
             anim.set_layers(Some(layers.clone()));
             anim.set_icons(atlas.clone());
+            anim.set_nav(nav.clone());
             anim.set_scene3d(scene.then(|| Scene3dIn { gl3d: h.clone(), terrain: terrain.clone(), mesh: Some(mesh.clone()) }));
             minimap::draw(p, &Xf { o: pos2(10.0 * s, 10.0 * s), s, a }, snap, NOW, &mut anim, Some(map), mates);
         });
@@ -1127,7 +1159,7 @@ fn render_3d_states() -> Result<(), String> {
     let mut written = Vec::new();
     let bgc = [GAME_BG.r(), GAME_BG.g(), GAME_BG.b()];
     let h3 = guardless();
-    let mut rig = Rig3d { r: &mut r, gl: gl.clone(), h: h3.clone(), terrain: terrain.clone(), mesh, layers, atlas, map };
+    let mut rig = Rig3d { r: &mut r, gl: gl.clone(), h: h3.clone(), terrain: terrain.clone(), mesh, layers, atlas, map, nav: Default::default() };
 
     // The car approaching the big hill; on the elevated highway; on the race ring.
     let hill_yaw = (-180.0f32).atan2(240.0);
@@ -1313,6 +1345,92 @@ fn render_3d_states() -> Result<(), String> {
     if d_race_road < 300 {
         failures.push(format!("3D race road over normal roads: barely differs from the thin line ({d_race_road} px < 300)"));
     }
+    // Phase L: the navigation route and the destination pin, in 3D (GL road + egui pin at the
+    // terrain's height), tilted and flat (egui), and not at all when hidden (a race, switched off).
+    let nav_view = synth_nav_view(&terrain, hill_yaw);
+    let _ = NAV_VIEW.set(nav_view.clone());
+    let fuchsia = crate::maprender::cfg::NavRouteCfg::default().color.0;
+    let near = |img: &ColorImage, c: [u8; 3], tol: i32| {
+        (10..10 + 208usize).flat_map(|x| (10..10 + 136usize).map(move |y| (x, y))).filter(|&(x, y)| px(img, x, y).iter().zip(c).map(|(a, b)| (*a as i32 - b as i32).abs()).sum::<i32>() <= tol).count()
+    };
+    let mut nav_counts = Vec::new();
+    for s in [1.0, 3.0] {
+        let sfx = if s == 1.0 { "1x" } else { "3x" };
+        rig.nav = nav_view.clone();
+        let img = rig.tile(&hills, &none, s, 1.0)?;
+        if s == 1.0 {
+            let err = rig.gl_error();
+            let (n, d) = (near(&img, fuchsia, 40), differing(&imgs["hills"], &img));
+            println!("  m2_3d_nav_{sfx}: GL error {err:#x}, status {:?}, {n} route px, {d} px differ from no route", rig.h.status());
+            if err != 0 || rig.h.status() != Gl3dStatus::Ready {
+                failures.push(format!("m2_3d_nav: GL error {err:#x}, status {:?}", rig.h.status()));
+            }
+            if n < 60 || d < 300 {
+                failures.push(format!("3D nav route + pin: only {n} route-coloured px, {d} px differ from the map without a route"));
+            }
+            nav_counts.push(("3d", n));
+        }
+        written.push(save(&img, &format!("m2_3d_nav_{sfx}"))?);
+    }
+    // A teammate's destination: the same pin with a ring in the setter's hue.
+    {
+        let mut shared = nav_view.clone();
+        if let Some(d) = shared.dest.as_mut() {
+            d.source = crate::nav::DestSource::Shared { setter: "Kai".into(), hue: 130.0 };
+        }
+        rig.nav = shared;
+        let img = rig.tile(&hills, &none, 1.0, 1.0)?;
+        let ring = crate::ui::coop::hue_color(130.0).to_array();
+        let n = near(&img, [ring[0], ring[1], ring[2]], 30);
+        println!("  m2_3d_nav_shared: {n} ring px");
+        if n < 6 {
+            failures.push(format!("3D nav shared destination: only {n} px of the setter's ring"));
+        }
+        written.push(save(&img, "m2_3d_nav_shared_1x")?);
+    }
+    // Tilted / flat 2D (the egui road) and the hidden cases.
+    for (name, mode) in [("tilted", ViewMode::Tilted), ("flat", ViewMode::Flat)] {
+        let mut cfg = cfg_3d(|_| {});
+        cfg.map_layers.tilt.set_view_mode(mode);
+        let snap = on_hills(cfg.clone());
+        rig.nav = nav_view.clone();
+        let img = rig.frame(&snap, &none, 1.0, 1.0, false);
+        let n = near(&img, fuchsia, 40);
+        println!("  m2_nav_{name}: {n} route px");
+        if n < 60 {
+            failures.push(format!("2D nav route ({name}): only {n} route-coloured px"));
+        }
+        nav_counts.push((name, n));
+        written.push(save(&img, &format!("m2_nav_{name}_1x"))?);
+        // In a race the runtime reports `PausedRace` with no line: nothing, pin included.
+        rig.nav = crate::nav::NavView { status: crate::nav::NavStatus::PausedRace, line: None, ..nav_view.clone() };
+        let hidden = rig.frame(&snap, &none, 1.0, 1.0, false);
+        // Switched off on this map: nothing either.
+        let mut off_cfg = cfg.clone();
+        off_cfg.map_layers.nav_route.on = false;
+        rig.nav = nav_view.clone();
+        let off = rig.frame(&on_hills(off_cfg), &none, 1.0, 1.0, false);
+        let (nh, no) = (near(&hidden, fuchsia, 40), near(&off, fuchsia, 40));
+        println!("  m2_nav_{name}: {nh} px in a race, {no} px switched off");
+        if nh != 0 || no != 0 {
+            failures.push(format!("2D nav route ({name}): drawn in a race ({nh} px) or switched off ({no} px)"));
+        }
+    }
+    // 3D too: a race hides it, the switch hides it.
+    {
+        rig.nav = crate::nav::NavView { status: crate::nav::NavStatus::PausedRace, line: None, ..nav_view.clone() };
+        let hidden = rig.tile(&hills, &none, 1.0, 1.0)?;
+        let mut cfg = cfg_3d(|c| c.map_layers.nav_route.on = false);
+        cfg.map_layers.tilt.set_view_mode(ViewMode::Relief);
+        rig.nav = nav_view.clone();
+        let off = rig.tile(&on_hills(cfg), &none, 1.0, 1.0)?;
+        let (nh, no) = (near(&hidden, fuchsia, 40), near(&off, fuchsia, 40));
+        println!("  m2_3d_nav: {nh} px in a race, {no} px switched off");
+        if nh != 0 || no != 0 {
+            failures.push(format!("3D nav route: drawn in a race ({nh} px) or switched off ({no} px)"));
+        }
+    }
+    rig.nav = Default::default();
     // A steeper pitch brings the horizon into view: the far edge fades into the game.
     let (hp, ht) = pill_coverage(&imgs["horizon"], true);
     let (sp, st) = pill_coverage(&imgs["hills"], true);
@@ -1383,6 +1501,25 @@ fn render_3d_states() -> Result<(), String> {
         failures.push(format!("composite_3d: no car marker near (108, 1054): {:?}", px(&img, 108, 1054)));
     }
     written.push(save(&img, "composite_3d_1080p")?);
+    // Phase L through the real `Renderer::frame_at` path: the overlay thread reads `nav_fn` itself
+    // (here the harness's stand-in for `nav::view()`), no `HudSnapshot` field involved.
+    let fuchsia = crate::maprender::cfg::NavRouteCfg::default().color.0;
+    let route_px = |img: &ColorImage| {
+        (4..212usize).flat_map(|x| (940..1076usize).map(move |y| (x, y))).filter(|&(x, y)| px(img, x, y).iter().zip(fuchsia).map(|(a, b)| (*a as i32 - b as i32).abs()).sum::<i32>() <= 40).count()
+    };
+    let before = route_px(&img);
+    r.nav_fn = synth_nav;
+    for _ in 0..3 {
+        r.frame_at([1920, 1080], Some(&comp), false, NOW, sbg);
+    }
+    let with_route = r.painter.read_screen_rgba([1920, 1080]);
+    let n = route_px(&with_route);
+    println!("  frame_at with nav_fn: {before} -> {n} route px in the map");
+    if before != 0 || n < 60 {
+        failures.push(format!("frame_at: the route from nav_fn is not on the HUD map ({before} px without, {n} with)"));
+    }
+    written.push(save(&with_route, "composite_3d_nav_1080p")?);
+    r.nav_fn = crate::nav::view;
     // Tilted again: the 3D objects are freed (and a later 3D switch starts afresh).
     let tilted_comp = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, ..Default::default() }), ..comp.clone() };
     r.frame_at([1920, 1080], Some(&tilted_comp), false, NOW, sbg);
@@ -1417,7 +1554,7 @@ fn render_3d_states() -> Result<(), String> {
                 let mut real_tex = IconTex::default();
                 let ratlas = real_tex.ensure(&r.ctx, real.icons.as_ref());
                 let h = guardless();
-                let mut rig = Rig3d { r: &mut r, gl: gl.clone(), h: h.clone(), terrain: rt.clone(), mesh: rmesh, layers: real.clone(), atlas: ratlas, map: MapTex { id: rtex.id(), orig_size: orig, winter: false } };
+                let mut rig = Rig3d { r: &mut r, gl: gl.clone(), h: h.clone(), terrain: rt.clone(), mesh: rmesh, layers: real.clone(), atlas: ratlas, map: MapTex { id: rtex.id(), orig_size: orig, winter: false }, nav: Default::default() };
                 let c = MapCalibration::DEFAULT;
                 let mut timing_snap = None;
                 for (name, x, z, yaw, in_race) in real_spots(&real) {

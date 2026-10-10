@@ -26,7 +26,7 @@ use super::probe::{Caps, TEXTURE_MAX_ANISOTROPY, TIME_ELAPSED};
 use super::roads::{self, RoadGpu};
 use super::shaders::{self, compile, Common, Prog};
 use super::Gl3dOptions;
-use crate::maprender::cfg::{OtherRoads, RaceCfg, ReliefCfg, RoadHeight, RoadsCfg, RaceFocusCfg, RouteStyle};
+use crate::maprender::cfg::{NavRouteCfg, OtherRoads, RaceCfg, ReliefCfg, RoadHeight, RoadsCfg, RaceFocusCfg, RouteStyle};
 use crate::maprender::mesh3d::{RoadMesh, LIFT_M};
 use crate::maprender::racesel::{RaceMark, RoadFocus};
 use crate::maprender::style;
@@ -60,6 +60,8 @@ pub struct Frame<'a> {
     /// The race lines (D80 / D88): drawn when [`Gl3d::sync_race`] holds a mesh; the marks are
     /// posts built per frame.
     pub race: Option<RaceFrame<'a>>,
+    /// The navigation route (phase L): drawn when [`Gl3d::sync_nav`] holds a mesh.
+    pub nav: Option<NavFrame<'a>>,
     /// Size factor of strokes (HUD design -> screen).
     pub s: f32,
     /// Breadcrumb trails at their recorded heights (D77).
@@ -75,6 +77,14 @@ pub struct RaceFrame<'a> {
     pub roads: &'a RoadsCfg,
     pub cfg: &'a RaceCfg,
     pub marks: &'a [RaceMark],
+}
+
+/// The navigation route of a frame: the road settings for the width rule and casing, and the
+/// route's own look (colour, width factor).
+#[derive(Clone, Copy)]
+pub struct NavFrame<'a> {
+    pub roads: &'a RoadsCfg,
+    pub cfg: &'a NavRouteCfg,
 }
 
 /// What one render did.
@@ -126,6 +136,9 @@ pub struct Gl3d {
     /// The race lines (D80 / D88): one mesh of every line drawn, built off-thread
     /// (`store::race_mesh`).
     pub race: Option<RoadGpu>,
+    /// The navigation route (phase L): one small mesh, built by `Route3d::new` and re-uploaded
+    /// when its `Arc` changes (a new route, or the next 150 m chunk of it).
+    pub nav: Option<RoadGpu>,
     fbo: Option<Fbo>,
     empty_vao: glow::VertexArray,
     queries: Vec<glow::Query>,
@@ -157,7 +170,7 @@ impl Gl3d {
             (v, q)
         };
         let n = queries.len();
-        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, race: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
+        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, race: None, nav: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
     }
 
     /// Upload the height raster (15 MB for the island, ~16 ms).
@@ -216,6 +229,34 @@ impl Gl3d {
         match mesh.filter(|m| !m.samples.is_empty()) {
             Some(m) => {
                 self.race = Some(RoadGpu::upload(gl, m.clone())?);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Does the GPU already hold exactly `mesh` as the route mesh (`None` = none)?
+    pub fn nav_is(&self, mesh: Option<&Arc<RoadMesh>>) -> bool {
+        match (&self.nav, mesh) {
+            (None, None) => true,
+            (Some(r), Some(m)) => Arc::ptr_eq(&r.mesh, m),
+            _ => false,
+        }
+    }
+
+    /// Make the route mesh the GPU holds `mesh` (`Route3d::new` builds it once per route chunk,
+    /// not per frame): uploaded when the `Arc` changes, dropped on `None`. Returns whether it
+    /// uploaded.
+    pub fn sync_nav(&mut self, gl: &glow::Context, mesh: Option<&Arc<RoadMesh>>) -> Result<bool, String> {
+        if self.nav_is(mesh) {
+            return Ok(false);
+        }
+        if let Some(mut old) = self.nav.take() {
+            old.destroy(gl);
+        }
+        match mesh.filter(|m| !m.samples.is_empty()) {
+            Some(m) => {
+                self.nav = Some(RoadGpu::upload(gl, m.clone())?);
                 Ok(true)
             }
             None => Ok(false),
@@ -470,6 +511,13 @@ impl Gl3d {
                 if rf.cfg.marks && !rf.marks.is_empty() {
                     self.draw_race_marks(gl, f, &heights, rf.marks, &mut st)?;
                 }
+            }
+            // ── the navigation route (phase L, D84): over the roads and the race lines, depth-tested
+            // like the race road (hills and decks in front hide it, only tunnel stretches show
+            // through); "race road only" hides roads, not this
+            if let (Some(nf), Some(r)) = (f.nav, self.nav.as_ref()) {
+                let table = roads::nav_table(nf.roads, nf.cfg, f.cam.view.scale, f.s, f.ppp);
+                self.draw_roads(gl, f, &heights, &table, r, Some((NAV_BIAS, f.relief.deck_m)), &mut st);
             }
             // ── trails (D77; the own car is a pass of its own, `render_marker`)
             if !f.trails.is_empty() {
@@ -831,6 +879,9 @@ impl Gl3d {
         if let Some(mut r) = self.race.take() {
             r.destroy(gl);
         }
+        if let Some(mut r) = self.nav.take() {
+            r.destroy(gl);
+        }
     }
 }
 
@@ -861,5 +912,8 @@ const BIAS_FILL: f32 = 0.0005;
 /// with no z-fighting.
 const RACE_BIAS: f32 = 0.0042;
 const RACE_BIAS_FILL: f32 = 0.00008;
+/// The navigation route (phase L) lies over the race road and the roads, under the trails (0.0044):
+/// its casing a step nearer than the race fill (0.00428), its fill (+ `RACE_BIAS_FILL`) at 0.00438.
+const NAV_BIAS: f32 = 0.0043;
 /// The start / finish posts stand on the race road: a little nearer than its fill.
 const RACE_BIAS_MARK: f32 = 0.0045;

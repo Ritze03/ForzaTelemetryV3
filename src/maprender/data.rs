@@ -573,7 +573,6 @@ pub struct MapLayers {
     pub roads: Arc<RoadLayer>,
     /// The same roads as a routable graph (navigation, `nav`): rebuilt with `roads`, so an
     /// editor Save changes both.
-    #[allow(dead_code)] // read by the navigator (task L2)
     pub route_graph: Arc<RouteGraph>,
     pub pois: Arc<PoiLayer>,
     pub races: Arc<RaceLayer>,

@@ -359,6 +359,62 @@ pub fn draw_waypoint_in(cv: &MapCanvas, (wx, wz): (f32, f32), colour: Color32, c
     shadowed(cv, at + vec2(0.0, -12.0 * s), egui::Align2::CENTER_BOTTOM, &distance_text(dist), FontId::proportional(10.0 * s), colour);
 }
 
+/// Where the navigation destination pin's tip stands on screen (phase L): the clicked world point
+/// through the map's camera, so in 3D at the terrain's height (`Camera::project` follows the
+/// relief), in 2D and tilted on the plane. Returns the point and whether the pin is on the map;
+/// off it, the point is pulled onto the bounds (the pin is then a dot on the edge).
+pub fn destination_at(cv: &MapCanvas, (wx, wz): (f32, f32), round: bool) -> (Pos2, bool) {
+    let s = cv.s;
+    let at = cv.to_screen(wx, wz);
+    // (the head stands 13 px above the tip: the bounds are judged at the head's height)
+    if cv.within(at - vec2(0.0, 6.0 * s), 9.0 * s, round) {
+        (at, true)
+    } else {
+        let d = at - cv.rect.center();
+        (cv.rect.center() + cv.pin(d, 8.0 * s, round), false)
+    }
+}
+
+/// The navigation destination (phase L, D84): a map pin whose tip is on the point, in `colour`
+/// (the route colour) with a white centre; a destination a teammate shared (D85) has a `ring` in
+/// the setter's hue round the head. Off the map it is a dot on the edge with the distance from
+/// `car`, like the waypoint. *Why egui in 3D too:* a pin is a screen-space marker (it stays upright
+/// and the same size, and nothing should hide it behind a ridge: it is where you are going); the
+/// tip is placed by the 3D camera at the terrain's height ([`destination_at`]).
+pub fn draw_destination(cv: &MapCanvas, dest: (f32, f32), colour: Color32, ring: Option<Color32>, car: (f32, f32)) {
+    draw_destination_in(cv, dest, colour, ring, car, false);
+}
+
+/// [`draw_destination`] with `round` bounds (see [`draw_remotes_in`]).
+pub fn draw_destination_in(cv: &MapCanvas, dest: (f32, f32), colour: Color32, ring: Option<Color32>, car: (f32, f32), round: bool) {
+    let s = cv.s;
+    let (at, on_map) = destination_at(cv, dest, round);
+    let dist = (dest.0 - car.0).hypot(dest.1 - car.1);
+    if !on_map {
+        cv.p.circle(at, 4.5 * s, cv.c(colour), Stroke::new(1.5 * s, cv.black(255)));
+        if let Some(r) = ring {
+            cv.p.circle_stroke(at, 6.5 * s, Stroke::new(1.6 * s, cv.c(r)));
+        }
+        shadowed(cv, at + vec2(0.0, -10.0 * s), egui::Align2::CENTER_BOTTOM, &distance_text(dist), FontId::proportional(10.0 * s), colour);
+        return;
+    }
+    let (head, r) = (at - vec2(0.0, 13.0 * s), 6.0 * s);
+    // The tail: from the tip to the head's lower flanks; the head's own fill and outline go over its top.
+    cv.p.add(egui::Shape::convex_polygon(
+        vec![at, head + vec2(-0.85 * r, 0.5 * r), head + vec2(0.85 * r, 0.5 * r)],
+        cv.c(colour),
+        Stroke::new(1.5 * s, cv.black(255)),
+    ));
+    cv.p.circle(head, r, cv.c(colour), Stroke::new(1.5 * s, cv.black(255)));
+    // (the tail's two inner edges were stroked across the head; paint the head's fill again over them)
+    cv.p.circle_filled(head, r - 0.8 * s, cv.c(colour));
+    cv.p.circle_filled(head, 0.4 * r, cv.c(Color32::WHITE));
+    if let Some(ring) = ring {
+        cv.p.circle_stroke(head, r + 2.6 * s, Stroke::new(1.8 * s, cv.c(ring)));
+    }
+    shadowed(cv, head + vec2(0.0, -(r + 5.0 * s)), egui::Align2::CENTER_BOTTOM, &distance_text(dist), FontId::proportional(10.0 * s), colour);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +594,57 @@ mod tests {
         let shapes = with_canvas(&cam3, rect, false, |cv| draw_waypoint(cv, (hx, hz), Color32::WHITE, car, 0.0));
         let dot = shapes.iter().find_map(|s| if let egui::Shape::Circle(c) = &s.shape { Some(c.center) } else { None }).unwrap();
         assert!((dot - on_hill).length() < 1.0, "{dot:?} vs {on_hill:?}");
+    }
+
+    /// L3: the destination pin's tip is placed by the map's camera. In 3D that is the terrain's
+    /// height at the clicked point (the hill's top, not the plane under it), in tilted / flat the
+    /// plane; the head stands 13 px above the tip; a shared destination adds the setter's ring; off
+    /// the map it is a dot on the edge (circle bounds for the round Minimap).
+    #[test]
+    fn the_destination_pin_projects_through_the_camera_onto_the_terrain_in_3d() {
+        use crate::maprender::terrain::Terrain;
+        use crate::maprender::view::Relief;
+        use std::sync::Arc;
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(208.0, 136.0));
+        let terrain = Arc::new(Terrain::synthetic());
+        let (hx, hz) = (-300.0f32, 200.0f32);
+        let car = (hx + 150.0, hz - 150.0);
+        let mk = |relief: bool| {
+            let c = Camera::new(car.0, car.1, -0.78, 600.0, rect, Camera::tilt_centre(rect, 0.85), 55f32.to_radians(), 200.0);
+            if relief { c.with_relief(Relief::new(terrain.clone(), 1.0, terrain.height(car.0, car.1))) } else { c }
+        };
+        let (cam3, tilted) = (mk(true), mk(false));
+        let tip = |cam: &Camera, round: bool| {
+            let mut out = None;
+            with_canvas(cam, rect, false, |cv| out = Some(destination_at(cv, (hx, hz), round)));
+            out.unwrap()
+        };
+        let (t3, on3) = tip(&cam3, false);
+        let (t2, on2) = tip(&tilted, false);
+        assert!(on3 && on2);
+        assert!((t3 - cam3.project(hx, hz).unwrap()).length() < 1e-3, "3D: the terrain's point");
+        assert!((t2 - tilted.project(hx, hz).unwrap()).length() < 1e-3, "tilted: the plane's point");
+        assert!((t3 - t2).length() > 10.0, "the hill's top is well off the plane under it: {t3:?} vs {t2:?}");
+        // The drawn pin: head circle 13 px above the tip, white centre, no ring for a local destination.
+        let colour = Color32::from_rgb(0xd9, 0x46, 0xef);
+        let circles = |ring: Option<Color32>, dest: (f32, f32), round: bool| -> Vec<(Pos2, f32)> {
+            with_canvas(&cam3, rect, false, |cv| draw_destination_in(cv, dest, colour, ring, car, round))
+                .iter()
+                .filter_map(|s| if let egui::Shape::Circle(c) = &s.shape { Some((c.center, c.radius)) } else { None })
+                .collect()
+        };
+        let local = circles(None, (hx, hz), false);
+        assert!(local.iter().all(|(c, _)| (c.x - t3.x).abs() < 1e-3 && ((t3.y - c.y) - 13.0).abs() < 1e-3), "head above the tip: {local:?} (tip {t3:?})");
+        assert_eq!(local.len(), 3, "head outline, head fill, white centre");
+        let shared = circles(Some(Color32::from_rgb(40, 200, 90)), (hx, hz), false);
+        assert_eq!(shared.len(), 4, "a shared destination adds the setter's ring");
+        // Off the map (far to the north-east): a dot on the edge, 8 px in; the circle bounds pull it in further.
+        let far = (hx + 40_000.0, hz + 40_000.0);
+        let edge = circles(None, far, false);
+        assert_eq!(edge.len(), 1, "an edge dot: {edge:?}");
+        assert!(rect.shrink(7.9).contains(edge[0].0) && !rect.shrink(8.5).contains(edge[0].0), "{:?}", edge[0].0);
+        let round = circles(None, far, true);
+        assert!(((round[0].0 - rect.center()).length() - (68.0 - 8.0)).abs() < 0.5, "{:?}", round[0].0);
     }
 
     #[test]
