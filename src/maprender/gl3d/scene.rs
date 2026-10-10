@@ -476,7 +476,7 @@ impl Gl3d {
             // Tests only: pretend the terrain LOD was last placed for another car position (the
             // frame before a level snap), under this frame's camera.
             #[cfg(test)]
-            let (car_x, car_z) = clipmap::LOD_CAR.lock().unwrap().map_or((car_x, car_z), |c| (c[0], c[1]));
+            let (car_x, car_z) = clipmap::LOD_CAR.get().map_or((car_x, car_z), |c| (c[0], c[1]));
             let car_px = [(car_x - h.2[0] as f64) / h.2[2] as f64 - 0.5, (h.2[1] as f64 - car_z) / h.2[2] as f64 - 0.5];
             gl.uniform_2_f32(p.u("uCarPx"), car_px[0] as f32, car_px[1] as f32);
             for lv in clipmap::levels(car_px) {
