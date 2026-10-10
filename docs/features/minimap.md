@@ -1384,12 +1384,15 @@ after; the picture an ideal 16-sample anti-aliaser gives is the floor):
    (`eprintln!`), and **the slow-GPU guard drops MSAA first**: at its limit (8 ms for 2 s) it switches
    multisampling off, restarts its verdict, and only fails 3D if the plain picture is also too slow.
    *Why no setting:* the cost is 0.005-0.04 ms; a toggle for it would be a question the user cannot answer.
-3. **The 2D map gets mipmaps and anisotropy too** (`gl3d::add_map_mips`, called by `map_scene::draw` for
-   the Dashboard / Viewer's flat and tilted map and by `hud/minimap.rs` before `draw_base`): a paint
-   callback of a 1 pt rect that reads the egui texture's `MIN_FILTER` and builds the chain once if
-   there is none (egui uploads the Dashboard's without), and sets the anisotropy. *Why a callback and not
-   `app.rs`'s `TextureOptions`:* `app.rs` is not this change's to edit, and the anisotropy needs GL
-   anyway. The HUD's texture already had mips; it only gains the anisotropy.
+3. **The 2D map gets mipmaps and anisotropy too.** D98 first did it with a paint callback
+   (`gl3d::add_map_mips`) that built the chain when egui had uploaded none, because `app.rs` uploaded
+   the Dashboard's map with `mipmap_mode: None` and `app.rs` was not that change's to edit. **D97 fixed
+   the root:** `app.rs` now uploads it with `mipmap_mode: Some(Linear)` (the overlay's always had it,
+   `OVERLAY_MAP_TEXTURE_OPTIONS`), egui builds the chain on upload, and the callback only sets the
+   **anisotropy** (`gl3d::add_map_aniso`, called by `map_scene::draw` for the Dashboard / Viewer's flat
+   and tilted map and by `hud/minimap.rs` before `draw_base`: a paint callback of a 1 pt rect, because
+   it needs GL; renamed from `add_map_mips` when the chain-building branch became dead). Cost of the
+   fix: the mip chain is +33 % of the map texture's memory and one `glGenerateMipmap` at upload.
 4. Not changed: the clipmap (the geomorph of D90 already hides its snaps), the markers' models, the
    trail ribbons (MSAA is what they get).
 
@@ -1429,7 +1432,8 @@ of GPU a frame (HUD city 0.032 -> 0.042, Dashboard city 0.082 -> 0.123, stopped 
 The roads are fine: egui's own 1 px feathering gives 0.05-0.35 % shimmering pixel-frames at the drive
 speed (the ideal is 0.02-0.03 %), nothing to fix. The map image was the problem: the Dashboard's map
 texture has no mipmaps (see above), minified it sparkled (Dashboard 1.5 km: aliasing error 12.3 vs
-4.3 now; Viewer 3 km: fast shimmer 9.5 % -> 0.94 %). Fixed by `add_map_mips`. Left open: 3D is still
+4.3 now; Viewer 3 km: fast shimmer 9.5 % -> 0.94 %). Fixed by mipmaps (first `add_map_mips`, since D97
+the upload itself: see 3. above). Left open: 3D is still
 more shimmery than 2D at the same view (HUD 3x 0.64 / 1.94 % in 3D against 0.05 / 0.98 % in 2D;
 Dashboard city 0.50 / 1.52 % against 0.16 / 0.81 %): the 3D picture has far more road geometry on
 screen, decks with walls and overlapping ribbons, where the 2D path thins the roads to 2 px.
@@ -1439,7 +1443,7 @@ cuts the drive shimmer by at least a quarter where there are geometry edges),
 `gl3d_real_install_shimmer` and `gl3d_real_install_shimmer_2d` those of `REAL_SHIMMER_LIMITS` /
 `REAL_SHIMMER_2D_LIMITS`, `gl3d_msaa_is_on_by_default_and_the_picture_is_resolved` (4 samples, road
 colours in the resolved picture, 0 when asked), `gl3d_guard_drops_msaa_before_failing`,
-`gl3d_2d_map_gets_mipmaps` (a texture without mips is trilinear + anisotropic after the callback; one
+`gl3d_2d_map_is_trilinear_and_anisotropic` (formerly `gl3d_2d_map_gets_mipmaps`; a mipmapped texture is trilinear + anisotropic after the callback; one
 with mips only gains the anisotropy). Existing count-the-exact-colour tests were adapted where a road
 is now soft-edged (`flat_world_equals_the_tilted_2d_map` uses an 8 px road and now agrees with
 `Camera::project` to 0.01 px instead of ~0.5; the thin race line is 14 px; the HUD route match is

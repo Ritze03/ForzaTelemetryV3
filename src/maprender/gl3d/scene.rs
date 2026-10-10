@@ -85,19 +85,25 @@ pub struct RaceFrame<'a> {
 pub struct NavFrame<'a> {
     pub roads: &'a RoadsCfg,
     pub cfg: &'a NavRouteCfg,
+    /// The car's position along the route (`NavProgress::u`): the shader draws only what lies
+    /// beyond it. A uniform, so the route mesh is not touched while driving or after a rewind.
+    pub cut: f32,
 }
 
-/// Mipmaps (when egui uploaded none) and anisotropy (when the GPU has it) for the **2D** map's
-/// texture (D98): `app.rs` loads the Dashboard's map with `mipmap_mode: None`, so a flat or tilted
-/// map minified to a fraction of its size sparkled and crawled while it moved (the 3D renderer
-/// builds the chain itself, [`Gl3d::prepare_map`]). egui sets `MIN_FILTER` only
-/// when it uploads, so the filter is read each call (one cached driver query) and the chain is
-/// built when it is not mipmapped: once per upload, `glGenerateMipmap` ~10 ms for the 4096 px
-/// image.
+/// `draw_roads`' `uCut` for a mesh that has no position along a route: the cut is off.
+const NO_CUT: f32 = -1.0e9;
+
+/// Anisotropic filtering (when the GPU has it) for the **2D** map's texture (D98): a tilted map is
+/// minified unevenly (far rows much more than near ones), trilinear alone blurs the distance.
+/// egui does not set it. (The mip chain is egui's: both map textures, the Dashboard's in `app.rs`
+/// and the overlay's, are uploaded with `mipmap_mode: Some(Linear)`; `app.rs` used to upload the
+/// Dashboard's with `None`, which made the 2D map sparkle while it moved - this function then built
+/// the chain itself, D98, until the upload was fixed at the root, D97.) One cached driver query
+/// and one parameter read per call.
 ///
 /// # Safety
 /// A current context, egui's state (texture unit 0 active, which egui re-binds per mesh).
-pub(super) unsafe fn ensure_mips(gl: &glow::Context, t: glow::Texture) {
+pub(super) unsafe fn ensure_aniso(gl: &glow::Context, t: glow::Texture) {
     use std::cell::Cell;
     thread_local! {
         /// The context's anisotropy limit, asked once per thread (a thread has one context).
@@ -106,11 +112,6 @@ pub(super) unsafe fn ensure_mips(gl: &glow::Context, t: glow::Texture) {
     // SAFETY: plain texture state on the current context.
     unsafe {
         gl.bind_texture(glow::TEXTURE_2D, Some(t));
-        let f = gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32;
-        if !matches!(f, glow::NEAREST_MIPMAP_NEAREST | glow::LINEAR_MIPMAP_NEAREST | glow::NEAREST_MIPMAP_LINEAR | glow::LINEAR_MIPMAP_LINEAR) {
-            gl.generate_mipmap(glow::TEXTURE_2D);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
-        }
         let aniso = ANISO.with(|a| {
             a.get().unwrap_or_else(|| {
                 let exts = gl.supported_extensions();
@@ -121,8 +122,7 @@ pub(super) unsafe fn ensure_mips(gl: &glow::Context, t: glow::Texture) {
                 v
             })
         });
-        // A tilted map is minified unevenly (far rows much more than near ones): trilinear alone
-        // blurs the distance, anisotropy keeps it sharp without sparkle.
+        // (anisotropy keeps the distance sharp without sparkle)
         if let Some(a) = aniso {
             if gl.get_tex_parameter_f32(glow::TEXTURE_2D, TEXTURE_MAX_ANISOTROPY) < a {
                 gl.tex_parameter_f32(glow::TEXTURE_2D, TEXTURE_MAX_ANISOTROPY, a);
@@ -238,7 +238,7 @@ pub struct Gl3d {
     /// (`store::race_mesh`).
     pub race: Option<RoadGpu>,
     /// The navigation route (phase L): one small mesh, built by `Route3d::new` and re-uploaded
-    /// when its `Arc` changes (a new route, or the next 150 m chunk of it).
+    /// when its `Arc` changes (a new route; the car's progress on it is a uniform).
     pub nav: Option<RoadGpu>,
     fbo: Option<Fbo>,
     empty_vao: glow::VertexArray,
@@ -347,7 +347,7 @@ impl Gl3d {
         }
     }
 
-    /// Make the route mesh the GPU holds `mesh` (`Route3d::new` builds it once per route chunk,
+    /// Make the route mesh the GPU holds `mesh` (`Route3d::new` builds it once per route,
     /// not per frame): uploaded when the `Arc` changes, dropped on `None`. Returns whether it
     /// uploaded.
     pub fn sync_nav(&mut self, gl: &glow::Context, mesh: Option<&Arc<RoadMesh>>) -> Result<bool, String> {
@@ -679,7 +679,8 @@ impl Gl3d {
             // D82: "race road only" draws nothing of the road mesh while the race road is there.
             let race_only = f.race.is_some_and(|r| r.cfg.route == RouteStyle::Road) && self.race.is_some() && f.focus.is_some_and(|c| c.other_roads == OtherRoads::RaceOnly);
             if let (Some(rc), Some(r), false) = (f.roads, self.roads.as_ref(), race_only) {
-                let table = roads::style_table(rc, f.focus, f.cam.view.scale, f.s, f.ppp);                self.draw_roads(gl, f, &heights, &table, r, None, &mut st);
+                let table = roads::style_table(rc, f.focus, f.cam.view.scale, f.s, f.ppp);
+                self.draw_roads(gl, f, &heights, &table, r, None, NO_CUT, &mut st);
             }
             // ── the race lines (D80 / D88): after every road, over them where nothing is in front
             // of them: their open stretches are depth-tested like the roads' (hidden behind hills
@@ -690,7 +691,7 @@ impl Gl3d {
                     let table = roads::race_table(rf.roads, rf.cfg, f.cam.view.scale, f.s, f.ppp);
                     // a thin line has no deck to speak of
                     let deck = if rf.cfg.route == RouteStyle::Road { f.relief.deck_m } else { 0.0 };
-                    self.draw_roads(gl, f, &heights, &table, r, Some((RACE_BIAS, deck)), &mut st);
+                    self.draw_roads(gl, f, &heights, &table, r, Some((RACE_BIAS, deck)), NO_CUT, &mut st);
                 }
                 if rf.cfg.marks && !rf.marks.is_empty() {
                     self.draw_race_marks(gl, f, &heights, rf.marks, &mut st)?;
@@ -701,7 +702,7 @@ impl Gl3d {
             // through); "race road only" hides roads, not this
             if let (Some(nf), Some(r)) = (f.nav, self.nav.as_ref()) {
                 let table = roads::nav_table(nf.roads, nf.cfg, f.cam.view.scale, f.s, f.ppp);
-                self.draw_roads(gl, f, &heights, &table, r, Some((NAV_BIAS, f.relief.deck_m)), &mut st);
+                self.draw_roads(gl, f, &heights, &table, r, Some((NAV_BIAS, f.relief.deck_m)), nf.cut, &mut st);
             }
             // ── trails (D77; the own car is a pass of its own, `render_marker`)
             if !f.trails.is_empty() {
@@ -732,7 +733,8 @@ impl Gl3d {
     /// `race` = the race lines' pass (D80 / D88): their depth bias base (casing; the fill a step
     /// nearer) and deck thickness (m), node heights always (the line's own heights), no
     /// per-rank steps.
-    unsafe fn draw_roads(&self, gl: &glow::Context, f: &Frame, heights: &HeightTex, table: &roads::StyleTable, r: &RoadGpu, race: Option<(f32, f32)>, st: &mut RenderStats) {
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn draw_roads(&self, gl: &glow::Context, f: &Frame, heights: &HeightTex, table: &roads::StyleTable, r: &RoadGpu, race: Option<(f32, f32)>, cut: f32, st: &mut RenderStats) {
         // SAFETY: the caller's contract.
         unsafe {
             let plan = roads::plan(&r.mesh, f.cam, f.ppp, table.rw[2].max(table.rw[1]));
@@ -750,6 +752,7 @@ impl Gl3d {
             gl.uniform_1_f32(p.u("uMode"), (race.is_some() || f.relief.road_height == RoadHeight::Nodes) as u8 as f32);
             gl.uniform_1_f32(p.u("uThick"), race.map_or(f.relief.deck_m, |r| r.1));
             gl.uniform_1_f32(p.u("uLift"), LIFT_M);
+            gl.uniform_1_f32(p.u("uCut"), cut);
             let flat = |v: &[[f32; 4]; roads::SLOTS]| -> Vec<f32> { v.iter().flatten().copied().collect() };
             gl.uniform_4_f32_slice(p.u("uSlotA"), &flat(&table.a));
             gl.uniform_4_f32_slice(p.u("uSlotB"), &flat(&table.b));

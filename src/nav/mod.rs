@@ -34,5 +34,5 @@ pub use search::Endpoint;
 #[cfg(test)]
 pub use {cfg::RouteFilters, cost::CostModel, graph::Edge, search::{Route, RouteError}, snap::Snap};
 pub use state::{
-    local_destination, set_destination, set_follow_shared, set_prefs, view, CarSample, Dest, DestSource, NavLine, NavStatus, NavView, SharedIn, Tracker,
+    local_destination, set_destination, set_follow_shared, set_prefs, view, CarSample, Dest, DestSource, NavLine, NavProgress, NavStatus, NavView, SharedIn, Tracker,
 };

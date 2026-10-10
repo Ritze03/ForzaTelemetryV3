@@ -22,7 +22,8 @@
 //! *automatic* requests (off route, graph replaced, retry after a failure) are at least
 //! [`MIN_AUTO_REROUTE_MS`] apart; a reply whose generation is stale is dropped; in a race the
 //! route is hidden and nothing is requested; a shared destination overrides the local one and
-//! is routed with the setter's filters and curve; the drawn line is published in 150 m chunks.
+//! is routed with the setter's filters and curve; the drawn line is the **whole route**, published
+//! once per route, and where the car is on it (`NavView::progress`) is written per packet.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -90,8 +91,10 @@ pub struct Dest {
     pub prefs: RoutePrefs,
 }
 
-/// The part of the route still to drive, as drawn. Immutable and shared: a consumer that caches
-/// something per line (the 3D deck mesh) keys it on `rev` / `Arc::ptr_eq`.
+/// The whole route, as drawn: the maps cut it at [`NavView::progress`] and draw the rest.
+/// Immutable and shared, a new `Arc` only for a new route (a re-route, new prefs, a replaced
+/// graph), never per packet: a consumer that caches something per line (the 3D deck mesh) keys it
+/// on `rev` / `Arc::ptr_eq`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct NavLine {
     /// Unique and increasing across all lines of the process.
@@ -103,16 +106,67 @@ pub struct NavLine {
     pub seg_kind: Vec<u8>,
 }
 
+impl NavLine {
+    /// The part of the line from `at` on, as the 2D maps draw it: the exact cut point (the
+    /// interpolated position of the car's projection), then every vertex after it; and the index
+    /// of the `seg_kind` entry of the first returned segment. Fewer than two points = nothing
+    /// left. `at` past the line's end is its end.
+    pub fn remaining(&self, at: NavProgress) -> (Vec<[f32; 2]>, usize) {
+        let n = self.pts.len();
+        if n < 2 {
+            return (self.pts.clone(), 0);
+        }
+        let seg = (at.seg as usize).min(n - 2);
+        let t = if at.seg as usize > n - 2 { 1.0 } else { at.t.clamp(0.0, 1.0) };
+        let (a, b) = (self.pts[seg], self.pts[seg + 1]);
+        let mut out = Vec::with_capacity(n - seg);
+        let first_kind = if t >= 1.0 {
+            seg + 1
+        } else {
+            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+            seg
+        };
+        out.extend_from_slice(&self.pts[seg + 1..]);
+        (out, first_kind)
+    }
+}
+
+/// Where the car is on [`NavLine`]: the projection of the car on the route, written for every
+/// packet (the line itself is not republished). A map draws the line from this point on; after a
+/// rewind it is smaller again and the road behind the car is back.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct NavProgress {
+    /// The segment the car is on (`NavLine::pts[seg]` -> `pts[seg + 1]`) ...
+    pub seg: u32,
+    /// ... and how far along it, 0..=1.
+    pub t: f32,
+    /// Metres driven along the route (what `remaining_m` is taken from).
+    pub along_m: f32,
+}
+
+impl NavProgress {
+    /// The position along the line as one number, `seg + t`: what the 3D route's vertices carry
+    /// ([`crate::maprender::mesh3d::RoadMesh::nav_route`]) and its shader compares with.
+    pub fn u(&self) -> f32 {
+        self.seg as f32 + self.t
+    }
+}
+
 /// Everything the maps and the tab need; a cheap clone (two `Arc`-free small structs and one `Arc`).
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct NavView {
-    /// Bumped on every published change of anything below (not for each packet).
+    /// Bumped on every published change of anything below, except `progress` (which changes with
+    /// each packet).
     pub rev: u64,
     pub status: NavStatus,
     pub dest: Option<Dest>,
-    /// The remaining route, trimmed in ~150 m chunks; `None` while hidden (race), failed, arrived
-    /// or without a destination. Compare `Arc::ptr_eq` / `rev` to detect a new line.
+    /// The whole route (draw it from [`progress`](Self::progress) on); `None` while hidden (race),
+    /// failed, arrived or without a destination. Compare `Arc::ptr_eq` / `rev` to detect a new line.
     pub line: Option<Arc<NavLine>>,
+    /// Where the car is on `line`. Unlike everything else here it changes with every packet
+    /// without `rev` moving; it always belongs to the `line` of the same view (both are written
+    /// under one lock).
+    pub progress: NavProgress,
     /// Metres still to drive / whole route length / remaining time at the assumed speeds (~).
     pub remaining_m: f32,
     pub total_m: f32,
@@ -529,6 +583,8 @@ pub struct Tracker<P: Planner> {
     watching: bool,
     cleared_seq: u64,
     published: Option<ViewKey>,
+    /// The progress the view holds.
+    published_progress: NavProgress,
 }
 
 impl Tracker<ThreadPlanner> {
@@ -564,6 +620,7 @@ impl<P: Planner> Tracker<P> {
             watching: false,
             cleared_seq: 0,
             published: Some(ViewKey { status: NavStatus::Idle, dest_rev: 0, line_rev: 0, remaining: 0, eta: 0, total: 0, cleared: 0 }),
+            published_progress: NavProgress::default(),
         }
     }
 
@@ -790,10 +847,11 @@ impl<P: Planner> Tracker<P> {
         }
     }
 
+    /// The whole route as a drawable line: once per route.
     fn make_line(&self, f: &Follower) -> Arc<NavLine> {
-        let (r, from) = (f.route(), f.drawn_from());
+        let r = f.route();
         let rev = self.sh.line_rev.fetch_add(1, Ordering::Relaxed) + 1;
-        Arc::new(NavLine { rev, pts: r.pts[from..].to_vec(), y: r.y[from..].to_vec(), seg_kind: r.seg_kind[from.min(r.seg_kind.len())..].to_vec() })
+        Arc::new(NavLine { rev, pts: r.pts.clone(), y: r.y.clone(), seg_kind: r.seg_kind.clone() })
     }
 
     // ── per packet ─────────────────────────────────────────────────────────────────────────────
@@ -826,10 +884,6 @@ impl<P: Planner> Tracker<P> {
             }
         } else if p.off_m <= OFF_ROUTE_M && self.pending.is_some_and(|p| p.off_route_only) {
             self.pending = None; // back on the route before the new one was asked for
-        }
-        if self.follower.as_mut().is_some_and(|f| f.advance_trim()) {
-            let f = self.follower.as_ref().unwrap();
-            self.line = Some(self.make_line(f));
         }
     }
 
@@ -881,12 +935,17 @@ impl<P: Planner> Tracker<P> {
         }
     }
 
-    /// Write the view if anything a reader sees changed (remaining distance at 1 m, time at 1 s).
+    /// Write the view if anything a reader sees changed (remaining distance at 1 m, time at 1 s);
+    /// the car's progress on the line is written whenever it moved, under the same lock, without
+    /// a new `rev` and without cloning anything.
     fn publish(&mut self) {
         let status = self.status();
-        let (remaining, eta, total) = match (&self.follower, status) {
-            (Some(f), NavStatus::Ok | NavStatus::Routing) => (f.progress().remaining_m, f.progress().remaining_eta_s, f.route().dist_m),
-            _ => (0.0, 0.0, 0.0),
+        let (remaining, eta, total, progress) = match (&self.follower, status) {
+            (Some(f), NavStatus::Ok | NavStatus::Routing) => {
+                let p = f.progress();
+                (p.remaining_m, p.remaining_eta_s, f.route().dist_m, NavProgress { seg: p.seg as u32, t: p.t, along_m: p.along_m })
+            }
+            _ => (0.0, 0.0, 0.0, NavProgress::default()),
         };
         let line = if matches!(status, NavStatus::Ok | NavStatus::Routing) { self.line.clone() } else { None };
         let key = ViewKey {
@@ -899,6 +958,11 @@ impl<P: Planner> Tracker<P> {
             cleared: self.cleared_seq,
         };
         if self.published.as_ref() == Some(&key) {
+            // Same view but for the car's position on the line: one lock, one store.
+            if progress != self.published_progress {
+                lock(&self.sh.view).progress = progress;
+                self.published_progress = progress;
+            }
             return;
         }
         let dest = match (&self.active, &self.arrived) {
@@ -908,9 +972,10 @@ impl<P: Planner> Tracker<P> {
         };
         let mut v = lock(&self.sh.view);
         let rev = v.rev + 1;
-        *v = NavView { rev, status, dest, line, remaining_m: remaining, total_m: total, eta_s: eta, local_cleared_seq: self.cleared_seq };
+        *v = NavView { rev, status, dest, line, progress, remaining_m: remaining, total_m: total, eta_s: eta, local_cleared_seq: self.cleared_seq };
         drop(v);
         self.published = Some(key);
+        self.published_progress = progress;
     }
 }
 
@@ -1102,12 +1167,13 @@ mod tests {
     }
 
     #[test]
-    fn a_route_is_followed_and_the_line_is_republished_every_150_m() {
+    fn a_route_is_followed_with_one_line_and_a_live_progress() {
         let mut r = routed();
         let first = r.view();
-        assert_eq!(first.line.as_ref().unwrap().pts.len(), 51);
+        let line = first.line.clone().unwrap();
+        assert_eq!(line.pts.len(), 51, "the whole route");
         assert!((first.remaining_m - 1000.0).abs() < 1.0 && (first.eta_s - 50.0).abs() < 1.0);
-        let mut revs = vec![first.line.as_ref().unwrap().rev];
+        assert_eq!(first.progress, NavProgress::default());
         let mut views = 0;
         let mut last_rev = first.rev;
         let mut x = 0.0;
@@ -1115,33 +1181,54 @@ mod tests {
             x += 5.0;
             r.drive_dt(x, 0.0, 70, false);
             let v = r.view();
+            // the progress is the car's position, every packet (not in chunks), on the same line
+            assert!((v.progress.along_m - x).abs() < 1e-2, "{x}: {:?}", v.progress);
+            assert!((v.progress.u() * 20.0 - x).abs() < 1e-2);
+            assert!(Arc::ptr_eq(v.line.as_ref().unwrap(), &line), "one Arc for the whole drive (no 150 m chunks)");
             if v.rev != last_rev {
                 views += 1;
                 last_rev = v.rev;
             }
-            let rev = v.line.as_ref().unwrap().rev;
-            if *revs.last().unwrap() != rev {
-                revs.push(rev);
-            }
         }
-        // 900 m driven: 6 trims (at 150, 290, 430, 570, 710, 850 m) -> 7 distinct lines, never one
-        // per packet (180 packets)
-        assert_eq!(revs.len(), 7, "{revs:?}");
-        assert!(revs.windows(2).all(|w| w[0] < w[1]));
+        // 180 packets: the view proper is rewritten when remaining (1 m) / eta (1 s) change
+        assert!(views <= 190);
         let v = r.view();
         assert!((v.remaining_m - 100.0).abs() < 8.0, "{}", v.remaining_m);
-        assert_eq!(v.line.as_ref().unwrap().pts[0], [840.0, 0.0], "the drawn start is the last chunk boundary");
         assert_eq!(v.line.as_ref().unwrap().seg_kind.len(), v.line.as_ref().unwrap().pts.len() - 1);
-        // the view is rewritten only when a number changes at its precision: 1 m steps of 5 m
-        // packets are one write per packet at worst, but a standing car writes nothing
-        assert!(views <= 190);
-        let before = r.view().rev;
+        let before = (r.view().rev, r.view().progress);
         for _ in 0..100 {
             r.drive_dt(900.0, 0.0, 70, false);
         }
-        assert_eq!(r.view().rev, before, "a car that stands still publishes nothing");
+        assert_eq!((r.view().rev, r.view().progress), before, "a car that stands still publishes nothing");
         // no extra route requests happened
         assert_eq!(r.pl.n(), 1);
+    }
+
+    /// A rewind (the car jumps 300 m back along the route): the progress goes back with it, the
+    /// line is the same one (the road behind the car is drawn again by the map), nothing is
+    /// re-requested, however long the car stays there.
+    #[test]
+    fn a_rewind_moves_the_progress_back_without_a_reroute_or_a_new_line() {
+        let mut r = routed();
+        for _ in 0..60 {
+            r.drive(600.0, 0.0);
+        }
+        let line = r.view().line.unwrap();
+        assert!((r.view().progress.along_m - 600.0).abs() < 1e-2);
+        let rev = r.view().rev;
+        r.drive(300.0, 2.0);
+        let v = r.view();
+        assert!((v.progress.along_m - 300.0).abs() < 1e-2, "{:?}", v.progress);
+        assert!((v.remaining_m - 700.0).abs() < 1.0, "the remaining distance grows back");
+        assert!(Arc::ptr_eq(v.line.as_ref().unwrap(), &line));
+        assert_eq!(v.status, NavStatus::Ok);
+        for _ in 0..80 {
+            r.drive(300.0, 2.0);
+        }
+        r.wait(500);
+        assert_eq!(r.pl.n(), 1, "no re-route");
+        assert!(v.rev > rev, "(the remaining distance is a published change)");
+        assert!(Arc::ptr_eq(r.view().line.as_ref().unwrap(), &line));
     }
 
     #[test]
@@ -1467,6 +1554,82 @@ mod tests {
         assert!(r.view().line.is_none());
     }
 
+    /// Real install (skipped without one): the island-crossing route (21 km, node 1 to the farthest
+    /// node) driven at 200 km/h in 60 Hz packets through the real tracker. The progress follows the
+    /// car packet by packet (<= 3 m a step: 0.92 m of road, a little more on a grade), the one
+    /// `NavLine` stays the same `Arc` for the whole drive, a rewind of 300 m in the middle takes the
+    /// progress back by 300 m with no request, and the end is an arrival.
+    #[test]
+    fn real_install_drive_a_long_route_with_a_rewind() {
+        use super::super::cfg::RouteFilters;
+        let Some(g) = super::super::tests::real_graph() else {
+            eprintln!("SKIP real_install_drive_a_long_route_with_a_rewind: no FH6 install");
+            return;
+        };
+        let n0 = g.node_index(1).expect("node 1");
+        let p0 = g.node_pos(n0);
+        let dist = |n: u32| (g.node_pos(n)[0] - p0[0]).hypot(g.node_pos(n)[1] - p0[1]);
+        let far = (0..g.node_count() as u32).max_by(|&a, &b| dist(a).total_cmp(&dist(b))).expect("a node");
+        let pf = g.node_pos(far);
+        let prefs = RoutePrefs { filters: RouteFilters::default(), curves: 0.0 };
+        let route = g.plan((p0[0], p0[1], Some(p0[2])), (pf[0], pf[1]), &prefs).expect("a route");
+        let total = route.dist_m;
+        let mut r = Rig::new();
+        r.sh.set_destination(Some([pf[0], pf[1]]));
+        r.drive(p0[0], p0[1]);
+        r.wait(250);
+        r.pl.answer(Arc::new(route.clone()));
+        r.drive(p0[0], p0[1]);
+        assert_eq!(r.view().status, NavStatus::Ok);
+        let line = r.view().line.expect("the line");
+        assert_eq!(line.pts.len(), route.pts.len(), "the whole route");
+        // The position `s` metres along the 2D polyline.
+        let mut cum = vec![0.0f32];
+        for w in route.pts.windows(2) {
+            cum.push(cum.last().unwrap() + (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]));
+        }
+        let len2d = *cum.last().unwrap();
+        let at = |s: f32| {
+            let i = cum.partition_point(|&c| c <= s).clamp(1, cum.len() - 1);
+            let (a, b) = (route.pts[i - 1], route.pts[i]);
+            let t = ((s - cum[i - 1]) / (cum[i] - cum[i - 1]).max(1e-6)).clamp(0.0, 1.0);
+            (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+        };
+        let step = 55.5 / 60.0;
+        let (mut s, mut last, mut steps, mut max_step, mut rewound) = (0.0f32, 0.0f32, 0u32, 0.0f32, false);
+        while s < len2d - 1.0 && r.view().status == NavStatus::Ok {
+            s += step;
+            if !rewound && s > 12_000.0 {
+                rewound = true;
+                let before = r.view().progress.along_m;
+                s -= 300.0;
+                let (x, z) = at(s);
+                r.drive_dt(x, z, 16, false);
+                let after = r.view().progress.along_m;
+                eprintln!("rewind: progress {before:.1} m -> {after:.1} m");
+                assert!((290.0..=330.0).contains(&(before - after)), "the progress went back by the rewind: {before} -> {after}");
+                last = after;
+                continue;
+            }
+            let (x, z) = at(s);
+            r.drive_dt(x, z, 16, false);
+            let v = r.view();
+            if v.status != NavStatus::Ok {
+                break;
+            }
+            let along = v.progress.along_m;
+            max_step = max_step.max(along - last);
+            assert!(along >= last - 1e-3 && along - last < 3.0, "packet {steps}: {last} -> {along}");
+            assert!(Arc::ptr_eq(v.line.as_ref().unwrap(), &line), "packet {steps}: one line for the whole drive");
+            last = along;
+            steps += 1;
+        }
+        eprintln!("{steps} packets over {total:.0} m, largest progress step {max_step:.2} m");
+        assert!(rewound && steps > 20_000);
+        assert_eq!(r.pl.n(), 1, "one request for the whole drive, rewind included");
+        assert!(matches!(r.view().status, NavStatus::Arrived | NavStatus::Idle), "{:?}", r.view().status);
+    }
+
     /// The per-packet cost when no destination is set: one atomic load. (Run in release and read
     /// the printed number: `cargo test --release tick_cost -- --nocapture --ignored`.)
     #[test]
@@ -1493,7 +1656,7 @@ mod tests {
             let s = CarSample { x, y: 0.0, z: 1.0, dt_ms: 14, driving: true, in_race: false };
             r.t.tick(2000 + i as u64, Some(&s));
         }
-        println!("following tick (20 km route): {:.1} ns", t.elapsed().as_nanos() as f64 / n as f64);
+        println!("following tick (20 km route, progress written per packet): {:.1} ns", t.elapsed().as_nanos() as f64 / n as f64);
     }
 
     // ── the thread planner, with a scripted graph source ────────────────────────────────────────

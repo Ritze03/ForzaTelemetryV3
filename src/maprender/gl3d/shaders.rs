@@ -162,6 +162,7 @@ layout(location = 1) in vec2 aTan;     // tangent x the mitre factor (mesh3d::Sa
 layout(location = 2) in float aS;
 layout(location = 3) in uvec4 aFlags;  // side (1 / 255 = -1), bot, slot, cap centre (1)
 layout(location = 4) in uint aRel;     // 1 = on the picked race line, 0 = other (in-race focus)
+layout(location = 5) in float aAlong;  // the navigation route's mesh only: position along the route (segment + fraction)
 uniform float uMode;       // 0 = terrain drape, 1 = node heights (RoadHeight)
 uniform float uThick;      // deck thickness, m
 uniform float uLift;       // metres above the ground (mesh3d::LIFT_M)
@@ -188,6 +189,7 @@ out float vPx;            // the ribbon's nominal width, px
 out float vWall;          // 1 at a deck's bottom vertices (the walls and underside are not feathered)
 out float vWallCov;       // the share of a pixel a wall of this height covers
 out float vBot;
+out float vAlong;         // aAlong, for the fragment shader's cut at the car (uCut)
 void main() {
   int slot = int(aFlags.z);
   float yT = heightAt(aPos.xy);
@@ -269,6 +271,7 @@ void main() {
   vDash = vec4(dash, 0.0, 0.0);
   vShade = aFlags.y == 1u ? 0.72 : 1.0;
   vS = aS;
+  vAlong = aAlong;
   vSide = side;
   vec4 c = projectW(p);
   // Toward the eye along the view ray (same screen position): beats the coarse terrain levels
@@ -295,7 +298,16 @@ in float vPx;
 in float vWall;
 in float vWallCov;
 in float vBot;
+in float vAlong;
+uniform float uCut;        // the navigation route: the car's position along it (aAlong scale); below -1e8 = no cut
 out vec4 oC;
+// The navigation route's live progress: what lies behind the car (vAlong < uCut) is not drawn.
+// The edge is anti-aliased over one pixel by the gradient of vAlong (the position along the
+// route changes by that much per pixel), so the cut moves smoothly, also between two samples.
+float cutCover() {
+  if (uCut < -1.0e8) return 1.0;
+  return clamp((vAlong - uCut) / max(fwidth(vAlong), 1e-5) + 0.5, 0.0, 1.0);
+}
 // Coverage of the pixel by the ribbon's nominal width: the distance to its edge in px (the
 // gradient of `side` is the local px per unit, so it holds in perspective and foreshortened too),
 // scaled down for a ribbon narrower than the pixel. A deck's walls (`vWall`) are not feathered at
@@ -326,7 +338,7 @@ void main() {
     // A dashed fill leaves its gaps empty (the map shows through).
     float f = vShade > 0.99 ? clamp((vInner - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0) : 0.0;
     float fa = vFill.a * f * dc;
-    float cov = ribbonCover() * fade;
+    float cov = ribbonCover() * fade * cutCover();
     float a = (vCol.a * (1.0 - f) + fa) * cov;
     if (a < 0.004) discard;
     vec3 c = (vCol.rgb * (vCol.a * (1.0 - f)) + vFill.rgb * fa) * vShade * cov;
@@ -334,7 +346,7 @@ void main() {
     return;
   }
   vec3 c = vCol.rgb * vShade;
-  float al = vCol.a * fade * dc * ribbonCover();
+  float al = vCol.a * fade * dc * ribbonCover() * cutCover();
   if (al < 0.004) discard;
   oC = vec4(c * al, al);
 }
@@ -524,7 +536,7 @@ pub const TERRAIN_UNIFORMS: &[&str] = &[
 ];
 pub const ROAD_UNIFORMS: &[&str] = &[
     "uVP", "uCar", "uExag", "uCam", "uH", "uHSize", "uHGeo", "uMode", "uThick", "uLift", "uSlotA", "uSlotB", "uSlotC", "uRW", "uFocus", "uMuteRgb", "uBias",
-    "uCasingAlpha", "uPass", "uVp",
+    "uCasingAlpha", "uPass", "uVp", "uCut",
 ];
 pub const COMP_UNIFORMS: &[&str] = &["uTex", "uUv", "uSizePx", "uRadius", "uAlpha"];
 pub const MARKER_UNIFORMS: &[&str] = &["uVP", "uCar", "uExag", "uCam", "uPos", "uYaw", "uK", "uColor", "uHull", "uAlpha"];

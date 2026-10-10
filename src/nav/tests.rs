@@ -665,7 +665,7 @@ fn real_install_graph() {
 
 // ── route-preference evaluation (D96; `cargo test --release pref_eval -- --ignored --nocapture`) ──
 
-fn real_graph() -> Option<RouteGraph> {
+pub(super) fn real_graph() -> Option<RouteGraph> {
     let media = crate::gamedata::install::find_media(None)?;
     let nav = Nav::load(&media).ok()?;
     let rt = RoadTypes::project();

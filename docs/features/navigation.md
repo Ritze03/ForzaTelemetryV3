@@ -278,9 +278,12 @@ No drawing and no UI here: readers call `nav::view()`, the UI calls the setters.
   `NoRoadData`. While a destination exists the worker looks at the store once a second; a different
   graph `Arc` (editor Save, season change, install found / gone) re-routes (`graph_changed`).
 * **Per-packet cost:** with no destination one atomic load (about 5 ns, release); following a 20 km
-  route about 0.8 us (windowed scan of 83 segments), plus the view lock only when something a reader
-  sees changed (remaining distance at 1 m, ETA at 1 s, status, line). Measured by the ignored test
-  `tick_cost` (`cargo test --release tick_cost -- --nocapture --ignored`).
+  route about 0.37 us (windowed scan of 83 segments, release, incl. the progress write below),
+  plus the view lock: the full view is
+  rewritten only when something a reader sees changed (remaining distance at 1 m, ETA at 1 s,
+  status, line), the car's progress (`NavView::progress`) with one short lock and a 12-byte store
+  whenever it moved. Measured by the ignored test `tick_cost` (`cargo test --release tick_cost --
+  --nocapture --ignored`).
 
 ### Inputs (the API the UI calls)
 
@@ -293,13 +296,18 @@ a `SharedIn` to `Tracker::set_shared`. Persisting the destination is the config'
 
 ### `nav::view()` -> `NavView`
 
-`{ rev, status, dest: Option<Dest>, line: Option<Arc<NavLine>>, remaining_m, total_m, eta_s,
-local_cleared_seq }`. `NavLine { rev, pts, y, seg_kind }` is the part still to drive (`seg_kind` 7 =
-jump). `Dest { x, z, source: Local | Shared { setter, hue }, prefs }`. `NavStatus`: `Idle`,
+`{ rev, status, dest: Option<Dest>, line: Option<Arc<NavLine>>, progress: NavProgress, remaining_m,
+total_m, eta_s, local_cleared_seq }`. `NavLine { rev, pts, y, seg_kind }` is the **whole route**
+(`seg_kind` 7 = jump), a new `Arc` only for a new route (a re-route, new prefs, a replaced graph).
+`NavProgress { seg, t, along_m }` is where the car is on it: the projection of the car on the line
+as segment index + fraction (+ the metres, which `remaining_m` is taken from), **written for every
+packet** and read together with `line` (both under the view's one lock, so a new route never shows
+with the old route's progress). The maps cut the line there ([`NavProgress::u`] = `seg + t` for the
+3D mesh, `NavLine::remaining` for 2D). `Dest { x, z, source: Local | Shared { setter, hue }, prefs }`. `NavStatus`: `Idle`,
 `WaitingForCar` (destination, no driving packet yet), `Routing` (a previous line may still be shown),
 `Ok`, `NoRoadNear(Car | Destination)`, `Unreachable`, `NoRoadData`, `PausedRace`, `Arrived`.
-`NavView::rev` changes on any published change; `NavLine::rev` only when the line itself is new
-(the key for the 3D deck mesh). `local_cleared_seq` increments when a local destination was cleared
+`NavView::rev` changes on any published change **except `progress`**; `NavLine::rev` only when the
+line itself is new (the key for the 3D deck mesh). `local_cleared_seq` increments when a local destination was cleared
 by arriving: the UI clears `AppConfig.nav.destination` when it sees it change.
 
 ### Rules
@@ -312,11 +320,11 @@ by arriving: the UI clears `AppConfig.nav.destination` when it sees it change.
 | After a route is adopted | off-route check suppressed 3 s | the new route starts at the car's snap |
 | Route starts far from the car (car in a field, snap up to 300 m) | off-route limit is 50 m + that gap until the car was first within 50 m of the route | otherwise a car 120 m from the road is "off route" at once and re-routes every 3 s forever |
 | `NoRoadNear(Car)` / `Unreachable` | retried every >= 3 s **while the car has moved >= 25 m** since the request | fast travel into a field recovers, a parked car does not poll; `NoRoadNear(Destination)` / `NoRoadData` are only retried on a changed input or graph |
-| Progress | windowed scan (2 back, 80 ahead), global scan if the window's nearest is > 50 m | a route passing near itself (loop, overpass) cannot make the car jump to the other pass; a shortcut / U-turn within 50 m of the route is "on route" |
-| Along-route distance | monotone inside the window | a reversing car does not add distance back; only the global fallback may move it backwards |
+| Progress | windowed scan (2 back, 80 ahead); if the window's nearest point is its **edge** (clamped to the first segment's start / the last one's end) the window is widened (doubling) until it is not; global scan if the window has nothing within 50 m | a route passing near itself (loop, overpass) cannot make the car jump to the other pass (the window is the first choice, so the pass nearest the previous progress wins); a shortcut / U-turn / **rewind** within 50 m of the route is "on route" |
+| Progress direction | **free**: it follows the exact projection, forwards and backwards | live display (D97) and **rewind**: Forza's rewind puts the car back along the route (300 m is typical); the progress goes back with it, `remaining_m` grows again and the maps show the road behind the car. A rewind is on the route, so it is not off-route time (the clock restarts from 0) and asks for no re-route. It used to be monotone inside the window ("a reversing car does not add distance back") |
 | Remaining ETA | sum of the remaining `seg_time_s` | same assumed speeds as the route (approximate by design, D84) |
 | Arrival | remaining < 25 m **and** car within 40 m of the route's end | the end is the snapped destination (it can be up to 300 m from the clicked point) |
-| Drawn line | trimmed in 150 m chunks; new `Arc<NavLine>` (new `rev`) per chunk and per new route | the 3D deck mesh is rebuilt when the `Arc` changes (the `gl3d::scene::sync_race` pattern, "a few ms, once per change, never per frame"); trimming per packet would rebuild it 70x a second. 2D and 3D agree to within 150 m of tail |
+| Drawn line | the **whole route**, one `Arc<NavLine>` (one `rev`) per route; the maps cut it at `NavView::progress` per frame | *Why (D97, the user: "Can the remaining route be sized dynamically, so the highlight doesnt go away in blocks (the nodes) on the map, when driving the route, but rather dynamically draw it, so it moves 'live' and not in 'blocks'/nodes? Also, when rewinding, the road that has already been driven isnt marked for navigation anymore."):* the line used to be trimmed in 150 m chunks, a new `Arc` per chunk, because a new `Arc` rebuilds the 3D deck mesh and trimming per packet would rebuild it 70x a second; the result was a route that shrank in blocks and, being cut, could not grow back after a rewind. Now the line never changes while driving, so the 3D mesh is built once per route and the cut is a per-frame number (see section 3) |
 | Race (race position != 0) | `PausedRace`, line hidden, nothing requested; on the way out a new route from wherever the race ended (D92) | the race is already a road-styled line in the same slot (D80), a second coloured road on top fights it, and the destination is irrelevant mid-race. A destination change during a race is held until it ends |
 | Prefs-only change | old line stays (and is followed) until the new route arrives | no blinking while the slider is dragged; a new destination drops the line at once |
 | Arrival, local | destination cleared (inputs + `local_cleared_seq`), `Arrived` until the next destination | D84: no prompt; this is where a later HUD notification hooks in |
@@ -324,15 +332,23 @@ by arriving: the UI clears `AppConfig.nav.destination` when it sees it change.
 
 ### Tests
 
-`follow.rs` (pure): progress / monotone, window vs global scan, the 50 m / 2 s rule incl. the 3 s
-suppression and hysteresis, capped steps, paused packets, far-start gap, arrival, degenerate route,
-150 m chunks. `state.rs` (a recording `FakePlanner`, explicit clock): idle asks for nothing,
-waits for a car, debounce, stale reply dropped, 150 m republish with no rev per packet, off-route
+`follow.rs` (pure): progress follows the car (continuous, no chunks: `progress_is_continuous_along_a_segment`),
+goes back with it, **rewinds** of 10 m .. 1.5 km re-acquire the exact position with no off-route time
+and no re-route (`a_rewind_reacquires_the_progress_behind_without_a_reroute`, `a_rewind_resets_the_off_route_clock`,
+a loop route), window vs global scan, the 50 m / 2 s rule incl. the 3 s
+suppression and hysteresis, capped steps, paused packets, far-start gap, arrival, degenerate route.
+`state.rs` (a recording `FakePlanner`, explicit clock): idle asks for nothing,
+waits for a car, debounce, stale reply dropped, one `Arc` for the whole drive with the progress
+updated per packet (and nothing published for a standing car), a rewind (progress back, same line,
+no request), off-route
 re-route, 3 s spacing, `NoRoadNear(Car)` retries, error -> status, race pause / resume / in-flight
 reply dropped, paused packets, local arrival, shared overrides local / falls back / opt-out,
 shared arrival, prefs-only change. Plus `ThreadPlanner` with a scripted graph source (waits for a
 loading graph, missing install, replaced graph, latest request wins). Real install: the L1 test
-`real_install_graph` (skips without `FH6_INSTALL_DIR`). The ignored `tick_cost` prints the per-packet cost.
+`real_install_graph` and `state::tests::real_install_drive_a_long_route_with_a_rewind` (the 23 km
+island route driven at 200 km/h in 60 Hz packets through the real tracker: 25 194 packets, the
+largest progress step 0.94 m, one `Arc`, a 300 m rewind at 12 km takes the progress from 12 005.8
+to 11 706.7 m, one route request in all, an arrival at the end; both skip without `FH6_INSTALL_DIR`). The ignored `tick_cost` prints the per-packet cost.
 Chain winding: `winding_is_the_roads_around_the_edge_not_the_edges_own` (a straight edge next to a
 zig-zag reads it, far away reads 0, reversing the polyline changes nothing),
 `a_short_road_with_one_corner_is_not_winding` (the 600 m floor), and the `cost.rs` tests (`wind`
@@ -376,14 +392,27 @@ loading) `paint2d::draw_layers_or_route(.., None, ..)` draws the route alone.
 
 `draw_race_lines`' road branch was factored into `draw_road_polylines(cx, cfg, factor, taper,
 &[RoadItem])` (every casing under every fill, tapered pieces, round ends); the race road and
-`draw_nav_route` both call it. `LayerCtx::nav: Option<&NavLine>` carries the line, `Parts::nav` the
-switch (`ALL` has it; **`OVER_3D` does not**: in the 3D view the GL scene draws the route; while the
+`draw_nav_route` both call it. `LayerCtx::nav: Option<NavRoute { line, at }>` carries the whole line
+and the car's `NavProgress`, `Parts::nav` the switch (`ALL` has it; **`OVER_3D` does not**: in the 3D view the GL scene draws the route; while the
 scene is not `Ready`, the underlay frames use `Parts::ALL` and draw it flat, like the roads).
 **Layer order (bottom to top):** roads, jump lines, race lines, **navigation route**, POIs, then
 trails, teammates, the own arrow, waypoints, **the destination pin**, compass. *Why this order:*
 the route is a road, so it lies over the roads and the race lines; the POIs and markers stay
 readable above it, and the car arrow is not covered by its own route. **"Race road only" (D82)
 does not hide the route** (it hides the road layer, and the route is not part of it).
+
+**Live cut (D97):** per frame `draw_nav_route` takes `NavLine::remaining(progress)`: the exact
+interpolated cut point (`pts[seg] + t * (pts[seg+1] - pts[seg])`), then the vertices after it, and
+draws that. So the start moves with every packet (sub-segment, not vertex to vertex) and after a
+rewind the longer remainder is simply drawn. It is a copy of at most the route's points (a 21 km
+route is ~1 000 points, 8 KB) and the same projecting / thinning the whole line got per frame
+before; nothing is cached. A route that is driven to the end draws nothing. The cut end is the
+polyline's ordinary round end (the same look the line's start always had). The jump stretch the
+car is on is cut too (the dashes start at the car). **Not interpolated between packets** (the
+progress is what the last packet said, ~60 Hz): at 200 km/h that is 0.9 m a step, about a pixel on
+the Dashboard map and a few on a zoomed-in HUD, and the car marker (drawn at the same packet's
+position) moves in the same steps, so the cut stays glued to it; interpolating would only make the
+cut and the car disagree.
 
 **Jumps (`seg_kind` 7):** the line is split at them; the road runs on each side are separate
 polylines, and the jump stretch is a **dashed take-off -> landing line** with a casing, like the jump
@@ -396,8 +425,27 @@ lines (4 / 3 design px on / off, solid below 0.02 px/m), width factor `style::NA
   (`race_road_layer`: 8 m samples, deck, mitred joins, round caps at the ends, **stretches 4 m or
   more under the terrain in the tunnel slot**) per run between jumps, and each jump stretch as a jump
   line (the jump slot: a taut string over the ground, no deck across the gap). `y` 0 = unknown = the
-  terrain. Heights are the route's own (the graph's node heights).
-* **Scene:** `Scene3d::route: Option<Route3d { line, mesh, cfg }>`, independent of the race lines and
+  terrain. Heights are the route's own (the graph's node heights). **The mesh is the whole route**
+  and carries `RoadMesh::along`: per GPU vertex its position along the route as `segment +
+  fraction` in the route's own vertex numbering (the sample's projection on the route segment it
+  came from, found through `SampleSrc` + the chain's first route point; the same value as
+  `NavProgress::u()`), uploaded as vertex attribute 5.
+* **Live cut (D97):** the car's `NavProgress::u()` is a **uniform** (`uCut`, set per frame in the nav
+  pass only; the other meshes get "off"), and `ROAD_FS` multiplies the fragment's coverage by
+  `cutCover()` = `clamp((vAlong - uCut) / fwidth(vAlong) + 0.5, 0, 1)`: what lies behind the car is
+  not drawn, and the cut edge is anti-aliased over one pixel by the gradient of the position along
+  the route (so it is as clean as the ribbon's own feathered edge, #235, and moves smoothly *between*
+  two samples, not sample to sample). The cut is perpendicular to the road (the samples' cross
+  sections), flat, not round; the casing and the fill, the deck's walls and the translucent tunnel
+  stretches use the same value, so they are cut together. A discarded fragment writes no depth.
+  Driving and a rewind therefore change one float, no mesh, no upload. *Why `segment + fraction` and
+  not metres:* it is what the follower knows exactly (the 2D cut needs no search, and 3D and 2D
+  cannot disagree about the metric: the follower's `along_m` is 3D length, the mesh's samples are 2D
+  projected). **Cost per frame:** `Route3d::new` cache hit 0.1 us + one uniform; no mesh work,
+  no upload. 2D: `NavLine::remaining` of a 1 050-point route 0.08 us (release), the whole 2D
+  route frame (shape building + an egui pass, whole island in view) 0.05 ms from the start and
+  0.05 ms from the middle (`bench_nav_cut`).
+* **Scene:** `Scene3d::route: Option<Route3d { line, mesh, cfg, at }>`, independent of the race lines and
   the in-race focus. The GPU copy (`Gl3d::nav`, `sync_nav`) is replaced when the mesh `Arc` changes,
   under the same "one heavy upload per callback" rule as the race mesh.
 * **Pass:** after the roads and the race lines, before the trails: `draw_roads` with `roads::nav_table`
@@ -410,10 +458,11 @@ lines (4 / 3 design px on / off, solid below 0.02 px/m), width factor `style::NA
   shared by the HUD and the Dashboard, behind a mutex that is held during the build so two maps
   do not build the same line twice). *Why not off-thread like `store::race_mesh`:* measured on the
   real install, release (`gl3d::tests::real_install_nav_route_mesh_cost`): the island-crossing
-  route (node 1 to the farthest node, 21.3 km, 3 180 samples, 26 k triangles, 347 KB) builds in
-  **0.51 ms** (6.2 ms debug), an 11 km route 0.28 ms, a lone jump 0.04 ms; a cache hit costs 60 ns.
-  It happens a new route or every 150 m chunk (every few seconds of driving), never per frame. An
-  off-thread build (thread, generation counter, the previous line shown for a frame after a change)
+  route (node 1 to the farthest node, 23.0 km, 3 437 samples, 28 k triangles, 375 KB, now with
+  the `along` values) builds in **0.57 ms** (was 0.51 ms for the 21.3 km route of the earlier
+  numbers), a 14.7 km route 0.54 ms, a lone jump 0.04 ms; a cache hit costs 70-140 ns.
+  It happens once per new route (the cache key is `NavLine::rev` + the terrain; the car's progress
+  is not part of it), never per frame and not while driving. An off-thread build (thread, generation counter, the previous line shown for a frame after a change)
   pays at 270 ms (all 170 race lines), not at half a millisecond. A panic in the builder is caught
   (no route, not a dead overlay thread).
 * **Pin in 3D:** egui, over the scene, its tip placed by the 3D camera at the **terrain's height**
@@ -450,17 +499,21 @@ map & Viewer pages (L5).
 
 ### Tests
 
-`paint2d`: route drawn as a road over the roads (casing, fill, round ends, width rule, config colour
+`paint2d`: the route starts at the exact interpolated progress point, between two vertices too, and a
+smaller progress (rewind) draws the longer remainder (`the_nav_route_starts_at_the_exact_progress_point_and_a_rewind_draws_more`),
+a partly driven jump stretch, `NavLine::remaining`; route drawn as a road over the roads (casing, fill, round ends, width rule, config colour
 and width, HUD fade alpha), not in `Parts::OVER_3D`, hidden with `on = false`, drawn without layer
 data, drawn with "Race road only", tapered in a tilted view, jump stretches dashed with no road over
 the gap, degenerate lines; `route_line` / `route_dest` per `NavStatus`. `mesh3d`: tunnel / jump /
-cap structure of the route mesh. `map_shared`: the pin projects through the camera onto the terrain
+cap structure of the route mesh, and its `along` values across the tunnel split, the gap and a tile border. `map_shared`: the pin projects through the camera onto the terrain
 in 3D. `gl3d` (headless GL, `#[ignore]`, `cargo test gl3d -- --ignored`, parallel-safe since #229): over the
 road it runs on, with race road only, through a hill (tunnel), a dashed jump, hidden behind a hill
 and under a deck, mesh rebuilt only when `rev` changes and uploaded once (and unaffected by a colour
-change), in all three GL flavours (`suite`), real-install routes (`gl3d_real_install_nav_route`,
+change or by the progress moving), **the cut at the progress** (`gl3d_nav_route_is_cut_at_the_progress_and_comes_back_after_a_rewind`:
+no route pixel behind the cut, the first route pixel within 0.5 px of the projected cut point for
+four fractions of one segment, a rewind brings the route back, one mesh build for all of it), in all three GL flavours (`suite`), real-install routes (`gl3d_real_install_nav_route`,
 `real_install_nav_route_mesh_cost`, need `FH6_INSTALL_DIR`). HUD PNG harness (`cargo test
-render_3d_states -- --ignored`): route + pin in 3D, shared ring, tilted, flat, hidden in a race and
+render_3d_states -- --ignored`): route + pin in 3D, shared ring, tilted, flat, halfway along (the first half gone, in 3D and 2D), hidden in a race and
 when switched off, and through `Renderer::frame_at` with `nav_fn`.
 
 ## 4. Navigation tab and Viewer destination (`src/ui/nav_tab.rs`, `src/ui/map_tab.rs`, L5)

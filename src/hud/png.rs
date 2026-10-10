@@ -1372,6 +1372,22 @@ fn render_3d_states() -> Result<(), String> {
         }
         written.push(save(&img, &format!("m2_3d_nav_{sfx}"))?);
     }
+    // Live progress (D97): halfway along the route its first half is gone (the cut is the car's
+    // position on it), in 3D as in the 2D views, and the destination pin stays.
+    let half = crate::nav::NavView { progress: crate::nav::NavProgress { seg: 8, t: 0.5, along_m: 170.0 }, ..nav_view.clone() };
+    {
+        // (the route is a thin line here and the pin has its colour: compare pictures, not colours)
+        rig.nav = nav_view.clone();
+        let whole = rig.tile(&hills, &none, 1.0, 1.0)?;
+        rig.nav = half.clone();
+        let img = rig.tile(&hills, &none, 1.0, 1.0)?;
+        let d = differing(&whole, &img);
+        println!("  m2_3d_nav_half: {d} px differ from the whole route");
+        if d < 25 {
+            failures.push(format!("3D nav route halfway: only {d} px differ from the whole route (the first half should be gone)"));
+        }
+        written.push(save(&img, "m2_3d_nav_half_1x")?);
+    }
     // A teammate's destination: the same pin with a ring in the setter's hue.
     {
         let mut shared = nav_view.clone();
@@ -1402,6 +1418,15 @@ fn render_3d_states() -> Result<(), String> {
         }
         nav_counts.push((name, n));
         written.push(save(&img, &format!("m2_nav_{name}_1x"))?);
+        let whole = img;
+        rig.nav = half.clone();
+        let img = rig.frame(&snap, &none, 1.0, 1.0, false);
+        let d = differing(&whole, &img);
+        println!("  m2_nav_{name}_half: {d} px differ from the whole route");
+        if d < 8 {
+            failures.push(format!("2D nav route ({name}) halfway: only {d} px differ from the whole route (the first half should be gone)"));
+        }
+        rig.nav = nav_view.clone();
         // In a race the runtime reports `PausedRace` with no line: nothing, pin included.
         rig.nav = crate::nav::NavView { status: crate::nav::NavStatus::PausedRace, line: None, ..nav_view.clone() };
         let hidden = rig.frame(&snap, &none, 1.0, 1.0, false);
