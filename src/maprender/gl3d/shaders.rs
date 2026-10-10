@@ -156,6 +156,7 @@ void main() {
 /// the overlapping translucent surfaces (the casing and fill of one road, two roads at a
 /// junction, a deck's walls under its top) only the nearest is blended, once.
 pub const ROAD_VS: &str = r#"
+const float FEATHER = 1.2;  // px the ribbon is drawn wider than its nominal width, for the edge's anti-aliasing
 layout(location = 0) in vec3 aPos;     // x, z, node height
 layout(location = 1) in vec2 aTan;     // tangent x the mitre factor (mesh3d::Sample)
 layout(location = 2) in float aS;
@@ -170,6 +171,7 @@ uniform vec4 uSlotC[10];   // dash m, gap m, casing alpha (0 = no casing), draw 
 uniform vec4 uRW;          // metres, min_px, max_px, casing_px  (px of the viewport, already x ppp x size factor)
 uniform vec4 uFocus;       // mode (0 none, 1 muted, 2 hidden), muted alpha, muted width factor, 0
 uniform vec3 uMuteRgb;
+uniform vec2 uVp;          // viewport px
 uniform vec2 uBias;        // depth bias toward the eye: base, per draw rank (fractions of the depth)
 uniform float uPass;       // 0 = casing, 1 = fill (opaque roads), 2 = translucent roads (D95)
 uniform float uCasingAlpha;
@@ -181,7 +183,10 @@ out float vCamZ;
 out float vShade;
 out float vS;
 out float vSide;
-out float vAA;
+out float vEdge;          // the ribbon's nominal edge in `side` units (the ribbon is drawn FEATHER px wider)
+out float vPx;            // the ribbon's nominal width, px
+out float vWall;          // 1 at a deck's bottom vertices (the walls and underside are not feathered)
+out float vWallCov;       // the share of a pixel a wall of this height covers
 out float vBot;
 void main() {
   int slot = int(aFlags.z);
@@ -216,7 +221,7 @@ void main() {
   if (transPass && cased) {
     // One ribbon: the casing's width, the fill's share of it marked for the fragment shader.
     px = wpx + uRW.w;
-    inner = wpx / px;
+    inner = wpx / px;                                    // (of the nominal width; scaled below)
     rgb = sb.rgb;
     alpha = alpha * uCasingAlpha;
   } else if (casingPass) {
@@ -226,25 +231,45 @@ void main() {
     dash = vec2(0.0);
   }
   if (trans != transPass) { alpha = 0.0; fillCol.a = 0.0; }
-  float hw = 0.5 * px / ppm;                             // half width, metres
+  // The ribbon is drawn FEATHER screen px wider than its nominal width, and the fragment shader
+  // fades its alpha over that margin by the distance to the nominal edge (D98): an anti-aliased
+  // edge that does not depend on the multisampling, which also keeps a sub-pixel road a steady
+  // grey. "Screen px": a road running across the view is foreshortened (tilt), so a feather of
+  // FEATHER px / ppm metres would be a fraction of a pixel there; `across` is the px per metre
+  // measured across the ribbon on the screen.
+  vec3 perp = vec3(-aTan.y, 0.0, aTan.x);
+  vec4 cp = projectW(base + perp);
+  vec4 c0 = projectW(base);
+  float across = length((cp.xy / cp.w - c0.xy / c0.w) * 0.5 * uVp) / max(length(perp), 1e-3);
+  across = clamp(across, 0.2 * ppm, 2.0 * ppm);
+  float hwNom = 0.5 * px / ppm;                          // nominal half width, metres
+  float hw = hwNom + 0.5 * FEATHER / across;             // drawn half width
   // A cap's centre vertex sits on the point itself (mesh3d::push_vertices).
   float side = aFlags.w == 1u ? 0.0 : ((aFlags.x == 1u) ? 1.0 : -1.0);
-  vec3 p = base + vec3(-aTan.y, 0.0, aTan.x) * side * hw;
+  vec3 p = base + perp * side * hw;
   bool deck = transPass || !(cased && !casingPass);      // the casing pass drew this road's deck
-  if (aFlags.y == 1u && deck) p.y -= uThick / uExag;
+  float drop = uThick / uExag;
+  if (aFlags.y == 1u && deck) p.y -= drop;
+  // A deck's wall seen from above is often under a pixel high: it is then drawn that much
+  // fainter (its height in px, 1 at most) instead of flickering on and off with the pixel grid.
+  vec3 pTop = p + vec3(0.0, (aFlags.y == 1u && deck) ? drop : 0.0, 0.0);
+  vec4 wt = projectW(pTop);
+  vec4 wb = projectW(pTop - vec3(0.0, drop, 0.0));
+  float wallPx = length((wt.xy / wt.w - wb.xy / wb.w) * 0.5 * uVp);
   // ... so the fill pass drops a cased road's walls and underside (collapsed onto the top, they
   // would still be drawn over it where back faces are not culled).
   vBot = (!deck && aFlags.y == 1u) ? 1.0 : 0.0;
   vCol = vec4(rgb, alpha);
   vFill = fillCol;
-  vInner = inner;
+  vEdge = hwNom / hw;
+  vInner = inner * vEdge;
+  vPx = px * across / ppm;
+  vWall = aFlags.y == 1u ? 1.0 : 0.0;
+  vWallCov = min(wallPx, 1.0);
   vDash = vec4(dash, 0.0, 0.0);
   vShade = aFlags.y == 1u ? 0.72 : 1.0;
   vS = aS;
   vSide = side;
-  // The fill's edge over its casing is anti-aliased in the fragment shader (no MSAA here); the
-  // deck's own edges are geometry, as before.
-  vAA = (cased && !casingPass && !transPass) ? 1.0 : 0.0;
   vec4 c = projectW(p);
   // Toward the eye along the view ray (same screen position): beats the coarse terrain levels
   // that sit above the exact bilinear surface the road follows, ranks overlapping types, and
@@ -265,29 +290,51 @@ in float vCamZ;
 in float vShade;
 in float vS;
 in float vSide;
-in float vAA;
+in float vEdge;
+in float vPx;
+in float vWall;
+in float vWallCov;
 in float vBot;
 out vec4 oC;
+// Coverage of the pixel by the ribbon's nominal width: the distance to its edge in px (the
+// gradient of `side` is the local px per unit, so it holds in perspective and foreshortened too),
+// scaled down for a ribbon narrower than the pixel. A deck's walls (`vWall`) are not feathered at
+// their edge but fainter when they are under a pixel high (`vWallCov`).
+float ribbonCover() {
+  float e = clamp((vEdge - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0) * min(vPx, 1.0);
+  return mix(e, vWallCov, vWall);
+}
+// Coverage of a dash pattern (dash, gap in metres) along the chain at the pixel: the distance to
+// the nearest dash edge over the metres one pixel spans, and the pattern's mean share once a
+// period is no longer wider than ~2 px (a hard edge there is moire, not a pattern).
+float dashCover(vec2 d) {
+  if (d.x <= 0.0) return 1.0;
+  float per = d.x + d.y;
+  float t = mod(vS, per);
+  float w = max(fwidth(vS), 1e-4);
+  float dist = t < d.x ? min(t, d.x - t) : -min(t - d.x, per - t);
+  float c = clamp(dist / w + 0.5, 0.0, 1.0);
+  return mix(d.x / per, c, clamp(per / w - 1.0, 0.0, 1.0));
+}
 void main() {
   if (vBot > 0.0) discard;
-  bool gap = vDash.x > 0.0 && mod(vS, vDash.x + vDash.y) > vDash.x;
+  float dc = dashCover(vDash.xy);
   float fade = farFade(vCamZ);
   if (vInner > 0.0) {
     // A translucent cased road (D95): the fill's colour inside, the casing's round it, the seam
     // anti-aliased by a mix, never two layers. The deck's walls and underside are all casing.
     // A dashed fill leaves its gaps empty (the map shows through).
     float f = vShade > 0.99 ? clamp((vInner - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0) : 0.0;
-    float fa = gap ? 0.0 : vFill.a * f;
-    float a = (vCol.a * (1.0 - f) + fa) * fade;
+    float fa = vFill.a * f * dc;
+    float cov = ribbonCover() * fade;
+    float a = (vCol.a * (1.0 - f) + fa) * cov;
     if (a < 0.004) discard;
-    vec3 c = (vCol.rgb * (vCol.a * (1.0 - f)) + vFill.rgb * fa) * vShade * fade;
+    vec3 c = (vCol.rgb * (vCol.a * (1.0 - f)) + vFill.rgb * fa) * vShade * cov;
     oC = vec4(c, a);
     return;
   }
-  if (gap) discard;
   vec3 c = vCol.rgb * vShade;
-  float al = vCol.a * fade;
-  if (vAA > 0.5) al *= clamp((1.0 - abs(vSide)) / max(fwidth(vSide), 1e-4) + 0.5, 0.0, 1.0);
+  float al = vCol.a * fade * dc * ribbonCover();
   if (al < 0.004) discard;
   oC = vec4(c * al, al);
 }
@@ -477,7 +524,7 @@ pub const TERRAIN_UNIFORMS: &[&str] = &[
 ];
 pub const ROAD_UNIFORMS: &[&str] = &[
     "uVP", "uCar", "uExag", "uCam", "uH", "uHSize", "uHGeo", "uMode", "uThick", "uLift", "uSlotA", "uSlotB", "uSlotC", "uRW", "uFocus", "uMuteRgb", "uBias",
-    "uCasingAlpha", "uPass",
+    "uCasingAlpha", "uPass", "uVp",
 ];
 pub const COMP_UNIFORMS: &[&str] = &["uTex", "uUv", "uSizePx", "uRadius", "uAlpha"];
 pub const MARKER_UNIFORMS: &[&str] = &["uVP", "uCar", "uExag", "uCam", "uPos", "uYaw", "uK", "uColor", "uHull", "uAlpha"];

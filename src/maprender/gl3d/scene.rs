@@ -87,6 +87,50 @@ pub struct NavFrame<'a> {
     pub cfg: &'a NavRouteCfg,
 }
 
+/// Mipmaps (when egui uploaded none) and anisotropy (when the GPU has it) for the **2D** map's
+/// texture (D98): `app.rs` loads the Dashboard's map with `mipmap_mode: None`, so a flat or tilted
+/// map minified to a fraction of its size sparkled and crawled while it moved (the 3D renderer
+/// builds the chain itself, [`Gl3d::prepare_map`]). egui sets `MIN_FILTER` only
+/// when it uploads, so the filter is read each call (one cached driver query) and the chain is
+/// built when it is not mipmapped: once per upload, `glGenerateMipmap` ~10 ms for the 4096 px
+/// image.
+///
+/// # Safety
+/// A current context, egui's state (texture unit 0 active, which egui re-binds per mesh).
+pub(super) unsafe fn ensure_mips(gl: &glow::Context, t: glow::Texture) {
+    use std::cell::Cell;
+    thread_local! {
+        /// The context's anisotropy limit, asked once per thread (a thread has one context).
+        static ANISO: Cell<Option<Option<f32>>> = const { Cell::new(None) };
+    }
+    // SAFETY: plain texture state on the current context.
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(t));
+        let f = gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32;
+        if !matches!(f, glow::NEAREST_MIPMAP_NEAREST | glow::LINEAR_MIPMAP_NEAREST | glow::NEAREST_MIPMAP_LINEAR | glow::LINEAR_MIPMAP_LINEAR) {
+            gl.generate_mipmap(glow::TEXTURE_2D);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+        }
+        let aniso = ANISO.with(|a| {
+            a.get().unwrap_or_else(|| {
+                let exts = gl.supported_extensions();
+                let v = (exts.contains("GL_EXT_texture_filter_anisotropic") || exts.contains("GL_ARB_texture_filter_anisotropic"))
+                    .then(|| gl.get_parameter_f32(super::probe::MAX_TEXTURE_MAX_ANISOTROPY).min(16.0))
+                    .filter(|a| *a >= 1.0);
+                a.set(Some(v));
+                v
+            })
+        });
+        // A tilted map is minified unevenly (far rows much more than near ones): trilinear alone
+        // blurs the distance, anisotropy keeps it sharp without sparkle.
+        if let Some(a) = aniso {
+            if gl.get_tex_parameter_f32(glow::TEXTURE_2D, TEXTURE_MAX_ANISOTROPY) < a {
+                gl.tex_parameter_f32(glow::TEXTURE_2D, TEXTURE_MAX_ANISOTROPY, a);
+            }
+        }
+    }
+}
+
 /// What one render did.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderStats {
@@ -100,13 +144,67 @@ pub struct RenderStats {
 }
 
 struct Fbo {
+    /// The resolved picture: `tex` is what the composite reads. With `samples == 0` this FBO is
+    /// also what the scene is drawn into (colour + `depth`); with multisampling it holds the
+    /// texture alone and is the target of the resolve blit.
     fbo: glow::Framebuffer,
     tex: glow::Texture,
+    /// `DEPTH24_STENCIL8`, multisampled like the colour when `samples > 0`.
     depth: glow::Renderbuffer,
-    /// A second depth buffer of the same size, swapped in for the tunnel pass (D95): the tunnels
-    /// are drawn over everything, so they need a depth of their own to sort among themselves.
-    depth_tunnel: glow::Renderbuffer,
+    /// Multisampling (D98): the framebuffer the scene is drawn into and its colour renderbuffer.
+    ms: Option<(glow::Framebuffer, glow::Renderbuffer)>,
+    samples: i32,
+    /// A second depth buffer of the same size and sample count, swapped in for the tunnel pass
+    /// (D95): the tunnels are drawn over everything, so they need a depth of their own to sort
+    /// among themselves. Made at the first translucent tunnel (a multisampled one is big).
+    depth_tunnel: std::cell::Cell<Option<glow::Renderbuffer>>,
     size: [i32; 2],
+}
+
+impl Fbo {
+    /// The framebuffer the scene is drawn into.
+    fn draw(&self) -> glow::Framebuffer {
+        self.ms.map_or(self.fbo, |m| m.0)
+    }
+
+    /// The tunnel pass's depth buffer, made on first use. `None` when the GPU refuses it.
+    ///
+    /// # Safety
+    /// A current context.
+    unsafe fn tunnel_depth(&self, gl: &glow::Context) -> Option<glow::Renderbuffer> {
+        if self.depth_tunnel.get().is_none() {
+            // SAFETY: plain object creation on the current context.
+            unsafe {
+                let rb = gl.create_renderbuffer().ok()?;
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+                if self.samples > 0 {
+                    gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, self.samples, glow::DEPTH24_STENCIL8, self.size[0], self.size[1]);
+                } else {
+                    gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH24_STENCIL8, self.size[0], self.size[1]);
+                }
+                self.depth_tunnel.set(Some(rb));
+            }
+        }
+        self.depth_tunnel.get()
+    }
+
+    /// # Safety
+    /// A current context; nothing of this may be used afterwards.
+    unsafe fn delete(self, gl: &glow::Context) {
+        // SAFETY: deleting objects this struct created.
+        unsafe {
+            gl.delete_framebuffer(self.fbo);
+            gl.delete_texture(self.tex);
+            gl.delete_renderbuffer(self.depth);
+            if let Some((f, c)) = self.ms {
+                gl.delete_framebuffer(f);
+                gl.delete_renderbuffer(c);
+            }
+            if let Some(d) = self.depth_tunnel.get() {
+                gl.delete_renderbuffer(d);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +248,8 @@ pub struct Gl3d {
     /// The egui texture whose mip chain we have prepared (and its generation: see [`Gl3d::prepare_map`]).
     map_prepared: Option<glow::Texture>,
     cull: bool,
+    /// Samples wanted for the scene framebuffer (`Gl3dOptions::msaa`; 0 once it is given up).
+    msaa: u32,
     /// [`Gl3d::destroy`] ran (the context is the owner's, so `Drop` cannot free anything itself).
     destroyed: bool,
 }
@@ -173,7 +273,7 @@ impl Gl3d {
             (v, q)
         };
         let n = queries.len();
-        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, race: None, nav: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, destroyed: false })
+        Ok(Gl3d { caps, terrain, road, comp, marker, trail, models: None, trail_buf: None, clip, heights: None, roads: None, race: None, nav: None, fbo: None, empty_vao, queries, q_inflight: vec![false; n], q_next: 0, map_prepared: None, cull: opts.cull, msaa: opts.msaa, destroyed: false })
     }
 
     /// Upload the height raster (15 MB for the island, ~16 ms).
@@ -266,6 +366,31 @@ impl Gl3d {
         }
     }
 
+    /// How many samples a `w` x `h` scene gets: the option, within the GPU's limit, and fewer for
+    /// a big view (a 4-sample colour + depth + tunnel depth is 12 x 4 bytes a pixel: 4K at 4
+    /// samples would be ~400 MB, so above ~4 Mpx it is 2).
+    fn samples_for(&self, w: i32, h: i32) -> i32 {
+        let s = (self.msaa as i32).min(self.caps.max_samples);
+        let s = if (w as i64) * (h as i64) > 4_200_000 { s.min(2) } else { s };
+        if s >= 2 { s } else { 0 }
+    }
+
+    /// Stop multisampling (the slow-GPU guard's first step): the next frame makes a plain FBO.
+    pub fn drop_msaa(&mut self, gl: &glow::Context) {
+        self.msaa = 0;
+        if self.fbo.as_ref().is_some_and(|f| f.samples > 0) {
+            if let Some(old) = self.fbo.take() {
+                // SAFETY: deleting objects this struct created.
+                unsafe { old.delete(gl) };
+            }
+        }
+    }
+
+    /// Multisampling is on in the FBO that is there (tests, the debug line).
+    pub fn samples(&self) -> i32 {
+        self.fbo.as_ref().map_or(0, |f| f.samples)
+    }
+
     fn ensure_fbo(&mut self, gl: &glow::Context, w: i32, h: i32) -> Result<(), String> {
         let (w, h) = (w.max(1), h.max(1));
         if self.fbo.as_ref().is_some_and(|f| f.size[0] >= w && f.size[1] >= h) {
@@ -280,16 +405,28 @@ impl Gl3d {
         }
         if let Some(old) = self.fbo.take() {
             // SAFETY: deleting objects this struct created.
-            unsafe {
-                gl.delete_framebuffer(old.fbo);
-                gl.delete_texture(old.tex);
-                gl.delete_renderbuffer(old.depth);
-                gl.delete_renderbuffer(old.depth_tunnel);
-            }
+            unsafe { old.delete(gl) };
         }
+        let samples = self.samples_for(w, h);
+        match self.make_fbo(gl, w, h, samples) {
+            Ok(f) => self.fbo = Some(f),
+            // A GPU that has the room for neither the samples nor the size of the picture: no
+            // multisampling is better than no 3D.
+            Err(e) if samples > 0 => {
+                eprintln!("3D map: {samples}x multisampling unavailable ({e}), drawing without");
+                self.msaa = 0;
+                self.fbo = Some(self.make_fbo(gl, w, h, 0)?);
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
+    fn make_fbo(&self, gl: &glow::Context, w: i32, h: i32, samples: i32) -> Result<Fbo, String> {
         // SAFETY: plain GL object creation on the current context; the caller restores the
         // framebuffer binding afterwards (`render` does).
         unsafe {
+            while gl.get_error() != 0 {}
             let tex = gl.create_texture()?;
             gl.active_texture(glow::TEXTURE3);
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -298,28 +435,68 @@ impl Gl3d {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            gl.active_texture(glow::TEXTURE0);
+            let storage = |gl: &glow::Context, rb: glow::Renderbuffer, fmt: u32| {
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+                if samples > 0 {
+                    gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples, fmt, w, h);
+                } else {
+                    gl.renderbuffer_storage(glow::RENDERBUFFER, fmt, w, h);
+                }
+            };
             let depth = gl.create_renderbuffer()?;
-            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
-            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH24_STENCIL8, w, h);
-            let depth_tunnel = gl.create_renderbuffer()?;
-            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth_tunnel));
-            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH24_STENCIL8, w, h);
+            storage(gl, depth, glow::DEPTH24_STENCIL8);
             let fbo = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
-            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(depth));
-            gl.active_texture(glow::TEXTURE0);
-            let st = gl.check_framebuffer_status(glow::FRAMEBUFFER);
-            if st != glow::FRAMEBUFFER_COMPLETE {
-                gl.delete_framebuffer(fbo);
-                gl.delete_texture(tex);
-                gl.delete_renderbuffer(depth);
-                gl.delete_renderbuffer(depth_tunnel);
-                return Err(format!("the scene framebuffer is incomplete (0x{st:X})"));
+            let mut ms = None;
+            let mut st = glow::FRAMEBUFFER_COMPLETE;
+            if samples > 0 {
+                // The multisampled target; the texture FBO above only receives the resolve.
+                let colour = gl.create_renderbuffer()?;
+                storage(gl, colour, glow::RGBA8);
+                let mf = gl.create_framebuffer()?;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(mf));
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::RENDERBUFFER, Some(colour));
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(depth));
+                ms = Some((mf, colour));
+                if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+                    st = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+                }
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            } else {
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(depth));
             }
-            self.fbo = Some(Fbo { fbo, tex, depth, depth_tunnel, size: [w, h] });
+            if st == glow::FRAMEBUFFER_COMPLETE {
+                st = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            }
+            let err = gl.get_error();
+            let f = Fbo { fbo, tex, depth, ms, samples, depth_tunnel: std::cell::Cell::new(None), size: [w, h] };
+            if st != glow::FRAMEBUFFER_COMPLETE || err != 0 {
+                f.delete(gl);
+                return Err(if err != 0 { format!("OpenGL error 0x{err:X} making the scene framebuffer") } else { format!("the scene framebuffer is incomplete (0x{st:X})") });
+            }
+            Ok(f)
         }
-        Ok(())
+    }
+
+    /// Resolve the multisampled picture into the texture the composite reads (no-op without
+    /// multisampling). `size` = the part drawn.
+    ///
+    /// # Safety
+    /// A current context. Leaves the framebuffer binding on ours (the callers restore the owner's).
+    unsafe fn resolve(&self, gl: &glow::Context, size: [i32; 2]) {
+        let Some(f) = self.fbo.as_ref() else { return };
+        let Some((ms, _)) = f.ms else { return };
+        // SAFETY: the caller's contract.
+        unsafe {
+            gl.disable(glow::SCISSOR_TEST);
+            gl.color_mask(true, true, true, true);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(ms));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(f.fbo));
+            gl.blit_framebuffer(0, 0, size[0], size[1], 0, 0, size[0], size[1], glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(ms));
+        }
     }
 
     fn save(gl: &glow::Context) -> Saved {
@@ -422,7 +599,7 @@ impl Gl3d {
     fn render_inner(&mut self, gl: &glow::Context, f: &Frame, h: &(glow::Texture, [i32; 2], [f32; 3])) -> Result<RenderStats, String> {
         let (w, hh) = (f.size[0], f.size[1]);
         self.ensure_fbo(gl, w, hh)?;
-        let fbo = self.fbo.as_ref().map(|b| b.fbo).ok_or("no framebuffer")?;
+        let fbo = self.fbo.as_ref().map(|b| b.draw()).ok_or("no framebuffer")?;
         if let Some(t) = f.map {
             self.prepare_map(gl, t);
         }
@@ -531,6 +708,7 @@ impl Gl3d {
                 self.draw_trails(gl, f, &heights, &mut st)?;
             }
 
+            self.resolve(gl, [w, hh]);
             if let Some(i) = q {
                 gl.end_query(TIME_ELAPSED);
                 self.q_inflight[i] = true;
@@ -580,6 +758,7 @@ impl Gl3d {
             gl.uniform_4_f32(p.u("uFocus"), table.focus[0], table.focus[1], table.focus[2], table.focus[3]);
             gl.uniform_3_f32(p.u("uMuteRgb"), table.mute_rgb[0], table.mute_rgb[1], table.mute_rgb[2]);
             gl.uniform_1_f32(p.u("uCasingAlpha"), table.casing_alpha);
+            gl.uniform_2_f32(p.u("uVp"), f.size[0] as f32, f.size[1] as f32);
             gl.bind_vertex_array(Some(r.vao));
             if self.cull {
                 gl.enable(glow::CULL_FACE);
@@ -644,7 +823,7 @@ impl Gl3d {
             // test, in draw order, as ever; with a translucent road among them, in a depth buffer
             // of their own (cleared, so still over everything) so that their overlaps blend once.
             if !plan.tunnel.is_empty() {
-                let own_depth = table.translucent(true).then(|| self.fbo.as_ref().map(|b| b.depth_tunnel)).flatten();
+                let own_depth = table.translucent(true).then(|| self.fbo.as_ref().and_then(|b| b.tunnel_depth(gl))).flatten();
                 if let Some(d) = own_depth {
                     gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_STENCIL_ATTACHMENT, glow::RENDERBUFFER, Some(d));
                     gl.depth_mask(true);
@@ -805,7 +984,7 @@ impl Gl3d {
     #[allow(clippy::too_many_arguments)]
     fn render_markers_inner(&mut self, gl: &glow::Context, cam: &Camera, ppp: f32, size: [i32; 2], s: f32, markers: &[Marker3d], heights: &HeightTex) -> Result<(usize, usize), String> {
         self.ensure_fbo(gl, size[0], size[1])?;
-        let fbo = self.fbo.as_ref().map(|b| b.fbo).ok_or("no framebuffer")?;
+        let fbo = self.fbo.as_ref().map(|b| b.draw()).ok_or("no framebuffer")?;
         if self.models.is_none() {
             self.models = Some([ModelGpu::upload(gl, &marker::arrow_model())?, ModelGpu::upload(gl, &marker::sedan_model())?]);
         }
@@ -865,6 +1044,7 @@ impl Gl3d {
                 draws += 2;
             }
             gl.bind_vertex_array(None);
+            self.resolve(gl, size);
         }
         Ok((tris, draws))
     }
@@ -914,10 +1094,7 @@ impl Gl3d {
                 gl.delete_query(q);
             }
             if let Some(f) = self.fbo.take() {
-                gl.delete_framebuffer(f.fbo);
-                gl.delete_texture(f.tex);
-                gl.delete_renderbuffer(f.depth);
-                gl.delete_renderbuffer(f.depth_tunnel);
+                f.delete(gl);
             }
         }
         self.clip.destroy(gl);

@@ -1035,7 +1035,7 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
 
 **Architecture and the whys**
 
-- **The scene is rendered into the renderer's own FBO (RGBA8 + 24-bit depth) and composited as a
+- **The scene is rendered into the renderer's own FBO (RGBA8 + 24-bit depth + 8-bit stencil, 4x multisampled and resolved by a blit since D98: see "Anti-aliasing / shimmer") and composited as a
   quad inside the same `egui_glow::CallbackFn`**, not shown via `register_native_texture`. That needs
   `&mut Painter` (only the overlay has it) and eframe offers no *replace* for a resized texture, and
   the Dashboard's widget code has no `Frame`. The callback needs nothing from the frame loop, so the
@@ -1337,6 +1337,114 @@ surface above it, Viewer + HUD 1x / 3x), `map_shared`'s `remote_markers_3d` unit
 test of D87's tunnel teammate: height, yaw, colour, paused grey, no height = terrain, none for flat /
 tilted, none off the map, no egui arrow with `flat_body = false` but the name and the pointer kept)
 and the HUD harness states `coop_sedan`, `coop_tunnel_sedan`, `coop_tunnel` (teammate pixels checked).
+
+### Anti-aliasing / shimmer (D98)
+
+*User, 2026-10-10: "the map/roads renderer is really 'shimmery'. Try to fix that" — and, asked where:
+"3D is the worst. HUD, dashboard, minimap".* Shimmer is temporal: edges that crawl, thin lines that
+break up and re-form, textures that sparkle while the map moves or turns. Diagnosed with a
+measurement before any fix (`gl3d/tests.rs`, "shimmer", below), then fixed in four places.
+
+**What shimmered, with evidence** (real island, RX 7900 XTX; numbers are the share of pixel-frames
+whose second temporal difference exceeds 24 levels while the car crawls at 0.3 px a frame, before ->
+after; the picture an ideal 16-sample anti-aliaser gives is the floor):
+
+| Suspect | Verdict |
+|---|---|
+| (1) No MSAA on the scene FBO | **Real, but not the main thing.** Road ribbons, deck walls, the car, trails and ridge silhouettes were all hard-edged. 4x MSAA alone did not reduce the share of shimmering pixel-frames at all (HUD 1x city 9.7 -> 11.1 %, Dashboard city 5.4 -> 6.1 %: a ribbon a pixel or two wide lands on 0-2 of 4 sample positions, so it still flips) though it cut the aliasing error (11.7 -> 9.6 and 9.4 -> 5.4 levels), and it is what anti-aliases everything that is not a ribbon (car marker: pixels off by more than 24 levels 0.54 -> 0.25 %, `hud_x3_sedan`; deck walls; ridges). |
+| (2) Map texture without mipmaps / anisotropy | **3D: no** (`prepare_map` already gave mips + anisotropy; terrain-only second difference is ~0.01 %). **2D: yes**, the Dashboard's and the Viewer's flat / tilted map: `app.rs` uploads the map with `mipmap_mode: None`, so a minified map sparkled (Viewer 3 km: 9.5 % of pixel-frames shimmering vs 0.9 % with mips). |
+| (3) Roads thinner than a pixel | **Real.** The width rule floors at 0.7 px; such a ribbon is on a pixel's centre or not, frame by frame. |
+| (4) FBO composite sampling | **No.** The viewport and the texture are 1:1 (`uUv` maps texel centres onto pixel centres); no resampling. |
+| (5) Camera position / yaw jitter | **No** (f64 car-relative matrix; yaw is eased by default, `map_smooth_rotation`). Left as it is: telemetry-rate position steps are the only wobble, and they are the same in 2D. |
+| (6) Hill shading / normals | **No** (terrain-only runs: 0.00-0.04 % of pixel-frames, the same with and without MSAA). |
+| (7) Dashes crawling | **Real.** Trail / jump dashes were a hard `discard` in metres along the chain: every dash edge snapped by a pixel. |
+
+**The fixes**
+
+1. **Ribbon edges are anti-aliased in the shader** (`ROAD_VS` / `ROAD_FS`): every road ribbon is
+   drawn `FEATHER` (1.2) screen px wider than its nominal width and its alpha ramps to 0 over that
+   margin by the distance to the nominal edge (`ribbonCover`, from `fwidth(vSide)`), scaled down for a
+   ribbon narrower than a pixel. *Why in the shader and not MSAA:* MSAA gives a 1.5 px line 5 coverage
+   levels at best and a 0.7 px line only 2 or 3, so it still flickers; analytic coverage is smooth at any
+   width. *Why the feather is measured in screen px across the ribbon (`across`):* in a tilted view a road
+   running across the picture is foreshortened vertically (cos of the pitch), so a feather of
+   `FEATHER / ppm` metres would be a fraction of a pixel there and the ramp would be cut short
+   (measured: with the foreshortening ignored Dashboard city had 1.2 / 3.4 % shimmering pixel-frames, 0.74 / 2.05 % with it). The deck's
+   walls and underside (`vWall`) are not feathered (their edges are MSAA's). Dashes (`dashCover`) are a
+   coverage ramp over the metres one pixel spans, and fade to the pattern's mean share once a period is
+   shorter than ~2 px (a hard edge there is moire). A deck wall under a pixel high is drawn that much
+   fainter (`vWallCov`; about a quarter of what was left on the Dashboard city: 2.05 -> 1.52 %). One
+   new uniform, `uVp`.
+2. **4x MSAA on the scene FBO** (`Gl3dOptions::msaa`, default 4): multisampled `RGBA8` +
+   `DEPTH24_STENCIL8` renderbuffers (the stencil of D95 works unchanged), resolved with one
+   `glBlitFramebuffer` into the texture the composite reads (needs only GL 3.0 / ES 3.0), at the end of the
+   scene pass and of the marker pass. The tunnel pass's second depth buffer is made at its first use
+   (a multisampled one is big). Samples: the option, capped by `GL_MAX_SAMPLES`, 2 above 4.2 Mpx
+   (4K at 4 samples would be ~400 MB of attachments; `Gl3d::samples_for`). A GPU that refuses the allocation draws without
+   (`eprintln!`), and **the slow-GPU guard drops MSAA first**: at its limit (8 ms for 2 s) it switches
+   multisampling off, restarts its verdict, and only fails 3D if the plain picture is also too slow.
+   *Why no setting:* the cost is 0.005-0.04 ms; a toggle for it would be a question the user cannot answer.
+3. **The 2D map gets mipmaps and anisotropy too** (`gl3d::add_map_mips`, called by `map_scene::draw` for
+   the Dashboard / Viewer's flat and tilted map and by `hud/minimap.rs` before `draw_base`): a paint
+   callback of a 1 pt rect that reads the egui texture's `MIN_FILTER` and builds the chain once if
+   there is none (egui uploads the Dashboard's without), and sets the anisotropy. *Why a callback and not
+   `app.rs`'s `TextureOptions`:* `app.rs` is not this change's to edit, and the anisotropy needs GL
+   anyway. The HUD's texture already had mips; it only gains the anisotropy.
+4. Not changed: the clipmap (the geomorph of D90 already hides its snaps), the markers' models, the
+   trail ribbons (MSAA is what they get).
+
+**Measuring shimmer** (`gl3d/tests.rs`, the "shimmer (D98)" block). One scene, a path of sub-pixel
+steps (`DRIVE` 0.1 px a frame, `FAST` 0.3 px, `TURN` 0.016 degrees), 16 frames, and two numbers:
+the *second temporal difference* `|I(t-1) - 2 I(t) + I(t+1)|` (small for a smooth picture moving a
+fraction of a pixel, +-contrast for an edge or texel that flips; not zero even for perfect AA, so the
+reference is measured too) and the *aliasing error* against the same view rendered at 2x / 4x the pixel
+density and box-filtered down. Tests: `gl3d_shimmer_synthetic` (synthetic world, any machine with an EGL
+device, asserts), `gl3d_real_install_shimmer` and `gl3d_real_install_shimmer_2d` (real island, prints and
+asserts; env `SHIMMER_ONLY=<scene part>`, `SHIMMER_QUICK=1`, `SHIMMER_TWEAK=nodeck|drape|nocasing`,
+`SHIMMER_FRAMES=1`, `SHIMMER_ALL=1` for the per-frame numbers and every frame as PNG).
+
+**Results** (real island, RX 7900 XTX, `gl3d_real_install_shimmer`; share of pixel-frames over 24 levels,
+drive 0.1 px a frame / fast 0.3 px a frame; "ideal" = the 2x / 4x supersampled picture; GPU ms from the
+timer query, release build, `gl3d_real_install_scenes`):
+
+| Scene (3D) | before | after | ideal | GPU before -> after |
+|---|---|---|---|---|
+| HUD city 500 m, 3x | 1.17 / 3.16 | 0.64 / 1.94 | 0.32 | 0.041 -> 0.042 ms |
+| HUD city 500 m, 1x | 3.45 / 9.75 | 1.39 / 4.41 | 0.07 | (HUD 1x not in the perf list) |
+| HUD bridge 150 m, 3x | 0.63 / 1.99 | 0.48 / 1.50 | 0.16 | 0.029 -> 0.034 ms |
+| Dashboard city 1.5 km | 1.87 / 5.40 | 0.50 / 1.52 | 0.17 | 0.087 -> 0.123 ms |
+| Viewer city 3 km | 2.19 / 6.05 | 0.38 / 1.11 | 0.16 | (Viewer island 8 km 0.066 -> 0.084 ms) |
+
+Synthetic world (any machine): HUD 1x 2.4 / 7.8 -> 0.34 / 2.8, HUD 3x 0.79 / 2.7 -> 0.07 / 1.2,
+Dashboard 0.61 / 2.1 -> 0.08 / 0.76, Viewer 3 km 0.13 / 0.45 -> 0.001 / 0.02. The own car (arrow /
+sedan) on its own: 0.14 / 0.84 -> 0.04 / 0.60 (MSAA only).
+
+*Cost.* The shader changes cost nothing measurable (GPU within noise, +0.01 ms CPU of vertex work
+for the extra two projections per ribbon vertex and the wall height). MSAA 4x costs +0.005 to +0.041 ms
+of GPU a frame (HUD city 0.032 -> 0.042, Dashboard city 0.082 -> 0.123, stopped HUD at 3 km 0.058 ->
+0.099, Viewer island 0.062 -> 0.084), the resolve included, and its memory is 4 x (colour + depth)
++ the tunnel depth on first use (1280 x 720: ~50 MB). The 3D frame stays under 0.15 ms on this GPU.
+
+**2D / Tilted (the egui path, `paint2d`).** Checked with the same measure (`gl3d_real_install_shimmer_2d`).
+The roads are fine: egui's own 1 px feathering gives 0.05-0.35 % shimmering pixel-frames at the drive
+speed (the ideal is 0.02-0.03 %), nothing to fix. The map image was the problem: the Dashboard's map
+texture has no mipmaps (see above), minified it sparkled (Dashboard 1.5 km: aliasing error 12.3 vs
+4.3 now; Viewer 3 km: fast shimmer 9.5 % -> 0.94 %). Fixed by `add_map_mips`. Left open: 3D is still
+more shimmery than 2D at the same view (HUD 3x 0.64 / 1.94 % in 3D against 0.05 / 0.98 % in 2D;
+Dashboard city 0.50 / 1.52 % against 0.16 / 0.81 %): the 3D picture has far more road geometry on
+screen, decks with walls and overlapping ribbons, where the 2D path thins the roads to 2 px.
+
+**Tests.** `gl3d_shimmer_synthetic` asserts the limits of `SHIMMER_LIMITS` (and that multisampling
+cuts the drive shimmer by at least a quarter where there are geometry edges),
+`gl3d_real_install_shimmer` and `gl3d_real_install_shimmer_2d` those of `REAL_SHIMMER_LIMITS` /
+`REAL_SHIMMER_2D_LIMITS`, `gl3d_msaa_is_on_by_default_and_the_picture_is_resolved` (4 samples, road
+colours in the resolved picture, 0 when asked), `gl3d_guard_drops_msaa_before_failing`,
+`gl3d_2d_map_gets_mipmaps` (a texture without mips is trilinear + anisotropic after the callback; one
+with mips only gains the anisotropy). Existing count-the-exact-colour tests were adapted where a road
+is now soft-edged (`flat_world_equals_the_tilted_2d_map` uses an 8 px road and now agrees with
+`Camera::project` to 0.01 px instead of ~0.5; the thin race line is 14 px; the HUD route match is
+looser): they measure the same things.
+
 
 ### Configuration
 

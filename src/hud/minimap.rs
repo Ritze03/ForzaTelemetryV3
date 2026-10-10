@@ -502,6 +502,8 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     let image = map.filter(|_| lc.image.on);
     if cam3.is_none() {
         if let Some(tex) = image {
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            crate::maprender::gl3d::add_map_mips(p, tex.id);
             draw_base(
                 p,
                 &BaseParams {

@@ -354,7 +354,8 @@ Default stays **Tilted**; 3D is opt-in.
   counts: `waiting3d` needs `snap.visible` and `Hud` resets its state (the scene included) once the
   fade-out finished, so a half-initialised scene cannot pin the frame loop and keep the surface up.
 - **Fallback.** Until the scene is `Ready`, and for good when it `Failed` (GL too old, shader
-  compile, incomplete FBO, a GL error in the first frames, or the slow-GPU guard: > 8 ms for 2 s),
+  compile, incomplete FBO, a GL error in the first frames, or the slow-GPU guard: > 8 ms for 2 s
+  with the scene's 4x multisampling already switched off by the guard, D98),
   `Gl3dHandle::wants_underlay()` is true and the minimap draws today's **tilted 2D map** (the
   relief-less camera, `Parts::ALL`, markers through the 2D camera). The harness asserts the failed
   3D HUD equals the Tilted picture pixel for pixel. The reason is `gl3d::last_failure()` (process
