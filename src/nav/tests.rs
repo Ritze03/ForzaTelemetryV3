@@ -118,6 +118,66 @@ fn curvature_is_the_roads_own_winding() {
     assert_eq!(curv(3, 4), 0.0);
 }
 
+/// 2 km straight, then 1 km of zig-zag (a 90 degree turn every 50 m), then 2 km straight; node ids
+/// 1.. in order. Returns the polyline.
+fn zigzag_road() -> Vec<NavVert> {
+    let (mut pts, mut x, mut z, mut id) = (vec![], 0.0f32, 0.0f32, 1u32);
+    let mut push = |x: f32, z: f32| {
+        pts.push(v(id, x, z, 0.0));
+        id += 1;
+    };
+    push(x, z);
+    for _ in 0..20 {
+        x += 100.0;
+        push(x, z);
+    }
+    for i in 0..20 {
+        if i % 2 == 0 {
+            z += 50.0;
+        } else {
+            x += 50.0;
+        }
+        push(x, z);
+    }
+    for _ in 0..20 {
+        x += 100.0;
+        push(x, z);
+    }
+    pts
+}
+
+#[test]
+fn winding_is_the_roads_around_the_edge_not_the_edges_own() {
+    let road = zigzag_road();
+    let g = build(&nav_of(vec![road.clone()]), &RoadTypes::raw());
+    let wind_of = |g: &RouteGraph, a: u32, b: u32| g.edges().iter().find(|e| EdgeKey::new(g.node_id(e.a), g.node_id(e.b)) == EdgeKey::new(a, b)).unwrap().wind;
+    // node 21 = start of the zig-zag, 41 = its end
+    assert!(wind_of(&g, 5, 6) == 0.0, "far from any bend");
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let inside = wind_of(&g, 30, 31);
+    assert!((inside - 16.0 * quarter / 800.0).abs() < 2e-3, "in the middle: ~16 turns in the 800 m window, got {inside}");
+    // a straight edge next to the zig-zag still reads the zig-zag
+    let near = wind_of(&g, 19, 20);
+    assert!(near > 0.3 * inside && g.edges().iter().find(|e| EdgeKey::new(g.node_id(e.a), g.node_id(e.b)) == EdgeKey::new(19, 20)).unwrap().curv == 0.0, "straight edge, winding road: {near}");
+    // direction-independent: the same road built the other way round has the same winding per edge
+    let mut rev = road;
+    rev.reverse();
+    let gr = build(&nav_of(vec![rev]), &RoadTypes::raw());
+    for e in g.edges() {
+        let (a, b) = (g.node_id(e.a), g.node_id(e.b));
+        assert!((wind_of(&gr, a, b) - e.wind).abs() < 1e-6, "edge {a}-{b}");
+    }
+}
+
+#[test]
+fn a_short_road_with_one_corner_is_not_winding() {
+    let nav = nav_of(vec![vec![v(1, 0.0, 0.0, 0.0), v(2, 50.0, 0.0, 0.0), v(3, 50.0, 50.0, 0.0)]]);
+    let g = build(&nav, &RoadTypes::raw());
+    for e in g.edges() {
+        assert!((e.wind - std::f32::consts::FRAC_PI_2 / super::graph::WIND_MIN_M).abs() < 1e-6, "{}", e.wind);
+    }
+}
+
 // ── filters and directedness in the search ───────────────────────────────────────────────────
 
 /// Offroad - T - Offroad in a row; `dirt` is always on so both ends can be snapped. Is the far end
@@ -610,7 +670,10 @@ fn real_graph() -> Option<RouteGraph> {
     let nav = Nav::load(&media).ok()?;
     let rt = RoadTypes::project();
     let pos = node_positions(&nav, &rt);
-    Some(RouteGraph::build(&nav, &rt, &pos))
+    let t = std::time::Instant::now();
+    let g = RouteGraph::build(&nav, &rt, &pos);
+    eprintln!("graph build: {:?} ({} nodes, {} edges)", t.elapsed(), g.node_count(), g.edge_count());
+    Some(g)
 }
 
 /// What a route looks like: length shares and winding, measured on its polyline (so the same

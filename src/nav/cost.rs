@@ -5,9 +5,9 @@
 //! Per metre of an arc:
 //!
 //! ```text
-//! cost_per_m(kind, curv, s) = ((1 - s) / speed[kind] + s / V_REF)
-//!                           * (kind == Highway ? (1 - s) * HW_FAST + s * HW_AVOID : 1)
-//!                           * (1 - BETA * s * min(curv / KAPPA, 1))
+//! cost_per_m(kind, curv, wind, s) = ((1 - s) / speed[kind] + s / V_REF)
+//!                                 * (kind == Highway ? (1 - s) * HW_FAST + s * HW_AVOID : 1)
+//!                                 * (1 - BETA * s * min(max(curv / KAPPA, wind / KAPPA_WIND), 1))
 //! cost(arc)                 = len * cost_per_m
 //! ```
 //!
@@ -25,9 +25,15 @@
 //! highway only beat a local road by 1.8x per metre, so a somewhat shorter local road often won
 //! and the route skipped the highway the user expects it to take; at the curvy end highways
 //! kept a share of the trips the curve bonus did not decide;
-//! (c) a winding bonus of up to `BETA` (90 %) on edges at or above `KAPPA` (10 mrad/m, about the
-//! 80th percentile of the island's road and dirt edges; touge hairpins sit at 15-50). *Why:*
-//! 50 % at 20 mrad/m left the route free to prefer a 2x shorter straight road to a hairpin pass.
+//! (c) a winding bonus of up to `BETA` (95 %) on an edge whose own curvature `curv` reaches
+//! `KAPPA` (10 mrad/m, about the 80th percentile of the island's road and dirt edges; touge
+//! hairpins sit at 15-50) **or** whose road winds that much around it: `wind` is the heading
+//! change per metre over +-400 m of the same road (`Edge::wind`, `graph.rs`), full at
+//! `KAPPA_WIND` (8 mrad/m). *Why wind:* a touge is a sustained stretch of bends with straights in
+//! between; the per-edge curvature rewarded only the bends, so the route kept preferring a
+//! shorter straighter road to the whole pass (D96, the user: "More Curves isnt aggressive enough,
+//! since it still kinda avoids some Touge routes"). The window gives the straights between
+//! hairpins the same bonus as the hairpins.
 //! The measurements are in `docs/features/navigation.md` (cost section).
 //!
 //! All the constants are `const`s, not UI settings. A highway factor below 1 lowers the A*
@@ -44,8 +50,11 @@ pub const V_REF: f32 = 22.0;
 /// Curvature (rad per m) at which the winding bonus is full (about the 80th percentile of the
 /// island's road and dirt edges).
 pub const KAPPA: f32 = 0.01;
-/// The winding bonus at `s = 1` for an edge at or above [`KAPPA`] (cost x `1 - BETA`).
-pub const BETA: f32 = 0.9;
+/// Winding of the road around an edge (rad per m, see `Edge::wind`) at which the bonus is full.
+/// The measured touge sit at 7-14 mrad/m; the 3-4 mrad/m of an ordinary country road barely counts.
+pub const KAPPA_WIND: f32 = 0.008;
+/// The winding bonus at `s = 1` for an edge at or above [`KAPPA`] / [`KAPPA_WIND`] (cost x `1 - BETA`).
+pub const BETA: f32 = 0.95;
 /// Cost factor of a highway metre at `s = 0` (the "faster roads" end): the preference for the
 /// highway on top of its speed. Not part of the ETA.
 pub const HW_FAST: f32 = 0.4;
@@ -113,16 +122,24 @@ impl CostModel {
         self.mask >> kind & 1 != 0
     }
 
-    /// Cost per metre of an edge of `kind` with winding `curv` (rad per m).
+    /// How winding an edge counts, 0..=1: the stronger of its own curvature (against [`KAPPA`])
+    /// and the road's winding around it (against [`KAPPA_WIND`]).
     #[inline]
-    pub fn per_m(&self, kind: u8, curv: f32) -> f32 {
-        self.base[kind as usize] * (1.0 - BETA * self.s * (curv / KAPPA).clamp(0.0, 1.0))
+    fn winding(curv: f32, wind: f32) -> f32 {
+        (curv / KAPPA).max(wind / KAPPA_WIND).clamp(0.0, 1.0)
+    }
+
+    /// Cost per metre of an edge of `kind` with own curvature `curv` and surrounding winding `wind`
+    /// (both rad per m).
+    #[inline]
+    pub fn per_m(&self, kind: u8, curv: f32, wind: f32) -> f32 {
+        self.base[kind as usize] * (1.0 - BETA * self.s * Self::winding(curv, wind))
     }
 
     /// Cost of driving `len` metres of such an edge.
     #[inline]
-    pub fn cost(&self, kind: u8, curv: f32, len: f32) -> f32 {
-        len * self.per_m(kind, curv)
+    pub fn cost(&self, kind: u8, curv: f32, wind: f32, len: f32) -> f32 {
+        len * self.per_m(kind, curv, wind)
     }
 
     /// Lower bound of the cost of getting `dist` metres (straight line, 2D) closer to the goal.
@@ -152,8 +169,8 @@ mod tests {
     fn slider_zero_is_travel_time_with_a_highway_preference() {
         let m = CostModel::new(&prefs(0.0, RouteFilters::ALL));
         let (hw, rd) = (RoadType::Highway.index(), RoadType::Road.index());
-        assert!((m.cost(rd, 0.05, 440.0) - 440.0 / 22.0).abs() < 1e-4, "plain travel time, curvature ignored at s = 0");
-        assert!((m.cost(hw, 0.05, 400.0) - HW_FAST * 400.0 / 40.0).abs() < 1e-4, "highway: travel time x HW_FAST");
+        assert!((m.cost(rd, 0.05, 0.0, 440.0) - 440.0 / 22.0).abs() < 1e-4, "plain travel time, curvature ignored at s = 0");
+        assert!((m.cost(hw, 0.05, 0.0, 400.0) - HW_FAST * 400.0 / 40.0).abs() < 1e-4, "highway: travel time x HW_FAST");
         assert!((CostModel::eta_s(hw, 400.0) - 10.0).abs() < 1e-6, "the ETA never carries the preference");
     }
 
@@ -161,10 +178,13 @@ mod tests {
     fn slider_one_blends_speeds_avoids_highways_and_rewards_winding() {
         let m = CostModel::new(&prefs(1.0, RouteFilters::ALL));
         let (hw, rd, dirt) = (RoadType::Highway.index(), RoadType::Road.index(), RoadType::Offroad.index());
-        assert!((m.per_m(dirt, 0.0) - m.per_m(rd, 0.0)).abs() < 1e-7, "all non-highway types cost the same per metre when straight");
-        assert!((m.per_m(hw, 0.0) - HW_AVOID * m.per_m(rd, 0.0)).abs() < 1e-7, "a straight highway costs HW_AVOID times a straight road");
-        assert!((m.per_m(rd, KAPPA) - m.per_m(rd, 0.0) * (1.0 - BETA)).abs() < 1e-7, "full bonus at KAPPA");
-        assert!((m.per_m(rd, 5.0 * KAPPA) - m.per_m(rd, KAPPA)).abs() < 1e-7, "bonus saturates");
+        assert!((m.per_m(dirt, 0.0, 0.0) - m.per_m(rd, 0.0, 0.0)).abs() < 1e-7, "all non-highway types cost the same per metre when straight");
+        assert!((m.per_m(hw, 0.0, 0.0) - HW_AVOID * m.per_m(rd, 0.0, 0.0)).abs() < 1e-7, "a straight highway costs HW_AVOID times a straight road");
+        assert!((m.per_m(rd, KAPPA, 0.0) - m.per_m(rd, 0.0, 0.0) * (1.0 - BETA)).abs() < 1e-7, "full bonus at KAPPA");
+        assert!((m.per_m(rd, 5.0 * KAPPA, 0.0) - m.per_m(rd, KAPPA, 0.0)).abs() < 1e-7, "bonus saturates");
+        assert!((m.per_m(rd, 0.0, KAPPA_WIND) - m.per_m(rd, KAPPA, 0.0)).abs() < 1e-7, "the road's winding around an edge gives the same bonus, straight edge or not");
+        assert!((m.per_m(rd, KAPPA, 0.5 * KAPPA_WIND) - m.per_m(rd, KAPPA, 0.0)).abs() < 1e-7, "the stronger of the two counts, they do not add");
+        assert!(m.per_m(rd, 0.0, 0.5 * KAPPA_WIND) < m.per_m(rd, 0.0, 0.0) && m.per_m(rd, 0.0, 0.5 * KAPPA_WIND) > m.per_m(rd, 0.0, KAPPA_WIND), "in between is in between");
     }
 
     /// The heuristic factor never exceeds the cost per metre of any allowed arc (admissibility).
@@ -177,8 +197,8 @@ mod tests {
                     if !m.allows(k) {
                         continue;
                     }
-                    for curv in [0.0, 0.005, 0.02, 0.3] {
-                        assert!(m.heuristic(1.0) <= m.per_m(k, curv) + 1e-9, "s {s} kind {k} curv {curv}");
+                    for (curv, wind) in [(0.0, 0.0), (0.005, 0.0), (0.02, 0.0), (0.3, 0.0), (0.0, 0.004), (0.0, 0.3)] {
+                        assert!(m.heuristic(1.0) <= m.per_m(k, curv, wind) + 1e-9, "s {s} kind {k} curv {curv} wind {wind}");
                     }
                 }
             }
