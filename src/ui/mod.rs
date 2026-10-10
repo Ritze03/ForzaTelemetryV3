@@ -8,6 +8,7 @@ pub mod gearbox;
 pub mod map_data;
 pub mod map_scene;
 pub mod map_tab;
+pub mod onboarding;
 pub mod overlay_tab;
 pub mod power_curve;
 pub mod settings;

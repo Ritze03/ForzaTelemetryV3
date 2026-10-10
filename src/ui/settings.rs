@@ -10,7 +10,7 @@ use crate::i18n::{tr, Language};
 /// height (mirrors `theme::slider_row`). Without it, a right closure that uses
 /// `right_to_left(Center)` centers its content across the column's full height
 /// and the control drifts to the vertical middle of the panel.
-fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
+pub(crate) fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
     crate::theme::columns(ui, 2, |c| {
         crate::theme::row_label(&mut c[0], label);
         c[1].horizontal(|ui| right(ui));
@@ -19,7 +19,7 @@ fn control_row(ui: &mut Ui, label: &str, right: impl FnOnce(&mut Ui)) {
 
 /// [`control_row`] with a tooltip on the label (the explanation that would otherwise be a
 /// helper line under the control; see the styling guide's "No helper text under options").
-fn control_row_tip(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui)) {
+pub(crate) fn control_row_tip(ui: &mut Ui, label: &str, tip: &str, right: impl FnOnce(&mut Ui)) {
     crate::theme::columns(ui, 2, |c| {
         crate::theme::row_label(&mut c[0], label).on_hover_text(tip);
         c[1].horizontal(|ui| right(ui));
@@ -58,7 +58,7 @@ impl Dot {
 }
 
 /// A coloured status dot + message (● renders in the font; emoji don't).
-fn status_dot(ui: &mut Ui, dot: Dot, msg: &str) {
+pub(crate) fn status_dot(ui: &mut Ui, dot: Dot, msg: &str) {
     ui.horizontal(|ui| {
         let col = dot.color();
         ui.label(RichText::new("\u{25CF}").color(col));
@@ -160,6 +160,8 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // ── RIGHT COLUMN ─────────────────────────────────────────
             let right = &mut cols[1];
             right.spacing_mut().item_spacing.y = 0.0;
+
+            crate::theme::card(right, tr("Getting started"), |ui| setup_guide_card(ui, app));
 
             crate::theme::card(right, tr("Repository / Credits"), |ui| repo_card(ui));
 
@@ -345,7 +347,7 @@ fn input_perm_fixes(ui: &mut Ui, app: &mut ForzaApp, report: &crate::input::Inpu
 
 /// The "Input Permissions" category (Linux): one status light per requirement, plus the
 /// fix commands when something is missing and the startup-reminder toggle.
-fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
+pub(crate) fn input_perm_card(ui: &mut Ui, app: &mut ForzaApp) {
     let p = app.input_probe;
     let dot = |ok: bool| if ok { Dot::Ok } else { Dot::Bad };
     status_dot(ui, dot(p.hotkeys_ok), tr("Hotkeys: read keyboard devices (/dev/input)"));
@@ -481,7 +483,7 @@ impl Fh6Setup {
 
 /// The "Game Install" category: where the FH6 install is (car names come from it). Empty =
 /// auto-detect through Steam; otherwise the typed / detected folder (game folder or `media`).
-fn game_install_card(ui: &mut Ui, app: &mut ForzaApp) {
+pub(crate) fn game_install_card(ui: &mut Ui, app: &mut ForzaApp) {
     use crate::gamedata::{install::InstallCheck, process};
     let id = egui::Id::new("fh6_install_dir");
     let editing = ui.ctx().memory(|m| m.has_focus(id));
@@ -538,6 +540,12 @@ fn game_install_card(ui: &mut Ui, app: &mut ForzaApp) {
 /// missing. X closes it for this session; "Don't remind me again" persists in config.
 /// Rendered from `ForzaApp::update` so it appears over any tab.
 pub fn input_perm_modal(ctx: &egui::Context, app: &mut ForzaApp) {
+    // I17: the guide's Input Permissions step shows the same status and commands, so it
+    // replaces this dialog while it is open (and the dialog does not pop up after it closes).
+    if app.onboarding.is_some() {
+        app.input_perm_modal_open = false;
+        return;
+    }
     if !app.input_perm_modal_open {
         return;
     }
@@ -1289,26 +1297,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
         #[cfg(target_os = "linux")]
         {
             use crate::config::FocusMethod;
-            let method_before = app.config.hotkeys.focus_method;
-            control_row_tip(ui, tr("Window Detection Method"), tr("Requires the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."), |ui| {
-                egui::ComboBox::from_id_salt("hk_focus_method")
-                    .selected_text(match app.config.hotkeys.focus_method {
-                        FocusMethod::Hyprland => "Hyprland",
-                        FocusMethod::X11 => "X11",
-                        FocusMethod::Custom => tr("Custom"),
-                        FocusMethod::Gnome => tr("GNOME (Window Calls extension)"),
-                    })
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Hyprland, "Hyprland").changed();
-                        changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::X11, "X11").changed();
-                        changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Gnome, tr("GNOME (Window Calls extension)")).changed();
-                        changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Custom, tr("Custom")).changed();
-                    });
-            });
-            if app.config.hotkeys.focus_method != method_before {
-                app.focus_preview.clear(); // a preview from the old method would mislead
-            }
+            focus_method_row(ui, app, &mut changed);
             if app.config.hotkeys.focus_method == FocusMethod::Gnome {
                 control_row(ui, tr("Active window"), |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1336,22 +1325,7 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
             }
         }
 
-        control_row(ui, tr("Game Window Title"), |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = match app.detect_until {
-                    Some(t) => {
-                        let secs = t.saturating_duration_since(std::time::Instant::now()).as_secs() + 1;
-                        format!("{} {}", tr("Detecting…"), secs)
-                    }
-                    None => tr("Detect").to_string(),
-                };
-                if ui.button(label).clicked() && app.detect_until.is_none() {
-                    app.detect_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
-                }
-                changed |= ui.add(egui::TextEdit::singleline(&mut app.config.hotkeys.game_match).desired_width(ui.available_width())).changed();
-            });
-        });
-
+        game_title_row(ui, app, &mut changed);
     }
 
     // Poll rate for window detection (drives both hotkey gating and the input gate).
@@ -1376,6 +1350,97 @@ fn input_card(ui: &mut Ui, app: &mut ForzaApp) {
     changed |= crate::theme::checkbox_row(ui, &mut app.config.hotkeys.input_focus_gate, tr("Only send inputs when game focused")).changed();
 
     if changed { app.sync_hotkeys(); }
+}
+
+/// Window Detection method dropdown (Linux; Windows has one method). Clears the preview line
+/// when the method changes, since a result from the old method would mislead.
+#[cfg(target_os = "linux")]
+fn focus_method_row(ui: &mut Ui, app: &mut ForzaApp, changed: &mut bool) {
+    use crate::config::FocusMethod;
+    let method_before = app.config.hotkeys.focus_method;
+    control_row_tip(ui, tr("Window Detection Method"), tr("Requires the \"Window Calls\" GNOME Shell extension (extensions.gnome.org/extension/4724)."), |ui| {
+        egui::ComboBox::from_id_salt("hk_focus_method")
+            .selected_text(match app.config.hotkeys.focus_method {
+                FocusMethod::Hyprland => "Hyprland",
+                FocusMethod::X11 => "X11",
+                FocusMethod::Custom => tr("Custom"),
+                FocusMethod::Gnome => tr("GNOME (Window Calls extension)"),
+            })
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                *changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Hyprland, "Hyprland").changed();
+                *changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::X11, "X11").changed();
+                *changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Gnome, tr("GNOME (Window Calls extension)")).changed();
+                *changed |= ui.selectable_value(&mut app.config.hotkeys.focus_method, FocusMethod::Custom, tr("Custom")).changed();
+            });
+    });
+    if app.config.hotkeys.focus_method != method_before {
+        app.focus_preview.clear();
+    }
+}
+
+/// "Game Window Title" row: the match text plus the 3 s **Detect** countdown (the capture
+/// itself runs in `ForzaApp::update`).
+fn game_title_row(ui: &mut Ui, app: &mut ForzaApp, changed: &mut bool) {
+    control_row(ui, tr("Game Window Title"), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = match app.detect_until {
+                Some(t) => {
+                    let secs = t.saturating_duration_since(std::time::Instant::now()).as_secs() + 1;
+                    format!("{} {}", tr("Detecting…"), secs)
+                }
+                None => tr("Detect").to_string(),
+            };
+            if ui.button(label).clicked() && app.detect_until.is_none() {
+                app.detect_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+            }
+            *changed |= ui.add(egui::TextEdit::singleline(&mut app.config.hotkeys.game_match).desired_width(ui.available_width())).changed();
+        });
+    });
+}
+
+/// The onboarding guide's Window Detection step (I17): the method, a **Test** button that
+/// reads the active window once (works for every method, unlike the Setup card, which only
+/// shows Test for GNOME / Custom), and the game window title with **Detect**. Shown whether
+/// or not anything currently gates on focus, so a first-run user can set it up before the
+/// overlay / hotkey options that need it are turned on.
+pub(crate) fn window_test_card(ui: &mut Ui, app: &mut ForzaApp) {
+    let mut changed = false;
+    #[cfg(target_os = "linux")]
+    {
+        focus_method_row(ui, app, &mut changed);
+        if app.config.hotkeys.focus_method == crate::config::FocusMethod::Custom {
+            control_row(ui, tr("Command"), |ui| {
+                changed |= ui.add(egui::TextEdit::singleline(&mut app.config.hotkeys.custom_cmd).desired_width(ui.available_width())).changed();
+            });
+        }
+    }
+    if changed {
+        app.sync_hotkeys(); // the Test below reads the detector's current parameters
+        changed = false;
+    }
+    control_row(ui, tr("Active window"), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button(tr("Test")).clicked() {
+                app.focus_preview = app.focus.query_now().unwrap_or_else(|e| format!("error: {e}"));
+            }
+        });
+    });
+    if !app.focus_preview.is_empty() {
+        let failed = app.focus_preview.starts_with("error:");
+        status_dot(ui, if failed { Dot::Bad } else { Dot::Ok }, &format!("\u{2192} {}", app.focus_preview));
+    }
+    game_title_row(ui, app, &mut changed);
+    if changed {
+        app.sync_hotkeys();
+    }
+}
+
+/// Setup's "Getting started" category: re-opens the first-run guide (I17).
+fn setup_guide_card(ui: &mut Ui, app: &mut ForzaApp) {
+    if ui.add(crate::theme::secondary_button(tr("Open setup guide"))).clicked() {
+        app.onboarding = Some(crate::ui::onboarding::State::new());
+    }
 }
 
 /// The "Repository" category: project link + credits.
