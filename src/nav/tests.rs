@@ -224,6 +224,29 @@ fn slider_picks_the_highway_or_the_winding_road() {
     assert!(nohw.seg_kind.iter().filter(|&&k| k == road).count() >= 38);
 }
 
+/// D96: a 700 m local road, or 200 m ramps and a 700 m highway between them. By the assumed
+/// speeds the local road is the quicker one (31.8 s against 35.7 s), but "faster roads" takes the
+/// highway anyway; the ETA shown stays the honest one.
+#[test]
+fn faster_roads_prefers_the_highway_over_a_marginally_quicker_local_road() {
+    let nav = nav_of(vec![
+        vec![v(1, 0.0, 0.0, 0.0), v(2, 700.0, 0.0, 0.0)],
+        vec![v(1, 0.0, 0.0, 0.0), v(3, 0.0, 200.0, 0.0), v(4, 700.0, 200.0, 0.0), v(2, 700.0, 0.0, 0.0)],
+    ]);
+    let mut rt = RoadTypes::raw();
+    typed(&mut rt, &[(1, 2, RoadType::Road), (1, 3, RoadType::Road), (3, 4, RoadType::Highway), (4, 2, RoadType::Road)]);
+    let g = build(&nav, &rt);
+    let all = RouteFilters::default();
+    let hw = RoadType::Highway.index();
+    let fast = g.plan((-5.0, 0.0, None), (705.0, 0.0), &prefs(all, 0.0)).unwrap();
+    assert!(fast.seg_kind.contains(&hw), "{:?}", fast.seg_kind);
+    assert!((fast.eta_s - (400.0 / 22.0 + 700.0 / 40.0)).abs() < 1.0, "the ETA is the honest time: {}", fast.eta_s);
+    let curvy = g.plan((-5.0, 0.0, None), (705.0, 0.0), &prefs(all, 1.0)).unwrap();
+    assert!(!curvy.seg_kind.contains(&hw), "{:?}", curvy.seg_kind);
+    let nohw = g.plan((-5.0, 0.0, None), (705.0, 0.0), &prefs(RouteFilters { highway: false, ..all }, 0.0)).unwrap();
+    assert!(!nohw.seg_kind.contains(&hw));
+}
+
 // ── snapping ─────────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -577,5 +600,362 @@ fn real_install_graph() {
         let t = std::time::Instant::now();
         let c = g.plan((p0[0], p0[1], Some(p0[2])), (pf[0], pf[1]), &prefs(p.filters, curves)).unwrap();
         eprintln!("  curves {curves}: {:.0} m, ETA {:.1} min, {:?}", c.dist_m, c.eta_s / 60.0, t.elapsed());
+    }
+}
+
+// ── route-preference evaluation (D96; `cargo test --release pref_eval -- --ignored --nocapture`) ──
+
+fn real_graph() -> Option<RouteGraph> {
+    let media = crate::gamedata::install::find_media(None)?;
+    let nav = Nav::load(&media).ok()?;
+    let rt = RoadTypes::project();
+    let pos = node_positions(&nav, &rt);
+    Some(RouteGraph::build(&nav, &rt, &pos))
+}
+
+/// What a route looks like: length shares and winding, measured on its polyline (so the same
+/// yardstick applies to every cost model).
+#[derive(Clone, Copy, Default, Debug)]
+struct Shape {
+    dist: f32,
+    eta: f32,
+    hw: f32,
+    /// summed heading change per metre (rad/m)
+    wind: f32,
+    /// share of length whose local curvature exceeds 20 mrad/m (the old KAPPA)
+    tight: f32,
+}
+
+fn shape(r: &Route) -> Shape {
+    let hw: f32 = r.seg_kind.iter().zip(&r.seg_len).filter(|(&k, _)| k == RoadType::Highway.index()).map(|(_, l)| l).sum();
+    let (mut turns, mut tight_len) = (0.0f32, 0.0f32);
+    for i in 1..r.pts.len().saturating_sub(1) {
+        let (a, b, c) = (r.pts[i - 1], r.pts[i], r.pts[i + 1]);
+        let (u, w) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+        let (lu, lw) = (u[0].hypot(u[1]), w[0].hypot(w[1]));
+        if lu < 1e-3 || lw < 1e-3 {
+            continue;
+        }
+        let t = (u[0] * w[1] - u[1] * w[0]).atan2(u[0] * w[0] + u[1] * w[1]).abs();
+        turns += t;
+        if t / (0.5 * (lu + lw)) > 0.02 {
+            tight_len += 0.5 * (lu + lw);
+        }
+    }
+    let d = r.dist_m.max(1.0);
+    Shape { dist: r.dist_m, eta: r.eta_s, hw: hw / d, wind: turns / d, tight: tight_len / d }
+}
+
+type Trip = ([f32; 3], [f32; 3]);
+
+/// Fixed-seed trips between nodes on allowed roads: 80 of 3-25 km and 30 of 0.3-2 km.
+fn eval_trips(g: &RouteGraph, filters: &RouteFilters) -> (Vec<Trip>, Vec<Trip>) {
+    let main: Vec<u32> = (0..g.node_count() as u32).filter(|&n| snap_at(g, n, filters).is_some()).collect();
+    let mut rng = Rng(0x0D96_u64 << 20 | 0x5eed);
+    let (mut long, mut short) = (vec![], vec![]);
+    while long.len() < 80 || short.len() < 30 {
+        let (a, b) = (main[rng.below(main.len())], main[rng.below(main.len())]);
+        let (pa, pb) = (g.node_pos(a), g.node_pos(b));
+        let d = (pa[0] - pb[0]).hypot(pa[1] - pb[1]);
+        if d >= 3000.0 && d <= 25000.0 && long.len() < 80 {
+            long.push((pa, pb));
+        } else if d >= 300.0 && d <= 2000.0 && short.len() < 30 {
+            short.push((pa, pb));
+        }
+    }
+    (long, short)
+}
+
+#[test]
+#[ignore]
+fn pref_eval() {
+    let Some(g) = real_graph() else {
+        eprintln!("SKIP pref_eval: FH6 install not found (set FH6_INSTALL_DIR)");
+        return;
+    };
+    let filters = RouteFilters::default();
+    let hw_mid: Vec<[f32; 2]> = g
+        .edges()
+        .iter()
+        .filter(|e| e.kind == RoadType::Highway.index())
+        .map(|e| {
+            let (a, b) = (g.node_pos(e.a), g.node_pos(e.b));
+            [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
+        })
+        .collect();
+    let near_hw = |p: [f32; 3], r: f32| hw_mid.iter().any(|m| (m[0] - p[0]).hypot(m[1] - p[1]) < r);
+    let (long, short) = eval_trips(&g, &filters);
+    let run = |trips: &[Trip], s: f32| -> (Vec<Option<Shape>>, f64) {
+        let p = prefs(filters, s);
+        let t = std::time::Instant::now();
+        let v = trips.iter().map(|(a, b)| g.plan((a[0], a[1], None), (b[0], b[1]), &p).ok().map(|r| shape(&r))).collect();
+        (v, t.elapsed().as_secs_f64() * 1e3 / trips.len() as f64)
+    };
+    let mean = |v: &[Option<Shape>], f: &dyn Fn(&Shape) -> f32| -> f32 {
+        let xs: Vec<f32> = v.iter().flatten().map(f).collect();
+        xs.iter().sum::<f32>() / xs.len().max(1) as f32
+    };
+    let reach: Vec<bool> = long.iter().map(|(a, b)| near_hw(*a, 800.0) && near_hw(*b, 800.0)).collect();
+    let reach2: Vec<bool> = long.iter().map(|(a, b)| near_hw(*a, 1500.0) && near_hw(*b, 1500.0)).collect();
+    eprintln!(
+        "80 long trips (3-25 km): {} with a highway within 800 m of both ends, {} within 1.5 km; 30 short trips (0.3-2 km)",
+        reach.iter().filter(|&&r| r).count(),
+        reach2.iter().filter(|&&r| r).count()
+    );
+    eprintln!("   s | dist km | ETA min | hw share | hw>=500m of near-800 | of near-1500 | wind mrad/m | tight % | ms/query");
+    let mut base: Option<Vec<Option<Shape>>> = None;
+    for s in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        let (v, ms) = run(&long, s);
+        let used = |set: &[bool]| {
+            v.iter().zip(set).filter(|(_, &r)| r).fold((0, 0), |(n, a), (x, _)| (n + 1, a + (x.map_or(0.0, |x| x.hw * x.dist) >= 500.0) as i32))
+        };
+        let ((n_reach, used500), (n2, used2)) = (used(&reach), used(&reach2));
+        eprintln!(
+            "{s:4} | {:7.2} | {:7.2} | {:7.1}% | {used500:3}/{n_reach:3}              | {used2:3}/{n2:3}      | {:11.2} | {:6.1}% | {ms:.2}",
+            mean(&v, &|x| x.dist) / 1000.0,
+            mean(&v, &|x| x.eta) / 60.0,
+            100.0 * mean(&v, &|x| x.hw),
+            1000.0 * mean(&v, &|x| x.wind),
+            100.0 * mean(&v, &|x| x.tight),
+        );
+        if s == 0.0 {
+            base = Some(v);
+        } else if s == 1.0 {
+            let b = base.as_ref().unwrap();
+            let ratio = |f: &dyn Fn(&Shape) -> f32| -> f32 {
+                let xs: Vec<f32> = b.iter().zip(&v).filter_map(|(a, c)| Some(f(c.as_ref()?) / f(a.as_ref()?).max(1e-6))).collect();
+                xs.iter().sum::<f32>() / xs.len() as f32
+            };
+            eprintln!("     s=1 vs s=0 per trip: dist x{:.2}, ETA x{:.2}", ratio(&|x| x.dist), ratio(&|x| x.eta));
+        }
+    }
+    let (sv, ms) = run(&short, 0.0);
+    let (sv1, _) = run(&short, 1.0);
+    let straight: f32 = short.iter().map(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1])).sum::<f32>() / short.len() as f32;
+    eprintln!(
+        "short trips: straight {:.2} km; s=0 route {:.2} km, hw {:.1}%, {ms:.2} ms; s=1 route {:.2} km",
+        straight / 1000.0,
+        mean(&sv, &|x| x.dist) / 1000.0,
+        100.0 * mean(&sv, &|x| x.hw),
+        mean(&sv1, &|x| x.dist) / 1000.0
+    );
+}
+
+/// A road chain: edges between two junctions / dead ends (degree != 2 nodes).
+#[derive(Clone, Debug)]
+struct Chain {
+    ends: [u32; 2],
+    edges: Vec<u32>,
+    len: f32,
+    /// length-weighted mean `curv`
+    curv: f32,
+    /// total ascent + descent along the chain (m)
+    relief: f32,
+    kind: u8,
+}
+
+fn chains(g: &RouteGraph, filters: &RouteFilters) -> Vec<Chain> {
+    let ok = |e: &super::graph::Edge| filters.allows(e.kind) && !e.is_jump() && e.kind != RoadType::Turnaround.index();
+    let deg = |n: u32| g.arcs_of(n).iter().filter(|&&a| ok(g.edge(a >> 1))).count();
+    let mut seen = vec![false; g.edge_count()];
+    let mut out = vec![];
+    for n in 0..g.node_count() as u32 {
+        if deg(n) == 2 {
+            continue;
+        }
+        for &a0 in g.arcs_of(n) {
+            let mut arc = a0;
+            if !ok(g.edge(arc >> 1)) || seen[(arc >> 1) as usize] {
+                continue;
+            }
+            let (mut len, mut cw, mut relief, mut cur) = (0.0f32, 0.0f32, 0.0f32, n);
+            let mut kinds = HashMap::<u8, f32>::new();
+            let mut es = vec![];
+            loop {
+                let e = g.edge(arc >> 1);
+                seen[(arc >> 1) as usize] = true;
+                es.push(arc >> 1);
+                let nxt = if e.a == cur { e.b } else { e.a };
+                len += e.len;
+                cw += e.curv * e.len;
+                *kinds.entry(e.kind).or_default() += e.len;
+                let (y0, y1) = (g.node_pos(cur)[2], g.node_pos(nxt)[2]);
+                if y0 != 0.0 && y1 != 0.0 {
+                    relief += (y1 - y0).abs();
+                }
+                cur = nxt;
+                if deg(cur) != 2 {
+                    break;
+                }
+                let next = g.arcs_of(cur).iter().copied().find(|&a| ok(g.edge(a >> 1)) && (a >> 1) != (arc >> 1));
+                match next {
+                    Some(a) if !seen[(a >> 1) as usize] => arc = a,
+                    _ => break,
+                }
+            }
+            let kind = kinds.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap().0;
+            out.push(Chain { ends: [n, cur], edges: es, len, curv: cw / len, relief, kind });
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn touge_chains() {
+    let Some(g) = real_graph() else { return };
+    let mut cs: Vec<f32> = g.edges().iter().filter(|e| e.kind == RoadType::Road.index() || e.kind == RoadType::Offroad.index()).map(|e| e.curv).collect();
+    cs.sort_by(|a, b| a.total_cmp(b));
+    let q = |f: f32| 1000.0 * cs[((cs.len() - 1) as f32 * f) as usize];
+    eprintln!("road+dirt edge curv mrad/m: p25 {:.1} p50 {:.1} p75 {:.1} p90 {:.1} p95 {:.1} p99 {:.1}", q(0.25), q(0.5), q(0.75), q(0.9), q(0.95), q(0.99));
+    let mut c = chains(&g, &RouteFilters::default());
+    let min_len = 1000.0;
+    c.retain(|c| c.len >= min_len && c.kind != RoadType::Highway.index());
+    eprintln!("{} chains >= {min_len} m", c.len());
+    c.sort_by(|a, b| b.curv.total_cmp(&a.curv));
+    for c in c.iter().take(30) {
+        let (p, q) = (g.node_pos(c.ends[0]), g.node_pos(c.ends[1]));
+        eprintln!("  {:5.0} m curv {:4.1} mrad/m relief {:4.0} m kind {} ends ({:6.0},{:6.0},{:4.0}) ({:6.0},{:6.0},{:4.0}) straight {:5.0}", c.len, 1000.0 * c.curv, c.relief, c.kind, p[0], p[1], p[2], q[0], q[1], q[2], (p[0] - q[0]).hypot(p[1] - q[1]));
+    }
+}
+
+/// Share of `chain`'s length that `r` drives (an edge counts when both its ends are route points).
+fn coverage(g: &RouteGraph, chain: &Chain, r: &Route) -> f32 {
+    let key = |p: [f32; 2]| ((p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64);
+    let on: std::collections::HashSet<(i64, i64)> = r.pts.iter().map(|&p| key(p)).collect();
+    let hit = |n: u32| on.contains(&key([g.node_pos(n)[0], g.node_pos(n)[1]]));
+    let got: f32 = chain.edges.iter().map(|&e| g.edge(e)).filter(|e| hit(e.a) && hit(e.b)).map(|e| e.len).sum();
+    got / chain.len
+}
+
+/// The touge-like chains: >= 1 km, >= 60 m of up and down, ranked by winding.
+fn touge_set(g: &RouteGraph, n: usize) -> Vec<Chain> {
+    let mut c = chains(g, &RouteFilters::default());
+    c.retain(|c| c.len >= 1000.0 && c.relief >= 60.0 && c.kind != RoadType::Highway.index());
+    c.sort_by(|a, b| b.curv.total_cmp(&a.curv));
+    c.truncate(n);
+    c
+}
+
+#[test]
+#[ignore]
+fn touge_trips() {
+    let Some(g) = real_graph() else { return };
+    let filters = RouteFilters::default();
+    let set = touge_set(&g, 20);
+    eprintln!("chain (len m, curv mrad/m, relief m) | s: route km / ETA min / share of the chain driven");
+    let mut taken = [0; 3];
+    for c in &set {
+        let (Some(a), Some(b)) = (snap_at(&g, c.ends[0], &filters), snap_at(&g, c.ends[1], &filters)) else { continue };
+        let mut line = format!("{:5.0} m {:4.1} {:4.0} |", c.len, 1000.0 * c.curv, c.relief);
+        for (i, s) in [0.0, 0.5, 1.0].into_iter().enumerate() {
+            let r = g.route(&a, &b, &prefs(filters, s)).unwrap();
+            let cov = coverage(&g, c, &r);
+            if cov > 0.9 {
+                taken[i] += 1;
+            }
+            line += &format!("  {:5.2} km {:4.1} min {:3.0}% |", r.dist_m / 1000.0, r.eta_s / 60.0, 100.0 * cov);
+        }
+        eprintln!("{line}");
+    }
+    eprintln!("chains driven (>90 %) at s = 0 / 0.5 / 1: {taken:?} of {}", set.len());
+}
+
+/// Trips across each touge chain: a start 0.5-2 km beyond one end, a destination 0.5-2 km beyond
+/// the other, 8 per chain. What share of them drives the chain (> 90 % of its length)?
+#[test]
+#[ignore]
+fn touge_uptake() {
+    let Some(g) = real_graph() else { return };
+    let filters = RouteFilters::default();
+    let set = touge_set(&g, 20);
+    let main: Vec<u32> = (0..g.node_count() as u32).filter(|&n| snap_at(&g, n, &filters).is_some()).collect();
+    let mut rng = Rng(0xD96_7046);
+    let (mut taken, mut trips) = ([0usize; 3], 0usize);
+    for c in &set {
+        // "beyond" an end = 0.5-2 km from it and further from the other end than the ends are apart
+        let dist = |u: u32, v: u32| (g.node_pos(u)[0] - g.node_pos(v)[0]).hypot(g.node_pos(u)[1] - g.node_pos(v)[1]);
+        let ring = |end: u32, other: u32| -> Vec<u32> { main.iter().copied().filter(|&n| (500.0..2000.0).contains(&dist(n, end)) && dist(n, other) > dist(end, other) + 300.0).collect() };
+        let (ra, rb) = (ring(c.ends[0], c.ends[1]), ring(c.ends[1], c.ends[0]));
+        if ra.is_empty() || rb.is_empty() {
+            continue;
+        }
+        let (mut got, mut n) = ([0usize; 3], 0usize);
+        for _ in 0..400 {
+            if n >= 8 {
+                break;
+            }
+            let (a, b) = (ra[rng.below(ra.len())], rb[rng.below(rb.len())]);
+            let (Some(sa), Some(sb)) = (snap_at(&g, a, &filters), snap_at(&g, b, &filters)) else { continue };
+            n += 1;
+            for (i, s) in [0.0, 0.5, 1.0].into_iter().enumerate() {
+                if let Ok(r) = g.route(&sa, &sb, &prefs(filters, s)) {
+                    got[i] += (coverage(&g, c, &r) > 0.9) as usize;
+                }
+            }
+        }
+        let p = g.node_pos(c.ends[0]);
+        eprintln!("chain {:5.0} m curv {:4.1} relief {:3.0} at ({:6.0},{:6.0}): drives it at s 0 / .5 / 1 = {} / {} / {} of {n}", c.len, 1000.0 * c.curv, c.relief, p[0], p[1], got[0], got[1], got[2]);
+        for i in 0..3 {
+            taken[i] += got[i];
+        }
+        trips += n;
+    }
+    eprintln!("touge through-trips driving the touge at s 0 / 0.5 / 1: {} / {} / {} of {trips}", taken[0], taken[1], taken[2]);
+}
+
+/// Draws the roads of a window (grey; highways white-ish, the touge chain yellow) with the s = 0
+/// route (blue) and the s = 1 route (red) over it. `PNG_DIR` = where to write `touge_<n>.png`.
+#[test]
+#[ignore]
+fn touge_png() {
+    let (Some(g), Ok(dir)) = (real_graph(), std::env::var("PNG_DIR")) else { return };
+    let filters = RouteFilters::default();
+    let set = touge_set(&g, 20);
+    for (n, c) in set.iter().enumerate() {
+        let (Some(a), Some(b)) = (snap_at(&g, c.ends[0], &filters), snap_at(&g, c.ends[1], &filters)) else { continue };
+        let routes = [0.0, 1.0].map(|s| g.route(&a, &b, &prefs(filters, s)).unwrap());
+        if coverage(&g, c, &routes[0]) > 0.9 || coverage(&g, c, &routes[1]) < 0.9 {
+            continue; // only the contested ones: s = 0 avoids the chain, s = 1 drives it
+        }
+        let (pa, pb) = (g.node_pos(c.ends[0]), g.node_pos(c.ends[1]));
+        let (cx, cz) = ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0);
+        let half = 1800.0f32;
+        let px = 1000u32;
+        let k = px as f32 / (2.0 * half);
+        let to = |x: f32, z: f32| ((x - cx + half) * k, (z - cz + half) * k);
+        let mut img = image::RgbImage::from_pixel(px, px, image::Rgb([24, 26, 30]));
+        let mut line = |p: (f32, f32), q: (f32, f32), col: [u8; 3], w: i32| {
+            let steps = ((q.0 - p.0).abs().max((q.1 - p.1).abs()) as i32).max(1);
+            for i in 0..=steps {
+                let (x, y) = (p.0 + (q.0 - p.0) * i as f32 / steps as f32, p.1 + (q.1 - p.1) * i as f32 / steps as f32);
+                for dx in -w..=w {
+                    for dy in -w..=w {
+                        let (ix, iy) = (x as i32 + dx, y as i32 + dy);
+                        if ix >= 0 && iy >= 0 && (ix as u32) < px && (iy as u32) < px {
+                            img.put_pixel(ix as u32, iy as u32, image::Rgb(col));
+                        }
+                    }
+                }
+            }
+        };
+        for e in g.edges() {
+            let (p, q) = (g.node_pos(e.a), g.node_pos(e.b));
+            let col = if e.kind == RoadType::Highway.index() { [150, 150, 160] } else { [70, 74, 82] };
+            line(to(p[0], p[1]), to(q[0], q[1]), col, 0);
+        }
+        for &ei in &c.edges {
+            let e = g.edge(ei);
+            let (p, q) = (g.node_pos(e.a), g.node_pos(e.b));
+            line(to(p[0], p[1]), to(q[0], q[1]), [230, 200, 60], 0);
+        }
+        for (r, col) in routes.iter().zip([[70, 140, 255], [255, 80, 80]]) {
+            for w in r.pts.windows(2) {
+                line(to(w[0][0], w[0][1]), to(w[1][0], w[1][1]), col, 1);
+            }
+        }
+        let path = format!("{dir}/touge_{n}.png");
+        img.save(&path).unwrap();
+        eprintln!("wrote {path}: chain {:.0} m; s=0 route {:.2} km (blue), s=1 route {:.2} km (red), chain yellow", c.len, routes[0].dist_m / 1000.0, routes[1].dist_m / 1000.0);
     }
 }
