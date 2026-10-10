@@ -402,7 +402,8 @@ pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut
     let mut win3d = windows_3d;
     let cp = CopyCtx { which, minimap_follows, out: Default::default() };
     let cp = &cp;
-    let MapLayerConfig { image, roads, pois, race_lines, tilt } = cfg;
+    // (`nav_route: _`: its card and "Copy to ..." row come with the Navigation tab, task L5)
+    let MapLayerConfig { image, roads, pois, race_lines, tilt, nav_route: _ } = cfg;
     let mut plate = plate;
     let mut image_card_ = |ui: &mut Ui| image_card(ui, image, plate.as_mut().map(|(v, e)| (&mut **v, *e)), enabled, cp);
     let mut tilt_card_ = |ui: &mut Ui| tilt_card(ui, tilt, enabled, cp, win3d.as_deref_mut());

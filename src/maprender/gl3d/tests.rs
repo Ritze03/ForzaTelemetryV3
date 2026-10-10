@@ -333,6 +333,7 @@ fn scene(w: &World, cam: Camera, mesh: bool, tex: Option<MapTex>, site: Site) ->
         roads,
         focus: None,
         race: None,
+        route: None,
         trails: vec![],
     }
 }
@@ -359,7 +360,7 @@ fn map_frame(rig: &mut Rig, w: &World, h: &Gl3dHandle, tex: MapTex, v: &View, pp
             cfg.pois.on = false;
             cfg.race_lines.mode = RaceLineMode::Off;
             let sel = RaceSel::default();
-            let cx = LayerCtx { p: &pc, cam: &cam2, s: 1.0, a: 1.0, car: v.car, corner_clip: None, icons: None, race_sel: &sel, week: None };
+            let cx = LayerCtx { p: &pc, cam: &cam2, s: 1.0, a: 1.0, car: v.car, corner_clip: None, icons: None, race_sel: &sel, week: None, nav: None };
             draw_layers(&cx, &w.layers, &cfg);
         }
         if !v.no_3d {
@@ -512,6 +513,27 @@ fn suite(flavour: Flavour, device: Option<usize>, tag: &str) {
         }
         let s = h.stats();
         eprintln!("[{tag}] PERF {name}: {} tri, {} draws, cpu {:.3} ms, gpu {:.3} ms (median of 30)", s.last.triangles, s.last.draws, median(cpu), median(gpu));
+    }
+    // ── the navigation route (phase L): its own road pass, in every flavour
+    {
+        let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
+        let line = Arc::new(crate::nav::NavLine { rev: 910_000, pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - 1] });
+        let r = route3d(&w, &line);
+        let mut v = View::dashboard();
+        v.car = (0.0, -250.0);
+        let mut last = None;
+        for _ in 0..3 {
+            last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                thick(s);
+                s.route = Some(r.clone());
+            }));
+        }
+        let o = last.unwrap();
+        assert_eq!(o.gl_error, 0, "[{tag}] route frame");
+        o.save(&format!("{tag}_nav_route.png"));
+        let n = o.count_near(b, route_rgb(), 30);
+        eprintln!("[{tag}] navigation route: {n} px");
+        assert!(n > 300, "[{tag}] the navigation route is drawn ({n})");
     }
     markers(&mut rig, &w, &h, tex, tag);
     mates(&mut rig, &w, &h, tex, tag);
@@ -1226,6 +1248,388 @@ fn gl3d_race_lines_and_marks_are_hidden_behind_hills() {
     rig.finish(&Gl3dHandle::new());
 }
 
+// ── the navigation route (phase L) ───────────────────────────────────────────────────────────
+
+/// A navigation line over the synthetic world: `pts` at `lift` m above the ground (0 = unknown
+/// heights), `kinds` per segment.
+fn nav_line(w: &World, rev: u64, pts: Vec<[f32; 2]>, lift: Option<f32>, kinds: Vec<u8>) -> Arc<crate::nav::NavLine> {
+    let y = pts.iter().map(|p| lift.map_or(0.0, |l| w.terrain.height(p[0], p[1]) + l)).collect();
+    let kinds = if kinds.is_empty() { vec![2; pts.len() - 1] } else { kinds };
+    Arc::new(crate::nav::NavLine { rev, pts, y, seg_kind: kinds })
+}
+
+fn route3d(w: &World, line: &Arc<crate::nav::NavLine>) -> Route3d {
+    Route3d::new(line, &w.terrain, NavRouteCfg::default()).expect("a route mesh")
+}
+
+/// The default route colour (fuchsia): nothing else in the synthetic world is near it.
+fn route_rgb() -> [u8; 3] {
+    NavRouteCfg::default().color.0
+}
+
+/// Eight frames of `v` with `tweak` applied, the last one back; the handle is destroyed.
+fn settled(rig: &mut Rig, w: &World, tex: MapTex, v: &View, name: &str, tweak: &dyn Fn(&mut Scene3d)) -> Out {
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let mut last = None;
+    for _ in 0..8 {
+        last = Some(map_frame(rig, w, &h, tex, v, 1.0, tweak));
+    }
+    let o = last.unwrap();
+    assert_eq!(o.gl_error, 0, "{name}");
+    o.save(&format!("{name}.png"));
+    h.destroy(&rig.gl);
+    o
+}
+
+/// L3: the route is a road of its own in 3D: over the roads it runs on (covering them), still
+/// drawn when "race road only" hides the road mesh, through a hill like a tunnel, and a jump
+/// stretch is a dashed line over the gap instead of a deck.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_nav_route_over_the_roads_and_race_only() {
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let styles = RoadsCfg::default().styles;
+    let race = crate::maprender::cfg::RaceCfg::default().color;
+    let count = |o: &Out, c: [u8; 3]| o.count_near([0, 0, 620, 420], c, 30);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+
+    // Over the road it runs on: the route's colour is drawn, the road under it is covered.
+    let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
+    let line = Arc::new(crate::nav::NavLine { rev: 1, pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - 1] });
+    let r = route3d(&w, &line);
+    v.car = (0.0, -250.0);
+    let o = settled(&mut rig, &w, tex, &v, "nav_route_over_road", &|s| {
+        thick(s);
+        s.route = Some(r.clone());
+    });
+    let (on, road_px) = (count(&o, route_rgb()), count(&o, rgb(styles.road.color)));
+    eprintln!("route over the road: {on} route px, {road_px} road px");
+    assert!(on > 300, "the route is drawn ({on})");
+    assert!(road_px < 20, "the road under the route is covered by it ({road_px})");
+    let none = settled(&mut rig, &w, tex, &v, "nav_route_off", &|s| thick(s));
+    assert_eq!(count(&none, route_rgb()), 0, "no route, none of its colour");
+
+    // "Race road only" (D82) hides the road mesh while a race road is there; the route is not a
+    // road of the mesh and stays. Race road along the offroad chain (z = -200), route along the road (z = -300).
+    let off = &w.layers.roads.by_type[RoadType::Offroad.index() as usize][0];
+    let rr = race3d(&w, vec![RaceRoad { pts: off.pts.clone(), y: off.y.iter().map(|y| y + 0.3).collect(), closed: false }], vec![], crate::maprender::cfg::RaceCfg::default());
+    let mut focus = crate::maprender::racesel::RoadFocus::default();
+    focus.jumps = vec![false; w.layers.roads.jumps.len()];
+    let f = Focus3d { focus: Arc::new(focus), cfg: RaceFocusCfg { other_roads: OtherRoads::RaceOnly, ..Default::default() } };
+    let o = settled(&mut rig, &w, tex, &v, "nav_route_race_only", &|s| {
+        thick(s);
+        s.focus = Some(f.clone());
+        s.race = Some(rr.clone());
+        s.route = Some(r.clone());
+    });
+    let (rt, rc, road_px) = (count(&o, route_rgb()), count(&o, race.0), count(&o, rgb(styles.road.color)));
+    eprintln!("race road only: route {rt}, race road {rc}, road {road_px}");
+    assert!(rt > 300 && rc > 300, "both the race road and the route are drawn (route {rt}, race {rc})");
+    assert!(road_px < 5, "race road only: no road of the road mesh ({road_px})");
+
+    // Through the big hill: the tunnel stretch shows through it, like a road tunnel.
+    let tun = &w.layers.roads.by_type[RoadType::Tunnel.index() as usize][0];
+    let line = Arc::new(crate::nav::NavLine { rev: 2, pts: tun.pts.clone(), y: tun.y.iter().map(|y| y + 0.3).collect(), seg_kind: vec![11; tun.pts.len() - 1] });
+    let rt3 = route3d(&w, &line);
+    assert!(!rt3.mesh.samples.is_empty() && rt3.mesh.samples.iter().any(|s| s.slot == crate::maprender::mesh3d::SLOT_TUNNEL), "the stretch under the hill is in the tunnel slot");
+    v.car = (-300.0, 0.0);
+    let o = settled(&mut rig, &w, tex, &v, "nav_route_tunnel", &|s| {
+        thick(s);
+        s.roads.on = false;
+        s.route = Some(rt3.clone());
+    });
+    let n = count(&o, route_rgb());
+    eprintln!("tunnel: {n} route px");
+    assert!(n > 100, "the route through the hill is drawn over it like a tunnel ({n})");
+
+    // A jump stretch: road, gap, road. The gap over the small hill at (50, 450) is a dashed line
+    // in the route colour (some pixels, far fewer than a deck's worth) and no deck.
+    let pts: Vec<[f32; 2]> = vec![[-400.0, 450.0], [-300.0, 450.0], [-120.0, 450.0], [220.0, 450.0], [320.0, 450.0], [420.0, 450.0]];
+    let line = nav_line(&w, 3, pts, Some(0.3), vec![2, 2, crate::maprender::style::NAV_SEG_JUMP, 2, 2]);
+    let rj = route3d(&w, &line);
+    assert!(rj.mesh.samples.iter().any(|s| s.slot == crate::maprender::mesh3d::SLOT_JUMP) && !rj.mesh.samples.iter().any(|s| s.slot != crate::maprender::mesh3d::SLOT_JUMP && s.x > -119.0 && s.x < 219.0));
+    v.car = (50.0, 450.0);
+    v.zoom = 450.0;
+    v.yaw = 0.0;
+    let o = settled(&mut rig, &w, tex, &v, "nav_route_jump", &|s| {
+        s.roads.on = false;
+        s.route = Some(rj.clone());
+    });
+    let gap_px = o.count_near([0, 0, 620, 420], route_rgb(), 30);
+    // the same route as one unbroken road (no jump) for scale
+    let full = nav_line(&w, 4, vec![[-400.0, 450.0], [-300.0, 450.0], [-120.0, 450.0], [220.0, 450.0], [320.0, 450.0], [420.0, 450.0]], Some(0.3), vec![]);
+    let rf = route3d(&w, &full);
+    let o2 = settled(&mut rig, &w, tex, &v, "nav_route_jump_as_road", &|s| {
+        s.roads.on = false;
+        s.route = Some(rf.clone());
+    });
+    let road_px = o2.count_near([0, 0, 620, 420], route_rgb(), 30);
+    eprintln!("jump: {gap_px} px with a dashed gap vs {road_px} px with a road over it");
+    assert!(gap_px > 100 && gap_px * 10 < road_px * 9, "the gap is dashes, not a deck ({gap_px} vs {road_px})");
+    rig.finish(&Gl3dHandle::new());
+}
+
+/// L3, like the race road (D88): occlusion. A route on the far side of the big hill is hidden by it
+/// (seen from the near side), drawn from the other side; a road deck above covers a route under it.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_nav_route_is_hidden_behind_hills_and_under_decks() {
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let count = |o: &Out| o.count_near([0, 0, 620, 420], route_rgb(), 30);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    v.angle = 75.0;
+    v.zoom = 300.0;
+    let pts: Vec<[f32; 2]> = (0..=14).map(|i| [-440.0 + 20.0 * i as f32, 440.0]).collect();
+    let line = nav_line(&w, 1, pts, Some(0.3), vec![]);
+    let r = route3d(&w, &line);
+    let mut counts = vec![];
+    for (name, car, yaw) in [("nav_route_plain_view", (-300.0f32, 700.0f32), std::f32::consts::PI), ("nav_route_behind_hill", (-300.0, -20.0), 0.0)] {
+        v.car = car;
+        v.yaw = yaw;
+        let o = settled(&mut rig, &w, tex, &v, name, &|s| {
+            s.roads.on = false;
+            s.roads.min_px = 14.0; // wide, so the route is easy to count
+            s.roads.max_px = 20.0;
+            s.route = Some(r.clone());
+        });
+        eprintln!("{name}: {} route px", count(&o));
+        counts.push(count(&o));
+    }
+    assert!(counts[0] > 200, "the control: the route in plain view is drawn ({counts:?})");
+    assert!(counts[1] < 10, "the route behind the hill is hidden by it ({counts:?})");
+
+    // Under the elevated highway (22 m up): on the deck itself (the control) and on the ground under it.
+    v.car = (600.0, 120.0);
+    v.yaw = 0.0;
+    v.angle = 12.0;
+    v.zoom = 250.0;
+    let hw = &w.layers.roads.by_type[RoadType::Highway.index() as usize][0];
+    let pts: Vec<[f32; 2]> = hw.pts.iter().copied().filter(|p| p[0] > 380.0 && p[0] < 820.0).collect();
+    let mut under = vec![];
+    for (i, (name, lift)) in [("nav_route_on_the_deck", 22.3f32), ("nav_route_under_the_deck", 0.3)].into_iter().enumerate() {
+        let line = nav_line(&w, 10 + i as u64, pts.clone(), Some(lift), vec![]); // (a different rev: the mesh cache is keyed on it)
+        let r = route3d(&w, &line);
+        let o = settled(&mut rig, &w, tex, &v, name, &|s| {
+            s.roads.min_px = 8.0;
+            s.roads.max_px = 12.0;
+            s.route = Some(r.clone());
+        });
+        eprintln!("{name}: {} route px", count(&o));
+        under.push(count(&o));
+    }
+    assert!(under[0] > 200, "the control: the route on the deck is drawn ({under:?})");
+    assert!(under[1] * 3 < under[0] * 2, "the deck above the route covers it ({under:?})");
+    rig.finish(&Gl3dHandle::new());
+}
+
+/// L3: the route mesh is built once per `NavLine::rev` (a new route or the next 150 m chunk) and
+/// uploaded once per mesh: the same line over many frames builds and uploads nothing more, a new
+/// `rev` does exactly one of each, a changed look (colour, width) neither.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    v.car = (0.0, -250.0);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let gpu = |h: &Gl3dHandle| h.lock().gl3d.as_ref().and_then(|g| g.nav.as_ref().map(|n| Arc::as_ptr(&n.mesh) as usize));
+    let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
+    let mk = |rev: u64, from: usize| Arc::new(crate::nav::NavLine { rev, pts: ch.pts[from..].to_vec(), y: ch.y[from..].iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - from - 1] });
+    let builds0 = NAV_MESH_BUILDS.load(Relaxed);
+    let mut frame = |line: &Arc<crate::nav::NavLine>, cfg: NavRouteCfg| {
+        // (every frame goes through `Route3d::new`, as the call sites do per frame)
+        let r = Route3d::new(line, &w.terrain, cfg).unwrap();
+        let o = map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+            thick(s);
+            s.route = Some(r.clone());
+        });
+        assert_eq!(o.gl_error, 0);
+        o
+    };
+    let a = mk(900_001, 0);
+    for _ in 0..12 {
+        frame(&a, NavRouteCfg::default());
+    }
+    let first = gpu(&h).expect("the route is on the GPU");
+    assert_eq!(NAV_MESH_BUILDS.load(Relaxed) - builds0, 1, "one build for twelve frames of one line");
+    for _ in 0..20 {
+        frame(&a, NavRouteCfg::default());
+    }
+    assert_eq!((NAV_MESH_BUILDS.load(Relaxed) - builds0, gpu(&h)), (1, Some(first)), "no rebuild, no re-upload while the line is the same");
+    // Colour and width are uniforms: no rebuild, no re-upload, and the picture changes.
+    let before = frame(&a, NavRouteCfg::default());
+    let green = NavRouteCfg { color: crate::maprender::cfg::Rgb([0, 255, 0]), width: 1.5, ..NavRouteCfg::default() };
+    let after = frame(&a, green);
+    assert_eq!((NAV_MESH_BUILDS.load(Relaxed) - builds0, gpu(&h)), (1, Some(first)));
+    assert!(before.count_near([0, 0, 620, 420], route_rgb(), 30) > 300 && after.count_near([0, 0, 620, 420], [0, 255, 0], 30) > 300 && after.count_near([0, 0, 620, 420], route_rgb(), 30) == 0);
+    // The next chunk (a new rev): exactly one more build, and the GPU copy is replaced.
+    let b = mk(900_002, 3);
+    for _ in 0..6 {
+        frame(&b, NavRouteCfg::default());
+    }
+    assert_eq!(NAV_MESH_BUILDS.load(Relaxed) - builds0, 2, "one more build for the new rev");
+    assert!(gpu(&h).is_some_and(|p| p != first), "the new mesh is on the GPU");
+    // No route: the GPU copy is dropped.
+    for _ in 0..3 {
+        map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| thick(s));
+    }
+    assert_eq!(gpu(&h), None);
+    rig.finish(&h);
+}
+
+/// The one mesh cache is shared by the maps and keyed on the line's rev and the terrain's (CPU only).
+#[test]
+fn route3d_builds_once_per_rev_and_terrain() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let w = world();
+    let line = |rev: u64, n: usize| Arc::new(crate::nav::NavLine { rev, pts: (0..n).map(|i| [10.0 * i as f32, -600.0]).collect(), y: vec![0.0; n], seg_kind: vec![2; n - 1] });
+    let (a, b) = (line(700_001, 30), line(700_002, 30));
+    let n0 = NAV_MESH_BUILDS.load(Relaxed);
+    let r1 = Route3d::new(&a, &w.terrain, NavRouteCfg::default()).unwrap();
+    let r2 = Route3d::new(&a, &w.terrain, NavRouteCfg { width: 2.0, ..NavRouteCfg::default() }).unwrap();
+    assert!(Arc::ptr_eq(&r1.mesh, &r2.mesh), "same rev: the cached mesh, whatever the look");
+    let r3 = Route3d::new(&b, &w.terrain, NavRouteCfg::default()).unwrap();
+    assert!(!Arc::ptr_eq(&r1.mesh, &r3.mesh), "a new rev: a new mesh");
+    assert_eq!(NAV_MESH_BUILDS.load(Relaxed) - n0, 2);
+    // Another terrain (a new `rev`) rebuilds.
+    let mut t2 = Terrain::synthetic();
+    t2.rev += 1;
+    let r4 = Route3d::new(&b, &t2, NavRouteCfg::default()).unwrap();
+    assert!(!Arc::ptr_eq(&r3.mesh, &r4.mesh));
+    // Fewer than two points: no route.
+    assert!(Route3d::new(&line(700_003, 1), &w.terrain, NavRouteCfg::default()).is_none());
+}
+
+/// Real routes over the island (the user's road data, all filters on so a jump can be used):
+/// across the whole island (node 1 to the farthest node), a medium one (about 5 km away), and one
+/// that flies a jump.
+fn real_routes(w: &World) -> Vec<(&'static str, crate::nav::Route)> {
+    use crate::nav::{RouteFilters, RoutePrefs};
+    let g = &w.layers.route_graph;
+    let prefs = RoutePrefs { filters: RouteFilters::ALL, curves: 0.0 };
+    let n0 = g.node_index(1).expect("node 1");
+    let p0 = g.node_pos(n0);
+    let dist = |n: u32| (g.node_pos(n)[0] - p0[0]).hypot(g.node_pos(n)[1] - p0[1]);
+    let far = (0..g.node_count() as u32).max_by(|&a, &b| dist(a).total_cmp(&dist(b))).expect("a node");
+    let mid = (0..g.node_count() as u32).min_by(|&a, &b| (dist(a) - 5000.0).abs().total_cmp(&(dist(b) - 5000.0).abs())).expect("a node");
+    let plan = |a: [f32; 3], b: [f32; 3]| g.plan((a[0], a[1], Some(a[2])), (b[0], b[1]), &prefs).expect("a route");
+    let mut out = vec![("island", plan(p0, g.node_pos(far))), ("5km", plan(p0, g.node_pos(mid)))];
+    for j in w.layers.roads.jumps.iter() {
+        // ~300 m before the take-off to ~300 m after the landing, at the fixed take-off / landing.
+        let (a, b) = ([j[0], j[1], j[2]], [j[3], j[4], j[5]]);
+        if let Ok(r) = g.plan((a[0], a[1], Some(a[2])), (b[0], b[1]), &prefs) {
+            if r.seg_kind.contains(&crate::maprender::style::NAV_SEG_JUMP) {
+                out.push(("jump", r));
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Real install, CPU only: what the route mesh costs. Printed per route (points, samples,
+/// triangles, build ms; run `--release` for the numbers that matter), and the shape asserted: jump
+/// stretches in the jump slot with no road deck over them, tunnels in the tunnel slot.
+/// `FH6_INSTALL_DIR=... cargo test --release real_install_nav_route_mesh -- --ignored --nocapture`
+#[test]
+#[ignore = "needs an FH6 install"]
+fn real_install_nav_route_mesh_cost() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP real_install_nav_route_mesh_cost: no FH6 install");
+        return;
+    };
+    for (name, r) in real_routes(&w) {
+        let mut best = std::time::Duration::MAX;
+        let mut mesh = None;
+        for _ in 0..7 {
+            let t = std::time::Instant::now();
+            let m = RoadMesh::nav_route(&r.pts, &r.y, &r.seg_kind, &w.terrain);
+            best = best.min(t.elapsed());
+            mesh = Some(m);
+        }
+        let m = mesh.unwrap();
+        let slot = |s: u8| m.samples.iter().filter(|x| x.slot == s).count();
+        let jumps = r.seg_kind.iter().filter(|&&k| k == crate::maprender::style::NAV_SEG_JUMP).count();
+        eprintln!(
+            "route {name}: {:.1} km, {} points, {} jump segments -> {} samples ({} tunnel, {} jump), {} + {} triangles, {} KB of vertices; build best of 7 {:.2} ms ({})",
+            r.dist_m / 1000.0,
+            r.pts.len(),
+            jumps,
+            m.samples.len(),
+            slot(crate::maprender::mesh3d::SLOT_TUNNEL),
+            slot(crate::maprender::mesh3d::SLOT_JUMP),
+            m.triangles().0,
+            m.triangles().1,
+            m.vertices.len() / 1024,
+            best.as_secs_f64() * 1e3,
+            if cfg!(debug_assertions) { "debug" } else { "release" }
+        );
+        assert!(!m.samples.is_empty());
+        assert_eq!(jumps > 0, slot(crate::maprender::mesh3d::SLOT_JUMP) > 0, "{name}: jump stretches are in the jump slot");
+        // The trailing part a chunk later (a new `NavLine::rev` every 150 m): the same order of cost.
+        let cut = (150.0 / r.dist_m * r.pts.len() as f32) as usize;
+        let t = std::time::Instant::now();
+        let m2 = RoadMesh::nav_route(&r.pts[cut..], &r.y[cut..], &r.seg_kind[cut..], &w.terrain);
+        eprintln!("  next chunk ({} points): {:.2} ms, {} samples", r.pts.len() - cut, t.elapsed().as_secs_f64() * 1e3, m2.samples.len());
+        // Cached: the same line again costs a lookup.
+        let line = Arc::new(crate::nav::NavLine { rev: 800_000 + name.len() as u64, pts: r.pts.clone(), y: r.y.clone(), seg_kind: r.seg_kind.clone() });
+        let first = Route3d::new(&line, &w.terrain, NavRouteCfg::default()).unwrap();
+        let t = std::time::Instant::now();
+        let again = Route3d::new(&line, &w.terrain, NavRouteCfg::default()).unwrap();
+        eprintln!("  cached Route3d::new: {:?}", t.elapsed());
+        assert!(Arc::ptr_eq(&first.mesh, &again.mesh));
+    }
+}
+
+/// Real install, GL: the island-crossing route and the route over a jump in a HUD-sized and a
+/// Dashboard-sized 3D view, and a 2D check that the same line is in the picture. PNGs to look at;
+/// the route colour is on screen, the GL state clean.
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_nav_route() {
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_nav_route: no FH6 install");
+        return;
+    };
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let routes = real_routes(&w);
+    for (i, (name, r)) in routes.iter().enumerate() {
+        // The car 10 % along the route, looking along it.
+        let k = (r.pts.len() / 10).max(1).min(r.pts.len() - 2);
+        let (car, next) = (r.pts[k], r.pts[(k + 8).min(r.pts.len() - 1)]);
+        let line = Arc::new(crate::nav::NavLine { rev: 810_000 + i as u64, pts: r.pts[k..].to_vec(), y: r.y[k..].to_vec(), seg_kind: r.seg_kind[k..].to_vec() });
+        let rt = route3d(&w, &line);
+        for (vname, mut v) in [("hud", View::hud()), ("dashboard", View::dashboard())] {
+            v.no_3d = false;
+            v.car = (car[0], car[1]);
+            v.yaw = (next[0] - car[0]).atan2(next[1] - car[1]);
+            v.zoom = if *name == "jump" { 350.0 } else { 600.0 };
+            v.car_y = Some(r.y[k].max(w.terrain.height(car[0], car[1])) + 1.0);
+            let o = settled(&mut rig, &w, tex, &v, &format!("real_nav_{name}_{vname}"), &|s| {
+                s.route = Some(rt.clone());
+                if vname == "hud" {
+                    s.roads.casing_px = 1.0;
+                }
+            });
+            let n = o.count_near([0, 0, 620, 420], route_rgb(), 30);
+            eprintln!("real route {name} ({vname}): {n} route px");
+            assert!(n > if vname == "hud" { 3 } else { 60 }, "{name} {vname}: the route is on screen ({n})"); // (the HUD map is small and its roads hairlines at this zoom)
+        }
+    }
+    rig.finish(&Gl3dHandle::new());
+}
+
 // ── the draw plan (CPU only) ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1494,7 +1898,7 @@ fn gl3d_synthetic_joins() {
             cfg.roads.max_px = 24.0;
             cfg.roads.casing_px = 3.0;
             let sel = RaceSel::default();
-            let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None };
+            let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None, nav: None };
             draw_layers(&cx, &w.layers, &cfg);
         });
         o.save(&format!("synth_{tag}_{name}_2d.png"));
@@ -1571,7 +1975,7 @@ fn gl3d_real_install_joins() {
                 cfg.pois.on = false;
                 cfg.race_lines.mode = RaceLineMode::Off;
                 let sel = RaceSel::default();
-                let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None };
+                let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None, nav: None };
                 draw_layers(&cx, &w.layers, &cfg);
             });
             o.save(&format!("join_{tag}_{name}_2d_{zoom:.0}.png"));
@@ -1707,7 +2111,7 @@ fn gl3d_real_install_race_roads() {
             let mut cfg = MapLayerConfig::default();
             cfg.pois.on = false;
             let sel = RaceSel::fixed(vec![li], true);
-            let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None };
+            let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None, nav: None };
             draw_layers(&cx, &w.layers, &cfg);
         });
         o.save(&format!("race_{name}_2d.png"));

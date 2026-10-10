@@ -496,6 +496,7 @@ impl Map3d {
         data: Option<&Arc<MapLayers>>,
         sel: &RaceSel,
         trails: Vec<crate::maprender::gl3d::Trail3d>,
+        route: Option<&Arc<crate::nav::NavLine>>,
     ) {
         use crate::maprender::gl3d;
         let lc = sc.layers;
@@ -532,6 +533,8 @@ impl Map3d {
                 roads: lc.roads.clone(),
                 focus,
                 race,
+                // Phase L: the navigation route, its own small mesh (built once per line chunk).
+                route: route.and_then(|l| gl3d::Route3d::new(l, &relief.terrain, lc.nav_route)),
                 trails,
             },
         );
@@ -555,7 +558,7 @@ impl Map3d {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>) {}
+    fn add_scene(&self, _: &egui::Painter, _: &Camera, _: &Scene, _: Option<MapTex>, _: crate::minimap::MapCalibration, _: Option<&Arc<MapLayers>>, _: &RaceSel, _: Vec<crate::maprender::gl3d::Trail3d>, _: Option<&Arc<crate::nav::NavLine>>) {}
 
     fn add_marker(&self, _: &egui::Painter, _: &Camera, _: crate::maprender::gl3d::Marker3d, _: Vec<crate::maprender::gl3d::Marker3d>) {}
 }
@@ -831,25 +834,26 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     }
     let sel: &RaceSel = &sel;
     let icons = data.and_then(|d| app.minimap_icons.borrow_mut().ensure(ui.ctx(), d.icons.as_ref()));
+    // The navigation route and its destination (phase L), read here on the UI thread from the
+    // process-global the listener thread keeps (`nav::view()`): hidden in a race and when switched
+    // off on this map. The route needs no layer data, so it is drawn when every layer is off too.
+    let nav = crate::nav::view();
+    let route = crate::maprender::paint2d::route_line(&nav, &lc.nav_route);
+    let dest = crate::maprender::paint2d::route_dest(&nav, &lc.nav_route);
     let layer_pass = |cam: &Camera, over_3d: bool| {
-        if let Some(data) = data {
-            let cx = crate::maprender::LayerCtx {
-                p: &painter,
-                cam,
-                s: 1.0,
-                a: 1.0,
-                car: (car_x, car_z),
-                corner_clip: None,
-                icons: icons.as_deref(),
-                race_sel: sel,
-                week: None,
-            };
-            if over_3d {
-                crate::maprender::paint2d::draw_layers_parts(&cx, data, lc, Parts::OVER_3D);
-            } else {
-                crate::maprender::draw_layers(&cx, data, lc);
-            }
-        }
+        let cx = crate::maprender::LayerCtx {
+            p: &painter,
+            cam,
+            s: 1.0,
+            a: 1.0,
+            car: (car_x, car_z),
+            corner_clip: None,
+            icons: icons.as_deref(),
+            race_sel: sel,
+            week: None,
+            nav: route.map(|l| &**l),
+        };
+        crate::maprender::paint2d::draw_layers_or_route(&cx, data.map(|d| &**d), lc, if over_3d { Parts::OVER_3D } else { Parts::ALL });
     };
     if underlay {
         layer_pass(&cam, false);
@@ -878,7 +882,7 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     if let Some(r) = &relief {
         // D77: in 3D the trails are part of the scene, at their recorded heights.
         let trails3d = trails.iter().filter_map(|(t, c)| crate::hud::map_shared::trail_3d(t, *c, fade, trail_now)).collect();
-        app.map3d.add_scene(&painter, r, sc, lc.image.on.then_some(tex), cal, data, sel, trails3d);
+        app.map3d.add_scene(&painter, r, sc, lc.image.on.then_some(tex), cal, data, sel, trails3d, route);
     }
     if !underlay {
         layer_pass(&cam, true); // the roads are in the scene; race lines and POIs over it
@@ -958,6 +962,15 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     let time = ui.input(|i| i.time) as f32;
     for (_pid, wx, wz, hue) in app.coop.waypoints() {
         crate::hud::map_shared::draw_waypoint(&cv, (wx, wz), crate::ui::coop::hue_color(hue), (car_x, car_z), time);
+    }
+    // The navigation destination (phase L): a pin in the route colour; a shared one has a ring in
+    // the setter's hue. In 3D its tip stands at the terrain's height (`MapCanvas::to_screen`).
+    if let Some(d) = dest {
+        let ring = match &d.source {
+            crate::nav::DestSource::Shared { hue, .. } => Some(crate::ui::coop::hue_color(*hue)),
+            crate::nav::DestSource::Local => None,
+        };
+        crate::hud::map_shared::draw_destination(&cv, (d.x, d.z), lc.nav_route.color.color(1.0), ring, (car_x, car_z));
     }
 
     // North compass: shared with the HUD Minimap (`hud::minimap::draw_compass`), scaled

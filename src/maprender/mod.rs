@@ -62,7 +62,7 @@ pub mod view;
 
 // The everyday API; the rest (`cfg::MapLayerConfig`, `data::MapLayers`, `paint2d::{IconAtlas,
 // CornerClip, ImageLook}`, `view::*`) is reached through its module.
-pub use paint2d::{draw_base, draw_layers, BaseParams, LayerCtx};
+pub use paint2d::{draw_base, BaseParams, LayerCtx};
 pub use racesel::RaceSel;
 pub use store::{layers, refresh_now, LayerStatus};
 pub use view::Camera;

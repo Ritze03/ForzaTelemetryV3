@@ -57,6 +57,19 @@ pub fn road_base_px(c: &RoadsCfg, px_per_m: f32) -> f32 {
 /// other road's casing showing as its edge.
 pub const RACE_ROAD_WIDTH: f32 = 1.5;
 
+/// Width factor of the navigation route (phase L) on the roads' width rule, 2D and 3D, times
+/// `NavRouteCfg::width`. The same as the race road's: the route is hidden in a race, so the two
+/// are never on screen together, and like it the route must cover whichever road it runs on, that
+/// road's casing showing as its edge.
+pub const NAV_ROUTE_WIDTH: f32 = 1.5;
+
+/// Width factor of a *jump* stretch of the route (take-off to landing, a dashed line like the
+/// jump lines, not a road deck over the gap), on the same rule; also times `NavRouteCfg::width`.
+pub const NAV_JUMP_WIDTH: f32 = 1.0;
+
+/// `RoadType::index` of a jump in `NavLine::seg_kind` (= `mesh3d::SLOT_JUMP`).
+pub const NAV_SEG_JUMP: u8 = 7;
+
 /// Final line width of a type: `max(0.7, base * type factor)`.
 pub fn line_px(base: f32, factor: f32) -> f32 {
     (base * factor).max(MIN_LINE_PX)

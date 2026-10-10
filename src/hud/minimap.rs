@@ -30,7 +30,7 @@ use super::col;
 use super::map_shared::{self, MapCanvas, Remote, TrailFade};
 use super::prims::{self, Xf};
 use crate::maprender::data::MapLayers;
-use crate::maprender::paint2d::{draw_layers_parts, CornerClip, IconAtlas, Parts};
+use crate::maprender::paint2d::{draw_layers_or_route, route_dest, route_line, CornerClip, IconAtlas, Parts};
 use crate::maprender::{draw_base, BaseParams, Camera, LayerCtx, RaceSel};
 use crate::minimap::{self as mm, MapCalibration, Season, Trail};
 use crate::overlay::snapshot::HudSnapshot;
@@ -241,6 +241,9 @@ pub struct MapAnim {
     icons: Option<Arc<IconAtlas>>,
     /// Which race lines to draw (one selector per map, `maprender::RaceSel`).
     race_sel: RaceSel,
+    /// The navigation route and destination (phase L), `nav::view()` read by the overlay renderer
+    /// each frame ([`MapAnim::set_nav`]); the default (idle, no line) draws nothing.
+    nav: crate::nav::NavView,
     /// The 3D scene's inputs; `None` = the 2D map ([`Scene3dIn`]).
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     scene3d: Option<Scene3dIn>,
@@ -264,6 +267,10 @@ impl MapAnim {
 
     pub fn set_icons(&mut self, icons: Option<Arc<IconAtlas>>) {
         self.icons = icons;
+    }
+
+    pub fn set_nav(&mut self, view: crate::nav::NavView) {
+        self.nav = view;
     }
 
     #[cfg(test)]
@@ -442,14 +449,16 @@ pub fn draw_compass_at(p: &Painter, xf: &Xf, at: [f32; 2], north: [f32; 2]) {
 
 /// Draw M2′. Returns true while the view is still easing.
 ///
-/// Layers: satellite image ([`draw_base`]) → roads / race lines / POIs ([`draw_layers_parts`], from
+/// Layers: satellite image ([`draw_base`]) → roads / race lines / navigation route / POIs ([`draw_layers_or_route`], from
 /// `anim.layers`, cut to the pill's rounded corners) → markers (`map_shared`) → compass → frame.
 /// The camera (flat or tilted, `OverlayConfig::map_layers.tilt`) is shared by all of them.
 ///
-/// **In 3D** (`anim` has a [`Scene3dIn`] and the scene is `Ready`) the image and the roads are the
-/// GL scene's, added as a paint callback over the plate; the tint, the race lines and POIs
-/// (`Parts::OVER_3D`, no occlusion by hills), the markers, compass and border follow over it, all
-/// through the relief camera (`Camera::project` lands on the terrain). *Why the tint comes after:*
+/// **In 3D** (`anim` has a [`Scene3dIn`] and the scene is `Ready`) the image, the roads, the race
+/// lines and the navigation route are the GL scene's, added as a paint callback over the plate;
+/// the tint, the POIs (`Parts::OVER_3D`, no occlusion by hills), the destination pin, the markers,
+/// compass and border follow over it, all through the relief camera (`Camera::project` lands on
+/// the terrain). The route and the pin come from `anim`'s `NavView` ([`MapAnim::set_nav`]), which
+/// the overlay renderer reads from `nav::view()` each frame. *Why the tint comes after:*
 /// it darkens the image so the white marker reads, and a callback is opaque, so a tint drawn
 /// before it would be hidden (it also dims the GL roads a little, 12 % in summer).
 pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAnim, map: Option<MapTex>, coop: &CoopLayer) -> bool {
@@ -515,9 +524,13 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     }
 
     // Race selection and the in-race focus (shared by the 2D roads and the GL ones).
-    let MapAnim { layers, icons, race_sel, .. } = anim;
+    let MapAnim { layers, icons, race_sel, nav, .. } = anim;
     let data = layers.as_deref().filter(|_| lc.wants_layers());
     let picked = data.map(|d| &*race_sel.update(&d.races, &lc.race_lines, car, snap.pkt.yaw, snap.pkt.race_position != 0));
+    // The navigation route and its destination (phase L), as the runtime published them; hidden in
+    // a race (the runtime sends no line then) and when switched off on this map.
+    let route = route_line(nav, &lc.nav_route);
+    let dest = route_dest(nav, &lc.nav_route);
 
     let hue = |h: f32| crate::ui::coop::hue_color(h);
     let at = coop.now.unwrap_or_else(Instant::now);
@@ -537,7 +550,7 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     // The 3D scene, over the plate (and, until it is Ready, over the 2D underlay).
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Some((sc, c3)) = &three {
-        use crate::maprender::gl3d::{add_scene, Focus3d, Race3d, Scene3d};
+        use crate::maprender::gl3d::{add_scene, Focus3d, Race3d, Route3d, Scene3d};
         let focus = data.zip(picked).and_then(|(d, rs)| {
             let focusing = rs.focus_line().is_some_and(|l| l < d.races.lines.len());
             // Other roads muted, hidden or gone; the race lines do not depend on it (D88).
@@ -568,6 +581,8 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 roads: lc.roads,
                 focus: focus.map(|focus| Focus3d { focus, cfg: lc.race_lines.focus }),
                 race,
+                // Phase L: the navigation route, its own small mesh (built once per line chunk).
+                route: route.and_then(|l| Route3d::new(l, &sc.terrain, lc.nav_route)),
                 // D77: the trails at their recorded heights (through a tunnel: in it, seen through the hill).
                 trails: trails.iter().filter_map(|(t, c)| map_shared::trail_3d(t, *c, fade, at)).collect(),
             },
@@ -579,11 +594,13 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
         }
     }
 
-    // Roads (2D only), race lines, POIs: the shared renderer, vectors cut to the pill's rounded
-    // corners (safe = the rect shrunk by the corner radius, which is wholly inside the pill).
-    if let (Some(data), Some(picked)) = (data, picked) {
+    // Roads (2D only), race lines, the navigation route (2D only), POIs: the shared renderer,
+    // vectors cut to the pill's rounded corners (safe = the rect shrunk by the corner radius,
+    // which is wholly inside the pill). Without layer data (every layer off, still loading) the
+    // route is all there is.
+    {
         let lp = p.with_clip_rect(rect);
-        draw_layers_parts(
+        draw_layers_or_route(
             &LayerCtx {
                 p: &lp,
                 cam,
@@ -592,8 +609,9 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
                 car,
                 corner_clip: Some(CornerClip { poly: &outline, safe: fr.safe(xf) }),
                 icons: icons.as_deref(),
-                race_sel: picked,
+                race_sel: picked.unwrap_or(&NO_SEL),
                 week: None,
+                nav: route.map(|l| &**l),
             },
             data,
             lc,
@@ -637,6 +655,14 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     for &(x, z, hue_deg) in &coop.waypoints {
         map_shared::draw_waypoint_in(&cv, (x, z), hue(hue_deg), car, now as f32, round);
     }
+    // The navigation destination (phase L): a pin in the route colour, in 3D at the terrain's height.
+    if let Some(d) = dest {
+        let ring = match &d.source {
+            crate::nav::DestSource::Shared { hue: h, .. } => Some(hue(*h)),
+            crate::nav::DestSource::Local => None,
+        };
+        map_shared::draw_destination_in(&cv, (d.x, d.z), lc.nav_route.color.color(1.0), ring, car, round);
+    }
 
     if cfg.compass {
         draw_compass_at(p, xf, fr.compass(), view.north_dir());
@@ -649,6 +675,9 @@ pub fn draw(p: &Painter, xf: &Xf, snap: &HudSnapshot, now: f64, anim: &mut MapAn
     }
     animating
 }
+
+/// No race lines: the selector of a draw without layer data (only the navigation route is drawn).
+static NO_SEL: std::sync::LazyLock<RaceSel> = std::sync::LazyLock::new(RaceSel::default);
 
 /// The snapshot's calibration, or the built-in default if it's unset (a zeroed snapshot).
 fn calibration(snap: &HudSnapshot) -> MapCalibration {

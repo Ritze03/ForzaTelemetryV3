@@ -14,6 +14,9 @@
 //! probe     what the context offers; the requirements
 //! ```
 //!
+//! The scene also carries the race lines ([`Race3d`], D88) and the navigation route ([`Route3d`],
+//! phase L), each its own small road mesh drawn after the roads, depth-tested like them.
+//!
 //! # How a map uses it (the shape of the call at all three sites)
 //!
 //! ```ignore
@@ -75,14 +78,16 @@ use std::time::{Duration, Instant};
 use egui::{PaintCallback, PaintCallbackInfo, Painter, Shape};
 use egui_glow::glow::{self, HasContext};
 
-use super::cfg::{RaceCfg, RaceFocusCfg, ReliefCfg, RoadsCfg};
+use super::cfg::{NavRouteCfg, RaceCfg, RaceFocusCfg, ReliefCfg, RoadsCfg};
 use super::mesh3d::RoadMesh;
 use super::paint2d::ImageLook;
 use super::racesel::{RaceDraw, RoadFocus};
+use super::terrain::Terrain;
 use super::view::Camera;
 use super::MapTex;
 use crate::minimap::MapCalibration;
-use scene::{Frame, Gl3d, RaceFrame};
+use crate::nav::NavLine;
+use scene::{Frame, Gl3d, NavFrame, RaceFrame};
 
 pub use marker::{Marker3d, Trail3d, TrailSeg, GROUND_BELOW_M};
 pub use probe::Caps;
@@ -201,6 +206,71 @@ pub struct Race3d {
     pub cfg: RaceCfg,
 }
 
+/// The navigation route in the scene (phase L, D84): its own small mesh, drawn as a road over the
+/// roads and the race lines, depth-tested like the race road (hills and decks hide it; tunnel
+/// stretches show through).
+#[derive(Clone)]
+pub struct Route3d {
+    /// The line the mesh was built from (`NavLine::rev` is the mesh's key).
+    pub line: Arc<NavLine>,
+    /// The route as a mesh (`RoadMesh::nav_route`), shared by every map that draws this line;
+    /// the GPU copy is replaced when this `Arc` changes.
+    pub mesh: Arc<RoadMesh>,
+    /// Colour and width factor.
+    pub cfg: NavRouteCfg,
+}
+
+/// The one route mesh the process holds: the HUD and the Dashboard map / Viewer draw the same
+/// route over the same terrain, so one build serves both threads.
+struct NavMeshEntry {
+    line_rev: u64,
+    terrain_rev: u64,
+    mesh: Arc<RoadMesh>,
+}
+
+static NAV_MESH: Mutex<Option<NavMeshEntry>> = Mutex::new(None);
+
+/// How many route meshes were built (tests: "rebuilt only when the line changes").
+#[cfg(test)]
+pub(crate) static NAV_MESH_BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Route3d {
+    /// The scene part for `line` over `terrain`: the cached mesh when `NavLine::rev` and the
+    /// terrain are the ones it was built from, else a fresh build. `None` for a line with fewer
+    /// than two points, or if the build panicked.
+    ///
+    /// **Built on the calling thread (the UI thread / the overlay thread), not off-thread - and
+    /// why that is fine:** a route mesh is small. Measured on the real install
+    /// (`tests::real_install_nav_route_mesh_cost`): the island-crossing route (node 1 to the
+    /// farthest node, 21.3 km, 1 025 points) is 3 180 samples / 26 k triangles / 347 KB and builds in
+    /// **0.51 ms release (6.2 ms debug)**, an 11 km one 0.28 ms (3.4 ms debug), a lone jump 0.04 ms;
+    /// the cached lookup is ~60 ns. It happens once per `NavLine::rev`, i.e. a new route or the
+    /// next 150 m chunk of the followed one (every few seconds of driving), never per frame. The
+    /// off-thread `store::race_mesh` pattern (thread, generation counter, the old line shown for a
+    /// frame after a change) pays for itself at 270 ms (all 170 race lines), not at half a
+    /// millisecond. The bytes then go to the GPU in `Gl3dState::step`, which keeps to one heavy
+    /// upload per callback (a route chunk is 0.3 MB).
+    pub fn new(line: &Arc<NavLine>, terrain: &Terrain, cfg: NavRouteCfg) -> Option<Route3d> {
+        if line.pts.len() < 2 {
+            return None;
+        }
+        let mut g = NAV_MESH.lock().unwrap_or_else(|e| e.into_inner());
+        let mesh = match g.as_ref().filter(|e| (e.line_rev, e.terrain_rev) == (line.rev, terrain.rev)) {
+            Some(e) => e.mesh.clone(),
+            None => {
+                // (a panic in the builder must not take the overlay thread down)
+                let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| RoadMesh::nav_route(&line.pts, &line.y, &line.seg_kind, terrain))).ok()?;
+                #[cfg(test)]
+                NAV_MESH_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mesh = Arc::new(built);
+                *g = Some(NavMeshEntry { line_rev: line.rev, terrain_rev: terrain.rev, mesh: mesh.clone() });
+                mesh
+            }
+        };
+        Some(Route3d { line: line.clone(), mesh, cfg })
+    }
+}
+
 /// Everything one frame of one map needs. Built per frame by the call site (cheap: `Arc`s and
 /// `Copy` configs), moved into the paint callback.
 #[derive(Clone)]
@@ -234,6 +304,9 @@ pub struct Scene3d {
     pub focus: Option<Focus3d>,
     /// The race lines of the current mode, hidden behind hills and decks like the roads (D88).
     pub race: Option<Race3d>,
+    /// The navigation route (phase L): independent of the race lines and of the in-race focus
+    /// ("race road only" does not hide it); hidden in a race by the runtime, not here.
+    pub route: Option<Route3d>,
     /// Breadcrumb trails at their recorded heights (D77), drawn after the roads.
     pub trails: Vec<Trail3d>,
 }
@@ -502,6 +575,12 @@ impl Gl3dState {
         } else {
             uploaded |= g.sync_race(gl, race_mesh)?;
         }
+        let nav_mesh = sc.route.as_ref().map(|r| &r.mesh);
+        if uploaded && !g.nav_is(nav_mesh) {
+            self.busy = true; // one heavy upload per callback: the route next frame
+        } else {
+            uploaded |= g.sync_nav(gl, nav_mesh)?;
+        }
         let ppp = info.pixels_per_point;
         let map = sc.map.and_then(|m| painter.texture(m.id).map(|t| (t, m.orig_size)));
         let frame = Frame {
@@ -520,6 +599,7 @@ impl Gl3dState {
             roads: (sc.roads.on && g.roads.is_some()).then_some(&sc.roads),
             focus: sc.focus.as_ref().map(|f| &f.cfg),
             race: sc.race.as_ref().map(|r| RaceFrame { roads: &sc.roads, cfg: &r.cfg, marks: &r.draw.marks }),
+            nav: sc.route.as_ref().filter(|_| g.nav.is_some()).map(|r| NavFrame { roads: &sc.roads, cfg: &r.cfg }),
             s: sc.s,
             trails: &sc.trails,
             sync_timing: self.opts.sync_timing,

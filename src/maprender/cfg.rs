@@ -562,6 +562,46 @@ impl TiltCfg {
     }
 }
 
+// ── navigation route ─────────────────────────────────────────────────────────────────────────
+
+/// The navigation route's look on a map (phase L, D84 / D92). The route itself comes from
+/// `nav::view()`; this is only how a map shows it. It is a road of its own, like the race road
+/// (D80): casing under a fill in `color`, round ends, in 3D a deck along the route's heights.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct NavRouteCfg {
+    /// Draw the route and the destination pin on this map.
+    pub on: bool,
+    /// Fill colour of the route and of a local destination's pin. Default fuchsia `#d946ef`: used
+    /// by no road type that is drawn (turnaround has it but is never drawn, D52) and clear of the
+    /// race colours (orange, pink).
+    pub color: Rgb,
+    /// Factor on the route's width (`1.0` = [`super::style::NAV_ROUTE_WIDTH`] on the roads' width
+    /// rule, i.e. a little wider than a highway).
+    pub width: f32,
+}
+
+impl Default for NavRouteCfg {
+    fn default() -> Self {
+        Self { on: true, color: Rgb::hex(0xd946ef), width: 1.0 }
+    }
+}
+
+impl NavRouteCfg {
+    /// Narrowest and widest `width` factor a map draws.
+    pub const WIDTH_RANGE: (f32, f32) = (0.5, 3.0);
+
+    /// `width` clamped to [`Self::WIDTH_RANGE`] (NaN = 1): what the renderers use, so a hand-edited
+    /// config cannot make the route invisible or fill the map.
+    pub fn width_factor(&self) -> f32 {
+        if self.width.is_finite() {
+            self.width.clamp(Self::WIDTH_RANGE.0, Self::WIDTH_RANGE.1)
+        } else {
+            1.0
+        }
+    }
+}
+
 // ── the whole thing ──────────────────────────────────────────────────────────────────────────
 
 /// The categories of a [`MapLayerConfig`] (= the settings cards of the Map tab). Race lines
@@ -573,9 +613,15 @@ pub enum LayerCategory {
     RaceLines,
     Roads,
     Pois,
+    /// The navigation route's look (L3); its card comes with the Navigation tab work (L5).
+    #[allow(dead_code)] // constructed by the card's "Copy to ..." row (L5); tested here
+    NavRoute,
 }
 
 impl LayerCategory {
+    /// The categories that have a card on the Map tab today. `NavRoute` joins when L5 adds its
+    /// card (the `ui.rs` copy test's fixture `two_maps` then needs differing `nav_route` values);
+    /// until then `cfg::tests` covers its copy explicitly.
     #[cfg(test)]
     pub const ALL: [LayerCategory; 5] =
         [LayerCategory::Image, LayerCategory::Tilt, LayerCategory::RaceLines, LayerCategory::Roads, LayerCategory::Pois];
@@ -591,6 +637,8 @@ pub struct MapLayerConfig {
     pub pois: PoisCfg,
     pub race_lines: RaceCfg,
     pub tilt: TiltCfg,
+    /// The navigation route and the destination pin (phase L, D84). Per map, like the rest.
+    pub nav_route: NavRouteCfg,
 }
 
 impl MapLayerConfig {
@@ -624,6 +672,7 @@ impl MapLayerConfig {
             LayerCategory::RaceLines => self.race_lines = from.race_lines,
             LayerCategory::Roads => self.roads = from.roads,
             LayerCategory::Pois => self.pois = from.pois.clone(),
+            LayerCategory::NavRoute => self.nav_route = from.nav_route,
         }
     }
 
@@ -720,6 +769,7 @@ mod tests {
         b.roads.casing_px = 3.0;
         b.pois.size_px = 20.0;
         b.pois.categories = vec!["barn_find".into()];
+        b.nav_route = NavRouteCfg { on: false, color: Rgb::hex(0x00ff88), width: 2.0 };
         b
     }
 
@@ -730,7 +780,36 @@ mod tests {
             LayerCategory::RaceLines => format!("{:?}", c.race_lines),
             LayerCategory::Roads => format!("{:?}", c.roads),
             LayerCategory::Pois => format!("{:?}", c.pois),
+            LayerCategory::NavRoute => format!("{:?}", c.nav_route),
         }
+    }
+
+    /// Every category, `NavRoute` included (it has no card yet, so it is not in `LayerCategory::ALL`).
+    fn all_categories() -> impl Iterator<Item = LayerCategory> {
+        LayerCategory::ALL.into_iter().chain([LayerCategory::NavRoute])
+    }
+
+    #[test]
+    fn nav_route_defaults_serde_and_old_configs() {
+        let d = NavRouteCfg::default();
+        assert_eq!((d.on, d.color, d.width), (true, Rgb([0xd9, 0x46, 0xef]), 1.0));
+        let json = serde_json::to_string(&MapLayerConfig::default()).unwrap();
+        assert!(json.contains(r##""nav_route":{"on":true,"color":"#d946ef","width":1.0}"##), "{json}");
+        assert_eq!(serde_json::from_str::<MapLayerConfig>(&json).unwrap(), MapLayerConfig::default());
+        // A config from before the navigation has no `nav_route`: the defaults (on, fuchsia).
+        let old: MapLayerConfig = serde_json::from_str(r#"{"tilt":{"on":true},"roads":{"min_px":2.0}}"#).unwrap();
+        assert_eq!(old.nav_route, d);
+        assert!(old.tilt.on && old.roads.min_px == 2.0);
+        // A partial one keeps the other defaults; a bad colour does not break the load.
+        let p: MapLayerConfig = serde_json::from_str(r##"{"nav_route":{"color":"#00ff00"}}"##).unwrap();
+        assert_eq!(p.nav_route, NavRouteCfg { color: Rgb([0, 255, 0]), ..d });
+        let b: MapLayerConfig = serde_json::from_str(r#"{"nav_route":{"on":false,"color":"nope"}}"#).unwrap();
+        assert!(!b.nav_route.on);
+        // The same on both maps' defaults, and the HUD variant.
+        assert_eq!(MapLayerConfig::hud().nav_route, d);
+        // The width the renderers use is clamped; NaN is 1.
+        let w = |width: f32| NavRouteCfg { width, ..d }.width_factor();
+        assert_eq!((w(0.0), w(99.0), w(1.7), w(f32::NAN)), (0.5, 3.0, 1.7, 1.0));
     }
 
     /// Copying a category changes that category on the target and nothing else; the source is
@@ -739,11 +818,11 @@ mod tests {
     fn copy_category_touches_only_its_category() {
         let a = MapLayerConfig::default();
         let b = all_different();
-        for cat in LayerCategory::ALL {
+        for cat in all_categories() {
             assert_ne!(section(&a, cat), section(&b, cat), "{cat:?}: the fixture must differ");
             let mut t = a.clone();
             t.copy_category(&b, cat);
-            for other in LayerCategory::ALL {
+            for other in all_categories() {
                 let want = if other == cat { section(&b, other) } else { section(&a, other) };
                 assert_eq!(section(&t, other), want, "copying {cat:?} gave {other:?} the wrong values");
             }
@@ -760,7 +839,7 @@ mod tests {
     fn copying_every_category_clones_the_config() {
         let b = all_different();
         let mut t = MapLayerConfig::dashboard();
-        for cat in LayerCategory::ALL {
+        for cat in all_categories() {
             t.copy_category(&b, cat);
         }
         assert_eq!(t, b);

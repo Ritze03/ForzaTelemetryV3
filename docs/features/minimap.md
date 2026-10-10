@@ -224,7 +224,7 @@ rotates the map. HUD plumbing: `HudSink::with_stick` stamps `HudSnapshot::look_s
 
 The Dashboard map and the HUD Minimap draw their markers with the same functions: `draw_own_arrow`,
 `draw_remotes` (teammate arrows, edge pointers, names, paused grey; in 3D the arrow is the GL car, `remote_markers_3d`, D89), `draw_trail` (+ `TrailFade`),
-`draw_waypoint`, and `draw_compass` (in `hud/minimap.rs`). Each takes a `MapCanvas` (painter,
+`draw_waypoint`, `draw_destination` (the navigation pin, phase L: [navigation.md](navigation.md) §3) and `draw_compass` (in `hud/minimap.rs`). Each takes a `MapCanvas` (painter,
 `MapView`, centre, bounds rect, size factor `s`, fade alpha `a`): the Dashboard passes `s = 1`,
 `a = 1`, the HUD its design scale and show/hide fade. Trail recording (`Trail`, `trail_push`) is
 shared in `src/minimap.rs`. *Why:* the user wants the HUD map to match the Dashboard's, and one
@@ -243,7 +243,7 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 
 | Module | What it holds |
 |---|---|
-| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
+| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt, the navigation route's look `nav_route`) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
 | `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `RoadLayer::joins` (`Joins`: an `End` per chain end + the `Overpass`es, D81), `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid + arc length per point `cum`). |
 | `icontex.rs` | `IconTex`: uploads the store's icon pixels as a texture **per egui context** and builds that context's `IconAtlas`. |
 | `store.rs` | The process-wide loader / cache: `layers()`, `refresh_now()`, thread `map-layers`. |
@@ -251,7 +251,7 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 | `style.rs` | Road draw order, the zoom-dependent width rule, dash patterns, the POI category table. |
 | `racesel.rs` | `RaceSel`: which race lines to draw, incl. the "current race" candidate tracking (D76) and the in-race focus (`RoadFocus`: which roads lie along what is drawn of the picked line). |
 | `ui.rs` | The settings UI (D63): `layers_ui` (the Image / View mode / Race lines / Roads / Points of interest cards, used by both Overlay-tab map tabs), `view_rows` + `ViewCfg` (zoom / orientation options of either config), `status_ui` (store status + `MapLayers::note`). |
-| `paint2d.rs` | `draw_base` (image mesh, far-edge fade) and `draw_layers` (roads, jumps, race lines, gate lines, POIs, the current chest) onto an egui `Painter`; `IconAtlas`, `CornerClip`. |
+| `paint2d.rs` | `draw_base` (image mesh, far-edge fade) and `draw_layers_parts` / `draw_layers_or_route` (roads, jumps, race lines, the navigation route, gate lines, POIs, the current chest) onto an egui `Painter`; `IconAtlas`, `CornerClip`. |
 
 ### Data model
 
@@ -321,8 +321,9 @@ folder, mirrored into `gamedata::install::USER_DIR` for the helper threads). One
 
 ### Drawing
 
-Order on the Dashboard: base image, then **`draw_layers`** (roads by type, jump lines, race lines with
-start / finish marks, POIs), then trails, teammates, own arrow, waypoints, compass.
+Order on the Dashboard: base image, then **`draw_layers_parts`** (roads by type, jump lines, race lines with
+start / finish marks, the **navigation route** (D84, below), POIs), then trails, teammates, own arrow, waypoints,
+the navigation destination pin, compass.
 
 - **CPU `Painter`, no baking.** One `Shape::line` per visible chain, every type's casing first, then
   every type's fill (D81; chain ends mitred or round-capped, overpasses outlined, see "Road joins and
@@ -663,6 +664,26 @@ EGL test device) at a 3 km zoom and the same at 300 m. A single route / a
 few picked lines (`current`, `nearest`, `near`) build in 0.1-6 ms. The mesh is rebuilt only when the
 drawn set changes (see `RaceSel::race_draw`), never for a change of colour, width or style.
 
+### Navigation route (phase L, D84)
+
+The route from the car to a clicked destination (`nav::view()`, see [navigation.md](navigation.md)) is
+drawn on all three maps in all view modes **as a road of its own, like the race road** (casing +
+opaque fill in `nav_route.color`, default fuchsia `#d946ef`, round ends, the roads' width rule x
+`style::NAV_ROUTE_WIDTH` 1.5 x `nav_route.width`), plus a destination pin. Details, the thread each
+map reads it on, the mesh cost and the config are in [navigation.md](navigation.md) §3; what matters
+for the renderer:
+
+- **Layer order:** roads, jump lines, race lines, **route**, POIs, then the markers and the pin.
+  "Race road only" (D82) does not hide it; the in-race `PausedRace` does (the runtime sends no line).
+- **2D / tilted:** `paint2d::draw_nav_route` through `draw_road_polylines`, the road branch of
+  `draw_race_lines` factored out; its jump stretches are dashed lines, not a deck over the gap.
+- **3D:** its own mesh (`RoadMesh::nav_route`, the race road's builder), `Scene3d::route` /
+  `Route3d`, its own pass after the race lines (`roads::nav_table`, bias above the race road),
+  depth-tested like the race road: hills and decks hide it, tunnel stretches (>= 4 m under the
+  terrain) go through. Built on the calling thread once per `NavLine::rev` (0.5 ms for a 21 km
+  route, release), not off-thread.
+- **Pin:** `hud::map_shared::draw_destination`, tip at the terrain's height in 3D.
+
 ### In-race focus (D66): other roads muted, POIs hidden
 
 *Why (the user, 2026-10-08):* "that it detects the right race is actually really nice, but ... there
@@ -908,8 +929,8 @@ radius, `ReliefCfg`, `RoadsCfg`, the optional in-race `Focus3d`), `add_scene(&Pa
 Scene3d)`, `Gl3dOptions` (requirements and test switches), `last_failure()`. Since D77 also
 `Scene3d::trails` (`Trail3d` / `TrailSeg`) and `add_marker(&Painter, &Gl3dHandle, MarkerScene)` with
 `Marker3d` (the own car, a callback of its own; see "3D: the own car and the trails in the scene"). The 2D-side step in
-`paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (POIs only: roads
-and, since D88, race lines are the scene's; `draw_layers` = `Parts::ALL`), POIs and the culling boxes go through `Camera::project` /
+`paint2d.rs`: `draw_layers_parts(cx, layers, cfg, Parts)` with `Parts::OVER_3D` (POIs only: roads,
+since D88 race lines and since phase L the navigation route are the scene's; `draw_layers_or_route` is what the call sites use, it also draws the route when there is no layer data), POIs and the culling boxes go through `Camera::project` /
 `k_at` / `footprint` (identical to the plane maths without a relief), `MapCanvas::to_screen`
 (`hud/map_shared.rs`) goes through `Camera::project`, so waypoints (and teammates without a height) sit on the
 terrain (teammates with a telemetry height: `to_screen_at`, see "Teammates at their real height"). In 3D the egui lines of `draw_layers` keep a constant width (`tapered` returns factor 1 for a
@@ -1233,6 +1254,7 @@ Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a 
 | POIs | on, hidden above a 10 km view, everywhere: barn finds, car meets, festival sites, houses, aftermarket spots + boards, speed traps, speed zones, trailblazers, drift zones, danger signs, current-season treasure chest; every other kind off but selectable | on, hidden above a 3 km view, only within 1 km of the car: festival sites, houses, speed traps, speed zones, trailblazers, drift zones, danger signs |
 | Race lines | current | current |
 | Tilt | off | on (40 deg, P 200 at 136 px, car 85 %, taper on) |
+| Navigation route (`nav_route`, phase L) | on, `#d946ef`, width 1.0 | same |
 | Existing keys (D62, D71) | radius 1 500 m driving / 4 500 m stopped, north-up (also when stopped), no compass | 500 m driving (3 000 m stopped), heading-up, no minimap plate (`map_plate_opacity` 0) |
 
 The existing Dashboard keys (`minimap_zoom_*_m`, `minimap_north_up`, `minimap_show_compass`) changed

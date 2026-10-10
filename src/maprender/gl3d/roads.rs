@@ -286,6 +286,33 @@ pub fn race_table(roads: &RoadsCfg, race: &crate::maprender::cfg::RaceCfg, scale
     t
 }
 
+/// The style table of the navigation route's own mesh (phase L, `RoadMesh::nav_route`): every slot
+/// in the route colour, opaque (its tunnel stretches at the road tunnels' alpha), the `Road`
+/// casing, width [`style::NAV_ROUTE_WIDTH`] x `nav.width` on the roads' width rule, no muting, one
+/// rank - the race road's look in the route's colour. The **jump** slot is the exception: a jump
+/// stretch is not a road, so it is a dashed line (the jump lines' 4 on / 3 off design px, solid
+/// when zoomed so far out that dashes are sub-pixel) at [`style::NAV_JUMP_WIDTH`].
+pub fn nav_table(roads: &RoadsCfg, nav: &crate::maprender::cfg::NavRouteCfg, scale: f32, s: f32, ppp: f32) -> StyleTable {
+    let mut t = style_table(roads, None, scale, s, ppp);
+    let c = rgb(nav.color);
+    let w = nav.width_factor();
+    let casing = rgb(roads.styles.road.casing_color);
+    let tunnel_alpha = roads.styles.tunnel.alpha.clamp(0.3, 1.0);
+    for slot in 0..SLOTS {
+        let alpha = if slot == crate::maprender::mesh3d::SLOT_TUNNEL as usize { tunnel_alpha } else { 1.0 };
+        t.a[slot] = [c[0], c[1], c[2], alpha];
+        t.b[slot] = [casing[0], casing[1], casing[2], style::NAV_ROUTE_WIDTH * w];
+        t.c[slot] = [0.0, 0.0, 1.0, 0.0];
+    }
+    let j = SLOT_JUMP as usize;
+    t.b[j][3] = style::NAV_JUMP_WIDTH * w;
+    if scale / s >= style::DASH_MIN_PX_PER_M {
+        t.c[j][0] = 4.0 * s / scale.max(1e-6);
+        t.c[j][1] = 3.0 * s / scale.max(1e-6);
+    }
+    t
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fill(t: &mut StyleTable, slot: usize, rank: usize, color: crate::maprender::cfg::Rgb, alpha: f32, factor: f32, dash: DashStyle, casing: Option<crate::maprender::cfg::Rgb>, base_car: f32, scale: f32, s: f32, dashes: bool) {
     let _ = s;
