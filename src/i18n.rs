@@ -1339,6 +1339,55 @@ fn de(s: &str) -> Option<&'static str> {
         "Places" => "Orte",
         "Collectibles" => "Sammelobjekte",
 
+        // ── First-run setup guide (I17) ──
+        "Setup guide" => "Einrichtungsassistent",
+        "Skip the guide" => "Assistent überspringen",
+        "Getting started" => "Erste Schritte",
+        "Open setup guide" => "Einrichtungsassistent öffnen",
+        "Skip" => "Überspringen",
+        "Next" => "Weiter",
+        "Finish" => "Fertig",
+        "Step" => "Schritt",
+        "Forza in-game setup" => "Einrichtung in Forza",
+        "The basics" => "Die Grundlagen",
+        "On" => "An",
+        "Enter in the game" => "Im Spiel eingeben",
+        "Packets arriving?" => "Kommen Pakete an?",
+        "Mini-Settings" => "Mini-Einstellungen",
+        "Where to find things" => "Wo du was findest",
+        "Open Setup" => "Setup öffnen",
+        "(game and app on the same PC)" => "(Spiel und App auf demselben PC)",
+        "(the app's listen port)" => "(der Listen-Port der App)",
+        "The app reads car names and the map from your Forza Horizon 6 install. Steam installs are found automatically. Otherwise start the game and use \"Detect from running game\", or enter the folder yourself."
+            => "Die App liest Fahrzeugnamen und die Karte aus deiner Forza-Horizon-6-Installation. Steam-Installationen werden automatisch gefunden. Sonst starte das Spiel und nutze \"Aus laufendem Spiel erkennen\" oder gib den Ordner selbst ein.",
+        "Hotkeys and the gearbox / backfire key presses need access to your keyboard devices. Green means ready. If something is red, run the commands, then log out and back in and press Re-check."
+            => "Hotkeys und die Tastendrücke für Getriebe / Backfire brauchen Zugriff auf deine Tastaturgeräte. Grün heißt bereit. Ist etwas rot, führe die Befehle aus, melde dich ab und wieder an und drücke Erneut prüfen.",
+        "Hotkeys and the overlay only react while the game window is in front, so the app has to read the active window. Pick the method for your desktop, then press Test: it shows the window that is active right now. Use Detect and click into the game within 3 seconds to set the game window title."
+            => "Hotkeys und das Overlay reagieren nur, solange das Spielfenster vorne ist, daher muss die App das aktive Fenster lesen. Wähle die Methode für deinen Desktop und drücke Test: Es zeigt das gerade aktive Fenster. Mit Detect und einem Klick ins Spiel innerhalb von 3 Sekunden setzt du den Spielfenstertitel.",
+        "Hotkeys and the overlay only react while the game window is in front. Press Test: it shows the window that is active right now. Use Detect and click into the game within 3 seconds to set the game window title."
+            => "Hotkeys und das Overlay reagieren nur, solange das Spielfenster vorne ist. Drücke Test: Es zeigt das gerade aktive Fenster. Mit Detect und einem Klick ins Spiel innerhalb von 3 Sekunden setzt du den Spielfenstertitel.",
+        "Tell the game to send its telemetry to this app. In Forza Horizon 6 open SETTINGS > HUD AND GAMEPLAY > Data Out and set the three values below. The screenshot shows how that screen looks."
+            => "Sage dem Spiel, dass es seine Telemetrie an diese App sendet. Öffne in Forza Horizon 6 EINSTELLUNGEN > HUD UND GAMEPLAY > Data Out und stelle die drei Werte unten ein. Der Screenshot zeigt, wie dieser Bildschirm aussieht.",
+        "Game on another PC? Use this PC's address instead:" => "Spiel auf einem anderen PC? Nimm stattdessen die Adresse dieses PCs:",
+        "Game on another PC? Use this PC's address in your network instead." => "Spiel auf einem anderen PC? Nimm stattdessen die Adresse dieses PCs in deinem Netzwerk.",
+        "The port in the screenshot is only an example: the game's port must equal the listen port above. Change it under Setup → Network."
+            => "Der Port im Screenshot ist nur ein Beispiel: Der Port im Spiel muss dem Listen-Port oben entsprechen. Ändere ihn unter Setup → Network.",
+        "Waiting for packets. Check the three values in the game, then start driving."
+            => "Warte auf Pakete. Prüfe die drei Werte im Spiel und fahre dann los.",
+        "That is the setup done. A few pointers for getting around:" => "Die Einrichtung ist fertig. Ein paar Hinweise zur Orientierung:",
+        "The cog wheel at the right end of the status bar (bottom) opens the Mini-Settings: the settings of the tab you are on, such as a Dashboard widget's options."
+            => "Das Zahnrad am rechten Ende der Statusleiste (unten) öffnet die Mini-Einstellungen: die Einstellungen des aktuellen Tabs, etwa die Optionen eines Dashboard-Widgets.",
+        "Setup → Hotkey lists every key binding, for example Hide HUD. Click a binding and press a key; Esc cancels, Backspace clears it."
+            => "Setup → Hotkey listet alle Tastenbelegungen auf, zum Beispiel HUD ausblenden. Klicke eine Belegung an und drücke eine Taste; Esc bricht ab, Rücktaste löscht sie.",
+        "Dashboard: your live telemetry widgets. Edit the layout to move or add them."
+            => "Dashboard: deine Live-Telemetrie-Widgets. Bearbeite das Layout, um sie zu verschieben oder hinzuzufügen.",
+        "Overlay: the in-game HUD (minimap, drive cluster, race block)."
+            => "Overlay: das HUD im Spiel (Minimap, Fahrzeuganzeige, Rennblock).",
+        "Map: the full-size map and all map settings." => "Karte: die Vollbild-Karte und alle Karteneinstellungen.",
+        "Setup → Profiles: save and switch whole setups." => "Setup → Profiles: ganze Einrichtungen speichern und wechseln.",
+        "This guide: Setup → Getting started → Open setup guide."
+            => "Dieser Assistent: Setup → Erste Schritte → Einrichtungsassistent öffnen.",
+
         _ => return None,
     })
 }

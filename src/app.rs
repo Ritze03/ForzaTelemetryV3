@@ -537,6 +537,7 @@ pub struct ForzaApp {
     pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete / Export / Import
     pub input_probe: crate::input::InputProbe, // D13: cached input-permission probe (Setup + startup modal)
     pub input_perm_modal_open: bool,         // D13: permissions modal currently showing
+    pub onboarding: Option<crate::ui::onboarding::State>, // I17/D33: first-run guide, Some while open (opened at launch while `config.onboarding_done` is false, or from Setup)
     pub input_prev_missing: bool,            // anything was missing at the previous refresh (modal re-shows on a transition into missing)
     pub input_perm_copied: Option<(usize, Instant)>, // D13: which fix command was just copied
     pub input_probe_task: crate::input::ProbeTask, // runs the input probe on a thread (it open()s every /dev/input node, ~150 ms); 2 s throttle
@@ -808,6 +809,8 @@ impl ForzaApp {
         let input_probe = crate::input::InputProbe::default();
         let input_prev_missing = false;
         let input_perm_modal_open = false;
+        // I17/D33: a fresh install (embedded default config) opens the setup guide; an existing config never does.
+        let onboarding = (!config.onboarding_done).then(crate::ui::onboarding::State::new);
         let mut input_probe_task = crate::input::ProbeTask::default();
         {
             let (kbs, ready) = (hotkeys.active_keyboards(), input.uinput_ready());
@@ -901,6 +904,7 @@ impl ForzaApp {
             profile_dialog: ProfileDialog::None,
             input_probe,
             input_perm_modal_open,
+            onboarding,
             input_prev_missing,
             input_perm_copied: None,
             input_probe_task,
@@ -2730,6 +2734,7 @@ impl eframe::App for ForzaApp {
             Tab::Debug => crate::ui::debug_tab::show(ui, self),
         });
 
+        crate::ui::onboarding::show(ctx, self);
         crate::ui::settings::input_perm_modal(ctx, self);
 
         // Mute every hotkey / pad source while a rebind capture is armed (keyboard, Hide HUD or

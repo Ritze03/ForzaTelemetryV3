@@ -933,6 +933,13 @@ pub struct AppConfig {
     /// D13: suppress the startup "input permissions missing" modal (Linux). Machine-specific,
     /// so excluded from profile export/import.
     pub input_perm_dont_remind: bool,
+    /// I17/D33: the first-run onboarding guide was finished or skipped. `true` for every config
+    /// that lacks the key (an existing install upgrading must NOT get the guide); only the
+    /// embedded fresh-install default (`assets/default-config.json`) says `false`. Machine-
+    /// specific and not part of a profile: excluded from export/import and kept across a
+    /// profile switch. See `docs/features/onboarding.md`.
+    #[serde(default = "default_true")]
+    pub onboarding_done: bool,
     /// FH6 install folder for the car-name database (Setup → Game Install). Empty = auto-detect.
     /// Machine-specific, so excluded from profile export/import.
     pub fh6_install_dir: String,
@@ -1121,6 +1128,7 @@ impl Default for AppConfig {
             always_on_top: false,
             experimental_pause_detection: true,
             input_perm_dont_remind: false,
+            onboarding_done: true,
             fh6_install_dir: String::new(),
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
@@ -1545,7 +1553,7 @@ const OVERLAY_KEYS: &[&str] = &["overlay"];
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
 const EXPORT_EXCLUDE: &[&str] = &[
-    "active_profile", "input_perm_dont_remind", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page",
+    "active_profile", "input_perm_dont_remind", "onboarding_done", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page",
 ];
 
 /// One selectable group in the export/import tree.
@@ -1898,12 +1906,14 @@ impl AppConfig {
         };
         // UI memory, not part of a profile
         let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
+        let onboarding_done = self.onboarding_done; // machine state: a profile snapshot must not re-open the guide
         let reset = match serde_json::from_str::<serde_json::Value>(&data) {
             // full snapshot = overlay every key
             Ok(overlay) => apply_preset_overlay(self, overlay),
             Err(_) => vec!["<invalid JSON>".to_string()],
         };
         (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
+        self.onboarding_done = onboarding_done;
         if !reset.is_empty() {
             eprintln!("profile {}: could not read: {}", path.display(), reset.join(", "));
             if !backed_up {
@@ -3113,5 +3123,50 @@ mod recovery_tests {
         assert_eq!(cfg.dsg_tuning_race.cruise_rpm_pct, 77.0, "the saved sibling field is kept");
         assert_eq!(cfg.dsg_tuning_race.accel_gamma, AppConfig::default().dsg_tuning_race.accel_gamma);
         assert_eq!(cfg.grid_cols, 33);
+    }
+
+    // ── I17 / D33: first-run onboarding flag ─────────────────────────────────────────────
+
+    #[test]
+    fn fresh_install_opens_onboarding_and_done_persists() {
+        use_data_dir("onboarding-fresh");
+        let mut cfg = AppConfig::load(); // no config.json on disk: the embedded default
+        assert!(!cfg.onboarding_done, "a fresh install shows the guide");
+        cfg.save(); // an autosave while the guide is open keeps it open for the next launch
+        assert!(!AppConfig::load().onboarding_done);
+        cfg.onboarding_done = true; // finished or skipped
+        cfg.save();
+        assert!(AppConfig::load().onboarding_done, "done persists: it does not reopen");
+    }
+
+    #[test]
+    fn existing_config_without_the_flag_does_not_get_the_guide() {
+        use_data_dir("onboarding-upgrade");
+        // A config written by a version before the flag existed: every key but this one.
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("onboarding_done");
+        std::fs::write(AppConfig::path(), v.to_string()).unwrap();
+        assert!(AppConfig::load().onboarding_done);
+        // ...also a minimal one, and one whose other values are unreadable.
+        assert!(AppConfig::parse("{}").0.onboarding_done);
+        assert!(AppConfig::parse(r#"{"grid_cols":"x"}"#).0.onboarding_done);
+    }
+
+    #[test]
+    fn embedded_default_is_the_only_one_with_the_guide_open() {
+        assert!(!AppConfig::parse(DEFAULT_CONFIG_JSON).0.onboarding_done);
+        assert!(AppConfig::default().onboarding_done);
+    }
+
+    #[test]
+    fn a_profile_snapshot_never_reopens_the_guide() {
+        use_data_dir("onboarding-profile");
+        let mut snapshot = AppConfig::default();
+        snapshot.onboarding_done = false; // e.g. saved while the guide was still open
+        let path = profile_path("Other");
+        std::fs::write(&path, serde_json::to_string(&snapshot).unwrap()).unwrap();
+        let mut live = AppConfig::default();
+        live.apply_profile_file(&path);
+        assert!(live.onboarding_done);
     }
 }
