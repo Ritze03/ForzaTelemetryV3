@@ -535,6 +535,14 @@ impl CoopState {
         self.inner.lock().unwrap().dest_view()
     }
 
+    /// While the room's destination is cleared: the id of the player who cleared it (`None` while
+    /// one is set, or nothing was set / cleared in this session). The Navigation tab uses it to
+    /// drop this player's own copy of a destination a teammate cleared for everyone.
+    pub fn cleared_by(&self) -> Option<String> {
+        let i = self.inner.lock().unwrap();
+        i.dest.as_ref().filter(|d| d.pos.is_none()).map(|d| d.setter_id.clone())
+    }
+
     /// Change counter of the shared destination ([`CoopReader::destination_seq`]).
     #[allow(dead_code)]
     pub fn destination_seq(&self) -> u64 {
@@ -1162,6 +1170,9 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
             std::thread::sleep(Duration::from_millis(500));
             continue 'reconnect;
         }
+        // Push it out now: the host waits at most 10 s for Hello, and without telemetry (game
+        // not running) nothing else would flush it. A would-block is left to the loop's flush.
+        let _ = ws.flush();
 
         let (tx, rx) = mpsc::sync_channel::<Message>(256);
         {
@@ -1322,6 +1333,14 @@ fn spawn_tunnel(
                     g.status = "Tunnel ready".into();
                     g.connecting = false;
                 }
+            }
+            // The pipe closed (cloudflared exited) before it printed a URL: the LAN server is
+            // still up, so say so instead of "Starting tunnel…" forever.
+            let mut g = inner.lock().unwrap();
+            if !stop.load(Ordering::Relaxed) && g.role == Role::Host && g.words.is_none() && g.connecting {
+                g.error = Some("cloudflared exited without a tunnel".into());
+                g.status = "Server up (LAN only — no tunnel)".into();
+                g.connecting = false;
             }
         });
     }
@@ -1899,11 +1918,10 @@ mod tests {
             let url = format!("ws://127.0.0.1:{port}");
             std::thread::spawn(move || client_loop(url, "Guest".into(), 50.0, g, stop));
         }
-        // The client writes Hello without flushing; any outgoing frame pushes it out (in the app
-        // that is the first telemetry packet), so send a waypoint to stand in for it.
+        // Hello is flushed on its own: no telemetry / waypoint is needed for the host to welcome
+        // the client (the host gives up after 10 s without one).
         let st = CoopState { inner: guest.clone(), stop: stop.clone(), port: 0 };
         wait_for("client connects", || guest.lock().unwrap().client_out.is_some());
-        st.set_waypoint(Some((0.0, 0.0)), 50.0);
         // Late-join resend, taken over by the client path with the host's id.
         wait_for("client adopts the host's destination", || guest.lock().unwrap().dest_view().is_some());
         let d = guest.lock().unwrap().dest_view().unwrap();

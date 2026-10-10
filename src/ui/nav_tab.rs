@@ -40,6 +40,47 @@ pub struct NavState {
     /// Filters or slider changed: tell the room (if this player's destination is in it) once the
     /// pointer is released, not on every frame of a slider drag.
     resend: bool,
+    /// When this co-op session came up, to share a destination set before joining.
+    join: JoinWatch,
+    /// The room's destination last frame (in a session), to notice a teammate clearing ours.
+    room_seen: Option<crate::coop::SharedDest>,
+}
+
+/// Shares a destination that existed before the session (set earlier, or saved from the last
+/// run) once per session, [`JOIN_GRACE`] after the session is up: by then a late joiner has
+/// received the room's own destination (the host / peers resend it right after the handshake),
+/// so [`room_op`] can leave a room that already has one alone.
+#[derive(Default, Debug)]
+struct JoinWatch {
+    /// When the session was first seen up (`None`: not yet, or co-op is off).
+    since: Option<std::time::Instant>,
+    /// Already decided for this session.
+    done: bool,
+}
+
+/// How long after the session is up the join share waits for the room's destination.
+const JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// `session`: co-op is on; `up`: the session is connected and this player has its id (listed
+/// in the roster). True once per session, [`JOIN_GRACE`] after `up` was first seen.
+fn join_due(w: &mut JoinWatch, session: bool, up: bool, now: std::time::Instant) -> bool {
+    if !session {
+        *w = JoinWatch::default();
+        return false;
+    }
+    if w.done {
+        return false;
+    }
+    let since = match w.since {
+        Some(t) => t,
+        None if up => *w.since.insert(now),
+        None => return false,
+    };
+    if now.duration_since(since) < JOIN_GRACE {
+        return false;
+    }
+    w.done = true;
+    true
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -127,6 +168,43 @@ pub fn sync(app: &mut ForzaApp, ctx: &egui::Context) {
         app.nav_ui.resend = false;
         room_event(app, RoomEvent::PrefsChanged, &v);
     }
+    let session = app.coop.role() != crate::coop::Role::Off;
+    // A host's room exists at once (its tunnel may still be starting); a client is up once
+    // connected and welcomed.
+    let host = app.coop.role() == crate::coop::Role::Host;
+    let up = session && !app.nav_ui.join.done && (host || !app.coop.is_connecting()) && {
+        let me = app.coop.my_id();
+        app.coop.roster().iter().any(|p| p.id == me)
+    };
+    if join_due(&mut app.nav_ui.join, session, up, std::time::Instant::now()) {
+        room_event(app, RoomEvent::Joined, &v);
+    }
+    let room = if session { app.coop.destination() } else { None };
+    let prev = std::mem::replace(&mut app.nav_ui.room_seen, room.clone());
+    if room.is_none() && session {
+        let by = app.coop.cleared_by();
+        if cleared_by_teammate(prev.as_ref(), by.as_deref(), &app.coop.my_id(), app.config.nav.destination) {
+            app.config.nav.destination = None;
+            push_inputs(app);
+        }
+    }
+}
+
+/// The room's destination was this player's own (`prev`, last frame) and a teammate has just
+/// cleared it for everyone (`cleared_by`, the clearer, while the room has none): the own copy of
+/// it (`local`, the saved destination the share came from) goes too, or "Clear for everyone"
+/// would leave the setter navigating there. Not when this player took it back themselves
+/// (sharing switched off: the clearer is them) or the session ended (no clearer).
+fn cleared_by_teammate(prev: Option<&crate::coop::SharedDest>, cleared_by: Option<&str>, my_id: &str, local: Option<[f32; 2]>) -> bool {
+    let Some(p) = prev else { return false };
+    p.setter_id == my_id && cleared_by.is_some_and(|by| by != my_id) && local == Some([p.x, p.z])
+}
+
+/// Before the config is saved at exit: an arrival the UI has not seen yet (the window was
+/// covered by the game, so no frame ran since) must not leave the old destination in the file.
+pub fn take_arrival_now(app: &mut ForzaApp) {
+    let v = nav::view();
+    take_arrival(&mut app.nav_ui.seen, v.local_cleared_seq, nav::local_destination(), &mut app.config.nav.destination);
 }
 
 fn push_inputs(app: &mut ForzaApp) {
@@ -165,6 +243,8 @@ pub(crate) enum RoomEvent {
     ShareToggled,
     /// Their filters or slider changed.
     PrefsChanged,
+    /// The session came up (a few seconds ago) and this player had a destination already.
+    Joined,
 }
 
 /// What to do to the room.
@@ -195,6 +275,8 @@ pub(crate) struct RoomCtx {
 ///   does not follow (`follow_shared` off) is left alone.
 /// * Sharing switched on with a destination: send it. Switched off: take this player's own out of
 ///   the room (a teammate's stays).
+/// * Joined a session with a destination already set: send it if sharing is on and the room has
+///   none (a room's destination is not replaced by one that only predates the join).
 /// * Filters / slider changed: the room's copy of this player's destination carries the old
 ///   ones, so send it again (the navigator routes a shared destination, even one's own, with the
 ///   room's filters).
@@ -208,6 +290,10 @@ pub(crate) fn room_op(ev: RoomEvent, nav: &NavConfig, c: &RoomCtx) -> Option<Roo
         RoomEvent::ShareToggled => match nav.destination {
             Some(p) if nav.share_destination => Some(RoomOp::Set(p)),
             _ if !nav.share_destination && c.room_has && c.room_mine => Some(RoomOp::Clear),
+            _ => None,
+        },
+        RoomEvent::Joined => match nav.destination {
+            Some(p) if nav.share_destination && !c.room_has => Some(RoomOp::Set(p)),
             _ => None,
         },
         RoomEvent::PrefsChanged => match nav.destination {
@@ -621,7 +707,7 @@ mod tests {
     #[test]
     fn nothing_goes_to_the_room_outside_a_session() {
         let off = RoomCtx::default();
-        for ev in [RoomEvent::Set([1.0, 2.0]), RoomEvent::Clear, RoomEvent::ShareToggled, RoomEvent::PrefsChanged] {
+        for ev in [RoomEvent::Set([1.0, 2.0]), RoomEvent::Clear, RoomEvent::ShareToggled, RoomEvent::PrefsChanged, RoomEvent::Joined] {
             assert_eq!(room_op(ev, &cfg(true, Some([1.0, 2.0])), &off), None, "{ev:?}");
         }
     }
@@ -654,6 +740,44 @@ mod tests {
         assert_eq!(room_op(RoomEvent::ShareToggled, &cfg(true, None), &ctx(false, false, false)), None, "no destination, nothing to share");
         assert_eq!(room_op(RoomEvent::ShareToggled, &cfg(false, Some(p)), &ctx(true, true, false)), Some(RoomOp::Clear));
         assert_eq!(room_op(RoomEvent::ShareToggled, &cfg(false, Some(p)), &ctx(true, false, false)), None, "a teammate's stays");
+    }
+
+    #[test]
+    fn a_destination_set_before_joining_is_shared_unless_the_room_has_one() {
+        let p = [1.0, 2.0];
+        assert_eq!(room_op(RoomEvent::Joined, &cfg(true, Some(p)), &ctx(false, false, false)), Some(RoomOp::Set(p)));
+        assert_eq!(room_op(RoomEvent::Joined, &cfg(true, Some(p)), &ctx(true, false, true)), None, "the room's stays");
+        assert_eq!(room_op(RoomEvent::Joined, &cfg(false, Some(p)), &ctx(false, false, false)), None, "sharing off");
+        assert_eq!(room_op(RoomEvent::Joined, &cfg(true, None), &ctx(false, false, false)), None, "nothing to share");
+    }
+
+    #[test]
+    fn a_teammate_clearing_my_shared_destination_clears_my_copy() {
+        let mine = crate::coop::SharedDest { setter_id: "me".into(), setter_name: "Me".into(), x: 1.0, z: 2.0, hue: 0.0, filter_bits: 1, curve: 0.0, ts: 5 };
+        let theirs = crate::coop::SharedDest { setter_id: "mate".into(), ..mine.clone() };
+        let local = Some([1.0, 2.0]);
+        assert!(cleared_by_teammate(Some(&mine), Some("mate"), "me", local));
+        assert!(!cleared_by_teammate(Some(&mine), Some("me"), "me", local), "taken back by me (sharing off): keep my own");
+        assert!(!cleared_by_teammate(Some(&mine), None, "me", local), "session over: keep it");
+        assert!(!cleared_by_teammate(Some(&theirs), Some("mate"), "me", local), "a teammate's: my own stays underneath");
+        assert!(!cleared_by_teammate(Some(&mine), Some("mate"), "me", Some([9.0, 9.0])), "I have another one by now");
+        assert!(!cleared_by_teammate(None, Some("mate"), "me", local));
+    }
+
+    #[test]
+    fn the_join_share_fires_once_per_session_after_the_grace() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut w = JoinWatch::default();
+        assert!(!join_due(&mut w, true, false, t0), "connecting");
+        assert!(!join_due(&mut w, true, true, t0 + Duration::from_secs(5)), "up: the grace starts now");
+        assert!(!join_due(&mut w, true, true, t0 + Duration::from_secs(7)));
+        assert!(join_due(&mut w, true, true, t0 + Duration::from_secs(8)));
+        assert!(!join_due(&mut w, true, true, t0 + Duration::from_secs(20)), "once per session");
+        assert!(!join_due(&mut w, true, false, t0 + Duration::from_secs(21)), "a reconnect does not repeat it");
+        assert!(!join_due(&mut w, false, false, t0 + Duration::from_secs(22)), "session over");
+        assert!(!join_due(&mut w, true, true, t0 + Duration::from_secs(30)), "next session: grace again");
+        assert!(join_due(&mut w, true, true, t0 + Duration::from_secs(33)));
     }
 
     #[test]

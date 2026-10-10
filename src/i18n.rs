@@ -1408,6 +1408,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Clear route" => "Route löschen",
         "Clear for everyone" => "Für alle löschen",
         "Clears the destination for the whole co-op room." => "Löscht das Ziel für den ganzen Koop-Raum.",
+        "Clears the destination and its route." => "Löscht das Ziel und seine Route.",
         "Dirt" => "Schotter",
         "Jumps" => "Sprünge",
         "Paved roads, also those of another or unknown type. Tunnels are driven when Road or Highway is on. Turnaround crossovers are never used."

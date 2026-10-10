@@ -197,15 +197,20 @@ fn session_panel(ui: &mut Ui, app: &mut ForzaApp, role: Role) {
                     ui.add_space(8.0);
                     stop_button(ui, app, tr("Cancel"));
                 } else {
-                    ui.label(tr("Share this code so others can join"));
-                    ui.add_space(2.0);
-                    match app.coop.words() {
-                        Some(words) => share_code(ui, app, &words),
-                        None => {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().size(16.0));
-                                ui.label(RichText::new(tr("Starting tunnel…")).color(Color32::GRAY));
-                            });
+                    let words = app.coop.words();
+                    // No code and none coming (cloudflared missing or exited, the status says
+                    // "LAN only"): no "Starting tunnel…" spinner, the LAN address is all there is.
+                    if words.is_some() || app.coop.is_connecting() {
+                        ui.label(tr("Share this code so others can join"));
+                        ui.add_space(2.0);
+                        match words {
+                            Some(words) => share_code(ui, app, &words),
+                            None => {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Spinner::new().size(16.0));
+                                    ui.label(RichText::new(tr("Starting tunnel…")).color(Color32::GRAY));
+                                });
+                            }
                         }
                     }
                     if let Some(lan) = app.coop.lan_url() {

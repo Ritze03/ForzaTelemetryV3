@@ -994,6 +994,9 @@ relief camera: its row-based depth scale is a flat-plane formula); the GL roads 
   `gl3d_terrain_levels_do_not_pop` (synthetic) and `gl3d_real_install_terrain_levels_do_not_pop`
   assert the worst-frame share stays below 0.01 % / 0.05 %; the `#[cfg(test)]` hook `clipmap::LOD_CAR`
   makes `scene.rs` place the levels for another car position to render the "previous frame".
+  `clipmap::LOD_CAR` (the pop tests' stale-levels override) is thread-local so the gl3d tests are
+  safe to run in parallel; tests that build nav routes take `NAV_LOCK` because `Route3d::new`
+  caches one mesh process-wide.
 - **Roads** (`roads.rs`, shaders): static GPU ribbons from K1's `RoadMesh`; heights, deck, width,
   colour, dashes and focus are all uniforms / per-vertex shader work, so no setting re-uploads
   anything. Node heights vs terrain drape is one uniform, cross-country always draped, jump lines
@@ -1071,8 +1074,8 @@ llvmpipe draw the same pictures (ES has no timer query). On llvmpipe (6 cores, r
 ~16 ms, roads ~10 ms, one step per frame.
 
 **Tests** (`gl3d/tests.rs`, headless EGL through `overlay::gl::Headless::new_with(Flavour, device)`;
-GL tests are `#[ignore]`, run `GL3D_PNG_DIR=dir cargo test gl3d -- --ignored --test-threads=1
---nocapture`, GLES 3.0 needs `MESA_GLES_VERSION_OVERRIDE=3.0` in the environment of its own
+GL tests are `#[ignore]`, run `GL3D_PNG_DIR=dir cargo test gl3d -- --ignored
+--nocapture` (parallel-safe, see the geomorph note), GLES 3.0 needs `MESA_GLES_VERSION_OVERRIDE=3.0` in the environment of its own
 process, `GL3D_DEVICE=<n>` runs the real-scene test on another EGL device): `gl3d_default_gl`,
 `gl3d_gles30`, `gl3d_llvmpipe` (HUD at ppp 1 / 1.5, Dashboard, roads of every type by colour, markers
 over the 3D, rounded mask, `get_error() == 0`, target FBO restored, PNGs),

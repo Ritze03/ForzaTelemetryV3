@@ -343,7 +343,8 @@ pub fn draw_waypoint(cv: &MapCanvas, wp: (f32, f32), colour: Color32, car: (f32,
 pub fn draw_waypoint_in(cv: &MapCanvas, (wx, wz): (f32, f32), colour: Color32, car: (f32, f32), time: f32, round: bool) {
     let s = cv.s;
     let mut at = cv.to_screen(wx, wz);
-    if !cv.within(at, 6.0 * s, round) {
+    let on_map = cv.within(at, 6.0 * s, round);
+    if !on_map {
         let d = at - cv.rect.center();
         at = cv.rect.center() + cv.pin(d, 8.0 * s, round);
     }
@@ -356,7 +357,13 @@ pub fn draw_waypoint_in(cv: &MapCanvas, (wx, wz): (f32, f32), colour: Color32, c
     ));
     cv.p.circle_filled(at, 2.5 * s, cv.c(Color32::WHITE));
     let dist = (wx - car.0).hypot(wz - car.1);
-    shadowed(cv, at + vec2(0.0, -12.0 * s), egui::Align2::CENTER_BOTTOM, &distance_text(dist), FontId::proportional(10.0 * s), colour);
+    if on_map {
+        shadowed(cv, at + vec2(0.0, -12.0 * s), egui::Align2::CENTER_BOTTOM, &distance_text(dist), FontId::proportional(10.0 * s), colour);
+    } else {
+        // Inwards of the pinned diamond, so a left / right edge does not cut the text in half.
+        let lpos = at - (at - cv.rect.center()).normalized() * 20.0 * s;
+        shadowed(cv, lpos, egui::Align2::CENTER_CENTER, &distance_text(dist), FontId::proportional(10.0 * s), colour);
+    }
 }
 
 /// Where the navigation destination pin's tip stands on screen (phase L): the clicked world point
@@ -395,7 +402,10 @@ pub fn draw_destination_in(cv: &MapCanvas, dest: (f32, f32), colour: Color32, ri
         if let Some(r) = ring {
             cv.p.circle_stroke(at, 6.5 * s, Stroke::new(1.6 * s, cv.c(r)));
         }
-        shadowed(cv, at + vec2(0.0, -10.0 * s), egui::Align2::CENTER_BOTTOM, &distance_text(dist), FontId::proportional(10.0 * s), colour);
+        // The distance goes inwards of the dot (as for an off-map teammate): above it, it was half
+        // cut off on the left / right edge.
+        let lpos = at - (at - cv.rect.center()).normalized() * 16.0 * s;
+        shadowed(cv, lpos, egui::Align2::CENTER_CENTER, &distance_text(dist), FontId::proportional(10.0 * s), colour);
         return;
     }
     let (head, r) = (at - vec2(0.0, 13.0 * s), 6.0 * s);

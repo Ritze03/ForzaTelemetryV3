@@ -330,7 +330,10 @@ a white centre and a black outline, the distance from the car above it. A destin
 shared (D85) has a **ring in the setter's hue** round the head. *Why the fill is always the route
 colour and the hue only a ring (the D85 "your call"):* the pin and the route read as one thing,
 and the ring says whose it is without making a green pin lead a fuchsia route. Off the map it is a
-dot on the edge (the circle's edge on the round Minimap) with the distance, like the waypoint.
+dot on the edge (the circle's edge on the round Minimap) with the distance placed 16 px inwards of
+it (like an off-map teammate; above the dot it was cut in half on a left / right edge), like the
+waypoint (whose off-map label moved inwards the same way). The pin's distance is the straight line
+from the car, not the route's remaining distance (that is on the tab).
 
 ### Config (`MapLayerConfig::nav_route: NavRouteCfg`, per map)
 
@@ -354,7 +357,7 @@ and width, HUD fade alpha), not in `Parts::OVER_3D`, hidden with `on = false`, d
 data, drawn with "Race road only", tapered in a tilted view, jump stretches dashed with no road over
 the gap, degenerate lines; `route_line` / `route_dest` per `NavStatus`. `mesh3d`: tunnel / jump /
 cap structure of the route mesh. `map_shared`: the pin projects through the camera onto the terrain
-in 3D. `gl3d` (headless GL, `#[ignore]`, `cargo test gl3d -- --ignored --test-threads=1`): over the
+in 3D. `gl3d` (headless GL, `#[ignore]`, `cargo test gl3d -- --ignored`, parallel-safe since #229): over the
 road it runs on, with race road only, through a hill (tunnel), a dashed jump, hidden behind a hill
 and under a deck, mesh rebuilt only when `rev` changes and uploaded once (and unaffected by a colour
 change), in all three GL flavours (`suite`), real-install routes (`gl3d_real_install_nav_route`,
@@ -421,6 +424,7 @@ One pure function, `map_tab::click_action(pane, click, shift, armed, in_session)
 |---|---|---|
 | left click | **set destination** | waypoint (only in a co-op session); **set destination** if Shift is held or the *Set destination* button is armed |
 | right click | nothing | clear waypoint (in a session); while armed: just disarm |
+| *Clear route* button | (the ROUTE card's) | shown while there is a destination; reads *Clear for everyone* (with a tooltip) while the destination is the room's, as on the tab |
 | Esc | - | disarms |
 
 The destination point is `map_scene::pick(&cam, pos)` (2D / tilted / 3D terrain ray-march), the same
@@ -444,7 +448,9 @@ and a profile switch keeps the live destination but takes the profile's filters)
 
 `nav_tab::sync` runs once per frame in `ForzaApp::update` before any tab draws:
 
-1. **Arrival:** `take_arrival(seen, view.local_cleared_seq, nav::local_destination(), &mut cfg.nav.destination)`:
+1. **Arrival:** `take_arrival(seen, view.local_cleared_seq, nav::local_destination(), &mut cfg.nav.destination)`
+   (also run by `take_arrival_now` in `on_exit` before the final save: an arrival while the game
+   covered the window has had no UI frame to take it over):
    when the navigator counted an arrival, the saved destination is cleared **once** (the counter
    moves once per arrival; `seen` starts at 0 and the counter at 0, so a destination loaded at
    startup is never cleared by the first frame). If the navigator holds a destination again (a click
@@ -467,6 +473,12 @@ calls `CoopState::set_destination` / `clear_destination`, which do nothing outsi
 
 * **Set** (a click): sent to the room when *Share my destination* is on, with the player colour
   (`coop_hue`), `filters.to_bits()` and `curves`.
+* **A teammate cleared this player's shared destination** ("Clear for everyone"): the own saved copy
+  (the destination the share came from) is cleared too (`cleared_by_teammate`, from the room's
+  destination last frame and `CoopState::cleared_by()`, the tombstone's setter). *Why:* without it the
+  setter's navigator fell back to its local copy of the same point, so "Clear for everyone" left the
+  setter's route standing (found live in QC). Not when this player took it back (sharing off: the
+  clearer is them) or the session ended (no tombstone).
 * **Clear**: clears the room's when the destination being cleared is a shared one: followed (anyone's,
   also with sharing off: anyone may clear it for everyone), or this player's own while sharing. A
   teammate's destination that is not followed (`follow_shared` off) is left alone.
@@ -479,12 +491,19 @@ calls `CoopState::set_destination` / `clear_destination`, which do nothing outsi
 * **Receiving** needs no UI: the listener thread hands the room's destination to the tracker (section
   5); the tab only displays it. A teammate's destination overrides this player's own while
   *Follow shared destinations* is on; the own one and the own filters are back when it ends.
-* A destination set *before* joining a session is not sent on joining; set it again or toggle
-  *Share my destination*. A click while a teammate's destination is followed and sharing is off sets
+* **Joined** with a destination already set (set before the session, or saved from the last run):
+  sent once per session, 3 s (`JOIN_GRACE`) after the session is up and this player is in the roster,
+  **only if the room has no destination by then** (`JoinWatch` / `join_due`, `RoomEvent::Joined`).
+  *Why the wait and the condition:* a late joiner receives the room's destination right after the
+  handshake; a saved destination from yesterday must not replace the group's current one (one slot,
+  last write wins), and the joiner then follows the room's instead. A host starting a session with a
+  destination shares it (the room is empty). A reconnect does not repeat it.
+* A click while a teammate's destination is followed and sharing is off sets
   the own destination but the teammate's keeps winning (one slot, last write wins; Clear first).
 
 Tests: `ui::nav_tab::tests` (bridge: startup does not clear, arrival clears once, same-frame click is
-kept, only changed inputs are pushed; `room_op` table incl. outside a session; formatting; the split;
+kept, only changed inputs are pushed; `room_op` table incl. outside a session and the join share;
+`join_due` once per session after the grace; `cleared_by_teammate`; formatting; the split;
 the four cards stay inside the pane at 240 / 280 / 360 px in English and German over every status incl.
 a shared destination with a very long name; read-only followed filters), `ui::map_tab::tests`
 (`clicks_on_the_maps_do_what_each_map_promises`, `viewer_controls_stay_inside_the_tab` with the new

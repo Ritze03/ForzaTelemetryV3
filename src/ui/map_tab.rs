@@ -39,6 +39,7 @@ use crate::theme;
 
 /// The viewer's state (not saved: where you left the view is not worth a config key; the tab
 /// opens on the car).
+#[derive(Default)]
 pub struct MapTabState {
     /// The user's pan and zoom over the base view (the car, at the Dashboard map's eased zoom,
     /// `ForzaApp::minimap_current_zoom`). Temporary: it
@@ -52,11 +53,6 @@ pub struct MapTabState {
     pub dest_armed: bool,
 }
 
-impl Default for MapTabState {
-    fn default() -> Self {
-        Self { manual: ManualView::default(), race_sel: Default::default(), dest_armed: false }
-    }
-}
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     if app.config.map_tab_settings {
@@ -218,11 +214,13 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
     }
 
     // Controls on top of the map (drawn after it, so they take the clicks).
-    let has_dest = crate::nav::view().dest.is_some();
+    let dest_now = crate::nav::view().dest;
+    let has_dest = dest_now.is_some();
+    let shared = dest_now.is_some_and(|d| matches!(d.source, crate::nav::DestSource::Shared { .. }));
     if which == MapPane::Navigation && !has_dest {
         crate::ui::nav_tab::hint_pill(ui, rect);
     }
-    let dest_btn = (which == MapPane::Viewer).then(|| DestButton { armed: state_ref(app, which).dest_armed, has_dest });
+    let dest_btn = (which == MapPane::Viewer).then(|| DestButton { armed: state_ref(app, which).dest_armed, has_dest, shared });
     let manual = state_ref(app, which).manual.is_manual();
     let out = controls(ui, rect, manual, zoom_m, app.config.minimap_show_compass, dest_btn);
     if out.follow {
@@ -248,6 +246,8 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
 pub(crate) struct DestButton {
     pub armed: bool,
     pub has_dest: bool,
+    /// The destination is the co-op room's: Clear clears it for everyone (as on the Navigation tab).
+    pub shared: bool,
 }
 
 /// What the buttons over a map pane asked for this frame.
@@ -291,7 +291,10 @@ fn controls(ui: &mut Ui, rect: Rect, manual: bool, zoom_m: f32, compass: bool, d
                 .on_hover_text(tr("Click, then click the map to navigate there. Shift+click does the same without this button; right-click or Esc cancels."))
                 .clicked();
             if d.has_dest {
-                out.clear = ui.add(theme::secondary_button(format!("{}  {}", icons::TIMES, tr("Clear route")))).clicked();
+                let label = if d.shared { tr("Clear for everyone") } else { tr("Clear route") };
+                let b = ui.add(theme::secondary_button(format!("{}  {}", icons::TIMES, label)));
+                let tip = if d.shared { tr("Clears the destination for the whole co-op room.") } else { tr("Clears the destination and its route.") };
+                out.clear = b.on_hover_text(tip).clicked();
             }
         }
     });
@@ -657,8 +660,8 @@ mod tests {
         // (what the viewer adds, text shapes it adds)
         let dests = [
             (None, 0),
-            (Some(DestButton { armed: false, has_dest: false }), 1),
-            (Some(DestButton { armed: true, has_dest: true }), 2),
+            (Some(DestButton { armed: false, has_dest: false, shared: false }), 1),
+            (Some(DestButton { armed: true, has_dest: true, shared: true }), 2),
         ];
         for lang in [Language::English, Language::German] {
             with_language(lang, || {
