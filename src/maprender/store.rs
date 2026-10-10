@@ -23,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::data::{GameData, MapLayers};
 use super::mesh3d::RoadMesh;
+use super::racesel::RaceDraw;
 use super::terrain::Terrain;
 use crate::minimap::Season;
 
@@ -153,11 +154,21 @@ struct MeshState {
     building: Option<(u64, u64)>,
 }
 
+/// The race lines' mesh cache ([`Store::race_mesh`], D88): the newest finished mesh with the
+/// drawn set and terrain it was built for, and the key of the build in flight (the `Arc`s are
+/// held, so a pointer compare cannot be fooled by a reused address).
+#[derive(Default)]
+struct RaceMeshState {
+    data: Option<(Arc<RaceDraw>, u64, Arc<RoadMesh>)>,
+    building: Option<(Arc<RaceDraw>, u64)>,
+}
+
 pub struct Store {
     src: Arc<dyn Source>,
     inner: Arc<Mutex<Inner>>,
     terrain: Arc<Mutex<TerrainState>>,
     mesh: Arc<Mutex<MeshState>>,
+    race_mesh: Arc<Mutex<RaceMeshState>>,
 }
 
 fn lock(m: &Mutex<Inner>) -> std::sync::MutexGuard<'_, Inner> {
@@ -166,7 +177,7 @@ fn lock(m: &Mutex<Inner>) -> std::sync::MutexGuard<'_, Inner> {
 
 impl Store {
     pub fn new(src: impl Source) -> Store {
-        Store { src: Arc::new(src), inner: Arc::new(Mutex::new(Inner::default())), terrain: Arc::new(Mutex::new(TerrainState::default())), mesh: Arc::new(Mutex::new(MeshState::default())) }
+        Store { src: Arc::new(src), inner: Arc::new(Mutex::new(Inner::default())), terrain: Arc::new(Mutex::new(TerrainState::default())), mesh: Arc::new(Mutex::new(MeshState::default())), race_mesh: Arc::new(Mutex::new(RaceMeshState::default())) }
     }
 
     /// The install's `media` folder with the debounced lookup (Steam detection reads the
@@ -286,6 +297,41 @@ impl Store {
         m.data.clone()
     }
 
+    /// The 3D mesh of the race lines the scene draws (D88: every line of the mode, up to all 170 =
+    /// ~1 000 km). Same contract as [`Store::road_mesh`]: the newest finished mesh, which is the
+    /// previous drawn set's while the build for `draw` runs on the `map-race-mesh` thread this
+    /// call starts (so a new pick shows the old lines for a moment, never a blank), `None` before
+    /// the first finishes. Cheap to poll every frame: the same `draw` and terrain give the same
+    /// `Arc`, and the renderer re-uploads only when it changes. The longest single route (85 km)
+    /// builds in ~5 ms, all 170 in the order of 100 ms: never on the UI thread.
+    pub fn race_mesh(&self, draw: &Arc<RaceDraw>, terrain: &Arc<Terrain>) -> Option<Arc<RoadMesh>> {
+        let want = (draw, terrain.rev);
+        let mut m = self.race_mesh.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh = m.data.as_ref().is_some_and(|(d, t, _)| Arc::ptr_eq(d, draw) && *t == want.1);
+        if !fresh && m.building.is_none() {
+            m.building = Some((draw.clone(), terrain.rev));
+            let (draw, terrain, state) = (draw.clone(), terrain.clone(), self.race_mesh.clone());
+            let spawned = std::thread::Builder::new().name("map-race-mesh".into()).spawn(move || {
+                let t0 = Instant::now();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| RoadMesh::race_roads(&draw.lines, &terrain)));
+                let mut m = state.lock().unwrap_or_else(|e| e.into_inner());
+                m.building = None;
+                match r {
+                    Ok(mesh) => {
+                        eprintln!("3D race mesh: {} lines built in {} ms ({} samples)", draw.lines.len(), t0.elapsed().as_millis(), mesh.samples.len());
+                        m.data = Some((draw, terrain.rev, Arc::new(mesh)));
+                    }
+                    Err(_) => eprintln!("3D race mesh: the builder panicked"),
+                }
+            });
+            if let Err(e) = spawned {
+                eprintln!("3D race mesh: could not start the builder thread: {e}");
+                m.building = None;
+            }
+        }
+        m.data.as_ref().map(|(_, _, mesh)| mesh.clone())
+    }
+
     fn spawn_terrain(&self, media: PathBuf) {
         let (src, state) = (self.src.clone(), self.terrain.clone());
         let key = media.clone();
@@ -403,6 +449,11 @@ pub fn layers() -> Layers {
 #[allow(dead_code)] // phase K: see Store::road_mesh
 pub fn road_mesh(layers: &Arc<MapLayers>, terrain: &Arc<Terrain>) -> Option<Arc<RoadMesh>> {
     global().road_mesh(layers, terrain)
+}
+
+/// The process-wide 3D race mesh (see [`Store::race_mesh`]).
+pub fn race_mesh(draw: &Arc<RaceDraw>, terrain: &Arc<Terrain>) -> Option<Arc<RoadMesh>> {
+    global().race_mesh(draw, terrain)
 }
 
 /// The process-wide 3D terrain (see [`Store::terrain`]). Call it only while a map is in 3D mode:
@@ -729,5 +780,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(s.road_mesh(&layers2, &terrain2).unwrap().terrain_rev, terrain2.rev);
+    }
+
+    #[test]
+    fn the_race_mesh_is_built_off_thread_and_follows_the_drawn_set() {
+        use crate::maprender::racesel::{RaceDraw, RaceRoad};
+        let (s, _) = fake();
+        let terrain = Arc::new(Terrain::synthetic());
+        let line = |z: f32| RaceRoad { pts: (0..20).map(|i| [i as f32 * 10.0, z]).collect(), y: vec![0.0; 20], closed: false };
+        let a = Arc::new(RaceDraw { lines: vec![line(0.0)], marks: vec![] });
+        let wait = |draw: &Arc<RaceDraw>| {
+            for _ in 0..500 {
+                if let Some(m) = s.race_mesh(draw, &terrain) {
+                    if s.race_mesh.lock().unwrap().data.as_ref().is_some_and(|d| Arc::ptr_eq(&d.0, draw)) {
+                        return m;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the race mesh did not finish");
+        };
+        let ma = wait(&a);
+        assert!(!ma.samples.is_empty());
+        assert!(Arc::ptr_eq(&ma, &s.race_mesh(&a, &terrain).unwrap()), "same set: the same mesh, no rebuild");
+        // A new drawn set: the old mesh is served until the new one is ready.
+        let b = Arc::new(RaceDraw { lines: vec![line(0.0), line(50.0)], marks: vec![] });
+        let stale = s.race_mesh(&b, &terrain).unwrap();
+        assert!(Arc::ptr_eq(&stale, &ma) || stale.samples.len() > ma.samples.len());
+        let mb = wait(&b);
+        assert!(mb.samples.len() > ma.samples.len());
     }
 }
