@@ -440,7 +440,7 @@ style that is a circle would also be neat."
 tab's Minimap page** together with all the layer settings, see [map-tab.md](map-tab.md). They
 used to be in the cog-wheel **Mini-Settings**, tab **Overlay** ("Minimap" and "Co-Op" sections);
 D79 moved them (the user: all map settings belong on the Map tab; Mini-Settings -> Overlay keeps
-only Notifications).
+only Notifications), D90 finished the job (nothing map-related is left in Mini-Settings).
 
 | Field | Default | Meaning |
 |---|---|---|

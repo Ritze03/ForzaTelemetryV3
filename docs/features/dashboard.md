@@ -115,7 +115,7 @@ Available widget kinds (`WidgetKind` in `src/config.rs`), rendered by
 ## Enabling / disabling widgets
 
 The mini-settings **Dashboard → Modules** sub-tab lists every widget kind as a
-checkbox: unchecking one adds it to `disabled_modules` (hidden from the grid
+checkbox (except **Map**, which is on the Map tab since D90, see [[map-tab]]): unchecking one adds it to `disabled_modules` (hidden from the grid
 without losing its saved position/size). **Position** is disabled by default.
 Right-clicking a module's checkbox re-parks it below the rest of the layout
 (useful after re-enabling one that no longer fits).
@@ -125,6 +125,5 @@ Right-clicking a module's checkbox re-parks it below the rest of the layout
 The cog "mini-settings" popup (`DashboardSubTab` in `src/app.rs`) has one sub-tab
 per concern: **General** (edit mode, grid size, grid/outline/title visibility),
 **Modules**, **Km/h**, **Gear**, **RPM**, **Sprint**, **Tires**, **Suspension**,
-**Shift**, **Engine**, **G-Force**, **Inputs**, **Boost**, **Power Graph**,
-and **Map** — each tunes the corresponding widget(s) above. (Config export/import
+**Shift**, **Engine**, **G-Force**, **Inputs**, **Boost** and **Power Graph** — each tunes the corresponding widget(s) above. (Config export/import
 moved out of here into the Settings → Profiles card — see [[profiles]].)

@@ -1012,6 +1012,23 @@ impl ForzaApp {
         self.minimap_loaded_season = s;
     }
 
+    /// The Dashboard map module was switched on or off (Map tab → Dashboard map & Viewer → *Show
+    /// Dashboard map*; it was Mini-Settings → Dashboard → Modules → Map until D90): load the map
+    /// image when it came on and nothing holds one, drop the texture when it went off.
+    pub fn dashboard_map_toggled(&mut self) {
+        if self.config.disabled_modules.contains(&crate::config::WidgetKind::MiniMap) {
+            self.minimap_texture = None;
+            self.minimap_img_receiver = None;
+        } else if self.minimap_texture.is_none() && self.minimap_img_receiver.is_none() {
+            let (tx, rx) = mpsc::channel::<MapLoadMessage>();
+            let (s, q) = (current_season(), self.config.minimap_quality);
+            std::thread::spawn(move || map_load_thread(s, q, tx));
+            self.minimap_error = None;
+            self.minimap_img_receiver = Some(rx);
+            self.minimap_loaded_season = s;
+        }
+    }
+
     /// Open the map editor in the browser (I26b). Starts the local server and builds the map data
     /// on a background thread first (the browser opens when that is done: `MapEvent::Ready`, see
     /// `poll_map_editor`); with a server already running in the same `start_from` mode it just
@@ -2363,7 +2380,7 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Engine,
                                         WidgetKind::Position, WidgetKind::Race,
                                         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
-                                        WidgetKind::MiniMap, WidgetKind::CoopPlayers, WidgetKind::Trace,
+                                        WidgetKind::CoopPlayers, WidgetKind::Trace,
                                         WidgetKind::Boost, WidgetKind::SessionStats,
                                         WidgetKind::PowerGraph, WidgetKind::BoostGraph,
                                     ] {
@@ -2376,25 +2393,9 @@ impl eframe::App for ForzaApp {
                                         if resp.changed() {
                                             if enabled {
                                                 self.config.disabled_modules.retain(|k| k != &kind);
-                                                if kind == WidgetKind::MiniMap
-                                                    && self.minimap_texture.is_none()
-                                                    && self.minimap_img_receiver.is_none()
-                                                {
-                                                    let (tx, rx) = mpsc::channel::<MapLoadMessage>();
-                                                    let s = current_season();
-                                                    let q = self.config.minimap_quality;
-                                                    std::thread::spawn(move || { map_load_thread(s, q, tx); });
-                                                    self.minimap_error = None;
-                                                    self.minimap_img_receiver = Some(rx);
-                                                    self.minimap_loaded_season = s;
-                                                }
                                             } else {
                                                 if !self.config.disabled_modules.contains(&kind) {
                                                     self.config.disabled_modules.push(kind.clone());
-                                                }
-                                                if kind == WidgetKind::MiniMap {
-                                                    self.minimap_texture = None;
-                                                    self.minimap_img_receiver = None;
                                                 }
                                             }
                                         }
@@ -2805,6 +2806,22 @@ mod tests {
             "Show co-op teammates", "Show shared waypoints", "Show trails",
         ] {
             assert!(!src.contains(&format!("tr(\"{label}")), "Mini-Settings still draws the map control \"{label}\"");
+        }
+    }
+
+    /// D90: the Mini-Settings window body (labels aside) touches no map or co-op-map config and no
+    /// map state: the Dashboard map's on/off switch (Modules -> Map) was the last one left.
+    #[test]
+    fn mini_settings_window_touches_no_map_config() {
+        let src = include_str!("app.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").expect("tests module")];
+        let a = src.find("egui::Window::new(\"page_settings_win\")").expect("Mini-Settings window");
+        let body = &src[a..a + src[a..].find("let hovered = win_resp").expect("end of window")];
+        for needle in [
+            "minimap_", "map_layers", "WidgetKind::MiniMap", "config.overlay.map_", "o.map_", "o.minimap_",
+            "coop_trail", "coop_map_playerlist", "coop_list_", "coop_teammates", "coop_waypoints", "coop_trails",
+        ] {
+            assert!(!body.contains(needle), "Mini-Settings window still uses `{needle}`");
         }
     }
 
