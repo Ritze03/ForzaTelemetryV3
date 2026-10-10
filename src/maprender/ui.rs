@@ -15,6 +15,7 @@ use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Stroke, TextureId, Ui};
 use super::cfg::{
     DashStyle, ImageCfg, LayerCategory, MapLayerConfig, MarkerStyle, OtherRoads, PoisCfg, RaceCfg, RaceLineMode, RoadStyles, RoadTypeStyle, RoadHeight, RoadsCfg, ReliefCfg, RouteStyle, TiltCfg, ViewMode,
 };
+use super::cfg::NavRouteCfg;
 use super::paint2d::IconAtlas;
 use super::store::{LayerStatus, Layers};
 use super::style::{self, Shape};
@@ -402,14 +403,14 @@ pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut
     let mut win3d = windows_3d;
     let cp = CopyCtx { which, minimap_follows, out: Default::default() };
     let cp = &cp;
-    // (`nav_route: _`: its card and "Copy to ..." row come with the Navigation tab, task L5)
-    let MapLayerConfig { image, roads, pois, race_lines, tilt, nav_route: _ } = cfg;
+    let MapLayerConfig { image, roads, pois, race_lines, tilt, nav_route } = cfg;
     let mut plate = plate;
     let mut image_card_ = |ui: &mut Ui| image_card(ui, image, plate.as_mut().map(|(v, e)| (&mut **v, *e)), enabled, cp);
     let mut tilt_card_ = |ui: &mut Ui| tilt_card(ui, tilt, enabled, cp, win3d.as_deref_mut());
     let mut race_card_ = |ui: &mut Ui| race_lines_card(ui, race_lines, enabled, cp);
     let mut roads_card_ = |ui: &mut Ui| roads_card(ui, roads, enabled, cp);
     let mut pois_card_ = |ui: &mut Ui| pois_card(ui, pois, icons, enabled, cp);
+    let mut nav_card_ = |ui: &mut Ui| nav_route_card(ui, nav_route, enabled, cp);
     ui.spacing_mut().item_spacing.x = 8.0; // inter-column gap
     let n = if three { 3 } else { 2 };
     theme::columns(ui, n, |uis| {
@@ -422,10 +423,12 @@ pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut
             tilt_card_(&mut uis[0]);
             race_card_(&mut uis[0]);
             roads_card_(&mut uis[1]);
+            nav_card_(&mut uis[1]);
             pois_card_(&mut uis[2]);
         } else {
             lead(&mut uis[0]);
             roads_card_(&mut uis[0]);
+            nav_card_(&mut uis[0]);
             image_card_(&mut uis[1]);
             tilt_card_(&mut uis[1]);
             race_card_(&mut uis[1]);
@@ -433,6 +436,27 @@ pub fn layers_ui(ui: &mut Ui, cfg: &mut MapLayerConfig, ax: LayerAux, lead: &mut
         }
     });
     cp.out.take()
+}
+
+/// The navigation route's look on this map (phase L): on / off, colour and width. The route comes
+/// from the Navigation tab or the Viewer; this is only how the map draws it.
+fn nav_route_card(ui: &mut Ui, c: &mut NavRouteCfg, enabled: bool, cp: &CopyCtx) {
+    theme::card(ui, tr("Navigation route"), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            theme::checkbox_row(ui, &mut c.on, tr("On")).on_hover_text(tr(
+                "Draw the navigation route and the destination pin on this map. It is hidden during a race.",
+            ));
+            ui.add_enabled_ui(c.on, |ui| {
+                control_row(ui, tr("Colour"), |ui| {
+                    egui::color_picker::color_edit_button_srgb(ui, &mut c.color.0);
+                });
+                let (lo, hi) = NavRouteCfg::WIDTH_RANGE;
+                theme::slider_row(ui, tr("Width"), &mut c.width, lo..=hi, 0.1, 1, "×")
+                    .on_hover_text(tr("1× is a little wider than a highway."));
+            });
+        });
+        card_copy_row(ui, cp, LayerCategory::NavRoute);
+    });
 }
 
 fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, enabled: bool, cp: &CopyCtx) {
@@ -1083,11 +1107,15 @@ mod tests {
         c.overlay.map_layers.image.opacity = 0.11;
         c.overlay.map_layers.tilt.angle_deg = 11.0;
         c.overlay.map_layers.race_lines.focus.mute_alpha = 0.11;
+        c.overlay.map_layers.nav_route.color = Rgb::hex(0x111111);
+        c.overlay.map_layers.nav_route.width = 1.1;
         c.minimap_layers.roads.styles.road.color = Rgb::hex(0x222222);
         c.minimap_layers.pois.size_px = 22.0;
         c.minimap_layers.image.opacity = 0.22;
         c.minimap_layers.tilt.angle_deg = 22.0;
         c.minimap_layers.race_lines.focus.mute_alpha = 0.22;
+        c.minimap_layers.nav_route.color = Rgb::hex(0x222222);
+        c.minimap_layers.nav_route.width = 2.2;
         c
     }
 

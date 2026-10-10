@@ -21,7 +21,8 @@ The navigation reference — read these to move around the source efficiently.
 - [Dashboard](features/dashboard.md) — the draggable widget grid, Edit Mode, and every available widget.
 - [Minimap](features/minimap.md) — seasonal map rendering, north-up/heading-up, trails, waypoints.
 - [In-game HUD Overlay](features/overlay.md) — the click-through wlr-layer-shell HUD over FH6 (Linux/Wayland): widgets, race/drift detection, visibility, monitor detection, the Overlay tab, and the overlay thread's architecture.
-- [Navigation](features/navigation.md) — routing core (`src/nav/`): route graph from the nav roads + road types, road-type filters, faster-roads/more-curves cost model, snapping, A*; the runtime (listener-thread tracker, `nav-route` worker, off-route / race / arrival / shared-destination rules, `nav::view()`); drawing / tab sections are filled in by later tasks.
+- [Navigation](features/navigation.md) — routing core (`src/nav/`): route graph from the nav roads + road types, road-type filters, faster-roads/more-curves cost model, snapping, A*; the runtime (listener-thread tracker, `nav-route` worker, off-route / race / arrival / shared-destination rules, `nav::view()`); the drawing on the maps; the Navigation tab (layout, click rules, config bridge, co-op sharing UI) and the Viewer's Set destination.
+- [features/onboarding.md](features/onboarding.md) — first-run setup guide (I17/D33): steps, first-run flag and why existing users don't see it, re-open from Setup, Forza Data Out screenshot
 - [Co-Op](features/coop.md) — shared telemetry over a cloudflared tunnel; remote players on the map.
 - [Backfire](features/backfire.md) — synthetic anti-lag / throttle-blip.
 - [Automatic Gearbox](features/gearbox.md) — DSG-style auto-shifter with per-car calibration.

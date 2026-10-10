@@ -20,7 +20,7 @@ The map fills the tab, drawn by the **same scene code as the Dashboard's Map wid
 (`map_scene::draw`, extracted from `dashboard::show_minimap_widget`; the shared renderer
 `maprender::draw_base` + `draw_layers`, D61): satellite image, roads, POIs, race lines, trails, co-op
 teammates, the own arrow, shared waypoints (click drops one, right-click clears, as on the
-Dashboard map), compass, the co-op player list. It uses the Dashboard's already loaded map
+Dashboard map), the navigation route and destination pin, compass, the co-op player list. It uses the Dashboard's already loaded map
 texture (`app.minimap_texture`) and POI icons (`app.minimap_icons`): no second copy.
 `ForzaApp::ensure_map_image` starts the load when the Dashboard map module is off (the startup
 load skips it), and reloads when the season changed under such a texture. Without an install the
@@ -46,6 +46,17 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   *Why (the user, 2026-10-09):* "only show the Follow Car button, while it isn't following the car
   at the moment". Before, it was always there (lit while following) and, with nothing manual,
   pressing it froze the view; that freeze (`ManualView::pin_centre`) is gone with the button.
+- **Set destination** (bottom right, left of Settings; phase L): a toggle button. Armed (accent
+  fill, crosshair cursor) the next left click sets the navigation destination and disarms; a right
+  click or Esc disarms. **Shift+left-click** sets it without arming. A plain left click stays the
+  co-op waypoint and a right click still clears it. **Clear route** appears beside it while a
+  destination exists. The rule is one pure function, `map_tab::click_action(pane, click, shift,
+  armed, in_session)`, tested by `clicks_on_the_maps_do_what_each_map_promises`. *Why a toggle and not
+  a right-click menu:* the right click already clears the waypoint and a menu would change that;
+  the button is discoverable and works without co-op (waypoints need a session). The Navigation
+  tab's map is the same code (`map_tab::map_pane`, `MapPane::Navigation`, its own view state
+  `NavState.map`) where every left click sets the destination; see `docs/features/navigation.md`.
+  The small Dashboard map widget has no click handling for it (D84).
 - **Settings** (**bottom right**, cog) switches the tab to the settings mode. The zoom radius is shown
   bottom left. *Why bottom right (the user, 2026-10-09):* "the settings are in the top right, but
   that's also where the co-op thingy draws ... just move the settings button to the bottom right."
@@ -187,6 +198,10 @@ of interest) or two, and edits a `MapLayerConfig`. Above the cards a status line
 layer store's state (no install / loading / loaded / error) and `MapLayers::note` (e.g. "your
 saved road types were ignored").
 
+- **Navigation route** (phase L, below Roads): **On**, **Colour** (default fuchsia `#d946ef`),
+  **Width** (factor, 0.5-3, 1 = a little wider than a highway), per map (`MapLayerConfig::nav_route`,
+  `LayerCategory::NavRoute`) with its own Copy to…. Only how the route is drawn; the route itself is
+  set and routed from the Navigation tab. Hidden in races regardless.
 - **Image:** satellite on/off, opacity, brightness, saturation (approximate, a grey veil); HUD
   only: **Map plate opacity** (`overlay.map_plate_opacity`, the minimap's own plate, not the
   General tab's *Plate opacity*); the same field is also on the Overlay tab -> Minimap page
@@ -302,7 +317,7 @@ a button that basically overrides the other map with the same settings, so I can
 them in between."
 
 - **Where:** a small right-aligned **Copy to…** menu button at the end of every card: Image,
-  View mode, Race lines (incl. the in-race focus), Roads, Points of interest, and the page's
+  View mode, Race lines (incl. the in-race focus), Roads, Navigation route, Points of interest, and the page's
   lead card (**View**). It lists the other map and **Both**. A pick overwrites **that
   category only** on the target; every other category is untouched. The button then reads
   "Copied" for 1.5 s (`copy_menu`, time kept in egui's temp memory).
@@ -334,10 +349,10 @@ them in between."
 
 `ui::test_render` panes at 700 / 1000 / 1100 / 1235 px, **English and German** (the language is
 a process-wide static: such tests go through `i18n::with_language`, which serialises them): the
-Minimap and Dashboard map & Viewer pages (six cards each, seven on the Dashboard page with its
+Minimap and Dashboard map & Viewer pages (seven cards each, eight on the Dashboard page with its
 Co-Op card; following the Dashboard, module off, every layer status), the Race lines card with
 either style and *Race road only*, the controls that came from Mini-Settings (D79) incl. the Map
-image card, the viewer's buttons (inside the tab, bottom right / left, Follow car only while
+image card, the viewer's buttons (inside the tab, bottom right / left incl. Set destination / Clear route, Follow car only while
 manual, never overlapping the compass or the co-op list), the module selector at the window minimum (three pages), the remembered
 state (saved, not exported), old configs with `viewer_*` keys / `map_tab_page: "viewer"`, the road
 width range; the Map data

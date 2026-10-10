@@ -613,18 +613,22 @@ pub enum LayerCategory {
     RaceLines,
     Roads,
     Pois,
-    /// The navigation route's look (L3); its card comes with the Navigation tab work (L5).
-    #[allow(dead_code)] // constructed by the card's "Copy to ..." row (L5); tested here
+    /// The navigation route's look: the "Navigation route" card.
     NavRoute,
 }
 
 impl LayerCategory {
-    /// The categories that have a card on the Map tab today. `NavRoute` joins when L5 adds its
-    /// card (the `ui.rs` copy test's fixture `two_maps` then needs differing `nav_route` values);
-    /// until then `cfg::tests` covers its copy explicitly.
+    /// The categories that have a card on the Map tab (the `ui.rs` copy test's fixture `two_maps`
+    /// needs differing values in every one of them).
     #[cfg(test)]
-    pub const ALL: [LayerCategory; 5] =
-        [LayerCategory::Image, LayerCategory::Tilt, LayerCategory::RaceLines, LayerCategory::Roads, LayerCategory::Pois];
+    pub const ALL: [LayerCategory; 6] = [
+        LayerCategory::Image,
+        LayerCategory::Tilt,
+        LayerCategory::RaceLines,
+        LayerCategory::Roads,
+        LayerCategory::Pois,
+        LayerCategory::NavRoute,
+    ];
 }
 
 /// Everything the shared renderer draws besides the markers (own arrow, co-op, compass).
@@ -784,9 +788,9 @@ mod tests {
         }
     }
 
-    /// Every category, `NavRoute` included (it has no card yet, so it is not in `LayerCategory::ALL`).
+    /// Every category.
     fn all_categories() -> impl Iterator<Item = LayerCategory> {
-        LayerCategory::ALL.into_iter().chain([LayerCategory::NavRoute])
+        LayerCategory::ALL.into_iter()
     }
 
     #[test]

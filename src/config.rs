@@ -1113,6 +1113,11 @@ pub struct AppConfig {
     /// Selected page of the Map tab's settings (UI memory, [`EXPORT_EXCLUDE`]).
     #[serde(default)]
     pub map_tab_page: MapPage,
+    /// Navigation (phase L, D83-D85): the Navigation tab's road-type filters, the faster /
+    /// more-curves slider, this player's destination and the two co-op switches. Not exported
+    /// with presets ([`EXPORT_EXCLUDE`]): the destination is a personal trip.
+    #[serde(default)]
+    pub nav: crate::nav::NavConfig,
 }
 
 impl Default for AppConfig {
@@ -1251,6 +1256,7 @@ impl Default for AppConfig {
             overlay_page: OverlayPage::default(),
             map_tab_settings: false,
             map_tab_page: MapPage::default(),
+            nav: Default::default(),
         }
     }
 }
@@ -1553,7 +1559,7 @@ const OVERLAY_KEYS: &[&str] = &["overlay"];
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
 const EXPORT_EXCLUDE: &[&str] = &[
-    "active_profile", "input_perm_dont_remind", "onboarding_done", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page",
+    "active_profile", "input_perm_dont_remind", "onboarding_done", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page", "nav",
 ];
 
 /// One selectable group in the export/import tree.
@@ -1907,6 +1913,7 @@ impl AppConfig {
         // UI memory, not part of a profile
         let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
         let onboarding_done = self.onboarding_done; // machine state: a profile snapshot must not re-open the guide
+        let destination = self.nav.destination; // a trip, not a setting: a profile switch must not bring an old one back
         let reset = match serde_json::from_str::<serde_json::Value>(&data) {
             // full snapshot = overlay every key
             Ok(overlay) => apply_preset_overlay(self, overlay),
@@ -1914,6 +1921,7 @@ impl AppConfig {
         };
         (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
         self.onboarding_done = onboarding_done;
+        self.nav.destination = destination;
         if !reset.is_empty() {
             eprintln!("profile {}: could not read: {}", path.display(), reset.join(", "));
             if !backed_up {
@@ -3168,5 +3176,82 @@ mod recovery_tests {
         let mut live = AppConfig::default();
         live.apply_profile_file(&path);
         assert!(live.onboarding_done);
+    }
+
+    // ── navigation (phase L) ────────────────────────────────────────────
+
+    /// An old config without `nav` loads with the D92 defaults: Road / Highway / Dirt on, Trail /
+    /// Cross-country / Jumps off, fastest roads, no destination, both co-op switches on.
+    #[test]
+    fn a_config_without_nav_gets_the_navigation_defaults() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("nav");
+        let (c, reset) = AppConfig::parse(&v.to_string());
+        assert!(reset.reset_keys.is_empty(), "a missing key is not an unreadable one: {:?}", reset.reset_keys);
+        let n = c.nav;
+        assert_eq!((n.filters.road, n.filters.highway, n.filters.dirt), (true, true, true));
+        assert_eq!((n.filters.trail, n.filters.cross_country, n.filters.jumps), (false, false, false));
+        assert_eq!((n.curves, n.destination, n.share_destination, n.follow_shared), (0.0, None, true, true));
+    }
+
+    /// The destination and the filters survive a save / load; a partial `nav` keeps the defaults
+    /// of what it lacks.
+    #[test]
+    fn nav_settings_round_trip_and_partial_nav_keeps_defaults() {
+        let mut c = AppConfig::default();
+        c.nav.destination = Some([1234.5, -678.0]);
+        c.nav.curves = 0.75;
+        c.nav.filters.trail = true;
+        c.nav.filters.road = false;
+        c.nav.share_destination = false;
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.nav, c.nav);
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["nav"] = serde_json::json!({ "curves": 0.5, "filters": { "jumps": true } });
+        let n = AppConfig::parse(&v.to_string()).0.nav;
+        assert_eq!(n.curves, 0.5);
+        assert!(n.filters.jumps && n.filters.road && n.filters.highway && n.filters.dirt && !n.filters.trail);
+        assert!(n.follow_shared && n.share_destination);
+    }
+
+    /// One unreadable value resets only itself, not the other navigation settings and not the
+    /// rest of the config.
+    #[test]
+    fn a_bad_nav_value_resets_only_that_field() {
+        let mut c = AppConfig::default();
+        c.nav.destination = Some([10.0, 20.0]);
+        c.nav.filters.trail = true;
+        c.nav.curves = 0.3;
+        c.listen_port = 4242;
+        let mut v = serde_json::to_value(&c).unwrap();
+        v["nav"]["curves"] = "lots".into();
+        let (back, reset) = AppConfig::parse(&v.to_string());
+        assert_eq!(reset.reset_keys, vec!["nav.curves".to_string()]);
+        assert_eq!(back.nav.curves, 0.0, "the bad field is back to its default");
+        assert_eq!(back.nav.destination, Some([10.0, 20.0]));
+        assert!(back.nav.filters.trail);
+        assert_eq!(back.listen_port, 4242);
+    }
+
+    /// `nav` (the destination is a personal trip) is not in any export group, and a profile switch
+    /// keeps the live destination while taking the profile's filters.
+    #[test]
+    fn nav_is_not_exported_and_a_profile_keeps_the_live_destination() {
+        assert!(EXPORT_EXCLUDE.contains(&"nav"));
+        let mut c = AppConfig::default();
+        c.nav.destination = Some([1.0, 2.0]);
+        let all = vec![true; KEY_GROUPS.len()];
+        assert!(!export_selected(&c, &all).contains("\"nav\""));
+        use_data_dir("nav-profile");
+        let mut snapshot = AppConfig::default();
+        snapshot.nav.destination = Some([9.0, 9.0]); // an old trip saved in the profile
+        snapshot.nav.filters.jumps = true;
+        let path = profile_path("Other");
+        std::fs::write(&path, serde_json::to_string(&snapshot).unwrap()).unwrap();
+        let mut live = AppConfig::default();
+        live.nav.destination = Some([1.0, 2.0]);
+        live.apply_profile_file(&path);
+        assert_eq!(live.nav.destination, Some([1.0, 2.0]), "the live trip stays");
+        assert!(live.nav.filters.jumps, "the profile's filters apply");
     }
 }

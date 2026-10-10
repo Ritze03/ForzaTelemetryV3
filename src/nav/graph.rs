@@ -75,7 +75,10 @@ impl SnapGrid {
 pub struct RouteGraph {
     /// x, z, y per dense node index (y 0.0 = unknown, the `mesh3d::known_y` rule).
     pub(super) pos: Vec<[f32; 3]>,
-    /// Stable nav / user-point id per node, ascending (so an id is found by binary search).
+    /// Stable nav / user-point id per node, ascending (so an id is found by binary search). Only
+    /// the test accessors ([`RouteGraph::node_id`], [`RouteGraph::node_index`]) read it today; it
+    /// is kept because a route has to be mappable back to nav ids (editor links, debugging).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) ids: Vec<u32>,
     pub(super) edges: Vec<Edge>,
     /// CSR adjacency: the outgoing arcs of node `n` are `arcs[arc_start[n]..arc_start[n + 1]]`;
@@ -217,9 +220,11 @@ impl RouteGraph {
         RouteGraph { pos: p, ids, edges, arc_start, arcs, grid }
     }
 
+    #[cfg(test)]
     pub fn node_count(&self) -> usize {
         self.pos.len()
     }
+    #[cfg(test)]
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
@@ -227,20 +232,25 @@ impl RouteGraph {
         self.edges.is_empty()
     }
     /// Position `[x, z, y]` of dense node `n` (y 0.0 = unknown).
+    #[cfg(test)]
     pub fn node_pos(&self, n: u32) -> [f32; 3] {
         self.pos[n as usize]
     }
     /// The stable nav / user-point id of dense node `n`.
+    #[cfg(test)]
     pub fn node_id(&self, n: u32) -> u32 {
         self.ids[n as usize]
     }
     /// Dense index of a nav / user-point id.
+    #[cfg(test)]
     pub fn node_index(&self, id: u32) -> Option<u32> {
         self.ids.binary_search(&id).ok().map(|i| i as u32)
     }
+    #[cfg(test)]
     pub fn edge(&self, e: u32) -> &Edge {
         &self.edges[e as usize]
     }
+    #[cfg(test)]
     pub fn edges(&self) -> &[Edge] {
         &self.edges
     }

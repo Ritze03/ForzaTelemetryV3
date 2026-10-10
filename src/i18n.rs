@@ -1388,6 +1388,60 @@ fn de(s: &str) -> Option<&'static str> {
         "This guide: Setup → Getting started → Open setup guide."
             => "Dieser Assistent: Setup → Erste Schritte → Einrichtungsassistent öffnen.",
 
+        // ── Navigation tab (phase L) ───────────────────────────────────
+        "Navigation" => "Navigation",
+        "Route" => "Route",
+        "Time" => "Zeit",
+        "Click the map to set a destination" => "Klicke auf die Karte, um ein Ziel zu setzen",
+        "Waiting for the car's position" => "Warte auf die Position des Fahrzeugs",
+        "Calculating…" => "Berechne…",
+        "On route" => "Auf der Route",
+        "No road near the car" => "Keine Straße in der Nähe des Fahrzeugs",
+        "No road near the destination" => "Keine Straße in der Nähe des Ziels",
+        "No route with these road types" => "Keine Route mit diesen Straßentypen",
+        "No road data (needs your Forza Horizon 6 install)" => "Keine Straßendaten (braucht deine Forza-Horizon-6-Installation)",
+        "Paused during a race" => "Während eines Rennens pausiert",
+        "Arrived" => "Angekommen",
+        "Set by" => "Gesetzt von",
+        "you" => "dir",
+        "a teammate" => "einem Mitspieler",
+        "Clear route" => "Route löschen",
+        "Clear for everyone" => "Für alle löschen",
+        "Clears the destination for the whole co-op room." => "Löscht das Ziel für den ganzen Koop-Raum.",
+        "Dirt" => "Schotter",
+        "Jumps" => "Sprünge",
+        "Paved roads, also those of another or unknown type. Tunnels are driven when Road or Highway is on. Turnaround crossovers are never used."
+            => "Asphaltstraßen, auch die von anderem oder unbekanntem Typ. Tunnel werden befahren, wenn Straße oder Autobahn an ist. Wendeübergänge werden nie benutzt.",
+        "Motorways. Tunnels are also driven when this is on." => "Autobahnen. Tunnel werden auch befahren, wenn das an ist.",
+        "Dirt and off-road tracks." => "Schotter- und Geländepisten.",
+        "Small game trails." => "Kleine Wildpfade.",
+        "Straight lines across country that are no road in the game." => "Gerade Linien querfeldein, die im Spiel keine Straße sind.",
+        "One-way jumps from take-off to landing. Risky: the landing can wreck the car."
+            => "Einbahn-Sprünge vom Absprung zur Landung. Riskant: Die Landung kann das Auto zerlegen.",
+        "Preference" => "Vorliebe",
+        "Faster roads" => "Schnelle Straßen",
+        "More curves" => "Mehr Kurven",
+        "Left: the fastest roads. Right: the most winding roads. The route is always the best one under the chosen road types."
+            => "Links: die schnellsten Straßen. Rechts: die kurvigsten Straßen. Die Route ist immer die beste unter den gewählten Straßentypen.",
+        "Not in a co-op session" => "Nicht in einer Koop-Sitzung",
+        "Share my destination" => "Mein Ziel teilen",
+        "Follow shared destinations" => "Geteilten Zielen folgen",
+        "Send the destination you set to your co-op room. Teammates who follow shared destinations navigate there with your road types."
+            => "Sendet das Ziel, das du setzt, an deinen Koop-Raum. Mitspieler, die geteilten Zielen folgen, navigieren mit deinen Straßentypen dorthin.",
+        "Navigate to the destination a teammate sets, from your own car and with their road types. Off: keep your own destination."
+            => "Navigiere zum Ziel, das ein Mitspieler setzt, von deinem eigenen Auto aus und mit seinen Straßentypen. Aus: behalte dein eigenes Ziel.",
+        "Shared destination set by" => "Geteiltes Ziel gesetzt von",
+        "No shared destination" => "Kein geteiltes Ziel",
+        "Set destination" => "Ziel setzen",
+        "Click, then click the map to navigate there. Shift+click does the same without this button; right-click or Esc cancels."
+            => "Klicken, dann auf die Karte klicken, um dorthin zu navigieren. Umschalt+Klick macht dasselbe ohne diese Schaltfläche; Rechtsklick oder Esc bricht ab.",
+        "The map's settings (the Dashboard map & Viewer page of the Map tab)."
+            => "Die Karteneinstellungen (die Seite Dashboard-Karte & Viewer im Karten-Tab).",
+        "Navigation route" => "Navigationsroute",
+        "Draw the navigation route and the destination pin on this map. It is hidden during a race."
+            => "Zeichnet die Navigationsroute und den Zielpunkt auf dieser Karte. Während eines Rennens ist sie ausgeblendet.",
+        "1× is a little wider than a highway." => "1× ist etwas breiter als eine Autobahn.",
+
         _ => return None,
     })
 }

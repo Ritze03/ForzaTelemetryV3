@@ -242,6 +242,7 @@ pub enum Tab {
     Dashboard,
     Overlay,
     Map,
+    Navigation,
     Backfire,
     Gearbox,
     PowerCurve,
@@ -326,6 +327,7 @@ fn tab_title(tab: Tab) -> &'static str {
         Tab::Dashboard => "Dashboard",
         Tab::Overlay => "Overlay",
         Tab::Map => "Map",
+        Tab::Navigation => "Navigation",
         Tab::PowerCurve => "Power Curve",
         Tab::Coop => "Co-Op",
         Tab::Backfire => "Backfire",
@@ -345,8 +347,8 @@ const PILL_FONT: f32 = 12.5;
 /// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
 /// so the tabs only shift once, uniformly, when the bar itself gets narrow.
 fn max_pill_width(ui: &egui::Ui) -> f32 {
-    const TABS: [Tab; 11] = [
-        Tab::Dashboard, Tab::Overlay, Tab::Map, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
+    const TABS: [Tab; 12] = [
+        Tab::Dashboard, Tab::Overlay, Tab::Map, Tab::Navigation, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
         Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog, Tab::Debug,
     ];
     TABS.iter()
@@ -586,6 +588,9 @@ pub struct ForzaApp {
     pub map_data: crate::ui::map_data::MapData,
     /// Map tab viewer state (view centre, zoom, follow); not saved.
     pub map_tab: crate::ui::map_tab::MapTabState,
+    /// Navigation tab state: its own map view, and the bookkeeping that keeps `config.nav` and the
+    /// navigator (`nav::`) in step (see `ui::nav_tab::NavState`).
+    pub nav_ui: crate::ui::nav_tab::NavState,
     /// The Dashboard map's temporary pan / zoom (D72). A `RefCell`: the widget draws from `&ForzaApp`.
     pub minimap_pan: std::cell::RefCell<crate::ui::map_scene::ManualView>,
     /// The 3D map renderer's state on this window's GL context (K4): the one `Gl3dHandle` the
@@ -942,6 +947,7 @@ impl ForzaApp {
             map_editor_mode: None,
             map_data: Default::default(),
             map_tab: Default::default(),
+            nav_ui: Default::default(),
             minimap_pan: Default::default(),
             map3d: Default::default(),
             map_editor_rx: None,
@@ -1634,6 +1640,8 @@ impl eframe::App for ForzaApp {
         self.drain_packets();
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
+        // Navigation: config -> navigator, local arrival -> config (before any tab draws).
+        crate::ui::nav_tab::sync(self, ctx);
         self.update_minimap_trails();
         // Live input status (every ~2 s): Setup lights, the modal's self-close and re-show.
         crate::ui::settings::refresh_input_facts(self, false);
@@ -1899,6 +1907,7 @@ impl eframe::App for ForzaApp {
                     (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
                     (Tab::Overlay,     icons::OVERLAY,    "Overlay"),
                     (Tab::Map,         icons::MAP,        "Map"),
+                    (Tab::Navigation,  icons::NAVIGATION, "Navigation"),
                     (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
                     (Tab::Coop,        icons::USERS,      "Co-Op"),
                     (Tab::Backfire,    icons::BOLT,       "Backfire"),
@@ -2724,6 +2733,7 @@ impl eframe::App for ForzaApp {
             Tab::Dashboard => crate::ui::dashboard::show(ui, self),
             Tab::Overlay => crate::ui::overlay_tab::show(ui, self),
             Tab::Map => crate::ui::map_tab::show(ui, self),
+            Tab::Navigation => crate::ui::nav_tab::show(ui, self),
             Tab::Backfire => crate::ui::backfire::show_backfire(ui, self),
             Tab::Gearbox => crate::ui::gearbox::show_gearbox(ui, self),
             Tab::PowerCurve => crate::ui::power_curve::show(ui, self),

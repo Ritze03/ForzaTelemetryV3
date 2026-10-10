@@ -16,11 +16,6 @@
 //! off-route / arrival rules; pure) and [`state`] (the listener-thread [`Tracker`], the
 //! `nav-route` worker thread, the process-global [`view()`] and the input setters).
 
-// The listener thread uses `Tracker` / `CarSample` / `SharedIn` (L2); the input API, `view()`, the
-// config and most graph accessors are consumed by the drawing (L3) and the tab (L5): drop this
-// when those land.
-#![allow(dead_code, unused_imports)]
-
 pub mod cfg;
 pub mod cost;
 pub mod follow;
@@ -32,11 +27,12 @@ pub mod state;
 #[cfg(test)]
 mod tests;
 
-pub use cfg::{NavConfig, RouteFilters, RoutePrefs};
-pub use cost::CostModel;
-pub use graph::{Edge, RouteGraph};
-pub use search::{Endpoint, Route, RouteError};
-pub use snap::Snap;
+pub use cfg::{NavConfig, RoutePrefs};
+pub use graph::RouteGraph;
+pub use search::Endpoint;
+// Only the tests name these through `crate::nav::` (nav's own and the 3D renderer's).
+#[cfg(test)]
+pub use {cfg::RouteFilters, cost::CostModel, graph::Edge, search::{Route, RouteError}, snap::Snap};
 pub use state::{
     local_destination, set_destination, set_follow_shared, set_prefs, view, CarSample, Dest, DestSource, NavLine, NavStatus, NavView, SharedIn, Tracker,
 };

@@ -16,7 +16,7 @@ Phase-H tooling in `tools/fh6-extract/` (usage and flags: [its README](../../too
 | **Highway** | motorway / expressway, marked separately from Road (drawn wider in the 2D preview) |
 | **Turnaround** | a link that exists only so the AI can get back onto the right road. User: "many roads are cross-connected, but it isn't like that in the game. It's probably just for the AI driving, so it can easily get back to the right road again… mark them… so later we can use them for navigation, but hide them from the actual in-game map." |
 
-Routing is **not built** (D47); the types are stored for it. Highway and Turnaround were added without a version bump (still `version: 2`).
+Routing **is built** (phase L, D83; it was deferred by D47): the Navigation tab routes over these types (`src/nav/`, `docs/features/navigation.md`). The route graph is built from the nav roads plus the **current** road types; the user's Road / Highway / Dirt / Trail / Cross-country / Jumps filters choose which types may be driven (Tunnel follows Road or Highway, Other and untyped follow Road, a Jump is one-way take-off to landing, **Turnaround is never routable**: it only exists for the game's AI). Saving in the editor rebuilds the graph and re-routes within about a second. Highway and Turnaround were added without a version bump (still `version: 2`).
 
 ## `fh6-road-types` v2
 

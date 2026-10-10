@@ -163,7 +163,9 @@ enabled, and its thread does the overlay's monitor detection (see [[overlay]]).
   closing line is "Run all commands above, then log out and back in." (Why: users couldn't tell
   whether they needed both.) If anything is missing a **modal** opens (at launch, and again on a
   transition into "missing", see *Live status* below; X = closed until then; *Don't remind me
-  again* sets `input_perm_dont_remind`). Setup has an
+  again* sets `input_perm_dont_remind`). While the first-run setup guide is open the modal is
+  suppressed (`settings::input_perm_modal` returns early when `app.onboarding` is set; the guide has
+  its own permissions step); it comes back on the next launch if something is still missing. Setup has an
   **Input Permissions** category below *Window Detection* (a light per requirement, the same
   copyable commands, a *Remind me on startup* checkbox = inverse of the flag, *Re-check*).
   Hidden on Windows. *Why:* both failures are silent otherwise (no hotkeys, dead gearbox /
