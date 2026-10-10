@@ -502,14 +502,19 @@ impl Map3d {
         let Some(relief) = &cam.relief else { return };
         // The road mesh only exists for roads that are drawn; it builds on its own thread.
         let mesh = data.filter(|_| lc.roads.on).and_then(|d| crate::maprender::store::road_mesh(d, &relief.terrain));
-        // The in-race focus (D66), exactly when the 2D path would apply it (`draw_layers_parts`),
-        // and also for a race road over normal roads: 3D draws the race road (D80) only from the
-        // focus, so without it a flat egui race road would be all there is (D82).
+        // The in-race focus (D66), exactly when the 2D path would apply it (`draw_layers_parts`):
+        // other roads muted, hidden or gone. The race lines themselves do not depend on it (D88).
         let focusing = data.is_some_and(|d| sel.focus_line().is_some_and(|l| l < d.races.lines.len()));
         let focus = data
-            .filter(|_| focusing && crate::maprender::cfg::focus_wanted(&lc.race_lines))
+            .filter(|_| focusing && lc.race_lines.focus.other_roads != crate::maprender::cfg::OtherRoads::Normal)
             .and_then(|d| sel.road_focus(d))
             .map(|focus| gl3d::Focus3d { focus, cfg: lc.race_lines.focus });
+        // Every race line the mode draws is part of the scene (D88), so terrain and overpasses
+        // hide it like the roads; its mesh builds on its own thread.
+        let race = data.and_then(|d| sel.race_draw(d, &lc.race_lines)).map(|draw| {
+            let mesh = crate::maprender::store::race_mesh(&draw, &relief.terrain);
+            gl3d::Race3d { draw, mesh, cfg: lc.race_lines }
+        });
         gl3d::add_scene(
             painter,
             &self.handle,
@@ -526,6 +531,7 @@ impl Map3d {
                 relief: lc.tilt.relief,
                 roads: lc.roads.clone(),
                 focus,
+                race,
                 trails,
             },
         );

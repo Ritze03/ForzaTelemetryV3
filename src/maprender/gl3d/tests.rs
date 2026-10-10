@@ -26,7 +26,7 @@ use crate::gamedata::roadtypes::RoadType;
 use crate::maprender::cfg::{MapLayerConfig, MarkerStyle, OtherRoads, RaceLineMode, TiltCfg};
 use crate::maprender::data::{Chain, MapLayers, RoadLayer};
 use crate::maprender::paint2d::{draw_base, draw_layers, BaseParams, LayerCtx};
-use crate::maprender::racesel::{RaceSel, Run};
+use crate::maprender::racesel::{MarkKind, RaceDraw, RaceMark, RaceRoad, RaceSel, Run};
 use crate::maprender::terrain::Terrain;
 use crate::overlay::gl::{Flavour, Headless};
 
@@ -330,6 +330,7 @@ fn scene(w: &World, cam: Camera, mesh: bool, tex: Option<MapTex>, site: Site) ->
         relief: tilt(40.0).relief,
         roads,
         focus: None,
+        race: None,
         trails: vec![],
     }
 }
@@ -908,9 +909,22 @@ fn gl3d_in_race_focus_mutes_or_hides_the_other_roads() {
 
 // ── the race road (D80) and "race road only" (D82) ──────────────────────────────────────────
 
-/// The focus of the synthetic world with a race road along chain 0 of `slot` (its points and
-/// heights, the driving line 0.3 m up): that chain relevant, every other one not.
-fn race_focus(w: &World, slot: RoadType, color: crate::maprender::cfg::Rgb) -> Arc<crate::maprender::racesel::RoadFocus> {
+/// The race lines of a scene (D88): `lines` and `marks` as `RaceSel::race_draw` would hand them
+/// over, their mesh built here (in the app `store::race_mesh` does it off-thread).
+fn race3d(w: &World, lines: Vec<RaceRoad>, marks: Vec<RaceMark>, cfg: crate::maprender::cfg::RaceCfg) -> Race3d {
+    let draw = Arc::new(RaceDraw { lines, marks });
+    let mesh = Some(Arc::new(crate::maprender::mesh3d::RoadMesh::race_roads(&draw.lines, &w.terrain)));
+    Race3d { draw, mesh, cfg }
+}
+
+/// A race line along chain 0 of `slot` (its points, the driving line 0.3 m above the heights).
+fn race_along(w: &World, slot: RoadType) -> RaceRoad {
+    let ch = &w.layers.roads.by_type[slot.index() as usize][0];
+    RaceRoad { pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), closed: false }
+}
+
+/// The focus of the synthetic world with chain 0 of `slot` relevant, every other one not.
+fn race_focus(w: &World, slot: RoadType) -> Arc<crate::maprender::racesel::RoadFocus> {
     let mut focus = crate::maprender::racesel::RoadFocus::default();
     for (s, chains) in w.layers.roads.by_type.iter().enumerate() {
         for (ci, ch) in chains.iter().enumerate() {
@@ -918,8 +932,6 @@ fn race_focus(w: &World, slot: RoadType, color: crate::maprender::cfg::Rgb) -> A
         }
     }
     focus.jumps = vec![false; w.layers.roads.jumps.len()];
-    let ch = &w.layers.roads.by_type[slot.index() as usize][0];
-    focus.race = Some(crate::maprender::racesel::RaceRoad { pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), closed: false, color });
     Arc::new(focus)
 }
 
@@ -944,13 +956,15 @@ fn gl3d_race_road_over_the_roads_and_race_only() {
     let mut counts = vec![];
     for (name, slot, car, mode) in cases {
         let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
-        let f = Focus3d { focus: race_focus(&w, slot, race), cfg: RaceFocusCfg { other_roads: mode, ..Default::default() } };
+        let f = Focus3d { focus: race_focus(&w, slot), cfg: RaceFocusCfg { other_roads: mode, ..Default::default() } };
+        let r = race3d(&w, vec![race_along(&w, slot)], vec![], crate::maprender::cfg::RaceCfg::default());
         v.car = car;
         let mut last = None;
         for _ in 0..8 {
             last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
                 thick(s);
                 s.focus = Some(f.clone());
+                s.race = Some(r.clone());
             }));
         }
         let o = last.unwrap();
@@ -1000,7 +1014,7 @@ fn gl3d_race_road_is_hidden_behind_hills() {
         let y: Vec<f32> = pts.iter().map(|p| w.terrain.height(p[0], p[1]) + 0.3).collect();
         let mut focus = crate::maprender::racesel::RoadFocus::default();
         focus.jumps = vec![false; w.layers.roads.jumps.len()];
-        focus.race = Some(crate::maprender::racesel::RaceRoad { pts, y, closed: false, color: race });
+        let r = race3d(&w, vec![RaceRoad { pts, y, closed: false }], vec![], crate::maprender::cfg::RaceCfg::default());
         let f = Focus3d { focus: Arc::new(focus), cfg: RaceFocusCfg { other_roads: OtherRoads::RaceOnly, ..Default::default() } };
         let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
         let mut last = None;
@@ -1009,6 +1023,7 @@ fn gl3d_race_road_is_hidden_behind_hills() {
                 s.roads.min_px = 14.0; // wide, so the race road is easy to count
                 s.roads.max_px = 20.0;
                 s.focus = Some(f.clone());
+                s.race = Some(r.clone());
             }));
         }
         let o = last.unwrap();
@@ -1032,17 +1047,14 @@ fn gl3d_race_road_is_hidden_behind_hills() {
     let mut under = vec![];
     for (name, lift) in [("race_road_on_the_deck", 22.3f32), ("race_road_under_the_deck", 0.3)] {
         let y: Vec<f32> = pts.iter().map(|p| w.terrain.height(p[0], p[1]) + lift).collect();
-        let mut focus = crate::maprender::racesel::RoadFocus::default();
-        focus.jumps = vec![false; w.layers.roads.jumps.len()];
-        focus.race = Some(crate::maprender::racesel::RaceRoad { pts: pts.clone(), y, closed: false, color: race });
-        let f = Focus3d { focus: Arc::new(focus), cfg: RaceFocusCfg { other_roads: OtherRoads::Normal, ..Default::default() } };
+        let r = race3d(&w, vec![RaceRoad { pts: pts.clone(), y, closed: false }], vec![], crate::maprender::cfg::RaceCfg::default());
         let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
         let mut last = None;
         for _ in 0..8 {
             last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
                 s.roads.min_px = 8.0;
                 s.roads.max_px = 12.0;
-                s.focus = Some(f.clone());
+                s.race = Some(r.clone());
             }));
         }
         let o = last.unwrap();
@@ -1055,6 +1067,68 @@ fn gl3d_race_road_is_hidden_behind_hills() {
     assert!(under[0] > 200, "the control: the race road on the deck is drawn ({under:?})");
     // (what peeks out below the deck is the parallax of the 22 m between them; without the depth test the whole road would be drawn: as many as on the deck)
     assert!(under[1] * 3 < under[0] * 2, "the deck above the race road covers it ({under:?})");
+    rig.finish(&Gl3dHandle::new());
+}
+
+/// D88, the rest of the race lines: whatever the race-line mode draws is in the scene, so the big
+/// hill hides it like the roads. Each case is seen from the far side of the hill (the control:
+/// drawn) and from the near side (hidden): the **Road** style of lines that are not the in-race
+/// focus (modes `nearest` / `near` / `all`: no focus at all here), the thin **Line** style (a
+/// ribbon of the configured width), and the start / finish **marks** (posts, a green one for a
+/// sprint's start). No roads are drawn, so only the race colour / the mark colour is counted.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_race_lines_and_marks_are_hidden_behind_hills() {
+    use crate::maprender::cfg::{RaceCfg, RouteStyle};
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    v.angle = 75.0;
+    v.zoom = 300.0;
+    // Two lines of the same set, as `All` / `Near` would draw them: z = 440 and z = 480.
+    let line = |z: f32| {
+        let pts: Vec<[f32; 2]> = (0..=14).map(|i| [-440.0 + 20.0 * i as f32, z]).collect();
+        let y: Vec<f32> = pts.iter().map(|p| w.terrain.height(p[0], p[1]) + 0.3).collect();
+        RaceRoad { pts, y, closed: false }
+    };
+    let posts: Vec<RaceMark> = (0..5).map(|i| RaceMark { at: [-440.0 + 70.0 * i as f32, 440.0], y: w.terrain.height(-440.0 + 70.0 * i as f32, 440.0) + 0.3, kind: MarkKind::SprintStart }).collect();
+    let base = RaceCfg::default();
+    let mark_colour = crate::maprender::style::START_DOT.to_array();
+    // (name, lines, marks, cfg, the colour that is counted)
+    let cases: Vec<(&str, Vec<RaceRoad>, Vec<RaceMark>, RaceCfg, [u8; 3])> = vec![
+        ("road_all", vec![line(440.0), line(480.0)], vec![], base, base.color.0),
+        ("thin_line", vec![line(440.0), line(480.0)], vec![], RaceCfg { route: RouteStyle::Line, width_px: 6.0, alpha: 1.0, ..base }, base.color.0),
+        ("marks", vec![], posts, base, [mark_colour[0], mark_colour[1], mark_colour[2]]),
+    ];
+    for (name, lines, marks, cfg, colour) in cases {
+        let r = race3d(&w, lines, marks, cfg);
+        let mut counts = vec![];
+        for (view, car, yaw) in [("plain", (-300.0f32, 700.0f32), std::f32::consts::PI), ("behind_hill", (-300.0, -20.0), 0.0)] {
+            v.car = car;
+            v.yaw = yaw;
+            let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+            let mut last = None;
+            for _ in 0..8 {
+                last = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                    s.roads.on = false;
+                    s.roads.min_px = 14.0; // wide race roads, easy to count
+                    s.roads.max_px = 20.0;
+                    s.race = Some(r.clone());
+                }));
+            }
+            let o = last.unwrap();
+            assert_eq!(o.gl_error, 0, "{name} {view}");
+            o.save(&format!("race_{name}_{view}.png"));
+            let n = o.count_near([0, 0, 620, 420], colour, 30);
+            eprintln!("{name} {view}: {n} pixels");
+            counts.push(n);
+            h.destroy(&rig.gl);
+        }
+        assert!(counts[0] > 100, "{name}: the control (plain view) is drawn ({counts:?})");
+        assert!(counts[1] < 10, "{name}: hidden behind the hill ({counts:?})");
+    }
     rig.finish(&Gl3dHandle::new());
 }
 
@@ -1427,7 +1501,7 @@ fn gl3d_real_install_joins() {
 #[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
 fn gl3d_real_install_race_roads() {
     use crate::gamedata::icons::RaceClass;
-    use crate::maprender::racesel::{RaceRoad, RoadFocus};
+    use crate::maprender::racesel::RoadFocus;
     let Some(w) = real_world() else {
         eprintln!("SKIP gl3d_real_install_race_roads: no FH6 install");
         return;
@@ -1494,10 +1568,11 @@ fn gl3d_real_install_race_roads() {
         };
         let l = &races.lines[li];
         let (x, z, y, yaw) = (l.pts[i][0], l.pts[i][1], l.y[i], heading(l, i));
-        let mut focus = RoadFocus::build(&w.layers.roads, l);
-        focus.race = Some(RaceRoad { pts: l.pts.clone(), y: l.y.clone(), closed: l.closed, color: rc.color });
+        let focus = RoadFocus::build(&w.layers.roads, l);
+        let road = RaceRoad { pts: l.pts.clone(), y: l.y.clone(), closed: l.closed };
         let t0 = std::time::Instant::now();
-        let m = crate::maprender::mesh3d::RoadMesh::race_road(focus.race.as_ref().unwrap(), &w.terrain);
+        let m = crate::maprender::mesh3d::RoadMesh::race_road(&road, &w.terrain);
+        let r3 = race3d(&w, vec![road], vec![], rc);
         eprintln!("race road spot {name}: route {} ({:.1} km, class {:?}) at ({x:.0}, {z:.0}) y {y:.1}; race mesh {} samples, {} triangles, built in {:.1} ms", l.route, l.length_m / 1000.0, class(li), m.samples.len(), m.triangles().0, t0.elapsed().as_secs_f64() * 1e3);
         let focus = Arc::new(focus);
         let modes: &[OtherRoads] = match name {
@@ -1516,7 +1591,10 @@ fn gl3d_real_install_race_roads() {
                 warm_up(&mut rig, &w, &h, tex, &v, ppp);
                 let mut o = None;
                 for _ in 0..4 {
-                    o = Some(map_frame(&mut rig, &w, &h, tex, &v, ppp, &|s| s.focus = Some(f.clone())));
+                    o = Some(map_frame(&mut rig, &w, &h, tex, &v, ppp, &|s| {
+                        s.focus = Some(f.clone());
+                        s.race = Some(r3.clone());
+                    }));
                 }
                 let o = o.unwrap();
                 assert_eq!(o.gl_error, 0, "{name} {vn}");
@@ -1539,6 +1617,55 @@ fn gl3d_real_install_race_roads() {
             draw_layers(&cx, &w.layers, &cfg);
         });
         o.save(&format!("race_{name}_2d.png"));
+    }
+    rig.finish(&Gl3dHandle::new());
+}
+
+/// D88 on the island: every line of mode `all` (170 lines, ~1 000 km) as one race mesh, in both
+/// styles and with the marks: build time, size and a frame to look at. `--release` for the numbers.
+#[test]
+#[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
+fn gl3d_real_install_all_race_lines() {
+    use crate::maprender::cfg::{RaceCfg, RaceLineMode, RouteStyle};
+    let Some(w) = real_world() else {
+        eprintln!("SKIP gl3d_real_install_all_race_lines: no FH6 install");
+        return;
+    };
+    let Some(mut rig) = open(Flavour::Default, None, [900, 600]) else { return };
+    let (_hold, tex) = rig.load_map(&w, crate::minimap::OVERLAY_MAP_TEXTURE_OPTIONS);
+    let cfg = RaceCfg { mode: RaceLineMode::All, ..RaceCfg::default() };
+    let t0 = std::time::Instant::now();
+    let draw = RaceSel::default().race_draw(&w.layers, &cfg).expect("all lines");
+    let t_draw = t0.elapsed().as_secs_f64() * 1e3;
+    let t1 = std::time::Instant::now();
+    let mesh = Arc::new(crate::maprender::mesh3d::RoadMesh::race_roads(&draw.lines, &w.terrain));
+    let t_mesh = t1.elapsed().as_secs_f64() * 1e3;
+    let km: f64 = w.layers.races.lines.iter().map(|l| l.length_m).sum::<f64>() / 1000.0;
+    eprintln!(
+        "all race lines: {} lines, {} marks, {:.0} km; race_draw {:.1} ms; mesh {:.1} ms, {} samples, {} + {} triangles (near + far), {:.1} MB vertices",
+        draw.lines.len(), draw.marks.len(), km, t_draw, t_mesh, mesh.samples.len(), mesh.triangles().0, mesh.triangles().1, mesh.vertices.len() as f64 / 1e6
+    );
+    let l = &w.layers.races.lines[w.layers.races.lines.len() / 2];
+    let mid = l.pts[l.pts.len() / 2];
+    for (name, route, zoom, angle) in [("road_3km", RouteStyle::Road, 3000.0f32, 50.0f32), ("line_3km", RouteStyle::Line, 3000.0, 50.0), ("road_300m", RouteStyle::Road, 300.0, 50.0), ("line_300m", RouteStyle::Line, 300.0, 50.0)] {
+        let r = Race3d { draw: draw.clone(), mesh: Some(mesh.clone()), cfg: RaceCfg { route, ..cfg } };
+        let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(880.0, 580.0));
+        let v = View { site: Site::Dashboard, rect, car: (mid[0], mid[1]), yaw: 0.0, zoom, angle, car_y: None, clip: None, no_3d: false, marker: None };
+        let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, sync_timing: true, ..Default::default() });
+        warm_up(&mut rig, &w, &h, tex, &v, 1.0);
+        let mut o = None;
+        for _ in 0..4 {
+            o = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                s.race = Some(r.clone());
+                s.roads.on = false;
+            }));
+        }
+        let o = o.unwrap();
+        assert_eq!(o.gl_error, 0, "{name}");
+        o.save(&format!("race_all_{name}.png"));
+        let st = h.stats().last;
+        eprintln!("all lines {name}: {} triangles drawn, {} draws, gpu {:?} ms", st.triangles, st.draws, st.gpu_ms);
+        h.destroy(&rig.gl);
     }
     rig.finish(&Gl3dHandle::new());
 }
