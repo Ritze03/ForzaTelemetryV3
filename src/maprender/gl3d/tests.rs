@@ -516,6 +516,7 @@ fn suite(flavour: Flavour, device: Option<usize>, tag: &str) {
     }
     // ── the navigation route (phase L): its own road pass, in every flavour
     {
+        let _nav = nav_lock();
         let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
         let line = Arc::new(crate::nav::NavLine { rev: 910_000, pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - 1] });
         let r = route3d(&w, &line);
@@ -1258,6 +1259,14 @@ fn nav_line(w: &World, rev: u64, pts: Vec<[f32; 2]>, lift: Option<f32>, kinds: V
     Arc::new(crate::nav::NavLine { rev, pts, y, seg_kind: kinds })
 }
 
+/// `Route3d::new` caches ONE mesh process-wide (and `NAV_MESH_BUILDS` counts builds), so tests that
+/// build routes must not interleave when run in parallel threads: another test's route evicts the
+/// slot and the counting tests see extra builds. Hold this for the whole test.
+static NAV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn nav_lock() -> std::sync::MutexGuard<'static, ()> {
+    NAV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn route3d(w: &World, line: &Arc<crate::nav::NavLine>) -> Route3d {
     Route3d::new(line, &w.terrain, NavRouteCfg::default()).expect("a route mesh")
 }
@@ -1287,6 +1296,7 @@ fn settled(rig: &mut Rig, w: &World, tex: MapTex, v: &View, name: &str, tweak: &
 #[test]
 #[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
 fn gl3d_nav_route_over_the_roads_and_race_only() {
+    let _nav = nav_lock();
     let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
     let w = world();
     let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
@@ -1377,6 +1387,7 @@ fn gl3d_nav_route_over_the_roads_and_race_only() {
 #[test]
 #[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
 fn gl3d_nav_route_is_hidden_behind_hills_and_under_decks() {
+    let _nav = nav_lock();
     let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
     let w = world();
     let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
@@ -1434,6 +1445,7 @@ fn gl3d_nav_route_is_hidden_behind_hills_and_under_decks() {
 #[test]
 #[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
 fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
+    let _nav = nav_lock();
     use std::sync::atomic::Ordering::Relaxed;
     let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
     let w = world();
@@ -1490,6 +1502,7 @@ fn gl3d_nav_route_mesh_is_rebuilt_only_when_the_line_changes() {
 /// The one mesh cache is shared by the maps and keyed on the line's rev and the terrain's (CPU only).
 #[test]
 fn route3d_builds_once_per_rev_and_terrain() {
+    let _nav = nav_lock();
     use std::sync::atomic::Ordering::Relaxed;
     let w = world();
     let line = |rev: u64, n: usize| Arc::new(crate::nav::NavLine { rev, pts: (0..n).map(|i| [10.0 * i as f32, -600.0]).collect(), y: vec![0.0; n], seg_kind: vec![2; n - 1] });
@@ -1544,6 +1557,7 @@ fn real_routes(w: &World) -> Vec<(&'static str, crate::nav::Route)> {
 #[test]
 #[ignore = "needs an FH6 install"]
 fn real_install_nav_route_mesh_cost() {
+    let _nav = nav_lock();
     let Some(w) = real_world() else {
         eprintln!("SKIP real_install_nav_route_mesh_cost: no FH6 install");
         return;
@@ -1597,6 +1611,7 @@ fn real_install_nav_route_mesh_cost() {
 #[test]
 #[ignore = "needs an EGL device and an FH6 install; writes PNGs"]
 fn gl3d_real_install_nav_route() {
+    let _nav = nav_lock();
     let Some(w) = real_world() else {
         eprintln!("SKIP gl3d_real_install_nav_route: no FH6 install");
         return;
@@ -2269,11 +2284,11 @@ fn pop_run(rig: &mut Rig, w: &World, tex: MapTex, path: &[(f32, f32, f32)], tag:
         for i in 0..path.len() - 1 {
             let (va, _) = mk(kind, path[i]);
             let (vb, _) = mk(kind, path[i + 1]);
-            *clipmap::LOD_CAR.lock().unwrap() = None;
+            clipmap::LOD_CAR.set(None);
             let new = map_frame(rig, w, &h, tex, &vb, ppp, &off);
-            *clipmap::LOD_CAR.lock().unwrap() = Some([va.car.0 as f64, va.car.1 as f64]);
+            clipmap::LOD_CAR.set(Some([va.car.0 as f64, va.car.1 as f64]));
             let stale = map_frame(rig, w, &h, tex, &vb, ppp, &off);
-            *clipmap::LOD_CAR.lock().unwrap() = None;
+            clipmap::LOD_CAR.set(None);
             assert_eq!(new.gl_error, 0);
             let (m, pct) = diff_share(&new, &stale, r);
             if m > 0.0 {

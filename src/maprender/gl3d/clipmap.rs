@@ -42,8 +42,12 @@ pub const VARIANTS: usize = 10;
 
 /// Tests only: the world (x, z) the terrain levels are placed for, instead of the camera's car
 /// (the pop regression test renders a frame with the previous frame's levels).
+/// Thread-local, not a process-wide static: tests run in parallel threads, and a global override
+/// made every other test's frames use the pop test's stale levels (flaky pop tests, D229).
 #[cfg(test)]
-pub static LOD_CAR: std::sync::Mutex<Option<[f64; 2]>> = std::sync::Mutex::new(None);
+thread_local! {
+    pub static LOD_CAR: std::cell::Cell<Option<[f64; 2]>> = const { std::cell::Cell::new(None) };
+}
 
 /// What one level draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
