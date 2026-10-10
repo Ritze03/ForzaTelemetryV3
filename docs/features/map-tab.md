@@ -208,7 +208,7 @@ saved road types were ignored").
   (**Minimap frame** card, D75).
 - **Roads:** on/off, scale width with zoom (road width in metres, minimum / maximum px; off =
   one fixed width; the three px sliders go up to **100 px**, `maprender::ui::ROAD_PX_MAX`, D74), outline width and opacity, then **By type**: per type a block with
-  visible, line colour, outline colour, width factor, dash, opacity, outline on/off. Turnarounds
+  visible, line colour, outline colour, width factor, dash, opacity (the whole road: outline and fill both see-through, D95, see [minimap.md](minimap.md) "Road opacity"), outline on/off. Turnarounds
   are never listed (D52). **Reset road styles** restores the "by type" preset.
 - **Points of interest:** on/off, icon size, **Max zoom radius** (tooltip: POIs are hidden
   while the view radius is above it; the default is 10 km on the Dashboard map and 3 km on the Minimap),

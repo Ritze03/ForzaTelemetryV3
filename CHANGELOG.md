@@ -17,6 +17,7 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **First-run setup guide**: on the first launch a step-by-step guide leads you through the setup: find the game install, check the input permissions (Linux), test window detection, then enter the Data Out values in Forza (with a screenshot, your listen port and a live "packets arriving?" check), and finally a short tour of the Mini-Settings and the hotkeys. You can skip it and re-open it any time from Setup → Getting started. Existing installs do not see it on update.
 
 ### Fixed
+- **Road opacity** — lowering a road type's opacity now makes the whole road see-through instead of just darker: the outline fades with the fill, in the 2D, tilted and 3D map and on the HUD minimap.
 - **Co-op: hosting without a tunnel**: when cloudflared stops without giving a join code, the Co-Op tab now says the session is up on your local network only instead of showing "Starting tunnel…" forever.
 - **Co-op: joining while the game is not running**: a player who joined a Cloudflare-hosted session before starting Forza was not added to the room and kept reconnecting every 10 seconds until telemetry flowed; joining now completes at once.
 - **3D map: race lines stay behind hills** — race lines in every mode, the thin line style and the start / finish marks are now hidden behind hills and overpasses like the roads, instead of showing through them.

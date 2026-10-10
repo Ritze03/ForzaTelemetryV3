@@ -191,6 +191,24 @@ pub struct StyleTable {
     pub casing_alpha: f32,
 }
 
+/// Below this alpha a road is "translucent" and goes through the pass of its own (D95, see
+/// `shaders::ROAD_VS`); the shader's `trans` test is the same number.
+pub const OPAQUE_ALPHA: f32 = 0.999;
+
+impl StyleTable {
+    /// Does the table hold a translucent road among the tunnel slot (`tunnel`) or the others?
+    /// The tunnel stretches are a range of their own per tile (`Plan::tunnel`), so the host asks
+    /// per range, and a frame with only opaque roads (everything at alpha 1) draws exactly the
+    /// two passes of before. The in-race muted look counts when it is translucent (its alpha
+    /// replaces the type's, in the shader).
+    pub fn translucent(&self, tunnel: bool) -> bool {
+        if self.focus[0] > 0.5 && self.focus[0] < 1.5 && self.focus[1] < OPAQUE_ALPHA {
+            return true;
+        }
+        (0..SLOTS).any(|s| (s == crate::maprender::mesh3d::SLOT_TUNNEL as usize) == tunnel && self.a[s][3] > 0.0 && self.a[s][3] < OPAQUE_ALPHA)
+    }
+}
+
 fn rgb(c: crate::maprender::cfg::Rgb) -> [f32; 3] {
     [c.0[0] as f32 / 255.0, c.0[1] as f32 / 255.0, c.0[2] as f32 / 255.0]
 }

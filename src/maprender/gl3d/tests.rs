@@ -1772,6 +1772,27 @@ fn gl3d_real_install_scenes() {
         }
         let s = h.stats().last;
         eprintln!("PERF real {name}: {} tri, {} draws, tiles {} near / {} far, render cpu {:.3} ms, gpu {:.3} ms", s.triangles, s.draws, s.tiles_near, s.tiles_far, median(cpu), median(gpu));
+        // D95: what translucent roads cost: every type opaque, as default (tunnels at .85), every type at .5.
+        for (label, a) in [("all opaque", Some(1.0f32)), ("default (tunnel .85)", None), ("all at .5", Some(0.5))] {
+            let tweak = move |s: &mut Scene3d| {
+                if let Some(a) = a {
+                    let st = &mut s.roads.styles;
+                    for t in [&mut st.road, &mut st.highway, &mut st.offroad, &mut st.other, &mut st.trail, &mut st.crosscountry, &mut st.tunnel, &mut st.jump] {
+                        t.alpha = a;
+                    }
+                }
+            };
+            let (mut gpu, mut cpu) = (vec![], vec![]);
+            for _ in 0..20 {
+                let o = map_frame(&mut rig, &w, &h, tex, &v, ppp, &tweak);
+                assert_eq!(o.gl_error, 0, "{name} {label}: GL error 0x{:X}", o.gl_error);
+                let s = h.stats();
+                gpu.extend(s.last.gpu_ms);
+                cpu.push(s.last.cpu_ms);
+            }
+            let s = h.stats().last;
+            eprintln!("PERF opacity {name} [{label}]: {} tri, {} draws, render cpu {:.3} ms, gpu {:.3} ms", s.triangles, s.draws, median(cpu), median(gpu));
+        }
     }
     rig.finish(&h);
 }
@@ -2357,4 +2378,145 @@ fn gl3d_real_install_terrain_levels_do_not_pop() {
     for (kind, mean, pct) in res {
         assert!(pct < POP_LIMIT_PCT, "{kind}: the worst frame changes {pct:.4} % of the pixels (mean {mean:.4}) when a terrain level snaps");
     }
+}
+
+// ── translucent roads (D95) ─────────────────────────────────────────────────────────────────
+
+/// A flat world for the opacity tests: a four-way of `Road` chain ends at (-300, 0) and an X of
+/// two crossing `Tunnel` chains at (300, 0). Both are junctions where, drawn as translucent
+/// lines, the pieces would overlap and blend twice.
+fn translucent_world() -> World {
+    let base = world();
+    let flat = Arc::new(Terrain::flat(100.0));
+    let mut roads = RoadLayer::default();
+    let mut add = |t: RoadType, pts: &[[f32; 2]]| roads.by_type[t.index() as usize].push(Chain::new(pts.to_vec(), vec![100.3; pts.len()]));
+    let o = (-300.0, 0.0);
+    add(RoadType::Road, &[[o.0 - 70.0, o.1], [o.0, o.1]]);
+    add(RoadType::Road, &[[o.0, o.1], [o.0 + 70.0, o.1]]);
+    add(RoadType::Road, &[[o.0, o.1 - 70.0], [o.0, o.1]]);
+    add(RoadType::Road, &[[o.0, o.1], [o.0, o.1 + 70.0]]);
+    let o = (300.0, 0.0);
+    add(RoadType::Tunnel, &[[o.0 - 70.0, o.1], [o.0 + 70.0, o.1]]);
+    add(RoadType::Tunnel, &[[o.0, o.1 - 70.0], [o.0, o.1 + 70.0]]);
+    let layers = Arc::new(MapLayers { rev: 1, roads: Arc::new(roads), ..Default::default() });
+    let mesh = Arc::new(RoadMesh::build(&layers.roads, &flat, 1));
+    World { terrain: flat, layers, mesh, image: base.image, cal: base.cal, orig: base.orig }
+}
+
+/// How much of `fill` each pixel of `o` has over the same pixel of `base` (the map without the
+/// roads): the blend share in the channels where the two colours differ by 60 or more; `None`
+/// where none does. A road at alpha `a` is `a` everywhere on its fill, two layers of it `1 - (1 - a)^2`.
+fn fill_share(o: &Out, base: &Out, fill: [u8; 3], x: usize, y: usize) -> Option<f32> {
+    let (p, b) = (o.at(x, y), base.at(x, y));
+    let ks: Vec<usize> = (0..3).filter(|&k| (fill[k] as i32 - b[k] as i32).abs() >= 60).collect();
+    (!ks.is_empty()).then(|| ks.iter().map(|&k| (p[k] as f32 - b[k] as f32) / (fill[k] as f32 - b[k] as f32)).sum::<f32>() / ks.len() as f32)
+}
+
+/// D95: a road type's opacity makes the whole road see-through (casing and fill, 3D), and where
+/// roads of the type meet or cross the surface is blended once. Both a depth-tested type (the
+/// four-way of roads) and the tunnels (their own depth buffer, drawn over everything).
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_translucent_roads_are_one_layer() {
+    let w = translucent_world();
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let st = RoadsCfg::default().styles;
+    let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(600.0, 400.0));
+    for (name, (x, z), ty) in [("road", (-300.0f32, 0.0f32), RoadType::Road), ("tunnel", (300.0, 0.0), RoadType::Tunnel)] {
+        let v = View { site: Site::Dashboard, rect, car: (x, z - 30.0), yaw: 0.25, zoom: 70.0, angle: 55.0, car_y: Some(101.0), clip: None, no_3d: false, marker: None, mates: vec![] };
+        let look = |alpha: f32| {
+            move |s: &mut Scene3d| {
+                s.roads.max_px = 30.0;
+                s.roads.casing_px = 4.0;
+                match ty {
+                    RoadType::Tunnel => s.roads.styles.tunnel.alpha = alpha,
+                    _ => s.roads.styles.road.alpha = alpha,
+                }
+            }
+        };
+        let map = settled(&mut rig, &w, tex, &v, &format!("translucent_{name}_map"), &|s| s.mesh = None);
+        let solid = settled(&mut rig, &w, tex, &v, &format!("translucent_{name}_100"), &look(1.0));
+        let (fill, casing) = (rgb(st.get(ty).unwrap().color), rgb(st.get(ty).unwrap().casing_color));
+        for alpha in [0.5f32, 0.25] {
+            let o = settled(&mut rig, &w, tex, &v, &format!("translucent_{name}_{:.0}", alpha * 100.0), &look(alpha));
+            let r = inside(&v, 1.0);
+            let (mut fills, mut casings, mut worst) = (0usize, 0usize, 0.0f32);
+            for y in r[1]..r[3] {
+                for xx in r[0]..r[2] {
+                    let Some(s) = fill_share(&o, &map, fill, xx, y) else { continue };
+                    if (s - alpha).abs() < 0.05 {
+                        fills += 1;
+                    }
+                    worst = worst.max(s);
+                    // the casing: its colour at `alpha` over the map
+                    let (p, b) = (o.at(xx, y), map.at(xx, y));
+                    if (0..3).all(|k| (p[k] as f32 - (alpha * casing[k] as f32 + (1.0 - alpha) * b[k] as f32)).abs() <= 6.0) && (0..3).any(|k| (casing[k] as i32 - b[k] as i32).abs() > 30) {
+                        casings += 1;
+                    }
+                }
+            }
+            eprintln!("{name} alpha {alpha}: {fills} fill px at {alpha}, {casings} casing px, largest fill share {worst:.3}");
+            assert!(fills > 300, "{name} alpha {alpha}: the fill is {alpha} of its colour over the map ({fills} px)");
+            assert!(casings > 30, "{name} alpha {alpha}: the casing is {alpha} of its colour over the map, not an opaque outline under the fill ({casings} px)");
+            // Nowhere, junction included, more of the fill than its alpha (two layers would be more).
+            assert!(worst <= alpha + 0.06, "{name} alpha {alpha}: a pixel has {worst} of the fill: blended twice");
+        }
+        // The same in flat 2D (egui meshes through the real painter): the spot, roads at 0.5 or
+        // none, and the same bounds.
+        let flat = |rig: &mut Rig, roads: bool, alpha: f32| {
+            rig.frame(1.0, |ctx| {
+                let p = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("map")));
+                p.rect_filled(ctx.content_rect(), 0.0, BACKDROP);
+                let cam = Camera::from_cfg(&TiltCfg::default(), (x, z), 0.0, 90.0, rect);
+                let outline = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+                let pc = p.with_clip_rect(rect);
+                draw_base(&pc, &BaseParams { cam: &cam, cal: w.cal, tex, outline: &outline, mirror: true, look: ImageLook::FULL, a: 1.0, far_fade: false });
+                if roads {
+                    let mut cfg = MapLayerConfig::default();
+                    cfg.pois.on = false;
+                    cfg.race_lines.mode = RaceLineMode::Off;
+                    cfg.roads.max_px = 24.0;
+                    cfg.roads.casing_px = 4.0;
+                    match ty {
+                        RoadType::Tunnel => cfg.roads.styles.tunnel.alpha = alpha,
+                        _ => cfg.roads.styles.road.alpha = alpha,
+                    }
+                    let sel = RaceSel::default();
+                    let cx = LayerCtx { p: &pc, cam: &cam, s: 1.0, a: 1.0, car: (x, z), corner_clip: None, icons: None, race_sel: &sel, week: None, nav: None };
+                    draw_layers(&cx, &w.layers, &cfg);
+                }
+            })
+        };
+        let map2d = flat(&mut rig, false, 1.0);
+        for alpha in [1.0f32, 0.5] {
+            let o = flat(&mut rig, true, alpha);
+            o.save(&format!("translucent_{name}_2d_{:.0}.png", alpha * 100.0));
+            let r = inside(&v, 1.0);
+            let (mut fills, mut worst) = (0usize, 0.0f32);
+            for y in r[1]..r[3] {
+                for xx in r[0]..r[2] {
+                    if let Some(s) = fill_share(&o, &map2d, fill, xx, y) {
+                        fills += ((s - alpha).abs() < 0.05) as usize;
+                        // (egui has no layers: where several chains end on one node, or cross, their
+                        // overlap blends twice, at most twice: the junction square is left out)
+                        let near_junction = (xx as f32 - 310.0).abs() < 30.0 && (y as f32 - 210.0).abs() < 30.0;
+                        if near_junction {
+                            assert!(s <= 1.0 - (1.0 - alpha).powi(2) + 0.06, "{name} 2D alpha {alpha}: {s} at the junction is more than two layers");
+                        } else {
+                            worst = worst.max(s);
+                        }
+                    }
+                }
+            }
+            eprintln!("{name} 2D alpha {alpha}: {fills} fill px, largest fill share {worst:.3}");
+            assert!(fills > 300, "{name} 2D alpha {alpha}: {fills} fill px");
+            assert!(worst <= alpha + 0.06, "{name} 2D alpha {alpha}: a pixel has {worst} of the fill: blended twice");
+        }
+        // The opaque look is what it was: the fill's own colour in the middle of the road.
+        let r = inside(&v, 1.0);
+        let opaque_fill = solid.count_near([r[0], r[1], r[2], r[3]], fill, 6);
+        assert!(opaque_fill > 300, "{name}: opacity 1 draws the fill's own colour ({opaque_fill} px)");
+    }
+    rig.finish(&Gl3dHandle::new());
 }
