@@ -76,6 +76,28 @@ impl Renderer {
         })
     }
 
+    /// Debug (`FORZA_OVERLAY_DEBUG`): read the frame just drawn (still on the back buffer) and say
+    /// how many of its pixels are not fully transparent, with the maximum alpha and any GL error.
+    /// Tells "we rendered nothing" apart from "we rendered, the compositor does not show it".
+    /// A full-frame readback (33 MB at 4K), so only the first frames and then rarely.
+    pub fn alpha_stats(&self, [w, h]: [u32; 2]) -> String {
+        use glow::HasContext;
+        let gl = self.painter.gl();
+        let mut px = vec![0u8; w as usize * h as usize * 4];
+        // SAFETY: a plain readback into a buffer of exactly w*h*4 bytes on the current context.
+        let err = unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.read_pixels(0, 0, w as i32, h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut px)));
+            gl.get_error()
+        };
+        let (mut lit, mut max) = (0usize, 0u8);
+        for p in px.chunks_exact(4) {
+            lit += usize::from(p[3] != 0);
+            max = max.max(p[3]);
+        }
+        format!("{lit} of {} px not transparent, max alpha {max}, GL error 0x{err:x}", w as usize * h as usize)
+    }
+
     /// Draw one frame of `size` physical px. Returns true while an animation still needs
     /// frames without a new packet — including the show/hide fade: once `snapshot.visible`
     /// is false and this returns false, the fade-out is done and the surface can go.

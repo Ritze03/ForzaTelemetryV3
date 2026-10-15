@@ -81,8 +81,14 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
 - Always **click-through**: an empty input region and no keyboard interactivity, so clicks
   and keys go to the game. The HUD therefore can't be dragged in place; the layout is set
   in the tab.
-- Scale factor is fixed at 1.0 (all target monitors are 1080p @1); fractional/integer
-  scaling is a known ponytail in `overlay/render.rs` and `wayland.rs`.
+- Scale factor is fixed at 1.0 (no `set_buffer_scale`); fractional/integer
+  scaling is a known ponytail in `overlay/render.rs` and `wayland.rs`. The buffer is the layer
+  surface's configured (logical) size and the HUD's own scale is `height / 1080`, so a 4K output
+  at compositor scale 1 gets a 3840x2160 buffer and HUD scale 2.0, and at compositor scale 2 a
+  1920x1080 buffer the compositor upscales (visible, a little soft). **4K was checked** (board
+  #248) on wlroots (sway headless, AMD / Mesa) at 3840x2160 with scale 1, 1.5 and 2 and two
+  outputs: the real HUD (fed by `tools/sim.py`) and the test pattern render and show at all of
+  them, so size alone is not what hides the HUD.
 
 ## Windows
 
@@ -997,6 +1003,21 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
 - **One frame per packet** (~60 Hz), woken by the listener's ping; no redraw-rate setting.
   Each frame registers a frame callback before the swap, and a new frame waits for it
   (swap interval 0).
+- **Frame-callback watchdog:** if a committed frame's callback has not arrived after 1.5 s the
+  overlay logs it once (`overlay: no wl_surface.frame callback ...`) and stops waiting for
+  callbacks (`Overlay::callbacks_dead`): frames then go out on pings and the animation timer,
+  with one callback request kept outstanding as a probe; when it arrives, waiting resumes
+  (`overlay: frame callbacks are arriving again`). `FORZA_OVERLAY_NO_FRAME_WAIT=1` starts in that
+  mode. *Why:* the HUD's first frame after every show is fully transparent by design (fade from
+  0), and the next frame is released by the callback. A callback that never comes (a compositor
+  that does not consider the surface visible, a driver that swallows it) left the transparent
+  frame on screen forever with no message; first seen as an invisible HUD on an NVIDIA / Hyprland
+  4K setup (board #248).
+- **Plain `eglSwapBuffers`, not `swap_buffers_with_damage(&[])`:** the old call passed
+  `n_rects = 0`, which Mesa reads as "everything damaged" but another driver may read as
+  "nothing damaged". Full damage was the intent (see the ponytail on `Gl::swap`), so the plain
+  swap loses nothing and removes the one driver-dependent bit of the present path. *Why:* NVIDIA
+  / egl-wayland was the one stack the HUD had not been seen working on.
 - A timer runs **only while something animates** and packets have stopped (no ping for
   40 ms): then frames step at 16 ms until the animation settles (e.g. the hide fade on
   pause). Frames are never scheduled at the monitor's rate. *Why:* DP-1 is 280 Hz VRR, and
@@ -1044,6 +1065,21 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
 - **X11 teardown** follows the same rule: EGL surface → X window (`Live` field order,
   `destroy_window`), painter → `Gl` (`eglTerminate`), and `Gl::_native` holds an `Arc` of the
   xcb connection so it closes last.
+
+### Diagnostics (stderr)
+
+The overlay logs one line per lifecycle step, because a user running from a desktop launcher
+sees no errors in the UI when only the surface is wrong: `overlay: EGL <ver>; GL <vendor> /
+<renderer> / <version>; config ...` (once, at start), `overlay: outputs: NAME (logical WxH, scale
+S, mode WxH), ...`, `overlay: creating the layer surface on NAME ...`, `overlay: configure WxH`,
+`overlay: EGL window surface WxH created`, `overlay: first frame committed N ms after ...`, the
+compositor closing the surface, no output matching the target (with the list of outputs), and
+the frame-callback watchdog. Extra switches for bug reports (env vars, no UI):
+- `FORZA_OVERLAY_DEBUG=1`: read each of the first three frames (then every 300th) back before
+  the swap and log `frame N: X of Y px not transparent, max alpha A, GL error`. *Why:* separates
+  "we render nothing" (alpha 0 everywhere after the first, fade-in, frame; a GL / data problem)
+  from "we render and the compositor does not show it" (a present / compositor problem).
+- `FORZA_OVERLAY_NO_FRAME_WAIT=1`: never wait for frame callbacks (above).
 
 ### Dev and test hooks
 

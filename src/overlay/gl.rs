@@ -42,7 +42,9 @@ impl Gl {
             .ok_or("no wl_display pointer")?;
         let raw = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(ptr));
         // SAFETY: `ptr` is the live wl_display of `conn`, and `native` keeps a clone of it.
-        unsafe { Self::with_native(raw, &|_| true, Box::new(conn.clone())) }
+        let gl = unsafe { Self::with_native(raw, &|_| true, Box::new(conn.clone())) }?;
+        gl.log_info();
+        Ok(gl)
     }
 
     /// EGL on any native display. `accept` narrows the config choice (the X11 backend needs
@@ -159,13 +161,38 @@ impl Gl {
     }
 
     /// Swap (which also commits the wl_surface).
+    ///
+    /// Plain `eglSwapBuffers`, i.e. the whole surface is damaged. Not
+    /// `swap_buffers_with_damage(&[])`: that passes `n_rects = 0`, which Mesa reads as "all
+    /// damaged" but which a driver may read as "nothing damaged" (the compositor then has no
+    /// reason to show the new buffer). Why: the HUD stayed invisible on a friend's NVIDIA machine
+    /// and an empty damage list was the one NVIDIA-dependent thing in the present path; full
+    /// damage is what this called for anyway, so plain swap loses nothing.
     // ponytail: full-surface damage. Upgrade: have the draw hook return widget rects, union
     // them with last frame's (plus outline margin), flip y (EGL damage is bottom-left origin)
-    // and pass them here. Only pays off when the game shows a static screen.
+    // and pass them to `swap_buffers_with_damage`, only if it shows up in a profile.
     pub fn swap(&self, surface: &WinSurface) -> Result<(), String> {
-        surface.swap_buffers_with_damage(&self.context, &[]).map_err(|e| format!("EGL swap: {e}"))
+        surface.swap_buffers(&self.context).map_err(|e| format!("EGL swap: {e}"))
     }
 
+    /// One log line naming the stack (EGL / GL vendor, renderer, version, the default
+    /// framebuffer's bit depths), for bug reports: the HUD's behaviour differs between Mesa and
+    /// NVIDIA's egl-wayland. Needs the context current (it is, surfaceless, after `new`).
+    pub fn log_info(&self) {
+        use glow::HasContext;
+        let gl = &self.glow;
+        // SAFETY: plain state queries on the current context.
+        let (vendor, renderer, version) = unsafe {
+            (gl.get_parameter_string(glow::VENDOR), gl.get_parameter_string(glow::RENDERER), gl.get_parameter_string(glow::VERSION))
+        };
+        let egl_ver = self.display.version_string();
+        let c = &self.config;
+        eprintln!(
+            "overlay: EGL {egl_ver}; GL {vendor} / {renderer} / {version}; config rgb888 alpha {} samples {}",
+            c.alpha_size(),
+            c.num_samples()
+        );
+    }
 }
 
 impl Drop for Gl {
