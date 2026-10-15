@@ -155,6 +155,56 @@ player drives off again. Shared by the Dashboard map and the viewer: one state t
   `a_nudge_does_not_reset_the_view`, `panning_while_driving_waits_for_the_next_stop`,
   `manual_view_overrides_the_base_and_resets`, pan / zoom anchoring).
 
+### Shift+drag: rotate and tilt the camera (D106)
+
+On the three GUI maps (Dashboard map, Map-tab Viewer, Navigation tab's map; **not** the HUD
+Minimap) **Shift + drag** (primary button) orbits the camera around the view centre. Plain drag
+still pans, the wheel still zooms; both work with an orbit on. The user (D106): *"There should be
+panning in the map in the GUI so I should be able to hold like shift and then move my mouse to like
+rotate the camera and stuff in all ways. So like right, left, up down"* ("panning" meant rotating
+the camera).
+
+- **Horizontal** movement rotates the map (`map_scene::Orbit::yaw`, 0.5 degrees per px, unlimited,
+  wrapped to (-PI, PI]); mouse right turns the map counter-clockwise on screen (the sense of the
+  map yaw). It is *added to* the map's heading, so it sits on top of heading-up (the car, or a
+  spectated teammate, D105) and north-up alike, and the map keeps following: an orbit never
+  cancels Follow, nor does Follow cancel the orbit.
+- **Vertical** movement changes the tilt angle (`Orbit::pitch_deg`, 0.3 degrees per px, clamped to
+  **5..80 degrees**; mouse down = more top-down, up = towards the horizon, the usual orbit-camera
+  convention). *Why 5..80:* it is the range of the Angle slider and of `Camera::from_cfg`'s own
+  clamp, so the camera never leaves what the settings and the 3D renderer (horizon, far plane,
+  tile loading) already handle; no new camera range to test.
+- **Flat view mode: only the rotation applies.** Vertical movement does nothing. *Why:* a flat map
+  has no tilt; tilting it "temporarily" would silently switch the map to another view mode and
+  make the drag mean two different things. Switch the View mode to Tilted / 3D to tilt.
+- **Session state, per map** (`ManualView::orbit`, next to pan and zoom: the Dashboard map,
+  the Viewer and the Navigation tab's map each have their own; not saved). It is an offset applied
+  to the camera for the frame (`ManualView::orbited` gives the effective heading and a layers
+  config whose `tilt.angle_deg` carries the override; the saved `minimap_layers.tilt` is never
+  written). Default = no rotation, configured tilt: the HUD Minimap never sees it and renders
+  unchanged. Everything that needs the camera takes the orbited one: the scene, markers, compass,
+  pan / zoom anchoring and the picking (`pick`: destination, waypoint), so a click lands under
+  the pointer with the orbit on (test `picking_round_trips_with_an_orbit`).
+- **Click vs. drag:** egui's drag threshold. A **Shift+click** without movement stays a click
+  (Viewer: set destination); a Shift+drag is never a click and never pans (test
+  `shift_drag_orbits_plain_drag_pans_and_a_click_is_a_click`). The Shift state is read each frame,
+  so releasing Shift mid-drag continues as a pan.
+- **Reset: click the compass** (`map_scene::compass_clicked`; its tooltip says *Shift+drag to
+  rotate and tilt the map. Click to reset.*). **The compass is drawn while an orbit is on even if
+  switched off in the settings** (it is also the indicator that the map is turned, and the reset
+  handle), and the Follow button moves aside for it as for the normal compass. *Why not a
+  double-click:* Shift+click sets the destination in the Viewer, so Shift+double-click would set
+  it twice. **Follow car does not reset the orbit** and neither does the drive-off snap-back
+  (`ManualView::reset` keeps it; `reset_all`, used when "Allow pan and zoom" is off, drops it):
+  those are about *where* the view is, and a rotation the user chose should survive them. The
+  Follow button is not shown for an orbit alone (`is_manual` ignores it). The tooltip of the
+  *Allow pan and zoom* option mentions the gesture; the orbit needs that option on, like pan.
+- Not in the Dashboard's layout-edit mode (the grid owns the drag, as for pan).
+- Tests: `map_scene::tests::orbit_*`, `follow_car_keeps_the_orbit`, `picking_round_trips_with_an_orbit`,
+  `shift_drag_orbits_plain_drag_pans_and_a_click_is_a_click`.
+- **Not verified on screen** by the agent that wrote it (no display session): the feel (px per
+  degree) and the 3D look at 5 / 80 degrees are by the numbers; tune `ORBIT_*_PER_PX` if needed.
+
 ## Settings mode
 
 The cog on the viewer switches the whole tab to settings; **Back to map** (arrow, top left)

@@ -606,7 +606,10 @@ via `map_scene::draw`, clicks, buttons); the viewer calls it with `MapPane::View
 shared with the viewer). **It draws with the Dashboard map & Viewer settings** (D73: layers, view
 mode incl. 3D, north-up, allow pan and zoom): the tab has none of its own, and its **Settings**
 button opens that page of the Map tab. *Why:* one map look everywhere, and the user wanted every map
-setting on the Map tab (D79). Pan / zoom is the Viewer's (drag, wheel, *Follow car* while manual).
+setting on the Map tab (D79). Pan / zoom is the Viewer's (drag, wheel, *Follow car* while manual), and so is the **Shift+drag
+orbit** (D106, [map-tab.md](map-tab.md#shiftdrag-rotate-and-tilt-the-camera-d106); own state in
+`app.nav_ui.map`; the compass click resets it). On this tab Shift+click still sets the destination
+(a click, not a drag), and the destination pick uses the orbited camera.
 A faint hint pill *Click the map to set a destination* shows at the bottom while there is none (not
 on a map narrower than 520 px).
 

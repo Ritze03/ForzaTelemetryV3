@@ -158,23 +158,31 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
         };
         st.manual.interact(ui, &resp, &v);
     } else {
-        state(app, which).manual.reset();
+        state(app, which).manual.reset_all();
     }
-    let (centre, zoom_m) = state_ref(app, which).manual.view(car, base_zoom_m);
+    let manual = state_ref(app, which).manual;
+    let (centre, zoom_m) = manual.view(car, base_zoom_m);
+    // The Shift+drag orbit (D106) on top of the base heading and tilt; the compass shows while it
+    // is on, even if switched off in the settings: it is the way back.
+    let compass = app.config.minimap_show_compass || manual.orbit.is_active();
 
     let cam = map_scene::texture_or_status(ui, app, rect).map(|texture| {
         let cfg = &app.config;
+        let (yaw, layers) = manual.orbited(yaw, &cfg.minimap_layers);
         let scene = Scene {
-            layers: &cfg.minimap_layers,
+            layers: &layers,
             centre,
             yaw,
             zoom_m,
             mirror: cfg.minimap_mirror_edges,
-            compass: cfg.minimap_show_compass,
+            compass,
             race_sel: &state_ref(app, which).race_sel,
         };
         map_scene::draw(ui, app, rect, texture, &scene)
     });
+    if allow && map_scene::compass_clicked(ui, rect) {
+        state(app, which).manual.reset_orbit();
+    }
     if app.spectate.take_changed() {
         // A player-list click on this map: show the new target at once (the zoom stays).
         state(app, which).manual.recentre();
@@ -227,8 +235,8 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
         crate::ui::nav_tab::hint_pill(ui, rect);
     }
     let dest_btn = (which == MapPane::Viewer).then(|| DestButton { armed: state_ref(app, which).dest_armed, has_dest, shared });
-    let manual = state_ref(app, which).manual.is_manual();
-    let out = controls(ui, rect, manual, follow.name.as_deref(), zoom_m, app.config.minimap_show_compass, dest_btn);
+    let is_manual = state_ref(app, which).manual.is_manual();
+    let out = controls(ui, rect, is_manual, follow.name.as_deref(), zoom_m, compass, dest_btn);
     if out.follow {
         // Panned (or only zoomed): back to the car and the configured zoom, at once.
         state(app, which).manual.reset();
@@ -314,7 +322,7 @@ fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zo
 }
 
 /// Tooltip of the "Allow pan and zoom" option (both maps): what it does and when it resets.
-pub(crate) const PAN_ZOOM_TIP: &str = "Drag the map to pan and scroll to zoom. The view goes back to the car once you start driving again.";
+pub(crate) const PAN_ZOOM_TIP: &str = "Drag the map to pan, scroll to zoom and Shift+drag to rotate and tilt it. The pan and zoom go back to the car once you start driving again; the rotation stays until you click the compass.";
 
 // ── settings ─────────────────────────────────────────────────────────────────────────────────
 
