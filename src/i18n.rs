@@ -1132,6 +1132,12 @@ fn de(s: &str) -> Option<&'static str> {
         // The Viewer shares the Dashboard map's settings (D73), so the page is named after both.
         "Dashboard map & Viewer" => "Dashboard-Karte & Viewer",
         "Follow car" => "Fahrzeug folgen",
+        // Co-op player list on the GUI maps (D105): click a teammate to follow their car.
+        "Follow" => "Folgen",
+        "Click to follow this player's car" => "Klicken, um dem Fahrzeug dieses Spielers zu folgen",
+        "Following this player. Click to follow your own car again"
+            => "Du folgst diesem Spieler. Klicken, um wieder deinem eigenen Fahrzeug zu folgen",
+        "Click to follow your own car again" => "Klicken, um wieder deinem eigenen Fahrzeug zu folgen",
         "Allow pan and zoom" => "Verschieben und Zoomen erlauben",
         "Drag the map to pan and scroll to zoom. The view goes back to the car once you start driving again."
             => "Karte ziehen zum Verschieben, scrollen zum Zoomen. Sobald du wieder losfährst, springt die Ansicht zurück zum Fahrzeug.",

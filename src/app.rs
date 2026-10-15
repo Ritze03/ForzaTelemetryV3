@@ -602,6 +602,9 @@ pub struct ForzaApp {
     pub nav_ui: crate::ui::nav_tab::NavState,
     /// The Dashboard map's temporary pan / zoom (D72). A `RefCell`: the widget draws from `&ForzaApp`.
     pub minimap_pan: std::cell::RefCell<crate::ui::map_scene::ManualView>,
+    /// Whose car the GUI maps (Dashboard map, Viewer, Navigation tab) follow: a teammate picked in the
+    /// co-op player list, else the own car (D105). Session state, shared by all of them.
+    pub spectate: crate::ui::map_scene::Spectate,
     /// The 3D map renderer's state on this window's GL context (K4): the one `Gl3dHandle` the
     /// Dashboard map and the Map-tab viewer share, destroyed in `on_exit`.
     pub map3d: crate::ui::map_scene::Map3d,
@@ -964,6 +967,7 @@ impl ForzaApp {
             map_tab: Default::default(),
             nav_ui: Default::default(),
             minimap_pan: Default::default(),
+            spectate: Default::default(),
             map3d: Default::default(),
             map_editor_rx: None,
             map_editor_last: None,
@@ -1791,12 +1795,13 @@ impl eframe::App for ForzaApp {
 
         // Shared "stopped" state: under 5 km/h for at least 1.5 s. Both the
         // ease-to-north and the zoom-out read it, so they kick in together.
-        let speed_kmh = self
-            .telemetry
-            .latest
-            .as_ref()
-            .map(|p| p.speed * 3.6)
-            .unwrap_or(0.0);
+        // A spectated teammate (D105) stands in for the own car in everything the GUI maps' view
+        // follows: stopped / driving, heading, zoom.
+        let spectated = crate::ui::map_scene::spectated(self);
+        let speed_kmh = match &spectated {
+            Some(s) => s.speed * 3.6,
+            None => self.telemetry.latest.as_ref().map(|p| p.speed * 3.6).unwrap_or(0.0),
+        };
         let minimap_stopped = if speed_kmh >= crate::minimap::STOPPED_KMH {
             self.minimap_stopped_at = None;
             false
@@ -1812,7 +1817,14 @@ impl eframe::App for ForzaApp {
             // In heading-up mode, ease the map to north once the car has been stopped.
             let stopped_north = self.config.minimap_north_up_when_stopped && minimap_stopped;
 
-            let target = if let Some(ref pkt) = self.telemetry.latest {
+            // The heading the view turns to: the spectated teammate's, else the own car's.
+            let heading = spectated.as_ref().map(|s| s.target_yaw);
+            if let (Some(h), true) = (heading, self.spectate.take_snap()) {
+                self.minimap_smoothed_yaw = h; // just picked: no spin from the old heading
+            }
+            let target = if let Some(h) = heading {
+                if stopped_north { 0.0 } else { h }
+            } else if let Some(ref pkt) = self.telemetry.latest {
                 if pkt.is_race_on != 0 {
                     if stopped_north {
                         0.0
@@ -1831,7 +1843,7 @@ impl eframe::App for ForzaApp {
                 let dt = ctx.input(|i| i.unstable_dt);
                 self.minimap_smoothed_yaw = crate::minimap::ease_yaw(self.minimap_smoothed_yaw, target, dt);
             } else {
-                self.minimap_smoothed_yaw = self.minimap_cached_yaw;
+                self.minimap_smoothed_yaw = heading.unwrap_or(self.minimap_cached_yaw);
             }
             if self.config.minimap_north_up {
                 0.0
@@ -1847,8 +1859,8 @@ impl eframe::App for ForzaApp {
         {
             let dt = ctx.input(|i| i.unstable_dt);
             let stick = self.gamepad.right_stick();
-            let (enabled, heading, base) =
-                (self.config.minimap_look_stick, self.minimap_cached_yaw, self.minimap_base_yaw());
+            let heading = spectated.as_ref().map_or(self.minimap_cached_yaw, |s| s.target_yaw);
+            let (enabled, base) = (self.config.minimap_look_stick, self.minimap_base_yaw());
             self.minimap_look.step(stick, enabled, heading, base, base_target, dt);
         }
 

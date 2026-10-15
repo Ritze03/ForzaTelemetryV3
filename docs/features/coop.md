@@ -181,6 +181,16 @@ Code: `src/coop.rs` (`start_trystero`, `generate_room_id`), `src/coop/{nostr,rtc
 - **Toolchain**: `rust-toolchain.toml` pins 1.96.1 and Cargo.toml has `rust-version = "1.91"`.
   Why: webrtc 0.21 -> rtc-mdns needs Rust >= 1.91.
 
+## Spectating from the GUI maps (D105)
+
+The co-op player list on the Dashboard map, the Map-tab Viewer and the Navigation tab's map is
+clickable: a teammate's row makes those maps follow their car (position, heading, 3D height) like the
+own one; the own row or the followed row again goes back. It reads the same `remote_players()`
+snapshot the list and the markers use, so a player who drops out of it (left, no packet for 3 s,
+session over) ends the spectating and the maps return to the own car; a paused one keeps their last
+position (`coop_last_pos`). Session state on `ForzaApp::spectate`, not saved, GUI only (the HUD has no
+player list and is not affected). Details: `docs/features/map-tab.md` (Spectate a teammate).
+
 ## On the in-game HUD overlay
 
 The HUD overlay's minimap ([[overlay]]) draws the co-op layer with the Dashboard map's own drawing

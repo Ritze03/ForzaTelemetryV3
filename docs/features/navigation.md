@@ -556,6 +556,11 @@ when switched off, and through `Renderer::frame_at` with `nav_fn`.
 
 ## 4. Navigation tab and Viewer destination (`src/ui/nav_tab.rs`, `src/ui/map_tab.rs`, L5)
 
+*Spectating (D105):* the Navigation tab's map and the Viewer follow a teammate picked in the co-op
+player list instead of the own car (`docs/features/map-tab.md`). Only the camera moves: the route is
+still routed from, cut at and progressed by the **own** car, and the Navigation tab's route readout
+is unchanged.
+
 `Tab::Navigation` sits between Map and Power Curve (icon `icons::NAVIGATION`, fa-location-arrow
 `U+F124`, checked present in the bundled Nerd Font; title "Navigation"). No Mini-Settings page.
 

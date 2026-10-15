@@ -42,6 +42,125 @@ pub struct Scene<'a> {
     pub race_sel: &'a RefCell<RaceSel>,
 }
 
+// ── spectating a teammate (D105) ─────────────────────────────────────────────────────────────
+
+/// Whose car the GUI maps follow (D105): the own car, or the teammate picked by a click in the
+/// co-op player list. One per app (`ForzaApp::spectate`), shared by the Dashboard map, the Map tab's
+/// Viewer and the Navigation tab's map, session state only (not in the config). Interior mutability
+/// because the Dashboard map draws from `&ForzaApp`.
+#[derive(Default)]
+pub struct Spectate {
+    id: RefCell<Option<String>>,
+    /// A pick happened this frame: the map that was clicked goes back to following ([`Self::take_changed`]).
+    changed: Cell<bool>,
+    /// … and the view heading jumps to the new target instead of easing from the old one.
+    snap: Cell<bool>,
+}
+
+/// The target after a click on a row of the player list: `clicked` is the teammate's id, `None` =
+/// the own entry. Clicking the entry already followed, or the own entry, goes back to the own car.
+fn after_click(current: Option<&str>, clicked: Option<&str>) -> Option<String> {
+    clicked.filter(|c| current != Some(c)).map(str::to_string)
+}
+
+impl Spectate {
+    /// The teammate followed, if any (not checked against the room: see [`spectated`]).
+    pub fn id(&self) -> Option<String> {
+        self.id.borrow().clone()
+    }
+
+    /// A click on a player-list row (`None` = the own entry).
+    fn click(&self, clicked: Option<&str>) {
+        let next = after_click(self.id.borrow().as_deref(), clicked);
+        *self.id.borrow_mut() = next;
+        self.changed.set(true);
+        self.snap.set(true);
+    }
+
+    fn clear(&self) {
+        *self.id.borrow_mut() = None;
+    }
+
+    /// Did a click in the player list change the target since the last call? The map that drew it
+    /// then drops its manual pan ([`ManualView::recentre`]) so it shows the new target at once.
+    pub fn take_changed(&self) -> bool {
+        self.changed.take()
+    }
+
+    /// The view heading should jump (once) to the spectated car's: a new target was just picked.
+    pub fn take_snap(&self) -> bool {
+        self.snap.take()
+    }
+}
+
+/// The teammate the maps follow, as of this frame.
+pub struct Spectated {
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    /// The heading the view turns to (`minimap::target_yaw`, as for the own car).
+    pub target_yaw: f32,
+    /// m/s; 0 while paused.
+    pub speed: f32,
+}
+
+/// The spectated teammate's live state, `None` = follow the own car. A target who is no longer in
+/// the room's player list (left, disconnected, no packet for 3 s: `CoopState::remote_players`) or
+/// when the session ended falls back to the own car for good (the pick is cleared); a *paused*
+/// teammate stays, at the last position seen (`ForzaApp::coop_last_pos`), as on the map.
+/// *Why cleared, not waited for:* a follow that silently resumes when they come back would move the
+/// camera with no click; coming back means clicking them again.
+pub fn spectated(app: &ForzaApp) -> Option<Spectated> {
+    let id = app.spectate.id()?;
+    let found = (app.coop.role() != crate::coop::Role::Off)
+        .then(|| app.coop.remote_players().into_iter().find(|(i, _)| i.id == id))
+        .flatten();
+    let Some((info, pkt)) = found else {
+        app.spectate.clear();
+        return None;
+    };
+    if pkt.is_paused() {
+        let s = app.coop_last_pos.get(&id)?; // never seen at a valid spot: nothing to follow yet
+        return Some(Spectated { name: info.name, x: s.x, y: s.y, z: s.z, target_yaw: s.yaw, speed: 0.0 });
+    }
+    Some(Spectated {
+        name: info.name,
+        x: pkt.position_x,
+        y: pkt.position_y,
+        z: pkt.position_z,
+        target_yaw: crate::minimap::target_yaw(&pkt, app.config.minimap_use_movement_dir),
+        speed: pkt.speed,
+    })
+}
+
+/// What a GUI map's view follows this frame: the spectated teammate or the own car.
+pub struct Follow {
+    /// World (x, z) the view centres on.
+    pub car: (f32, f32),
+    /// The followed car's live height (the 3D camera sits above it); `None` = no live telemetry.
+    pub y: Option<f32>,
+    /// Packet speed in m/s (`None` = nothing received): the manual view's reset gate.
+    pub speed: Option<f32>,
+    /// The teammate's name while spectating (the Follow button says it).
+    pub name: Option<String>,
+}
+
+pub fn follow(app: &ForzaApp) -> Follow {
+    match spectated(app) {
+        Some(s) => Follow { car: (s.x, s.z), y: Some(s.y), speed: Some(s.speed), name: Some(s.name) },
+        None => {
+            let p = app.telemetry.latest.as_ref();
+            Follow {
+                car: (app.minimap_cached_car_x, app.minimap_cached_car_z),
+                y: p.filter(|p| p.is_race_on != 0).map(|p| p.position_y),
+                speed: p.map(|p| p.speed),
+                name: None,
+            }
+        }
+    }
+}
+
 // ── manual pan and zoom (D72) ────────────────────────────────────────────────────────────────
 
 /// Zoom limits of a manual view, as the radius (metres from the centre to the nearest edge):
@@ -304,6 +423,12 @@ impl ManualView {
         *self = Self::default();
     }
 
+    /// Follow the car (or the spectated teammate) again but keep the zoom: a new spectate target
+    /// was picked on this map.
+    pub fn recentre(&mut self) {
+        self.centre = None;
+    }
+
     /// The effective (centre, radius): the manual parts over the base.
     pub fn view(&self, car: (f32, f32), base_zoom_m: f32) -> ((f32, f32), f32) {
         (self.centre.unwrap_or(car), self.zoom_m.unwrap_or(base_zoom_m))
@@ -394,7 +519,7 @@ pub fn compass_rect(rect: Rect) -> Rect {
 /// (the viewer's is the same: only while manual). True = pressed (the caller resets the view). Right of
 /// the compass when that is on: [`draw`] leaves whether it painted one in the egui context,
 /// keyed by the map's `Ui`, so the caller needs no extra argument.
-pub fn follow_button(ui: &mut Ui, rect: Rect) -> bool {
+pub fn follow_button(ui: &mut Ui, rect: Rect, name: Option<&str>) -> bool {
     let compass = ui.ctx().data(|d| d.get_temp::<bool>(compass_id(ui))).unwrap_or(false);
     let dx = if compass { (compass_rect(rect).right() + 6.0 - rect.left()).max(8.0) } else { 8.0 };
     let at = Rect::from_min_size(rect.left_top() + vec2(dx, 8.0), vec2((rect.width().min(220.0) - dx).max(0.0), 26.0));
@@ -403,11 +528,20 @@ pub fn follow_button(ui: &mut Ui, rect: Rect) -> bool {
         egui::UiBuilder::new().max_rect(at).layout(egui::Layout::left_to_right(egui::Align::Min)),
         |ui| {
             hit = ui
-                .add(crate::theme::secondary_button(format!("{}  {}", crate::icons::CROSSHAIRS, tr("Follow car"))))
+                .add(crate::theme::secondary_button(format!("{}  {}", crate::icons::CROSSHAIRS, follow_label(name))))
                 .clicked();
         },
     );
     hit
+}
+
+/// The Follow button's text: "Follow car", or "Follow <name>" while a teammate is spectated
+/// (pressing it resumes following them, see `docs/features/map-tab.md`).
+pub fn follow_label(name: Option<&str>) -> String {
+    match name {
+        Some(n) => format!("{} {n}", tr("Follow")),
+        None => tr("Follow car").to_string(),
+    }
 }
 
 fn compass_id(ui: &Ui) -> egui::Id {
@@ -599,10 +733,9 @@ fn relief_camera(app: &ForzaApp, sc: &Scene, rect: Rect, prev_car_y: Option<f32>
         let TerrainStatus::Ready(terrain) = store::terrain() else {
             return None; // the status line in the View mode card says why
         };
-        let following = sc.centre == (app.minimap_cached_car_x, app.minimap_cached_car_z);
-        let telemetry_y = following
-            .then(|| app.telemetry.latest.as_ref().filter(|p| p.is_race_on != 0).map(|p| p.position_y + 1.0))
-            .flatten();
+        let f = follow(app); // the own car, or the spectated teammate (D105)
+        let following = sc.centre == f.car;
+        let telemetry_y = following.then_some(f.y.map(|y| y + 1.0)).flatten();
         let ground = terrain.height(sc.centre.0, sc.centre.1);
         let car_y = telemetry_y.unwrap_or_else(|| eased_car_y(prev_car_y, ground, dt));
         let settled = telemetry_y.is_some() || (car_y - ground).abs() < 0.25;
@@ -849,13 +982,16 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     let nav = crate::nav::view();
     let route = crate::maprender::paint2d::route_line(&nav, &lc.nav_route);
     let dest = crate::maprender::paint2d::route_dest(&nav, &lc.nav_route);
+    // Near-only POIs (and the like) are around the followed car: the own one, or the spectated
+    // teammate's (D105).
+    let followed = follow(app);
     let layer_pass = |cam: &Camera, over_3d: bool| {
         let cx = crate::maprender::LayerCtx {
             p: &painter,
             cam,
             s: 1.0,
             a: 1.0,
-            car: (car_x, car_z),
+            car: followed.car,
             corner_clip: None,
             icons: icons.as_deref(),
             race_sel: sel,
@@ -1000,11 +1136,13 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     // never reflows (which would flicker). Front marker is a dot, or the ⏸ glyph
     // (in the player's colour) when paused.
     if cfg.coop_map_playerlist && app.coop.role() != crate::coop::Role::Off {
+        let followed_id = spectated(app).and(app.spectate.id());
         let unit = if cfg.use_mph { "mph" } else { "km/h" };
-        // (hue colour, paused, row text, class, PI). The class column is drawn as a
-        // label image (assets/labels) after the text, so it's excluded from the text.
-        let mut rows: Vec<(Color32, bool, String, i32, i32)> = Vec::new();
-        let mut push_row = |hue: f32, name: &str, speed_ms: f32, gear: u8, class: i32, pi: i32, dist: f32, is_self: bool, paused: bool| {
+        // (hue colour, paused, row text, class, PI, player id: None = the own entry). The class
+        // column is drawn as a label image (assets/labels) after the text, so it's excluded from the text.
+        let mut rows: Vec<(Color32, bool, String, i32, i32, Option<String>)> = Vec::new();
+        let mut push_row = |hue: f32, name: &str, speed_ms: f32, gear: u8, class: i32, pi: i32, dist: f32, id: Option<&str>, paused: bool| {
+            let is_self = id.is_none();
             // Name: 12 cells, left-aligned, ellipsised if longer.
             let mut s = if name.chars().count() > 12 {
                 name.chars().take(11).collect::<String>() + "…"
@@ -1033,11 +1171,11 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
                 };
                 s += &format!(" G{g:<2}"); // "G10" / "G9 " / "GN " / "GR "
             }
-            rows.push((crate::ui::coop::hue_color(hue), paused, s, class, pi));
+            rows.push((crate::ui::coop::hue_color(hue), paused, s, class, pi, id.map(str::to_string)));
         };
         if let Some(p) = &app.telemetry.latest {
             // Our own class/PI come from the cache so a local pause doesn't blank them.
-            push_row(cfg.coop_hue, &cfg.coop_name, p.speed, p.gear, app.cached_car_class, app.cached_car_pi, 0.0, true, p.is_paused());
+            push_row(cfg.coop_hue, &cfg.coop_name, p.speed, p.gear, app.cached_car_class, app.cached_car_pi, 0.0, None, p.is_paused());
         }
         for (info, pkt) in app.coop.remote_players() {
             let paused = pkt.is_paused();
@@ -1057,7 +1195,7 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
             } else {
                 (pkt.car_class, pkt.car_performance_index)
             };
-            push_row(info.hue, &info.name, pkt.speed, pkt.gear, cl, pi, dist, false, paused);
+            push_row(info.hue, &info.name, pkt.speed, pkt.gear, cl, pi, dist, Some(&info.id), paused);
         }
         if !rows.is_empty() {
             let font = egui::FontId::monospace(11.0);
@@ -1067,18 +1205,46 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
             let class_scale = (row_h - 2.0) / native.y;
             let class_gap = 6.0;
             let class_w = if cfg.coop_list_class { native.x * class_scale + class_gap } else { 0.0 };
-            let galleys: Vec<(Color32, bool, std::sync::Arc<egui::Galley>, i32, i32)> = rows
+            let galleys: Vec<(Color32, bool, std::sync::Arc<egui::Galley>, i32, i32, Option<String>)> = rows
                 .iter()
-                .map(|(c, paused, s, cl, pi)| (*c, *paused, painter.layout_no_wrap(s.clone(), font.clone(), Color32::WHITE), *cl, *pi))
+                .map(|(c, paused, s, cl, pi, id)| (*c, *paused, painter.layout_no_wrap(s.clone(), font.clone(), Color32::WHITE), *cl, *pi, id.clone()))
                 .collect();
-            let text_w = galleys.iter().map(|(_, _, g, _, _)| g.size().x).fold(0.0, f32::max);
+            let text_w = galleys.iter().map(|(_, _, g, _, _, _)| g.size().x).fold(0.0, f32::max);
             let w = text_x + text_w + class_w + pad;
             let h = pad * 2.0 + row_h * galleys.len() as f32;
             let origin = rect.right_top() + vec2(-w - 6.0, 6.0);
             let panel = egui::Rect::from_min_size(origin, vec2(w, h));
             painter.rect_filled(panel, 4.0, Color32::from_black_alpha(160));
-            for (i, (c, paused, g, cl, pi)) in galleys.into_iter().enumerate() {
+            // Clicking a teammate's row follows their car (D105), the own row or the followed row
+            // goes back to the own car. Not while the Dashboard is being laid out (the grid owns the
+            // mouse there).
+            let clickable = !(cfg.dashboard_edit_mode && app.current_tab == crate::app::Tab::Dashboard);
+            let followed_id = followed_id.as_deref();
+            for (i, (c, paused, g, cl, pi, id)) in galleys.into_iter().enumerate() {
                 let cy = panel.top() + pad + row_h * i as f32 + row_h * 0.5;
+                let row = Rect::from_min_size(pos2(panel.left(), panel.top() + pad + row_h * i as f32), vec2(w, row_h));
+                let on = id.is_some() && id.as_deref() == followed_id; // the one being followed
+                // The own row only does something while a teammate is followed (back to the own car).
+                let live = clickable && (id.is_some() || followed_id.is_some());
+                if live {
+                    let r = ui.interact(row, ui.id().with(("map_scene_spectate", i)), egui::Sense::click());
+                    let tip = match (&id, on) {
+                        (Some(_), false) => tr("Click to follow this player's car"),
+                        (Some(_), true) => tr("Following this player. Click to follow your own car again"),
+                        (None, _) => tr("Click to follow your own car again"),
+                    };
+                    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+                    if r.hovered() && !on {
+                        painter.rect_filled(row, 3.0, crate::theme::TEXT.gamma_multiply(0.12));
+                    }
+                    if r.clicked() {
+                        app.spectate.click(id.as_deref());
+                    }
+                }
+                if on {
+                    painter.rect_filled(row, 3.0, crate::theme::ACCENT.gamma_multiply(0.3));
+                    painter.rect_stroke(row, 3.0, Stroke::new(1.0, crate::theme::ACCENT), egui::StrokeKind::Inside);
+                }
                 let icon_pos = pos2(panel.left() + icon_x, cy);
                 if paused {
                     painter.text(icon_pos, egui::Align2::CENTER_CENTER, crate::icons::PAUSE,
@@ -1151,6 +1317,43 @@ mod tests {
         assert!(zoom_factor(-50.0, 1.0) > 1.0);
         assert!(zoom_factor(0.0, 1.5) < 1.0);
         assert_eq!(zoom_factor(0.0, 1.0), 1.0);
+    }
+
+    /// The player list's click: a teammate's row follows them, the same row again or the own row
+    /// goes back to the own car, another teammate switches.
+    #[test]
+    fn list_click_selects_toggles_and_returns_to_the_own_car() {
+        assert_eq!(after_click(None, Some("bob")).as_deref(), Some("bob")); // select
+        assert_eq!(after_click(Some("bob"), Some("bob")), None); // same entry again: off
+        assert_eq!(after_click(Some("bob"), None), None); // own entry: off
+        assert_eq!(after_click(None, None), None); // own entry while not following: nothing
+        assert_eq!(after_click(Some("bob"), Some("eve")).as_deref(), Some("eve")); // switch
+        let s = Spectate::default();
+        assert!(!s.take_changed() && !s.take_snap());
+        s.click(Some("bob"));
+        assert_eq!(s.id().as_deref(), Some("bob"));
+        assert!(s.take_changed() && s.take_snap());
+        assert!(!s.take_changed() && !s.take_snap(), "each is reported once");
+        s.click(Some("bob"));
+        assert_eq!(s.id(), None);
+        s.click(Some("eve"));
+        s.clear(); // the player left: back to the own car, silently (no click, no `changed`)
+        assert_eq!(s.id(), None);
+    }
+
+    #[test]
+    fn follow_button_names_the_followed_player() {
+        assert_eq!(follow_label(None), tr("Follow car"));
+        assert!(follow_label(Some("Bob")).ends_with("Bob"));
+    }
+
+    /// Picking a player keeps the zoom but drops a pan; the Follow button drops both.
+    #[test]
+    fn picking_a_player_recentres_but_keeps_the_zoom() {
+        let mut v = ManualView { centre: Some((1.0, 2.0)), zoom_m: Some(300.0), ..Default::default() };
+        v.recentre();
+        assert_eq!(v.view((5.0, 6.0), 900.0), ((5.0, 6.0), 300.0));
+        assert!(v.is_manual()); // still zoomed
     }
 
     /// A manual view made while stopped snaps back once the car drives off (after the delay), and

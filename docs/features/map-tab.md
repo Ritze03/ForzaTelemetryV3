@@ -46,6 +46,46 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   *Why (the user, 2026-10-09):* "only show the Follow Car button, while it isn't following the car
   at the moment". Before, it was always there (lit while following) and, with nothing manual,
   pressing it froze the view; that freeze (`ManualView::pin_centre`) is gone with the button.
+- **Spectate a teammate** (D105): in a co-op session, a click on a row of the co-op player list
+  (top right of `map_scene::draw`) makes every **GUI** map (Dashboard map, Viewer, Navigation tab's
+  map; **not** the HUD Minimap) follow that teammate's car exactly as it follows the own one: view
+  centre, heading (heading-up / tilted / 3D camera), zoom (driven by *their* speed: the
+  stopped / driving zoom and ease-to-north), the 3D camera height, near-only POIs, and the manual
+  view's reset-on-driving gate. The own arrow / 3D car, trails, distances, race-line pick and the
+  navigation route (cut and progress are per own car) are unchanged: only the camera target moves.
+  - **State:** `ForzaApp::spectate` (`map_scene::Spectate`, the teammate's id), *one* target shared by
+    all GUI maps, session only, never in the config. *Why shared:* the three maps are never on screen
+    together and "I am watching Bob" is one intent; per-map state would need three lists of
+    state for no gain. Interior mutability (`RefCell` / `Cell`) because the Dashboard widget draws
+    from `&ForzaApp`.
+  - **Wiring:** `map_scene::spectated(app)` resolves the id against `coop.remote_players()` this
+    frame (position, `minimap::target_yaw`, speed; a paused teammate = `coop_last_pos`, speed 0);
+    `map_scene::follow(app)` returns the followed car's centre / height / speed (own car when not
+    spectating). `ForzaApp::update` feeds the spectated heading and speed into the very same
+    `minimap_smoothed_yaw` / look-around / zoom easing the own car drives, so heading-up, north-up,
+    smooth rotation and the snap-free switch need no second code path; `map_pane` and
+    `show_minimap_widget` take their `car` / `speed` from `follow`, `relief_camera` its height.
+  - **List:** every row is a click target (pointer cursor, tooltip "Click to follow this player's
+    car"); the followed row has an accent-tinted fill and outline (theme tokens). Click it again or
+    the own row = back to the own car (the own row only reacts while spectating). Rule:
+    `map_scene::after_click`, tested by `list_click_selects_toggles_and_returns_to_the_own_car`.
+    Not clickable while the Dashboard is in layout-edit mode.
+  - **Leaving:** a target that is no longer in the player list (left, disconnected, no packet for
+    3 s, session over) falls back to the own car and the pick is **cleared**, silently. *Why cleared,
+    not kept waiting:* a follow that resumes by itself when they come back would move the camera
+    without a click. A *paused* teammate stays and is shown at the last valid position.
+  - **Pan and Follow:** a pick drops the clicked map's pan (`ManualView::recentre`, keeps the zoom).
+    Panning stops following as before; the **Follow** button (shown only while manual) then
+    *resumes the current target*, so it reads "Follow <name>" while spectating
+    (`map_scene::follow_label`). *Why not "Follow car goes to my own car":* the button's job is to
+    undo a manual pan, and a pan while spectating should return to what you were watching; going
+    back to the own car is the click on the row.
+  - Not followed: the race-line pick (`RaceSel`, "current race") stays on the own car. The
+    right-stick look-around still works, relative to the spectated heading.
+  *Why (the user, 2026-10-15):* "on all of the maps in the GUI, not the overlay, only in the GUI. I
+  should be able to click on the players in the top right on the co-op screen and then basically
+  inspect them or like uh spectate them so I can like it automatically follows their car the same
+  way it would follow my car".
 - **Set destination** (bottom right, left of Settings; phase L): a toggle button. Armed (accent
   fill, crosshair cursor) the next left click sets the navigation destination and disarms; a right
   click or Esc disarms. **Shift+left-click** sets it without arming. A plain left click stays the

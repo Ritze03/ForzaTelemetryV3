@@ -140,9 +140,11 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
     // (incl. the right-stick look), same base zoom.
     let allow = app.config.minimap_allow_pan_zoom;
     let resp = ui.allocate_rect(rect, if allow { Sense::click_and_drag() } else { Sense::click() });
-    let car = (app.minimap_cached_car_x, app.minimap_cached_car_z);
+    // What the view follows: the own car, or the teammate picked in the co-op player list (D105).
+    // The heading (`yaw`) follows the same car (`ForzaApp::update` eases it towards it).
+    let follow = map_scene::follow(app);
+    let (car, speed) = (follow.car, follow.speed);
     let yaw = app.minimap_look.view_yaw(app.minimap_base_yaw());
-    let speed = app.telemetry.latest.as_ref().map(|p| p.speed);
     let base_zoom_m = app.minimap_current_zoom;
 
     // Input first; the scene is then drawn from the updated view, so a drag moves the map in
@@ -173,6 +175,10 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
         };
         map_scene::draw(ui, app, rect, texture, &scene)
     });
+    if app.spectate.take_changed() {
+        // A player-list click on this map: show the new target at once (the zoom stays).
+        state(app, which).manual.recentre();
+    }
 
     // Clicks. Waypoints exist only in a co-op session.
     let in_session = app.coop.role() != crate::coop::Role::Off;
@@ -222,7 +228,7 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
     }
     let dest_btn = (which == MapPane::Viewer).then(|| DestButton { armed: state_ref(app, which).dest_armed, has_dest, shared });
     let manual = state_ref(app, which).manual.is_manual();
-    let out = controls(ui, rect, manual, zoom_m, app.config.minimap_show_compass, dest_btn);
+    let out = controls(ui, rect, manual, follow.name.as_deref(), zoom_m, app.config.minimap_show_compass, dest_btn);
     if out.follow {
         // Panned (or only zoomed): back to the car and the configured zoom, at once.
         state(app, which).manual.reset();
@@ -265,14 +271,14 @@ pub(crate) struct ControlsOut {
 /// route" beside it while a route exists. *Why bottom right:* the top right belongs to the co-op
 /// player list (D73). *Why only while manual:* a "Follow car" that is already following does
 /// nothing and only covers the map (user, D79).
-fn controls(ui: &mut Ui, rect: Rect, manual: bool, zoom_m: f32, compass: bool, dest: Option<DestButton>) -> ControlsOut {
+fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zoom_m: f32, compass: bool, dest: Option<DestButton>) -> ControlsOut {
     const M: f32 = 10.0;
     let mut out = ControlsOut::default();
     if manual {
         let dx = if compass { (map_scene::compass_rect(rect).right() - rect.left() + 6.0 - M).max(0.0) } else { 0.0 };
         let left = Rect::from_min_size(rect.left_top() + vec2(M + dx, M), vec2((rect.width() * 0.5 - M - dx).max(0.0), 30.0));
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Min)), |ui| {
-            let label = format!("{}  {}", icons::CROSSHAIRS, tr("Follow car"));
+            let label = format!("{}  {}", icons::CROSSHAIRS, map_scene::follow_label(follow_name));
             out.follow = ui.add(theme::secondary_button(label)).clicked();
         });
     }
@@ -672,14 +678,14 @@ mod tests {
                             // Following the car: no Follow car button. Panned or zoomed: it shows.
                             let out = render("map_viewer", w, h, |ui, _| {
                                 let rect = ui.available_rect_before_wrap();
-                                controls(ui, rect, false, 1500.0, compass, dest);
+                                controls(ui, rect, false, None, 1500.0, compass, dest);
                             });
                             check_panes(&out, w, "viewer controls, following");
                             let n = out.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Text(_))).count();
                             assert_eq!(n, 2 + extra, "{lang:?} at {w} px: while following only the buttons and the radius show");
                             let out = render("map_viewer", w, h, |ui, _| {
                                 let rect = ui.available_rect_before_wrap();
-                                controls(ui, rect, true, 1500.0, compass, dest);
+                                controls(ui, rect, true, None, 1500.0, compass, dest);
                             });
                             check_panes(&out, w, "viewer controls");
                             // Text shapes in paint order: Follow car, Settings, [Set destination, [Clear route]], the radius.
