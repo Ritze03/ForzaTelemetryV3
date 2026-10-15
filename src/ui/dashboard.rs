@@ -2547,7 +2547,9 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // North-up locks the map (yaw 0); otherwise it's heading-up (rotates with the car). The
     // right-stick look-around sits on top of that base, see `minimap::LookAround`.
     let yaw = app.minimap_look.view_yaw(app.minimap_base_yaw());
-    let car = (app.minimap_cached_car_x, app.minimap_cached_car_z);
+    // The own car, or the teammate picked in the co-op player list (D105).
+    let follow = crate::ui::map_scene::follow(app);
+    let car = follow.car;
     let (centre, zoom_m) = {
         let mut mv = app.minimap_pan.borrow_mut();
         if pan {
@@ -2557,7 +2559,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
                 rect,
                 car,
                 base_zoom_m: app.minimap_current_zoom,
-                speed: app.telemetry.latest.as_ref().map(|p| p.speed),
+                speed: follow.speed,
                 now: ui.input(|i| i.time),
             };
             mv.interact(ui, &map_resp, &v);
@@ -2576,7 +2578,10 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         race_sel: &app.minimap_race_sel,
     };
     let cam = crate::ui::map_scene::draw(ui, app, rect, texture, &scene);
-    if pan && app.minimap_pan.borrow().is_manual() && crate::ui::map_scene::follow_button(ui, rect) {
+    if app.spectate.take_changed() {
+        app.minimap_pan.borrow_mut().recentre(); // a player-list click: show the new target at once
+    }
+    if pan && app.minimap_pan.borrow().is_manual() && crate::ui::map_scene::follow_button(ui, rect, follow.name.as_deref()) {
         app.minimap_pan.borrow_mut().reset();
     }
 
