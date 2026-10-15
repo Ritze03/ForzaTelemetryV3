@@ -350,9 +350,11 @@ fn snap_skips_disallowed_types_and_grows_its_radius() {
     assert!(g.snap(5000.0, 5000.0, None, &RouteFilters::ALL).is_none());
 }
 
+/// The trip's points (without the lead-in `plan` lays behind the start, D104).
 fn assert_pts(r: &Route, want: &[[f32; 2]]) {
-    assert_eq!(r.pts.len(), want.len(), "{:?}", r.pts);
-    for (p, w) in r.pts.iter().zip(want) {
+    let pts = &r.pts[r.lead_segs..];
+    assert_eq!(pts.len(), want.len(), "{:?}", r.pts);
+    for (p, w) in pts.iter().zip(want) {
         assert!((p[0] - w[0]).abs() < 1e-3 && (p[1] - w[1]).abs() < 1e-3, "{:?} vs {want:?}", r.pts);
     }
 }
@@ -366,7 +368,7 @@ fn start_and_destination_sit_mid_edge() {
     let r = g.plan((30.0, 5.0, None), (170.0, -5.0), &p).unwrap();
     assert_pts(&r, &[[30.0, 0.0], [100.0, 0.0], [170.0, 0.0]]);
     assert!((r.dist_m - 140.0).abs() < 1e-3);
-    assert_eq!(r.seg_kind.len(), 2);
+    assert_eq!(r.seg_kind.len() - r.lead_segs, 2);
     // against the polyline order, ending on the edge before the start's
     let r = g.plan((130.0, 3.0, None), (40.0, 3.0), &p).unwrap();
     assert_pts(&r, &[[130.0, 0.0], [100.0, 0.0], [40.0, 0.0]]);
@@ -385,6 +387,46 @@ fn start_and_destination_sit_mid_edge() {
     let r = g.plan((50.0, 2.0, None), (50.0, -2.0), &p).unwrap();
     assert_eq!(r.pts.len(), 1);
     assert_eq!(r.dist_m, 0.0);
+}
+
+/// D104: `plan` lays about `LEAD_M` of the road the car stands on *behind* the start (the side the
+/// route does not take); the trip itself (`dist_m`, `eta_s`) is the same as without it.
+#[test]
+fn the_route_has_a_lead_in_behind_its_start() {
+    let nav = nav_of(vec![line(&[1, 2, 3, 4, 5, 6], 0.0, 0.0)]); // nodes at x = 0, 100 .. 500
+    let g = build(&nav, &RoadTypes::raw());
+    let p = road_prefs();
+    let xs = |r: &Route| r.pts.iter().map(|q| q[0].round() as i32).collect::<Vec<_>>();
+    // 250 -> 450, heading +x: behind the start is -x; the partial edge (50 m) is already enough.
+    let r = g.plan((250.0, 3.0, None), (450.0, 3.0), &p).unwrap();
+    assert_eq!((r.lead_segs, xs(&r)), (1, vec![200, 250, 300, 400, 450]));
+    assert!((r.dist_m - 200.0).abs() < 1e-3 && r.seg_len.len() == r.pts.len() - 1 && r.seg_time_s.len() == r.pts.len() - 1);
+    assert_eq!(r.seg_len[0], 50.0, "the lead's own piece");
+    // 230: 30 m to the node, then the whole edge before it
+    let r = g.plan((230.0, 3.0, None), (450.0, 3.0), &p).unwrap();
+    assert_eq!((r.lead_segs, &xs(&r)[..4]), (2, &[100, 200, 230, 300][..]));
+    assert!((r.dist_m - 220.0).abs() < 1e-3, "the trip's length is without the lead: {}", r.dist_m);
+    // the other way: heading -x, behind is +x
+    let r = g.plan((230.0, 3.0, None), (30.0, 3.0), &p).unwrap();
+    assert_eq!(r.lead_segs, 1);
+    assert_eq!(xs(&r)[..3], [300, 230, 200]);
+    // at a dead end (the start on the first node) there is nothing behind
+    let r = g.plan((0.0, 0.0, None), (300.0, 0.0), &p).unwrap();
+    assert_eq!((r.lead_segs, r.pts[0]), (0, [0.0, 0.0]));
+    // a junction behind the start: the road that goes on straight, not the side road
+    let mut rt = RoadTypes::raw();
+    let nav = nav_of(vec![line(&[1, 2, 3, 4, 5], 0.0, 0.0), vec![v(3, 200.0, 0.0, 0.0), v(9, 200.0, 100.0, 0.0)]]);
+    typed(&mut rt, &[(3, 9, RoadType::Road)]);
+    let g = build(&nav, &rt);
+    let r = g.plan((230.0, 3.0, None), (390.0, 3.0), &p).unwrap();
+    assert_eq!((r.lead_segs, &xs(&r)[..4]), (2, &[100, 200, 230, 300][..]), "straight on over the junction at 200");
+    // a lead-in is never a jump and respects the filters
+    let nav = nav_of(vec![line(&[1, 2, 3, 4], 0.0, 0.0)]);
+    let mut rt = RoadTypes::raw();
+    typed(&mut rt, &[(1, 2, RoadType::Road), (2, 3, RoadType::Trail), (3, 4, RoadType::Road)]);
+    let g = build(&nav, &rt);
+    let r = g.plan((230.0, 3.0, None), (390.0, 3.0), &p).unwrap();
+    assert_eq!((r.lead_segs, r.pts[0][0]), (1, 200.0), "trails are off: the lead stops at the trail's end");
 }
 
 #[test]

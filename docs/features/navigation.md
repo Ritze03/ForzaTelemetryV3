@@ -216,6 +216,18 @@ that only grazes the pass and a parallel road of the same winding are the likely
   profile ever asks for it. Measured numbers below.
 * `Route` carries per-segment kind / length / time so the follower (L2) can compute the remaining
   ETA, and the drawing (L3) can split at jumps and tunnels; `y` per point is 0.0 when unknown.
+* **Lead-in (D104, `RouteGraph::add_lead`, called by `plan`, not by `route` / `search`):** `plan` lays
+  `LEAD_M` (40 m, whole edges, so up to one edge more, at most 8 edges) of the road the car stands on
+  *behind* the start, on the side the route does not take: from the start point away from the route's
+  first direction, at every junction the allowed road that continues most straight (never turning
+  back, never onto a jump, never to a node already in the lead-in); nothing at a dead end. They are
+  the first `Route::lead_segs` segments (`pts[lead_segs]` is the start's projection point);
+  `dist_m` / `eta_s` are the trip's, without them. *Why (the user (D104): "When I'm driving away from the route, it always takes a whole node length until it actually fills the like normal road with the route color again. Plus, the route coloring of the road should cover the whole length of my car with some extra, and it should be rounded at the end and not just cut off straight." and, asked, "when I'm driving in the wrong direction then obviously the route gets longer and I see it filling it behind me but it's always per node and not like dynamically like we have it for when driving along the route"):* a route starts at the car's
+  snap, so a car driving the *wrong way* (away from the destination) left the route's first point
+  behind and nothing could follow it there; the drawn start stayed where it was snapped and caught up only
+  with the next re-route, which needs > 50 m and 2 s off the route and then comes in a block (the
+  user's "per node"). With the lead-in the wrong-way car is still *on the route*, driving back
+  along it, and the map cuts it at the car live, per packet, like along the route.
 
 ### Snapping (`snap.rs`)
 
@@ -299,11 +311,16 @@ a `SharedIn` to `Tracker::set_shared`. Persisting the destination is the config'
 `{ rev, status, dest: Option<Dest>, line: Option<Arc<NavLine>>, progress: NavProgress, remaining_m,
 total_m, eta_s, local_cleared_seq }`. `NavLine { rev, pts, y, seg_kind }` is the **whole route**
 (`seg_kind` 7 = jump), a new `Arc` only for a new route (a re-route, new prefs, a replaced graph).
-`NavProgress { seg, t, along_m }` is where the car is on it: the projection of the car on the line
-as segment index + fraction (+ the metres, which `remaining_m` is taken from), **written for every
-packet** and read together with `line` (both under the view's one lock, so a new route never shows
-with the old route's progress). The maps cut the line there ([`NavProgress::u`] = `seg + t` for the
-3D mesh, `NavLine::remaining` for 2D). `Dest { x, z, source: Local | Shared { setter, hue }, prefs }`. `NavStatus`: `Idle`,
+`NavProgress { seg, t, along_m }` is where the **drawn route starts**: the projection of the car on the
+line **minus `CUT_BEHIND_M` (9 m)** along the route (D104; 0 at least), as segment index + fraction
+(`along_m` is the *car's* metres from the line's first point, which `remaining_m` is taken from),
+**written for every packet** and read together with `line` (both under the view's one lock, so a new
+route never shows with the old route's progress). The maps cut the line there ([`NavProgress::u`] =
+`seg + t` for the 3D mesh, `NavLine::remaining` for 2D), so every map (HUD Minimap, Dashboard map,
+Viewer, Navigation tab; flat, tilted, 3D) agrees. `CUT_BEHIND_M` is the car's length (~5 m) plus ~4 m
+margin, a fixed guess (`ponytail:` in `follow.rs`); "behind" is along the route, so a car driving
+the wrong way gets the margin on its nose (from the lead-in). *Why (the user (D104): "When I'm driving away from the route, it always takes a whole node length until it actually fills the like normal road with the route color again. Plus, the route coloring of the road should cover the whole length of my car with some extra, and it should be rounded at the end and not just cut off straight."):* the cut used to be the car's
+centre, so the car's rear half stood on the plain road. `Dest { x, z, source: Local | Shared { setter, hue }, prefs }`. `NavStatus`: `Idle`,
 `WaitingForCar` (destination, no driving packet yet), `Routing` (a previous line may still be shown),
 `Ok`, `NoRoadNear(Car | Destination)`, `Unreachable`, `NoRoadData`, `PausedRace`, `Arrived`.
 `NavView::rev` changes on any published change **except `progress`**; `NavLine::rev` only when the
@@ -321,10 +338,11 @@ by arriving: the UI clears `AppConfig.nav.destination` when it sees it change.
 | Route starts far from the car (car in a field, snap up to 300 m) | off-route limit is 50 m + that gap until the car was first within 50 m of the route | otherwise a car 120 m from the road is "off route" at once and re-routes every 3 s forever |
 | `NoRoadNear(Car)` / `Unreachable` | retried every >= 3 s **while the car has moved >= 25 m** since the request | fast travel into a field recovers, a parked car does not poll; `NoRoadNear(Destination)` / `NoRoadData` are only retried on a changed input or graph |
 | Progress | windowed scan (2 back, 80 ahead); if the window's nearest point is its **edge** (clamped to the first segment's start / the last one's end) the window is widened (doubling) until it is not; global scan if the window has nothing within 50 m | a route passing near itself (loop, overpass) cannot make the car jump to the other pass (the window is the first choice, so the pass nearest the previous progress wins); a shortcut / U-turn / **rewind** within 50 m of the route is "on route" |
+| Re-route when the car leaves the lead-in (D104) | `Progress::behind_m` > 20 m (`TRAIL_AFTER_M`: the car is that far behind the route's real start, in the lead-in or past its first point, on the road: within 50 m of the first segment, was on the route before) -> a new route from the car **at once**: no debounce, no 3 s spacing, `TRAIL_SPACING_MS` (100 ms) after the last request, not while one is in flight, and only after the car moved 20 m since the last request | the lead-in is 40 m, so 20 m of it are still ahead of the car for the cut margin (9 m) and the re-route's latency at speed; one request per 20 m of wrong-way driving (about every 0.4 s at 200 km/h), not per packet and not per node. The movement rule stops a car beyond a dead end's tip (no lead-in to lay, the same snap each time) from asking every tick. A new route is a new mesh in 3D (~0.5 ms, once per route, allowed). The slow rule below (> 50 m, 2 s, 3 s spacing) stays for the rest |
 | Progress direction | **free**: it follows the exact projection, forwards and backwards | live display (D97) and **rewind**: Forza's rewind puts the car back along the route (300 m is typical); the progress goes back with it, `remaining_m` grows again and the maps show the road behind the car. A rewind is on the route, so it is not off-route time (the clock restarts from 0) and asks for no re-route. It used to be monotone inside the window ("a reversing car does not add distance back") |
 | Remaining ETA | sum of the remaining `seg_time_s` | same assumed speeds as the route (approximate by design, D84) |
 | Arrival | remaining < 25 m **and** car within 40 m of the route's end | the end is the snapped destination (it can be up to 300 m from the clicked point) |
-| Drawn line | the **whole route**, one `Arc<NavLine>` (one `rev`) per route; the maps cut it at `NavView::progress` per frame | *Why (D97, the user: "Can the remaining route be sized dynamically, so the highlight doesnt go away in blocks (the nodes) on the map, when driving the route, but rather dynamically draw it, so it moves 'live' and not in 'blocks'/nodes? Also, when rewinding, the road that has already been driven isnt marked for navigation anymore."):* the line used to be trimmed in 150 m chunks, a new `Arc` per chunk, because a new `Arc` rebuilds the 3D deck mesh and trimming per packet would rebuild it 70x a second; the result was a route that shrank in blocks and, being cut, could not grow back after a rewind. Now the line never changes while driving, so the 3D mesh is built once per route and the cut is a per-frame number (see section 3) |
+| Drawn line | the **whole route** (with its lead-in), one `Arc<NavLine>` (one `rev`) per route; the maps cut it at `NavView::progress` (9 m behind the car) per frame | *Why (D97, the user: "Can the remaining route be sized dynamically, so the highlight doesnt go away in blocks (the nodes) on the map, when driving the route, but rather dynamically draw it, so it moves 'live' and not in 'blocks'/nodes? Also, when rewinding, the road that has already been driven isnt marked for navigation anymore."):* the line used to be trimmed in 150 m chunks, a new `Arc` per chunk, because a new `Arc` rebuilds the 3D deck mesh and trimming per packet would rebuild it 70x a second; the result was a route that shrank in blocks and, being cut, could not grow back after a rewind. Now the line never changes while driving, so the 3D mesh is built once per route and the cut is a per-frame number (see section 3). D104 keeps that: only a car that drives 20 m the wrong way gets a new route |
 | Race (race position != 0) | `PausedRace`, line hidden, nothing requested; on the way out a new route from wherever the race ended (D92) | the race is already a road-styled line in the same slot (D80), a second coloured road on top fights it, and the destination is irrelevant mid-race. A destination change during a race is held until it ends |
 | Prefs-only change | old line stays (and is followed) until the new route arrives | no blinking while the slider is dragged; a new destination drops the line at once |
 | Arrival, local | destination cleared (inputs + `local_cleared_seq`), `Arrived` until the next destination | D84: no prompt; this is where a later HUD notification hooks in |
@@ -332,7 +350,9 @@ by arriving: the UI clears `AppConfig.nav.destination` when it sees it change.
 
 ### Tests
 
-`follow.rs` (pure): progress follows the car (continuous, no chunks: `progress_is_continuous_along_a_segment`),
+`follow.rs` (pure): the cut is 9 m behind the car and never before the route's start, moves as much as the car
+(`the_drawn_route_starts_behind_the_car_and_never_before_the_routes_start`), a lead-in is followed back
+and forth (`a_lead_in_is_followed_live_when_the_car_drives_the_wrong_way`), `behind_m`; progress follows the car (continuous, no chunks: `progress_is_continuous_along_a_segment`),
 goes back with it, **rewinds** of 10 m .. 1.5 km re-acquire the exact position with no off-route time
 and no re-route (`a_rewind_reacquires_the_progress_behind_without_a_reroute`, `a_rewind_resets_the_off_route_clock`,
 a loop route), window vs global scan, the 50 m / 2 s rule incl. the 3 s
@@ -340,7 +360,11 @@ suppression and hysteresis, capped steps, paused packets, far-start gap, arrival
 `state.rs` (a recording `FakePlanner`, explicit clock): idle asks for nothing,
 waits for a car, debounce, stale reply dropped, one `Arc` for the whole drive with the progress
 updated per packet (and nothing published for a standing car), a rewind (progress back, same line,
-no request), off-route
+no request), **the wrong way** (`driving_the_wrong_way_the_drawn_start_follows_the_car_live`: 1 km
+away from the destination at 100 km/h through a planner that answers with a lead-in: the drawn start
+moves at most as far as the car every packet, also across the ~50 re-routes, and is always 9 m ahead of the
+car; it fails without the lead-in / re-route: the start stops at the first route's end),
+`a_car_parked_behind_the_start_asks_once`, off-route
 re-route, 3 s spacing, `NoRoadNear(Car)` retries, error -> status, race pause / resume / in-flight
 reply dropped, paused packets, local arrival, shared overrides local / falls back / opt-out,
 shared arrival, prefs-only change. Plus `ThreadPlanner` with a scripted graph source (waits for a
@@ -349,6 +373,8 @@ loading graph, missing install, replaced graph, latest request wins). Real insta
 island route driven at 200 km/h in 60 Hz packets through the real tracker: 25 194 packets, the
 largest progress step 0.94 m, one `Arc`, a 300 m rewind at 12 km takes the progress from 12 005.8
 to 11 706.7 m, one route request in all, an arrival at the end; both skip without `FH6_INSTALL_DIR`). The ignored `tick_cost` prints the per-packet cost.
+Lead-in (`the_route_has_a_lead_in_behind_its_start`: partial edge, whole edge before it, the other
+direction, a dead end, straight on over a junction, filters; the trip's `dist_m` is without it).
 Chain winding: `winding_is_the_roads_around_the_edge_not_the_edges_own` (a straight edge next to a
 zig-zag reads it, far away reads 0, reversing the polyline changes nothing),
 `a_short_road_with_one_corner_is_not_winding` (the 600 m floor), and the `cost.rs` tests (`wind`
@@ -401,7 +427,8 @@ the route is a road, so it lies over the roads and the race lines; the POIs and 
 readable above it, and the car arrow is not covered by its own route. **"Race road only" (D82)
 does not hide the route** (it hides the road layer, and the route is not part of it).
 
-**Live cut (D97):** per frame `draw_nav_route` takes `NavLine::remaining(progress)`: the exact
+**Live cut (D97):** per frame `draw_nav_route` takes `NavLine::remaining(progress)` (`progress` = the
+car **minus 9 m**, D104): the exact
 interpolated cut point (`pts[seg] + t * (pts[seg+1] - pts[seg])`), then the vertices after it, and
 draws that. So the start moves with every packet (sub-segment, not vertex to vertex) and after a
 rewind the longer remainder is simply drawn. It is a copy of at most the route's points (a 21 km
@@ -432,11 +459,20 @@ lines (4 / 3 design px on / off, solid below 0.02 px/m), width factor `style::NA
   `NavProgress::u()`), uploaded as vertex attribute 5.
 * **Live cut (D97):** the car's `NavProgress::u()` is a **uniform** (`uCut`, set per frame in the nav
   pass only; the other meshes get "off"), and `ROAD_FS` multiplies the fragment's coverage by
-  `cutCover()` = `clamp((vAlong - uCut) / fwidth(vAlong) + 0.5, 0, 1)`: what lies behind the car is
-  not drawn, and the cut edge is anti-aliased over one pixel by the gradient of the position along
-  the route (so it is as clean as the ribbon's own feathered edge, #235, and moves smoothly *between*
-  two samples, not sample to sample). The cut is perpendicular to the road (the samples' cross
-  sections), flat, not round; the casing and the fill, the deck's walls and the translucent tunnel
+  `cutCover()`: what lies behind the cut (the car minus 9 m, D104) is not drawn, and the cut edge is
+  anti-aliased over one pixel by the gradient of the position along the route (`(vAlong - uCut) /
+  fwidth(vAlong) + 0.5`; so it is as clean as the ribbon's own feathered edge, #235, and moves smoothly
+  *between* two samples, not sample to sample). **The cut end is round (D104,** the user (D104): "When I'm driving away from the route, it always takes a whole node length until it actually fills the like normal road with the route color again. Plus, the route coloring of the road should cover the whole length of my car with some extra, and it should be rounded at the end and not just cut off straight."**):**
+  the first half width past the cut is a half ellipse with its tip at the cut, computed in screen px
+  from the same gradients (px along = `(vAlong - uCut) / fwidth(vAlong)`, the half width along the
+  road = `vHw / fwidth(vS)` with `vHw` the pass's nominal half width in metres, a new varying; across =
+  `|vSide| / vEdge`), so the perspective foreshortens it correctly; it multiplies the ribbon's own
+  coverage as the *ratio* of the ellipse's to the straight edge's, so it is 1 where it meets the
+  straight road and the road's edge is not faded twice. A casing pass starts its end `vCapD` (the
+  casing's extra width) before the fill's, so the casing wraps the fill's round end evenly. A cut
+  at `uCut <= 0` (the car within 9 m of the route's start) is no cut: the whole route, its own start
+  cap included (the cap's samples all carry `along` 0, which would otherwise read as half covered).
+  The casing and the fill, the deck's walls and the translucent tunnel
   stretches use the same value, so they are cut together. A discarded fragment writes no depth.
   Driving and a rewind therefore change one float, no mesh, no upload. *Why `segment + fraction` and
   not metres:* it is what the follower knows exactly (the 2D cut needs no search, and 3D and 2D
@@ -509,7 +545,9 @@ cap structure of the route mesh, and its `along` values across the tunnel split,
 in 3D. `gl3d` (headless GL, `#[ignore]`, `cargo test gl3d -- --ignored`, parallel-safe since #229): over the
 road it runs on, with race road only, through a hill (tunnel), a dashed jump, hidden behind a hill
 and under a deck, mesh rebuilt only when `rev` changes and uploaded once (and unaffected by a colour
-change or by the progress moving), **the cut at the progress** (`gl3d_nav_route_is_cut_at_the_progress_and_comes_back_after_a_rewind`:
+change or by the progress moving), **the round cut end** (`gl3d_nav_route_cut_end_is_round`: on a 50 px wide road seen from above only the middle rows
+start at the cut, the rows near the edges well after it; a cut at the route's start draws the whole route with its
+start cap), **the cut at the progress** (`gl3d_nav_route_is_cut_at_the_progress_and_comes_back_after_a_rewind`:
 no route pixel behind the cut, the first route pixel within 0.5 px of the projected cut point for
 four fractions of one segment, a rewind brings the route back, one mesh build for all of it), in all three GL flavours (`suite`), real-install routes (`gl3d_real_install_nav_route`,
 `real_install_nav_route_mesh_cost`, need `FH6_INSTALL_DIR`). HUD PNG harness (`cargo test

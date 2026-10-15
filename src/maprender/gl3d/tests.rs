@@ -1814,6 +1814,79 @@ fn gl3d_nav_route_is_cut_at_the_progress_and_comes_back_after_a_rewind() {
     rig.finish(&Gl3dHandle::new());
 }
 
+/// D104: the cut end of the route is round, not a straight line across the road. On a wide road the
+/// route's first pixel is at the cut for the middle of the road only, the rows near the road's edges
+/// start several pixels further on, and a cut at the very start of the route
+/// (`seg` 0, `t` 0) draws the whole route, its start cap included, with no cut at all.
+#[test]
+#[ignore = "needs an EGL device; writes PNGs (GL3D_PNG_DIR)"]
+fn gl3d_nav_route_cut_end_is_round() {
+    let _nav = nav_lock();
+    let Some(mut rig) = open(Flavour::Default, None, [620, 420]) else { return };
+    let w = world();
+    let (_hold, tex) = rig.load_map(&w, TextureOptions::LINEAR);
+    let mut v = View::dashboard();
+    v.no_3d = false;
+    v.car = (0.0, -250.0);
+    v.angle = 0.0; // looking straight down: a circle on the ground is a circle on the screen
+    let ch = &w.layers.roads.by_type[RoadType::Road.index() as usize][0];
+    let line = Arc::new(crate::nav::NavLine { rev: 930_001, pts: ch.pts.clone(), y: ch.y.iter().map(|y| y + 0.3).collect(), seg_kind: vec![2; ch.pts.len() - 1] });
+    let cam = camera(&w, &v);
+    let h = Gl3dHandle::with_options(Gl3dOptions { guard: None, ..Default::default() });
+    let tol = 40;
+    let mut shot = |name: &str, at: crate::nav::NavProgress| {
+        let r = Route3d::new(&line, at, &w.terrain, NavRouteCfg::default()).unwrap();
+        let mut o = None;
+        for _ in 0..8 {
+            o = Some(map_frame(&mut rig, &w, &h, tex, &v, 1.0, &|s| {
+                s.roads.min_px = 30.0;
+                s.roads.max_px = 34.0;
+                s.route = Some(r.clone());
+            }));
+        }
+        let o = o.unwrap();
+        assert_eq!(o.gl_error, 0);
+        o.save(&format!("nav_round_{name}.png"));
+        o
+    };
+    // First route pixel per row, for the rows that have any, and the cut's screen x.
+    let rows = |o: &Out| -> Vec<(usize, usize)> {
+        (0..o.h)
+            .filter_map(|y| {
+                (0..o.w).find(|&x| {
+                    let p = o.at(x, y);
+                    (0..3).map(|k| (p[k] as i32 - route_rgb()[k] as i32).abs()).sum::<i32>() <= tol
+                }).map(|x| (y, x))
+            })
+            .collect()
+    };
+    let at = crate::nav::NavProgress { seg: 22, t: 0.5, along_m: 0.0 };
+    let (a, b) = (line.pts[22], line.pts[23]);
+    let cx = cam.project(a[0] + (b[0] - a[0]) * 0.5, a[1] + (b[1] - a[1]) * 0.5).expect("on screen").x;
+    let r = rows(&shot("mid", at));
+    // (the rows of the ribbon that start within the road's own wobble of the cut's x, vs. all of them)
+    let (top, bot) = (r.first().unwrap().0, r.last().unwrap().0);
+    let height = bot - top + 1;
+    assert!(height >= 40, "a wide road: {height} rows");
+    let tip = r.iter().map(|p| p.1).min().unwrap() as f32;
+    let at_cut = r.iter().filter(|p| p.1 as f32 <= tip + 2.0).count();
+    let far_edge = r.iter().filter(|p| p.1 as f32 >= tip + 8.0).count();
+    eprintln!("cut at x {cx:.1}; {height} rows, the tip at {tip}, {at_cut} rows within 2 px of it, {far_edge} rows 8+ px after it");
+    assert!((tip - cx).abs() < 3.0, "the tip is at the cut");
+    // a straight cut starts every row at the cut (all {height}); a round one only the middle of the road
+    assert!(at_cut * 2 < height, "round: only {at_cut} of {height} rows start at the cut");
+    assert!(far_edge * 4 >= height, "round: the rows near the road's edges start well after it ({far_edge} of {height})");
+    // the cut at the start of the route: no cut, the whole route including its own start cap
+    let whole = rows(&shot("start", crate::nav::NavProgress::default()));
+    let start_x = line.pts[0];
+    let sx = cam.project(start_x[0], start_x[1]).expect("on screen").x;
+    // (the road is ~50 px wide: its own round start cap reaches ~25 px before the start point)
+    let first = whole.iter().map(|p| p.1).min().unwrap() as f32;
+    assert!((sx - 35.0..=sx - 15.0).contains(&first), "the start cap is drawn: first pixel {first} vs the start at {sx}");
+    h.destroy(&rig.gl);
+    rig.finish(&Gl3dHandle::new());
+}
+
 /// The one mesh cache is shared by the maps and keyed on the line's rev and the terrain's (CPU only).
 #[test]
 fn route3d_builds_once_per_rev_and_terrain() {

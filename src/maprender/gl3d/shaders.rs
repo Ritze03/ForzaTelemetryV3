@@ -190,6 +190,8 @@ out float vWall;          // 1 at a deck's bottom vertices (the walls and unders
 out float vWallCov;       // the share of a pixel a wall of this height covers
 out float vBot;
 out float vAlong;         // aAlong, for the fragment shader's cut at the car (uCut)
+out float vHw;            // this pass's nominal half width, metres (the radius of the cut's round end)
+out float vCapD;          // how far behind the fill's cut a casing pass's round end begins (the casing's extra width), metres
 void main() {
   int slot = int(aFlags.z);
   float yT = heightAt(aPos.xy);
@@ -245,6 +247,8 @@ void main() {
   float across = length((cp.xy / cp.w - c0.xy / c0.w) * 0.5 * uVp) / max(length(perp), 1e-3);
   across = clamp(across, 0.2 * ppm, 2.0 * ppm);
   float hwNom = 0.5 * px / ppm;                          // nominal half width, metres
+  vHw = hwNom;
+  vCapD = (casingPass || (transPass && cased)) ? 0.5 * uRW.w / ppm : 0.0;
   float hw = hwNom + 0.5 * FEATHER / across;             // drawn half width
   // A cap's centre vertex sits on the point itself (mesh3d::push_vertices).
   float side = aFlags.w == 1u ? 0.0 : ((aFlags.x == 1u) ? 1.0 : -1.0);
@@ -299,14 +303,37 @@ in float vWall;
 in float vWallCov;
 in float vBot;
 in float vAlong;
+in float vHw;
+in float vCapD;
 uniform float uCut;        // the navigation route: the car's position along it (aAlong scale); below -1e8 = no cut
 out vec4 oC;
 // The navigation route's live progress: what lies behind the car (vAlong < uCut) is not drawn.
 // The edge is anti-aliased over one pixel by the gradient of vAlong (the position along the
 // route changes by that much per pixel), so the cut moves smoothly, also between two samples.
+// The cut end is **round** (D104, like the 2D route's): the first half width past the cut is a
+// half ellipse (a half circle on the ground, foreshortened by the view), with its tip at the cut.
+// All in screen px along (`a`, from the tip: vAlong over its gradient) and across (`y`, the share of
+// the half width), so the perspective is right; the half width in px along the road is
+// vHw / (the chain's metres per px, fwidth(vS)). It is a factor on the ribbon's own coverage (which
+// already fades the straight edges), as the ratio of the ellipse's coverage to the straight
+// edge's, so it is 1 where the cap meets the straight road and no edge is faded twice. A casing
+// pass starts its cap vCapD (its extra width) before the cut, so it wraps the fill's cap evenly.
 float cutCover() {
   if (uCut < -1.0e8) return 1.0;
-  return clamp((vAlong - uCut) / max(fwidth(vAlong), 1e-5) + 0.5, 0.0, 1.0);
+  if (uCut <= 0.0) return 1.0;                 // the route's own start: nothing lies before it
+  float a = (vAlong - uCut) / max(fwidth(vAlong), 1e-5);
+  float wm = max(fwidth(vS), 1e-4);
+  a += vCapD / wm;
+  float ra = vHw / wm;
+  if (ra < 1.0) return clamp(a + 0.5, 0.0, 1.0);          // too small to be round: the plain cut
+  if (a >= ra) return 1.0;
+  float rc = vEdge / max(fwidth(vSide), 1e-4);            // the half width across, px
+  float m = max(min(ra, rc), 1.0);
+  float y = min(abs(vSide) / vEdge, 1.0);
+  float n = length(vec2((a - ra) / ra, y));
+  float capCov = clamp((1.0 - n) * m + 0.5, 0.0, 1.0);
+  float edgeCov = clamp((1.0 - y) * m + 0.5, 0.0, 1.0);
+  return min(capCov / max(edgeCov, 1.0e-3), 1.0);
 }
 // Coverage of the pixel by the ribbon's nominal width: the distance to its edge in px (the
 // gradient of `side` is the local px per unit, so it holds in perspective and foreshortened too),
