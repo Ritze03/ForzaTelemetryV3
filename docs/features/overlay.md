@@ -13,7 +13,8 @@ original plan with every decision (D1–D28) is in `.claude/teamlead/plan/wsl-ov
 
 ## Platform support
 
-- **Works:** Wayland compositors with `wlr-layer-shell`. Tested on Hyprland; should work on
+- **Works:** Wayland compositors with `wlr-layer-shell`. Tested on Hyprland (AMD/Mesa, and
+  NVIDIA since the [draw-buffer fix](#lifecycle-and-drop-order)); should work on
   others with it, such as Sway and KDE Plasma (untested). It is
   a surface on the `overlay` layer, which sits above fullscreen games.
 - **Fallback: X11 / XWayland backend** (`overlay/x11.rs`) for GNOME (Mutter has
@@ -1054,6 +1055,14 @@ focus thread ── OverlayCmd::SetOutput(name) over a calloop channel ──►
 - **The 3D map renderer** (`Renderer::gl3d`, a `Gl3dHandle`; programs, height texture, road buffers,
   scene FBO) is destroyed in `Renderer::drop` **before** `painter.destroy()`, context current, and
   earlier whenever the Minimap leaves 3D. See [Minimap in 3D](#minimap-in-3d).
+- **Draw buffer on every bind (NVIDIA).** `Gl::make_current` sets `GL_DRAW_BUFFER` /
+  `GL_READ_BUFFER` to `GL_BACK` each time it binds a window surface (Wayland and X11). *Why:*
+  the context's first `make_current` is surfaceless, and per the GL spec that leaves both at
+  `GL_NONE`; binding a window later does not reset them. Mesa re-initialises them per drawable,
+  so AMD/Intel never showed it, but NVIDIA follows the spec: the surface was mapped, swaps and
+  frame callbacks ran at 60 Hz, and every frame was drawn into nothing, so the HUD (and the
+  `FORZA_OVERLAY_TEST` pattern) stayed fully transparent (found on an RTX 4080 SUPER, driver
+  615, Hyprland 0.56; a pixel readback was `[0,0,0,0]` until the fix).
 - **EGL failures:** a failed swap/surface creation rebuilds the surface; 3 in a row (lost
   context, GPU reset) stop the thread, which the tab reports as stopped.
 - **Disabled reasons** (`overlay::DisabledReason`, translated): no `WAYLAND_DISPLAY`,

@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use egui_glow::glow;
+use egui_glow::glow::{self, HasContext};
 use glutin::api::egl::{config::Config, context::PossiblyCurrentContext, display::Display, surface::Surface};
 use glutin::config::{ColorBufferType, ConfigSurfaceTypes, ConfigTemplateBuilder, GlConfig};
 use glutin::context::{ContextAttributesBuilder, PossiblyCurrentGlContext};
@@ -143,8 +143,27 @@ impl Gl {
         self.config.native_visual()
     }
 
+    /// Binds `surface` and points the default framebuffer's draw/read buffer at its back buffer.
+    /// Why: the context was first made current *surfaceless*, and per the GL spec that leaves
+    /// `GL_DRAW_BUFFER`/`GL_READ_BUFFER` at `GL_NONE`, which binding a window later doesn't
+    /// reset. Mesa re-initialises them per drawable, NVIDIA follows the spec: every frame was
+    /// drawn into nothing (a mapped, fully transparent overlay; measured on an RTX 4080 SUPER,
+    /// driver 615). Two state calls per frame.
     pub fn make_current(&self, surface: &WinSurface) -> Result<(), String> {
-        self.context.make_current(surface).map_err(|e| format!("EGL make current: {e}"))
+        self.context.make_current(surface).map_err(|e| format!("EGL make current: {e}"))?;
+        let v = self.glow.version();
+        // SAFETY: the context is current on this thread (just above).
+        unsafe {
+            if !v.is_embedded {
+                self.glow.draw_buffer(glow::BACK);
+                self.glow.read_buffer(glow::BACK);
+            } else if v.major >= 3 {
+                // GLES 3 only takes BACK through glDrawBuffers; GLES 2 has no draw buffer state.
+                self.glow.draw_buffers(&[glow::BACK]);
+                self.glow.read_buffer(glow::BACK);
+            }
+        }
+        Ok(())
     }
 
     /// Detach from any window surface (call before dropping one).
