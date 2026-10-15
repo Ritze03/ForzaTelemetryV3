@@ -33,7 +33,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::cfg::{RouteFilters, RoutePrefs};
-use super::follow::{Follower, OFF_ROUTE_M};
+use super::follow::{Follower, OFF_ROUTE_M, TRAIL_AFTER_M};
+#[cfg(test)]
+use super::follow::CUT_BEHIND_M;
 use super::graph::RouteGraph;
 use super::search::{Endpoint, Route, RouteError};
 
@@ -41,6 +43,9 @@ use super::search::{Endpoint, Route, RouteError};
 pub const DEBOUNCE_MS: u64 = 200;
 /// Minimum spacing of two automatic requests.
 pub const MIN_AUTO_REROUTE_MS: u64 = 3000;
+/// A new route for a car that drove away from the start of its route (D104) is asked for this
+/// soon after the last request, and only after the car moved [`TRAIL_AFTER_M`] since it.
+pub const TRAIL_SPACING_MS: u64 = 100;
 /// A failed route (no road near the car, unreachable) is retried only after the car moved this far.
 pub const RETRY_MOVE_M: f32 = 25.0;
 /// How often the worker thread looks at the store for a replaced graph while a destination exists.
@@ -131,16 +136,18 @@ impl NavLine {
     }
 }
 
-/// Where the car is on [`NavLine`]: the projection of the car on the route, written for every
-/// packet (the line itself is not republished). A map draws the line from this point on; after a
-/// rewind it is smaller again and the road behind the car is back.
+/// Where the drawn route starts on [`NavLine`]: the car's projection on the route **minus
+/// [`CUT_BEHIND_M`](super::follow::CUT_BEHIND_M)** (D104; the whole car is on the route colour),
+/// written for every packet (the line itself is not republished). A map draws the line from this
+/// point on; after a rewind it is smaller again and the road behind the car is back.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct NavProgress {
-    /// The segment the car is on (`NavLine::pts[seg]` -> `pts[seg + 1]`) ...
+    /// The segment the cut is on (`NavLine::pts[seg]` -> `pts[seg + 1]`) ...
     pub seg: u32,
     /// ... and how far along it, 0..=1.
     pub t: f32,
-    /// Metres driven along the route (what `remaining_m` is taken from).
+    /// Metres driven along the route by the **car** (what `remaining_m` is taken from; the cut
+    /// itself is [`CUT_BEHIND_M`](super::follow::CUT_BEHIND_M) before it).
     pub along_m: f32,
 }
 
@@ -785,6 +792,22 @@ impl<P: Planner> Tracker<P> {
         });
     }
 
+    /// The car is past the route's start (wrong way): a new route from the car at once, no debounce
+    /// and not the 3 s spacing (a mesh rebuild each, ~0.5 ms, and one A* on the worker, at most
+    /// every [`TRAIL_SPACING_MS`]). Not while one is in flight, and not for a car that has not moved
+    /// since the last request (a car beyond a dead end's tip snaps to the same point every time).
+    fn schedule_trail(&mut self, now_ms: u64) {
+        let (Some(c), Some(r)) = (self.car, self.req_car) else { return };
+        if self.inflight || (c.0 - r.0).hypot(c.2 - r.1) < TRAIL_AFTER_M {
+            return;
+        }
+        let due = now_ms.max(self.last_submit_ms.map_or(0, |l| l + TRAIL_SPACING_MS));
+        self.pending = Some(match self.pending {
+            Some(p) => Pending { due_ms: p.due_ms.min(due), off_route_only: false },
+            None => Pending { due_ms: due, off_route_only: false },
+        });
+    }
+
     fn maybe_submit(&mut self, now_ms: u64) {
         let (Some(p), Some(car)) = (self.pending, self.car) else { return };
         let Some((dest, prefs)) = self.active.as_ref().map(|a| ((a.dest.x, a.dest.z), a.dest.prefs)) else { return };
@@ -824,7 +847,7 @@ impl<P: Planner> Tracker<P> {
         match r.result {
             Ok(route) => {
                 self.err = None;
-                let gap = match (self.req_car, route.pts.first()) {
+                let gap = match (self.req_car, route.pts.get(route.lead_segs)) {
                     (Some(c), Some(p)) => (p[0] - c.0).hypot(p[1] - c.1),
                     _ => 0.0,
                 };
@@ -877,6 +900,9 @@ impl<P: Planner> Tracker<P> {
         if p.arrived {
             self.arrive(now_ms);
             return;
+        }
+        if p.behind_m > TRAIL_AFTER_M {
+            self.schedule_trail(now_ms);
         }
         if p.reroute {
             if self.pending.is_none() && !self.inflight {
@@ -943,7 +969,7 @@ impl<P: Planner> Tracker<P> {
         let (remaining, eta, total, progress) = match (&self.follower, status) {
             (Some(f), NavStatus::Ok | NavStatus::Routing) => {
                 let p = f.progress();
-                (p.remaining_m, p.remaining_eta_s, f.route().dist_m, NavProgress { seg: p.seg as u32, t: p.t, along_m: p.along_m })
+                (p.remaining_m, p.remaining_eta_s, f.route().dist_m, NavProgress { seg: p.cut_seg as u32, t: p.cut_t, along_m: p.along_m })
             }
             _ => (0.0, 0.0, 0.0, NavProgress::default()),
         };
@@ -1183,7 +1209,8 @@ mod tests {
             let v = r.view();
             // the progress is the car's position, every packet (not in chunks), on the same line
             assert!((v.progress.along_m - x).abs() < 1e-2, "{x}: {:?}", v.progress);
-            assert!((v.progress.u() * 20.0 - x).abs() < 1e-2);
+            // ... and the drawn route starts CUT_BEHIND_M behind it (not before the route's start)
+            assert!((v.progress.u() * 20.0 - (x - CUT_BEHIND_M).max(0.0)).abs() < 1e-2, "{x}: {:?}", v.progress);
             assert!(Arc::ptr_eq(v.line.as_ref().unwrap(), &line), "one Arc for the whole drive (no 150 m chunks)");
             if v.rev != last_rev {
                 views += 1;
@@ -1229,6 +1256,89 @@ mod tests {
         assert_eq!(r.pl.n(), 1, "no re-route");
         assert!(v.rev > rev, "(the remaining distance is a published change)");
         assert!(Arc::ptr_eq(r.view().line.as_ref().unwrap(), &line));
+    }
+
+    /// What `plan` makes for a car at (`x`, 0) on a straight road to (1000, 0): the trip from
+    /// `x` on, with a 40 m lead-in behind it.
+    fn planned_from(x: f32) -> Arc<Route> {
+        let mut pts: Vec<[f32; 2]> = vec![[x - 40.0, 0.0], [x - 20.0, 0.0], [x, 0.0]];
+        let mut g = ((x / 20.0).floor() + 1.0) * 20.0;
+        while g < 1000.0 {
+            pts.push([g, 0.0]);
+            g += 20.0;
+        }
+        pts.push([1000.0, 0.0]);
+        let mut r = (*route_of(pts)).clone();
+        r.lead_segs = 2;
+        Arc::new(r)
+    }
+
+    /// D104, the wrong way: the car drives away from the destination, from the route's start on, for
+    /// 1 km at ~100 km/h. The drawn route's start follows it every packet (never a jump, never
+    /// more than the car moved), it always begins 9 m ahead of the car (the car is covered, with
+    /// its nose), and that takes one request per ~20 m (not one per packet, none per node). Before:
+    /// the start stayed where the first route began and the car left it behind until the next
+    /// re-route (50 m and 2 s later), in chunks.
+    #[test]
+    fn driving_the_wrong_way_the_drawn_start_follows_the_car_live() {
+        let mut r = Rig::new();
+        r.sh.set_destination(Some([1000.0, 0.0]));
+        r.drive(0.0, 0.0);
+        r.wait(250);
+        r.pl.answer(planned_from(0.0));
+        r.drive(0.0, 0.0);
+        assert_eq!(r.view().status, NavStatus::Ok);
+        let start_x = |v: &NavView| v.line.as_ref().unwrap().remaining(v.progress).0[0][0];
+        let (mut x, mut last_start, mut answered, mut lines) = (0.0f32, start_x(&r.view()), 1, 1);
+        let mut last_line = r.view().line.unwrap();
+        for i in 0..400 {
+            x -= 2.5;
+            r.drive_dt(x, 0.0, 90, false);
+            if r.pl.n() > answered {
+                // the worker answers at once, from the car where it was at the request
+                let from = r.pl.last().car.0;
+                assert!((from - x).abs() < 2.6, "the request is from the car's position");
+                r.pl.answer(planned_from(from));
+                answered = r.pl.n();
+                r.drive_dt(x, 0.0, 0, false);
+            }
+            let v = r.view();
+            assert_eq!(v.status, NavStatus::Ok, "packet {i}");
+            let s = start_x(&v);
+            assert!(s <= x - CUT_BEHIND_M + 1e-2, "packet {i}: car at {x}, drawn from {s}: the car is not covered");
+            assert!((s - last_start).abs() <= 2.5 + 1e-2, "packet {i}: the start jumped {last_start} -> {s}");
+            last_start = s;
+            if !Arc::ptr_eq(v.line.as_ref().unwrap(), &last_line) {
+                lines += 1;
+                last_line = v.line.clone().unwrap();
+            }
+        }
+        // ~1 km: about one new route per 20 m of the 40 m lead-in's half, not one per packet
+        assert!((20..=80).contains(&lines), "{lines} routes for 1000 m / 400 packets");
+        assert!(r.times.windows(2).all(|w| w[1] - w[0] >= TRAIL_SPACING_MS), "{:?}", r.times);
+    }
+
+    /// ... and a car that stands beyond a route's start (a dead end's tip, nothing to lay behind)
+    /// does not make a request per tick: only when it moves.
+    #[test]
+    fn a_car_parked_behind_the_start_asks_once() {
+        let mut r = Rig::new();
+        r.sh.set_destination(Some([1000.0, 0.0]));
+        r.drive(0.0, 0.0);
+        r.wait(250);
+        r.pl.answer(straight(1000.0)); // no lead-in: the start is a dead end's tip
+        r.drive(0.0, 0.0);
+        for i in 0..40 {
+            r.drive(-(i as f32).min(25.0), 0.0); // creeps to 25 m past it, then stops
+        }
+        r.wait(300);
+        assert_eq!(r.pl.n(), 2, "one new route for the move");
+        r.pl.answer(straight(1000.0)); // (the same dead end again)
+        for _ in 0..60 {
+            r.drive(-25.0, 0.0);
+        }
+        r.wait(1000);
+        assert_eq!(r.pl.n(), 2, "no more while it stands");
     }
 
     #[test]
@@ -1596,7 +1706,9 @@ mod tests {
             (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
         };
         let step = 55.5 / 60.0;
-        let (mut s, mut last, mut steps, mut max_step, mut rewound) = (0.0f32, 0.0f32, 0u32, 0.0f32, false);
+        // (the car starts at the trip's start, the end of the lead-in `plan` laid behind it)
+        let s0 = cum[route.lead_segs];
+        let (mut s, mut last, mut steps, mut max_step, mut rewound) = (s0, s0, 0u32, 0.0f32, false);
         while s < len2d - 1.0 && r.view().status == NavStatus::Ok {
             s += step;
             if !rewound && s > 12_000.0 {

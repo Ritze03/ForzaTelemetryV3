@@ -19,8 +19,12 @@
 //!   (`dt_ms` summed over packets while the game is driving), so a frame stall counts as one
 //!   capped step and a paused game counts nothing. After a route is adopted the check is
 //!   suppressed for [`REROUTE_SUPPRESS_S`] (hysteresis: the new route starts at the car's snap).
-//! * The drawn line is the whole route; where it starts is the progress ([`Progress::seg`] +
-//!   [`Progress::t`]), cut by the map per frame. (It used to be trimmed in 150 m chunks.)
+//! * The drawn line is the whole route; where it starts is the **cut** ([`Progress::cut_seg`] +
+//!   [`Progress::cut_t`]: the car's progress minus [`CUT_BEHIND_M`], so the whole car is on the
+//!   route colour), cut by the map per frame. (It used to be trimmed in 150 m chunks.)
+//! * A car that drives **away from the route's start** (the wrong way, or a rewind past it)
+//!   leaves the route's first point behind, and nothing in the route can follow it there:
+//!   [`Progress::behind_m`] tells the runtime, which asks for a new route from the car (D104).
 
 use std::sync::Arc;
 
@@ -36,6 +40,15 @@ pub const REROUTE_SUPPRESS_S: f32 = 3.0;
 pub const ARRIVE_REMAINING_M: f32 = 25.0;
 /// ...if the car is also this close to the route's end.
 pub const ARRIVE_CAR_M: f32 = 40.0;
+/// The drawn route starts this far **behind** the car (D104), so the whole car sits on the route
+/// colour with some extra, not just the half in front of its centre. ponytail: a fixed guess, ~5 m
+/// for a car (the 3D marker is about that long) + ~4 m margin. "Behind" is along the route: a car
+/// driving the wrong way gets the margin on its nose, from the lead-in ([`Route::lead_segs`]).
+pub const CUT_BEHIND_M: f32 = 9.0;
+/// The car is this far (m) behind the route's real start (in the lead-in, or past its end) and
+/// the runtime asks for a new route at once (D104): the lead-in is [`LEAD_M`](super::search::LEAD_M)
+/// long, so this leaves 20 m of it ahead of the car for the cut margin and the re-route's latency.
+pub const TRAIL_AFTER_M: f32 = 20.0;
 /// Segments scanned behind / ahead of the current one (~40 m back, ~1.6 km ahead on 20 m edges).
 const WINDOW_BACK: usize = 2;
 const WINDOW_FWD: usize = 80;
@@ -54,6 +67,14 @@ pub struct Progress {
     /// car on the route, exact to the packet.
     pub seg: usize,
     pub t: f32,
+    /// Where the **drawn** route starts: the car's position minus [`CUT_BEHIND_M`] along the
+    /// route (0 at most, the route's start), as segment + fraction like `seg` / `t`.
+    pub cut_seg: usize,
+    pub cut_t: f32,
+    /// How far the car is **behind the route's real start** (m): into the lead-in
+    /// ([`Route::lead_segs`]) plus past its first point; 0 when it is not, was never on the route
+    /// yet, or is more than [`OFF_ROUTE_M`] to the side of the first segment.
+    pub behind_m: f32,
     /// Remaining < [`ARRIVE_REMAINING_M`] and the car within [`ARRIVE_CAR_M`] of the end.
     pub arrived: bool,
     /// The car has been off the route for [`OFF_ROUTE_S`]: ask for a new route. Stays true on
@@ -98,8 +119,15 @@ impl Follower {
         }
         cum_m.push(m);
         cum_s.push(s);
-        let p = Progress { along_m: 0.0, remaining_m: m, remaining_eta_s: s, off_m: 0.0, seg: 0, t: 0.0, arrived: false, reroute: false };
-        Follower { route, cum_m, cum_s, seg: 0, t: 0.0, p, off_ms: 0, suppress_ms: (REROUTE_SUPPRESS_S * 1000.0) as u32, limit_m: OFF_ROUTE_M + start_gap_m.max(0.0), on_route_seen: start_gap_m <= OFF_ROUTE_M }
+        let lead = route.lead_segs.min(route.seg_len.len());
+        let (a0, s0) = (cum_m[lead], cum_s[lead]);
+        // The car is taken to be at the route's real start (the end of the lead-in) until a packet says otherwise.
+        let p = Progress { along_m: a0, remaining_m: m - a0, remaining_eta_s: s - s0, off_m: 0.0, seg: lead, t: 0.0, cut_seg: 0, cut_t: 0.0, behind_m: 0.0, arrived: false, reroute: false };
+        let mut f = Follower { route, cum_m, cum_s, seg: lead, t: 0.0, p, off_ms: 0, suppress_ms: (REROUTE_SUPPRESS_S * 1000.0) as u32, limit_m: OFF_ROUTE_M + start_gap_m.max(0.0), on_route_seen: start_gap_m <= OFF_ROUTE_M };
+        if !f.route.seg_len.is_empty() {
+            (f.p.cut_seg, f.p.cut_t) = f.cut_at(a0 - CUT_BEHIND_M);
+        }
+        f
     }
 
     pub fn route(&self) -> &Arc<Route> {
@@ -143,12 +171,15 @@ impl Follower {
             self.p.remaining_eta_s = ((*self.cum_s.last().unwrap()) - (self.cum_s[seg] + t * self.route.seg_time_s[seg])).max(0.0);
             self.p.seg = seg;
             self.p.t = t;
+            (self.p.cut_seg, self.p.cut_t) = self.cut_at(along - CUT_BEHIND_M);
         }
         self.p.off_m = off;
         if off <= OFF_ROUTE_M {
             self.on_route_seen = true;
             self.limit_m = OFF_ROUTE_M;
         }
+
+        self.p.behind_m = self.behind_start(x, z);
 
         // The off-route clock, in packet time. Suppressed right after a route was adopted.
         if self.suppress_ms > 0 {
@@ -164,6 +195,37 @@ impl Follower {
         let end = self.end();
         self.p.arrived = self.p.remaining_m < ARRIVE_REMAINING_M && (x - end[0]).hypot(z - end[1]) < ARRIVE_CAR_M;
         &self.p
+    }
+
+    /// Segment + fraction at `along_m` metres along the route (clamped to the route).
+    fn cut_at(&self, along_m: f32) -> (usize, f32) {
+        let nseg = self.route.seg_len.len();
+        let a = along_m.max(0.0);
+        let seg = self.cum_m.partition_point(|&c| c <= a).saturating_sub(1).min(nseg - 1);
+        let l = self.route.seg_len[seg];
+        (seg, if l > 0.0 { ((a - self.cum_m[seg]) / l).clamp(0.0, 1.0) } else { 0.0 })
+    }
+
+    /// See [`Progress::behind_m`].
+    fn behind_start(&self, x: f32, z: f32) -> f32 {
+        if !self.on_route_seen {
+            return 0.0;
+        }
+        let lead_m = self.cum_m[self.route.lead_segs.min(self.route.seg_len.len())];
+        let into_lead = (lead_m - self.p.along_m).max(0.0);
+        if self.seg != 0 || self.t > 0.0 {
+            return into_lead;
+        }
+        // At the very first point: how far the car is past it, along the first segment.
+        let (a, b) = (self.route.pts[0], self.route.pts[1]);
+        let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx.hypot(dz);
+        if l <= 0.0 {
+            return into_lead;
+        }
+        let (ex, ez) = (a[0] - x, a[1] - z);
+        let (past, side) = ((ex * dx + ez * dz) / l, (ex * dz - ez * dx).abs() / l);
+        if side > OFF_ROUTE_M { into_lead } else { into_lead + past.max(0.0) }
     }
 
     /// Where the car is on the route: `(segment, fraction, distance to the route, found)`;
@@ -236,10 +298,80 @@ pub(crate) mod tests {
         let seg_time_s: Vec<f32> = seg_len.iter().map(|l| l / 20.0).collect();
         let dist_m = seg_len.iter().sum();
         let eta_s = seg_time_s.iter().sum();
-        Arc::new(Route { y: vec![0.0; pts.len()], seg_kind: vec![1; seg_len.len()], seg_len, seg_time_s, dist_m, eta_s, cost: 0.0, pts })
+        Arc::new(Route { y: vec![0.0; pts.len()], seg_kind: vec![1; seg_len.len()], seg_len, seg_time_s, dist_m, eta_s, cost: 0.0, pts, lead_segs: 0 })
     }
 
     const DT: u32 = 100;
+
+    /// A straight route with `lead` 20 m segments laid before x = 0 (the lead-in `plan` makes).
+    fn with_lead(len: f32, lead: usize) -> Arc<Route> {
+        let mut r = (*route_of((0..=(len / 20.0) as usize + lead).map(|i| [20.0 * (i as f32 - lead as f32), 0.0]).collect())).clone();
+        r.lead_segs = lead;
+        r.dist_m = len;
+        Arc::new(r)
+    }
+
+    #[test]
+    fn the_drawn_route_starts_behind_the_car_and_never_before_the_routes_start() {
+        let mut f = Follower::new(straight(1000.0), 0.0);
+        for (x, want) in [(0.0, 0.0), (5.0, 0.0), (9.0, 0.0), (29.0, 20.0), (310.0, 301.0), (1000.0, 991.0)] {
+            let p = *f.update(x, 0.0, DT, true);
+            let cut = 20.0 * (p.cut_seg as f32 + p.cut_t);
+            assert!((cut - want).abs() < 1e-2, "car at {x}: the cut is {cut}, want {want}");
+            assert!((p.along_m - x).abs() < 1e-2, "the car's own progress is untouched");
+        }
+        // continuous: the cut moves as much as the car, every packet
+        let mut f = Follower::new(straight(1000.0), 0.0);
+        let mut last = 0.0;
+        for i in 0..400 {
+            let p = *f.update(i as f32 * 2.5, 0.0, DT, true);
+            let cut = 20.0 * (p.cut_seg as f32 + p.cut_t);
+            assert!(cut >= last && cut - last <= 2.5 + 1e-3, "packet {i}: {last} -> {cut}");
+            last = cut;
+        }
+        // a rewind takes it back with the car
+        let p = *f.update(500.0, 0.0, DT, true);
+        assert!((20.0 * (p.cut_seg as f32 + p.cut_t) - 491.0).abs() < 1e-2);
+    }
+
+    /// D104: a route with a lead-in. The car starts at the trip's start (the lead's end), the
+    /// progress goes back into the lead when it drives the wrong way, the cut runs ahead of it
+    /// there, and `behind_m` says how far in it is.
+    #[test]
+    fn a_lead_in_is_followed_live_when_the_car_drives_the_wrong_way() {
+        let mut f = Follower::new(with_lead(1000.0, 2), 0.0); // x = -40 .. 1000
+        let p = *f.progress();
+        assert_eq!((p.seg, p.along_m, p.remaining_m), (2, 40.0, 1000.0), "before any packet: at the trip's start");
+        assert!((20.0 * (p.cut_seg as f32 + p.cut_t) - 31.0).abs() < 1e-3, "{p:?}");
+        let p = *f.update(0.0, 0.0, DT, true);
+        assert_eq!((p.behind_m, p.remaining_m), (0.0, 1000.0));
+        // 30 m the wrong way: in the lead, remaining is the way back plus the trip, and the cut is 9 m ahead of the car
+        let p = *f.update(-30.0, 2.0, DT, true);
+        assert!((p.along_m - 10.0).abs() < 1e-3 && (p.remaining_m - 1030.0).abs() < 1e-3, "{p:?}");
+        assert!((p.behind_m - 30.0).abs() < 1e-3, "{p:?}");
+        assert!((20.0 * (p.cut_seg as f32 + p.cut_t) - 1.0).abs() < 1e-3 && !p.reroute);
+        // past the lead's end, 8 m, on the road: still on the route (nothing before the start to draw)
+        let p = *f.update(-48.0, 0.0, DT, true);
+        assert_eq!((p.cut_seg, p.cut_t, p.off_m), (0, 0.0, 8.0));
+        assert!((p.behind_m - 48.0).abs() < 1e-3, "{p:?}");
+        // back on the trip: nothing behind
+        let p = *f.update(100.0, 0.0, DT, true);
+        assert_eq!(p.behind_m, 0.0);
+    }
+
+    #[test]
+    fn behind_m_without_a_lead_in_is_the_distance_past_the_first_point() {
+        let mut f = Follower::new(straight(1000.0), 0.0);
+        assert_eq!(f.update(0.0, 0.0, DT, true).behind_m, 0.0);
+        assert!((f.update(-12.0, 3.0, DT, true).behind_m - 12.0).abs() < 1e-3);
+        assert_eq!(f.update(200.0, 0.0, DT, true).behind_m, 0.0);
+        // 80 m to the side: not on the road at all
+        let mut f = Follower::new(straight(1000.0), 0.0);
+        assert_eq!(f.update(-30.0, 80.0, DT, true).behind_m, 0.0);
+        // a car that was never near the route (a field, start gap 200 m) has no "behind"
+        let mut f = Follower::new(straight(1000.0), 200.0);
+        assert_eq!(f.update(-30.0, 150.0, DT, true).behind_m, 0.0);
+    }
 
     #[test]
     fn progress_follows_the_car_and_goes_back_with_it() {
