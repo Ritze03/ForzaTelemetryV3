@@ -2550,7 +2550,7 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     // The own car, or the teammate picked in the co-op player list (D105).
     let follow = crate::ui::map_scene::follow(app);
     let car = follow.car;
-    let (centre, zoom_m) = {
+    let (mv, centre, zoom_m) = {
         let mut mv = app.minimap_pan.borrow_mut();
         if pan {
             let v = crate::ui::map_scene::ViewIn {
@@ -2564,20 +2564,27 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
             };
             mv.interact(ui, &map_resp, &v);
         } else {
-            mv.reset();
+            mv.reset_all();
         }
-        mv.view(car, app.minimap_current_zoom)
+        let (centre, zoom_m) = mv.view(car, app.minimap_current_zoom);
+        (*mv, centre, zoom_m)
     };
+    // The Shift+drag orbit (D106) on top of the base heading and tilt; the compass shows while it
+    // is on, even if switched off in the settings: it is the way back.
+    let (yaw, layers) = mv.orbited(yaw, &cfg.minimap_layers);
     let scene = crate::ui::map_scene::Scene {
-        layers: &cfg.minimap_layers,
+        layers: &layers,
         centre,
         yaw,
         zoom_m,
         mirror: cfg.minimap_mirror_edges,
-        compass: cfg.minimap_show_compass,
+        compass: cfg.minimap_show_compass || mv.orbit.is_active(),
         race_sel: &app.minimap_race_sel,
     };
     let cam = crate::ui::map_scene::draw(ui, app, rect, texture, &scene);
+    if pan && crate::ui::map_scene::compass_clicked(ui, rect) {
+        app.minimap_pan.borrow_mut().reset_orbit();
+    }
     if app.spectate.take_changed() {
         app.minimap_pan.borrow_mut().recentre(); // a player-list click: show the new target at once
     }

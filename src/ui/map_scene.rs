@@ -13,6 +13,7 @@
 //! and falls back to the tilted 2D map (the relief-less camera) until the scene is `Ready` and for
 //! good when the context cannot do 3D.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
@@ -218,13 +219,72 @@ impl DriveGate {
     }
 }
 
+/// Smallest and largest tilt angle (degrees from straight down) an orbit can reach: the range of
+/// the Angle slider and of `Camera::from_cfg`'s own clamp, so the camera never leaves what the
+/// settings already allow.
+pub const ORBIT_PITCH_MIN_DEG: f32 = 5.0;
+pub const ORBIT_PITCH_MAX_DEG: f32 = 80.0;
+/// Radians of rotation per pixel of horizontal Shift+drag (0.5 degrees: 720 px is a full turn).
+const ORBIT_YAW_PER_PX: f32 = std::f32::consts::PI / 360.0;
+/// Degrees of tilt per pixel of vertical Shift+drag.
+const ORBIT_PITCH_PER_PX: f32 = 0.3;
+
+/// The Shift+drag orbit of a GUI map (D106): a rotation (`yaw`, added to the map's heading, so it
+/// sits on top of heading-up and north-up alike) and a tilt angle (`pitch_deg`, `None` = the
+/// configured one) applied to the camera. Session state of one map, like the pan and zoom; never
+/// written to the config (the saved tilt / relief settings stay as they are, the orbit is an
+/// offset on top). The default (no rotation, configured tilt) is the unchanged map.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Orbit {
+    /// Radians, wrapped to (-PI, PI]. Positive turns the map counter-clockwise on screen (the
+    /// map yaw's own sense), which is what dragging the mouse right does.
+    pub yaw: f32,
+    /// The tilt angle override in degrees, 5..=80. Only used while the map is tilted / 3D.
+    pub pitch_deg: Option<f32>,
+}
+
+impl Orbit {
+    /// Anything to undo? (Shows the compass and arms its reset.)
+    pub fn is_active(&self) -> bool {
+        self.yaw.abs() > 1e-4 || self.pitch_deg.is_some()
+    }
+
+    /// A Shift+drag of `delta` px: right / left turns the map, down / up tilts the camera towards
+    /// top-down / towards the horizon (the orbit-camera convention). In a flat map (`tilt.on`
+    /// false) only the rotation applies: flat has no tilt to change. `tilt` is the configured one.
+    pub fn dragged(&mut self, delta: Vec2, tilt: &crate::maprender::cfg::TiltCfg) {
+        use std::f32::consts::{PI, TAU};
+        let y = (self.yaw + delta.x * ORBIT_YAW_PER_PX).rem_euclid(TAU);
+        self.yaw = if y > PI { y - TAU } else { y };
+        if tilt.on {
+            let now = self.pitch_deg.unwrap_or(tilt.angle_deg);
+            self.pitch_deg = Some((now - delta.y * ORBIT_PITCH_PER_PX).clamp(ORBIT_PITCH_MIN_DEG, ORBIT_PITCH_MAX_DEG));
+        }
+    }
+
+    /// `layers` with the orbit's tilt angle on its camera (borrowed unchanged when there is none,
+    /// or the map is flat).
+    pub fn layers<'a>(&self, layers: &'a MapLayerConfig) -> Cow<'a, MapLayerConfig> {
+        match self.pitch_deg {
+            Some(p) if layers.tilt.on => {
+                let mut l = layers.clone();
+                l.tilt.angle_deg = p;
+                Cow::Owned(l)
+            }
+            _ => Cow::Borrowed(layers),
+        }
+    }
+}
+
 /// A map's temporary manual view: the user's pan (`centre`) and zoom (`zoom_m`) over the map's
-/// own base view (the car, the configured zoom). Shared by the Dashboard map and the Map tab
-/// viewer so they behave alike. `None` = that part follows the base.
+/// own base view (the car, the configured zoom), and its [`Orbit`]. Shared by the Dashboard map
+/// and the Map tab viewer so they behave alike. `None` = that part follows the base.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ManualView {
     pub centre: Option<(f32, f32)>,
     pub zoom_m: Option<f32>,
+    /// Not part of "manual": Follow car and the drive-off reset leave it alone (D106).
+    pub orbit: Orbit,
     gate: DriveGate,
 }
 
@@ -418,9 +478,27 @@ impl ManualView {
         self.centre.is_some() || self.zoom_m.is_some()
     }
 
-    /// Back to the base view (follow the car, configured zoom).
+    /// Back to the base view (follow the car, configured zoom). The orbit stays: *Why:* "Follow
+    /// car" and the drive-off snap-back are about *where* the view is; a rotation / tilt the user
+    /// chose should not be undone by them (the compass resets it, [`Self::reset_orbit`]).
     pub fn reset(&mut self) {
+        *self = Self { orbit: self.orbit, ..Self::default() };
+    }
+
+    /// Back to the configured rotation and tilt.
+    pub fn reset_orbit(&mut self) {
+        self.orbit = Orbit::default();
+    }
+
+    /// Everything back to the base view, the orbit too (pan and zoom switched off).
+    pub fn reset_all(&mut self) {
         *self = Self::default();
+    }
+
+    /// The map's effective heading and layers: the base ones with the orbit on top. The
+    /// camera, the markers, the compass and every picking use these, never the base ones.
+    pub fn orbited<'a>(&self, yaw: f32, layers: &'a MapLayerConfig) -> (f32, Cow<'a, MapLayerConfig>) {
+        (yaw + self.orbit.yaw, self.orbit.layers(layers))
     }
 
     /// Follow the car (or the spectated teammate) again but keep the zoom: a new spectate target
@@ -456,20 +534,30 @@ impl ManualView {
         false
     }
 
-    /// One frame of input on the map's response: a drag pans, the wheel (or a pinch) zooms, then
+    /// One frame of input on the map's response: a drag pans (with Shift it orbits, [`Orbit`]),
+    /// the wheel (or a pinch) zooms, then
     /// the reset gate runs. While the view follows the car the wheel zooms around the car (the
     /// car stays put, nothing to anchor to); once panned it zooms around the cursor. On a map
     /// drawn in 3D both anchor on the terrain surface under the pointer ([`Ground`]).
     pub fn interact(&mut self, ui: &Ui, resp: &egui::Response, v: &ViewIn) {
         let ground = Ground::of(ui);
         let dt = ui.input(|i| i.stable_dt);
+        // Shift+drag orbits (D106) instead of panning; Shift+click is no drag and stays a click.
+        let dragging = resp.dragged_by(egui::PointerButton::Primary);
+        let rotating = dragging && ui.input(|i| i.modifiers.shift);
+        if rotating {
+            self.orbit.dragged(resp.drag_delta(), &v.layers.tilt);
+        }
+        // Pan and zoom work on the picture as drawn, orbit included.
+        let (yaw, layers) = self.orbited(v.yaw, v.layers);
+        let layers: &MapLayerConfig = &layers;
         let (centre, zoom) = self.view(v.car, v.base_zoom_m);
-        if resp.dragged_by(egui::PointerButton::Primary) && resp.drag_delta() != Vec2::ZERO {
+        if dragging && !rotating && resp.drag_delta() != Vec2::ZERO {
             if let Some(now) = resp.interact_pointer_pos() {
                 let prev = now - resp.drag_delta();
                 let new = match &ground {
-                    Some(g) => g.panned(v.layers, centre, v.yaw, zoom, v.rect, dt, prev, now),
-                    None => panned(&camera(v.layers, centre, v.yaw, zoom, v.rect), centre, prev, now),
+                    Some(g) => g.panned(layers, centre, yaw, zoom, v.rect, dt, prev, now),
+                    None => panned(&camera(layers, centre, yaw, zoom, v.rect), centre, prev, now),
                 };
                 self.touch(v.speed);
                 self.centre = Some(new);
@@ -484,8 +572,8 @@ impl ManualView {
                 let (new_centre, new_zoom) = match anchor {
                     Some(at) => {
                         let (c, z) = match &ground {
-                            Some(g) => g.zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, dt, at, factor),
-                            None => zoomed_at(v.layers, centre, v.yaw, zoom, v.rect, at, factor),
+                            Some(g) => g.zoomed_at(layers, centre, yaw, zoom, v.rect, dt, at, factor),
+                            None => zoomed_at(layers, centre, yaw, zoom, v.rect, at, factor),
                         };
                         (Some(c), z)
                     }
@@ -542,6 +630,20 @@ pub fn follow_label(name: Option<&str>) -> String {
         Some(n) => format!("{} {n}", tr("Follow")),
         None => tr("Follow car").to_string(),
     }
+}
+
+/// The compass is the orbit's handle (D106): a click on it (where [`draw`] painted one) resets the
+/// rotation and tilt, and hovering it says how to turn the map. True = clicked. Call it after the
+/// map's own `allocate_rect`, so the compass takes the click (a click on the Viewer's map would
+/// otherwise set a waypoint).
+pub fn compass_clicked(ui: &mut Ui, rect: Rect) -> bool {
+    if !ui.ctx().data(|d| d.get_temp::<bool>(compass_id(ui))).unwrap_or(false) {
+        return false;
+    }
+    ui.interact(compass_rect(rect), compass_id(ui).with("hit"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tr("Shift+drag to rotate and tilt the map. Click to reset."))
+        .clicked()
 }
 
 fn compass_id(ui: &Ui) -> egui::Id {
@@ -1634,6 +1736,182 @@ mod tests {
                 assert!(Ground::of(ui).is_none());
             });
         });
+    }
+
+    // ── orbit (D106) ─────────────────────────────────────────────────────────────────────────
+
+    fn tilt(on: bool, angle: f32) -> crate::maprender::cfg::TiltCfg {
+        crate::maprender::cfg::TiltCfg { on, angle_deg: angle, ..Default::default() }
+    }
+
+    /// Right turns the map counter-clockwise (positive yaw), and the yaw wraps into (-PI, PI]
+    /// however far the mouse goes.
+    #[test]
+    fn orbit_drag_turns_and_wraps() {
+        use std::f32::consts::PI;
+        let mut o = Orbit::default();
+        assert!(!o.is_active());
+        o.dragged(vec2(90.0, 0.0), &tilt(false, 55.0));
+        assert!((o.yaw - 90.0 * ORBIT_YAW_PER_PX).abs() < 1e-6 && o.yaw > 0.0);
+        o.dragged(vec2(-180.0, 0.0), &tilt(false, 55.0));
+        assert!(o.yaw < 0.0);
+        for _ in 0..50 {
+            o.dragged(vec2(300.0, 0.0), &tilt(false, 55.0));
+            assert!(o.yaw > -PI - 1e-4 && o.yaw <= PI + 1e-4, "{}", o.yaw);
+        }
+        // 720 px is exactly a full turn.
+        let mut o = Orbit::default();
+        o.dragged(vec2(720.0, 0.0), &tilt(false, 55.0));
+        assert!(o.yaw.abs() < 1e-4, "{}", o.yaw);
+    }
+
+    /// Vertical drag tilts (down = more top-down), starts from the configured angle, and stays in
+    /// the 5..80 range the settings allow; a flat map has no tilt to change.
+    #[test]
+    fn orbit_drag_tilts_within_the_range_and_flat_only_turns() {
+        let t = tilt(true, 55.0);
+        let mut o = Orbit::default();
+        o.dragged(vec2(0.0, 30.0), &t);
+        assert!((o.pitch_deg.unwrap() - (55.0 - 30.0 * ORBIT_PITCH_PER_PX)).abs() < 1e-4);
+        o.dragged(vec2(0.0, -30.0), &t);
+        assert!((o.pitch_deg.unwrap() - 55.0).abs() < 1e-3);
+        o.dragged(vec2(0.0, 10_000.0), &t);
+        assert_eq!(o.pitch_deg, Some(ORBIT_PITCH_MIN_DEG));
+        o.dragged(vec2(0.0, -10_000.0), &t);
+        assert_eq!(o.pitch_deg, Some(ORBIT_PITCH_MAX_DEG));
+        let mut flat = Orbit::default();
+        flat.dragged(vec2(50.0, 80.0), &tilt(false, 55.0));
+        assert!(flat.yaw != 0.0 && flat.pitch_deg.is_none());
+    }
+
+    /// The orbit is an offset on the camera, never on the saved config: the default changes
+    /// nothing (HUD parity), a tilt override leaves the original untouched, a flat map ignores it.
+    #[test]
+    fn orbit_layers_leave_the_config_alone() {
+        let mut layers = MapLayerConfig::dashboard();
+        layers.tilt.on = true;
+        layers.tilt.angle_deg = 55.0;
+        let none = ManualView::default();
+        let (y, l) = none.orbited(0.4, &layers);
+        assert!(y == 0.4 && matches!(l, Cow::Borrowed(_)));
+        let mut mv = ManualView::default();
+        mv.orbit = Orbit { yaw: 1.0, pitch_deg: Some(30.0) };
+        let (y, l) = mv.orbited(0.4, &layers);
+        assert!((y - 1.4).abs() < 1e-6 && l.tilt.angle_deg == 30.0);
+        assert_eq!(layers.tilt.angle_deg, 55.0);
+        layers.tilt.on = false;
+        assert!(matches!(mv.orbited(0.0, &layers).1, Cow::Borrowed(_)));
+    }
+
+    /// Follow car / the drive-off reset keep the orbit; only the compass (or switching pan and
+    /// zoom off) drops it.
+    #[test]
+    fn follow_car_keeps_the_orbit() {
+        let mut mv = ManualView { centre: Some((1.0, 2.0)), zoom_m: Some(200.0), orbit: Orbit { yaw: 0.5, pitch_deg: Some(40.0) }, ..Default::default() };
+        mv.reset();
+        assert!(!mv.is_manual() && mv.orbit.yaw == 0.5 && mv.orbit.pitch_deg == Some(40.0));
+        mv.reset_orbit();
+        assert_eq!(mv, ManualView::default());
+        mv.orbit.yaw = 1.0;
+        mv.reset_all();
+        assert_eq!(mv, ManualView::default());
+    }
+
+    /// Picking uses the orbited camera: a click lands on the world point drawn under it, flat,
+    /// tilted and in 3D, and dragging still keeps the grabbed point under the pointer.
+    #[test]
+    fn picking_round_trips_with_an_orbit() {
+        let mv = ManualView { orbit: Orbit { yaw: 2.3, pitch_deg: Some(33.0) }, ..Default::default() };
+        let centre = (120.0, -340.0);
+        for on in [false, true] {
+            let mut layers = MapLayerConfig::dashboard();
+            layers.tilt.on = on;
+            let (yaw, l) = mv.orbited(0.7, &layers);
+            let cam = camera(&l, centre, yaw, 900.0, VIEW);
+            assert_eq!(on, !cam.is_flat());
+            for p in [pos2(400.0, 300.0), pos2(250.0, 450.0), pos2(600.0, 380.0)] {
+                let at = pick(&cam, p).expect("on the plane");
+                let back = cam.project(at[0], at[1]).unwrap();
+                assert!((back - p).length() < 0.05, "tilt {on}: {at:?} shows at {back:?}, not {p:?}");
+            }
+            let (prev, now) = (pos2(400.0, 300.0), pos2(470.0, 340.0));
+            let grabbed = cam.unproject(prev).unwrap();
+            let new = panned(&cam, centre, prev, now);
+            let under = camera(&l, new, yaw, 900.0, VIEW).project(grabbed[0], grabbed[1]).unwrap();
+            assert!((under - now).length() < 0.2, "tilt {on}: {under:?} vs {now:?}");
+        }
+        // 3D: the terrain pick still inverts the projection under the orbit.
+        let layers = layers_3d();
+        let (yaw, l) = mv.orbited(0.7, &layers);
+        let t = Arc::new(Terrain::synthetic());
+        let cam = Camera::from_cfg_relief(&l.tilt, (-250.0, 80.0), yaw, 500.0, VIEW, Some(&t), Some(t.height(-250.0, 80.0) + 1.0));
+        assert!(cam.relief.is_some() && (cam.pitch - 33f32.to_radians()).abs() < 1e-5);
+        for p in [pos2(400.0, 330.0), pos2(330.0, 400.0), pos2(470.0, 420.0)] {
+            let at = pick(&cam, p).expect("on the ground");
+            let (back, _) = cam.project3(at[0], t.height(at[0], at[1]), at[1]).unwrap();
+            assert!((back - p).length() < 0.5, "picked {at:?} shows at {back:?}, not {p:?}");
+        }
+    }
+
+    /// Through egui's input: a Shift+drag orbits and does not pan, a plain drag pans and does not
+    /// orbit, a Shift+click (no movement) is a click and changes neither.
+    #[test]
+    fn shift_drag_orbits_plain_drag_pans_and_a_click_is_a_click() {
+        use egui::{Event, Modifiers, PointerButton};
+        let ctx = egui::Context::default();
+        let mut layers = MapLayerConfig::dashboard();
+        layers.tilt.on = true;
+        let mut t = 0.0_f64;
+        let mut frame = |mv: &mut ManualView, ev: Vec<Event>, shift: bool| -> bool {
+            t += 0.1;
+            let raw = egui::RawInput {
+                screen_rect: Some(VIEW),
+                time: Some(t),
+                modifiers: Modifiers { shift, ..Default::default() },
+                events: ev,
+                ..Default::default()
+            };
+            let mut clicked = false;
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let resp = ui.allocate_rect(VIEW, egui::Sense::click_and_drag());
+                    let v = ViewIn { layers: &layers, yaw: 0.0, rect: VIEW, car: (0.0, 0.0), base_zoom_m: 900.0, speed: Some(0.0), now: t };
+                    mv.interact(ui, &resp, &v);
+                    clicked |= resp.clicked();
+                });
+            });
+            clicked
+        };
+        let at = |x: f32, y: f32, down: Option<bool>| -> Vec<Event> {
+            let mut e = vec![Event::PointerMoved(pos2(x, y))];
+            if let Some(pressed) = down {
+                e.push(Event::PointerButton { pos: pos2(x, y), button: PointerButton::Primary, pressed, modifiers: Modifiers::default() });
+            }
+            e
+        };
+        let drag = |mv: &mut ManualView, frame: &mut dyn FnMut(&mut ManualView, Vec<Event>, bool) -> bool, shift: bool| {
+            frame(mv, at(400.0, 300.0, None), shift);
+            frame(mv, at(400.0, 300.0, Some(true)), shift);
+            for i in 1..=6 {
+                frame(mv, at(400.0 + 12.0 * i as f32, 300.0 + 6.0 * i as f32, None), shift);
+            }
+            let clicked = frame(mv, at(472.0, 336.0, Some(false)), shift);
+            assert!(!clicked, "a drag is not a click");
+        };
+        let mut mv = ManualView::default();
+        drag(&mut mv, &mut frame, true);
+        assert!(mv.orbit.yaw > 0.0 && mv.orbit.pitch_deg.is_some_and(|p| p < 55.0), "{:?}", mv.orbit);
+        assert!(mv.centre.is_none(), "Shift+drag must not pan");
+        let orbit = mv.orbit;
+        drag(&mut mv, &mut frame, false);
+        assert!(mv.centre.is_some(), "a plain drag pans");
+        assert_eq!(mv.orbit, orbit, "a plain drag does not orbit");
+        // Shift+click: a click, no change of the view.
+        let mut still = ManualView::default();
+        frame(&mut still, at(300.0, 300.0, None), true);
+        frame(&mut still, at(300.0, 300.0, Some(true)), true);
+        let clicked = frame(&mut still, at(300.0, 300.0, Some(false)), true);
+        assert!(clicked && still == ManualView::default());
     }
 
     /// The compass box is where `draw_compass` paints (disc of radius 11 at (18, 18) HUD units).

@@ -1139,8 +1139,10 @@ fn de(s: &str) -> Option<&'static str> {
             => "Du folgst diesem Spieler. Klicken, um wieder deinem eigenen Fahrzeug zu folgen",
         "Click to follow your own car again" => "Klicken, um wieder deinem eigenen Fahrzeug zu folgen",
         "Allow pan and zoom" => "Verschieben und Zoomen erlauben",
-        "Drag the map to pan and scroll to zoom. The view goes back to the car once you start driving again."
-            => "Karte ziehen zum Verschieben, scrollen zum Zoomen. Sobald du wieder losfährst, springt die Ansicht zurück zum Fahrzeug.",
+        "Drag the map to pan, scroll to zoom and Shift+drag to rotate and tilt it. The pan and zoom go back to the car once you start driving again; the rotation stays until you click the compass."
+            => "Karte ziehen zum Verschieben, scrollen zum Zoomen, Shift+Ziehen zum Drehen und Kippen. Verschiebung und Zoom springen zurück zum Fahrzeug, sobald du wieder losfährst; die Drehung bleibt, bis du auf den Kompass klickst.",
+        "Shift+drag to rotate and tilt the map. Click to reset."
+            => "Shift+Ziehen dreht und kippt die Karte. Klicken setzt sie zurück.",
         "Back to map" => "Zurück zur Karte",
         "Off: the map turns with the car's heading." => "Aus: Die Karte dreht sich mit der Fahrtrichtung des Fahrzeugs.",
 
