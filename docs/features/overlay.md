@@ -1116,7 +1116,10 @@ the frame-callback watchdog. Extra switches for bug reports (env vars, no UI):
   `m2_3d_frame_rect_300x200`), `composite_3d_1080p`, `m2_real_*_3d_*`.
 - Unit tests cover the classifier, drift window, lap trace, visibility target, layout
   stacking, fade/place/count-up curves, gear labels, the frame-pacing helper and the
-  capability probe.
+  capability probe. `cluster_text_scales_with_the_hud` checks that every text pen of both
+  clusters (with and without a drive-mode letter) scales exactly with the HUD scale. *Why:* the
+  PNG harness and the devs' monitors run at scale 1, so a size mixed up between design and
+  screen px only showed in-game at 4K (the auto-gear label sat 5 px high on the pill).
 
 ## Deliberately left out
 

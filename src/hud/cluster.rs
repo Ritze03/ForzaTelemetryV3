@@ -113,7 +113,8 @@ fn draw_gear(p: &Painter, xf: &Xf, g: &GearSpec, cl: &Cl, shadow: bool, color: C
     if w > xf.l(g.max_w) {
         (num, let_st, cell, run, w) = fit(xf.l(g.max_w) / w);
     }
-    let base = xf.p(g.cx, g.baseline(num.size / xf.s));
+    // `num.size` is design px already (`layout` scales it by `xf.s`).
+    let base = xf.p(g.cx, g.baseline(num.size));
     let x0 = base.x - w / 2.0;
     let lrun = prims::layout(p, xf.s, &letter.to_string(), &let_st);
     // ponytail: letter at 85 % of the digit colour's alpha, so the gear number leads.
@@ -332,6 +333,55 @@ mod tests {
         // Reverse and neutral stay bare in auto, so "R" alone is always reverse.
         assert_eq!(l(0, Some(DriveMode::Race)), (None, "R".to_string()));
         assert_eq!(l(11, Some(DriveMode::Sport)), (None, "N".to_string()));
+    }
+
+    /// Every text galley `draw` puts down (shadows included): its first glyph's pen position
+    /// (baseline), in design px from the widget origin, at HUD scale `s`. The pen, not the
+    /// galley's top-left: a galley's ascent is rounded to whole pixels at each size.
+    fn texts_at(draw: fn(&Painter, &Xf, &HudSnapshot, f64, i64) -> bool, snap: &HudSnapshot, s: f32) -> Vec<egui::Pos2> {
+        let ctx = egui::Context::default();
+        super::super::fonts::install(&ctx);
+        let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(3840.0, 2160.0))), ..Default::default() };
+        let o = pos2(10.0, 20.0);
+        let out = ctx.run(raw, |ctx| {
+            let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("t")));
+            draw(&p, &Xf { o, s, a: 1.0 }, snap, 0.0, 126);
+        });
+        out.shapes
+            .into_iter()
+            .filter_map(|c| match c.shape {
+                egui::Shape::Text(t) => {
+                    let pen = t.galley.rows.first().and_then(|r| r.glyphs.first().map(|g| t.pos + r.pos.to_vec2() + g.pos.to_vec2()))?;
+                    Some(pos2((pen.x - o.x) / s, (pen.y - o.y) / s))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cluster_text_scales_with_the_hud() {
+        // The gear with a drive-mode letter used to sit 0.4 × 26 × (1 − 1/s) design px too high
+        // on the pill at any scale but 1 (its baseline came from the size ÷ s): 5 px at 4K.
+        let mut snap = HudSnapshot::default();
+        snap.pkt.gear = 9;
+        snap.pkt.engine_idle_rpm = 900.0;
+        snap.pkt.engine_max_rpm = 8000.0;
+        snap.pkt.current_engine_rpm = 4120.0;
+        for (name, draw) in [("pill", draw_pill as fn(&Painter, &Xf, &HudSnapshot, f64, i64) -> bool), ("halo", draw_halo)] {
+            for auto in [Some(DriveMode::Street), None] {
+                let snap = HudSnapshot { auto_gear: auto, ..snap.clone() };
+                let one = texts_at(draw, &snap, 1.0);
+                assert!(!one.is_empty());
+                for s in [2.0, 4.0 / 3.0] {
+                    let other = texts_at(draw, &snap, s);
+                    assert_eq!(one.len(), other.len(), "{name} {auto:?} s={s}");
+                    for (a, b) in one.iter().zip(&other) {
+                        assert!((*a - *b).length() < 0.1, "{name} {auto:?}: {a:?} at s=1 but {b:?} at s={s}");
+                    }
+                }
+            }
+        }
     }
 
     fn cl(rpm: f32) -> Cl {
