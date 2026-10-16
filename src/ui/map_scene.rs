@@ -169,6 +169,31 @@ pub fn follow(app: &ForzaApp) -> Follow {
 pub const ZOOM_MIN_M: f32 = 50.0;
 pub const ZOOM_MAX_M: f32 = 8000.0;
 
+/// The zoom the Viewer's treasure-chest button goes to (D109): the same radius meaning as every
+/// zoom here (the readout bottom left, `max_zoom_m`), so "a 500 m zoom" is the view the zoom
+/// readout would show as "500 m".
+pub const CHEST_ZOOM_M: f32 = 500.0;
+
+/// Where the Viewer's treasure-chest button goes, or `None` = the button is not shown (D109). The
+/// button exists only while the current chest is **actually drawn** on this map, so this repeats
+/// the conditions of `paint2d::draw_pois` for that one marker: POIs on, the
+/// `treasure_chest_current` category enabled, the map data loaded with a chest for `week`, the
+/// chest inside the radius when "Only near the car" is on (`car` = the followed car), POIs not
+/// hidden by the in-race focus (`focusing`), and not hidden at [`CHEST_ZOOM_M`] by "Max zoom
+/// radius" (the slider's minimum is 500 m, so only a hand-edited config trips that).
+pub fn chest_target(cfg: &MapLayerConfig, pois: Option<&crate::maprender::data::PoiLayer>, car: (f32, f32), week: i64, focusing: bool) -> Option<(f32, f32)> {
+    let p = &cfg.pois;
+    if !p.on || (focusing && cfg.race_lines.focus.hide_pois) || p.max_zoom_m < CHEST_ZOOM_M {
+        return None;
+    }
+    if !p.categories.iter().any(|c| c == "treasure_chest_current") {
+        return None;
+    }
+    let it = pois?.current_chest(week)?;
+    let near = !p.near_only || (it.x - car.0).powi(2) + (it.z - car.1).powi(2) <= p.radius_m * p.radius_m;
+    near.then_some((it.x, it.z))
+}
+
 /// The car counts as driving from this speed (m/s, ~11 km/h) …
 pub const DRIVE_MS: f32 = 3.0;
 /// … and as stopped below this one (~7 km/h). Between the two nothing changes: the gap is the
@@ -505,6 +530,15 @@ impl ManualView {
     /// was picked on this map.
     pub fn recentre(&mut self) {
         self.centre = None;
+    }
+
+    /// Stop following and show `at` with a view radius of `zoom_m` (the chest button, D109). A
+    /// jump, like Follow car: this view has no animation to hook into. Armed like a pan, so
+    /// driving off still brings the view back to the car.
+    pub fn go_to(&mut self, at: (f32, f32), zoom_m: f32, speed: Option<f32>) {
+        self.touch(speed);
+        self.centre = Some(at);
+        self.zoom_m = Some(zoom_m.clamp(ZOOM_MIN_M, ZOOM_MAX_M));
     }
 
     /// The effective (centre, radius): the manual parts over the base.
@@ -1677,6 +1711,79 @@ mod tests {
         assert!(!mv.tick(&ctx, Some(30.0), 105.0));
         mv.reset();
         assert_eq!(mv, ManualView::default());
+    }
+
+    // ── the treasure-chest button (D109) ─────────────────────────────────────────────────────
+
+    /// Week 69 = chest 017 (the board east at x = 3000); 016 (x = -50) is the older one.
+    fn chest_pois() -> crate::maprender::data::PoiLayer {
+        use crate::gamedata::poi::{Poi, PoiKind};
+        let p = |kind, name: &str, x| Poi { kind, x, z: 0.0, y: 0.0, name: name.into(), n: 0, gate: None };
+        crate::maprender::data::PoiLayer::from_items([
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_016", -50.0),
+            p(PoiKind::TreasureChestBoard, "treasure_chest_board_017", 3000.0),
+        ])
+    }
+
+    /// The button's visibility rule: shown only while the current chest is actually drawn.
+    #[test]
+    fn chest_button_shows_only_while_the_chest_is_drawn() {
+        let pois = chest_pois();
+        let on = MapLayerConfig::dashboard();
+        assert!(on.pois.on && on.pois.categories.iter().any(|c| c == "treasure_chest_current"), "the default shows it");
+        // On: the current chest (017), not the older one.
+        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 69, false), Some((3000.0, 0.0)));
+        // The week moves on the Thursday rollover: 68 is chest 016.
+        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 68, false), Some((-50.0, 0.0)));
+        // Not loaded: no map data, or no chest for that week.
+        assert_eq!(chest_target(&on, None, (0.0, 0.0), 69, false), None);
+        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 10, false), None);
+        // POIs off.
+        let mut c = on.clone();
+        c.pois.on = false;
+        assert_eq!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, false), None);
+        // Category off (the plain `treasure_chest` category does not count: that is another one).
+        let mut c = on.clone();
+        c.pois.categories.retain(|s| s != "treasure_chest_current");
+        c.pois.categories.push("treasure_chest".into());
+        assert_eq!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, false), None);
+        // "Only near the car": outside the radius it is not drawn, inside it is; follows the car.
+        let mut c = on.clone();
+        c.pois.near_only = true;
+        c.pois.radius_m = 1000.0;
+        assert_eq!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, false), None);
+        assert_eq!(chest_target(&c, Some(&pois), (2500.0, 0.0), 69, false), Some((3000.0, 0.0)));
+        // In-race focus hides POIs only when that option is on.
+        let mut c = on.clone();
+        c.race_lines.focus.hide_pois = true;
+        assert_eq!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, true), None);
+        assert!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, false).is_some());
+        c.race_lines.focus.hide_pois = false;
+        assert!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, true).is_some());
+        // A hand-edited "Max zoom radius" below the 500 m the click zooms to: not drawn there.
+        let mut c = on.clone();
+        c.pois.max_zoom_m = 400.0;
+        assert_eq!(chest_target(&c, Some(&pois), (0.0, 0.0), 69, false), None);
+    }
+
+    /// The click: stop following, centre on the chest, a 500 m radius; the orbit is untouched and
+    /// Follow car (`reset`) brings the car back.
+    #[test]
+    fn chest_click_centres_the_view_at_500_m() {
+        let mut mv = ManualView { orbit: Orbit { yaw: 0.5, pitch_deg: Some(40.0) }, ..Default::default() };
+        let car = (10.0, 20.0);
+        assert_eq!(mv.view(car, 1500.0), (car, 1500.0));
+        mv.go_to((3000.0, -4000.0), CHEST_ZOOM_M, Some(0.0));
+        assert!(mv.is_manual());
+        assert_eq!(mv.view(car, 1500.0), ((3000.0, -4000.0), 500.0));
+        assert_eq!(mv.orbit, Orbit { yaw: 0.5, pitch_deg: Some(40.0) });
+        mv.reset();
+        assert_eq!(mv.view(car, 1500.0), (car, 1500.0));
+        // From an already panned and zoomed view it replaces both.
+        mv.centre = Some((1.0, 1.0));
+        mv.zoom_m = Some(4000.0);
+        mv.go_to((3000.0, -4000.0), CHEST_ZOOM_M, None);
+        assert_eq!(mv.view(car, 1500.0), ((3000.0, -4000.0), 500.0));
     }
 
     // ── 3D (K4) ──────────────────────────────────────────────────────────────────────────────

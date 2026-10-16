@@ -10,6 +10,8 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Mouse controls on the Dashboard map and the Map-tab viewer** — **left click** drops your co-op marker (as before), **middle click** routes you to the clicked point, and **right click** opens a menu at the pointer: Set marker here, Navigate here, Clear marker and Clear route (each only when it applies). Right click no longer clears your marker directly (use the menu), and Shift+click no longer sets the destination (Shift+drag still rotates and tilts the map).
 - **Navigation sidebar on the Map tab** — a small location-arrow button in the viewer's bottom right (where *Set destination* was) or the **N** key opens a side panel next to the map with the route status, distance and time, the road types, the faster-roads / more-curves slider and the co-op switches, with a short hint of the mouse controls at its bottom. It remembers whether it was open.
 
+- **Treasure-chest button on the Map-tab viewer** — a small button with the game's chest icon in the bottom right (left of the navigation button) zooms the viewer to this week's treasure chest at a 500 m view radius; *Follow car* takes you back. It only appears while the current treasure chest is actually drawn on the map: with POIs, the *Current treasure chest* category or the viewer's *Allow pan and zoom* switched off, or the chest outside the *Only near the car* radius, there is no button.
+
 ### Removed
 - **The Navigation tab and the viewer's Set destination / Clear route buttons** — everything the tab had is in the new sidebar on the Map tab; the destination is set with the middle mouse button or the right-click menu, and cleared in the sidebar or the menu.
 

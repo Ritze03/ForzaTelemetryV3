@@ -1454,6 +1454,7 @@ fn de(s: &str) -> Option<&'static str> {
         "No shared destination" => "Kein geteiltes Ziel",
         "Navigation: the route, road types and the map controls (N)."
             => "Navigation: die Route, Straßentypen und die Kartensteuerung (N).",
+        "Zoom to the treasure chest" => "Auf die Schatztruhe zoomen",
         "The map's settings (the Dashboard map & Viewer page of the Map tab)."
             => "Die Karteneinstellungen (die Seite Dashboard-Karte & Viewer im Karten-Tab).",
         "Navigation route" => "Navigationsroute",

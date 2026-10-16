@@ -93,6 +93,34 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   persisted `map_nav_open` are in `docs/features/navigation.md` section 4. There is no *Clear route*
   button on the map any more (the sidebar and the right-click menu have it). Leave room left of it for
   further small buttons.
+- **Treasure-chest button** (D109; bottom right, left of the navigation button, same size): zooms
+  the Viewer to the **current treasure chest** with a **500 m** view radius. Icon: the game's chest
+  icon from the POI atlas (the `treasure_chest_current` category's UV rect, the same texture the POI
+  renderer draws; `app.minimap_icons`), a gem glyph (`icons::GEM`) when the atlas has none.
+  Tooltip "Zoom to the treasure chest".
+  - **Which chest:** `PoiLayer::current_chest(week_index_now())`, the one `treasure_chest_current`
+    draws (chest number = week - 52, see `docs/features/minimap.md`). Always exactly one (or none
+    before the first chest); older chests are never a target, so no nearest-to-centre pick exists.
+  - **Shown only while that chest is actually drawn** (`map_scene::chest_target`, tested by
+    `chest_button_shows_only_while_the_chest_is_drawn`; it repeats `paint2d::draw_pois`' conditions
+    for that marker): POIs on, the `treasure_chest_current` category enabled in the Dashboard map &
+    Viewer layers (`minimap_layers`), map data loaded with a chest for this week, inside the
+    *Radius around the car* when *Only near the car* is on (the followed car, own or spectated; out
+    of the radius = not drawn = no button), POIs not hidden by the in-race focus (*hide POIs*),
+    and *Max zoom radius* >= 500 m (the slider's floor, so only a hand-edited config trips it).
+    Any of it off = no button at all, not a greyed one. Also hidden while *Allow pan and zoom* is
+    off (the click could not move the view).
+  - **Click:** `ManualView::go_to`: stop following, centre on the chest, `zoom_m` = 500
+    (`CHEST_ZOOM_M`). *Zoom meaning:* `zoom_m` is the app's one zoom unit, the view radius (centre
+    to nearest edge; the readout bottom left, the *Max zoom radius* setting), so "500 m" is what
+    the readout then shows, not a 500 m wide view. A plain jump (this view has no animation); it is
+    armed like a pan, so *Follow car* or driving off brings the car back, and the D106 orbit is left
+    alone. Test: `chest_click_centres_the_view_at_500_m`.
+  *Why (the user, 2026-10-16):* "There should be a button on the full-sized map, like in the bottom
+  right or somewhere you can decide that with the icon for the treasure chest, and when it's
+  clicked it should zoom to the treasure chest with like a 500 meter zoom. This button should only
+  be accessible if the last treasure chest is actually being shown on the map. So if it's
+  deactivated, then don't show it at all." The Dashboard map and the HUD have no such button.
 - **Mouse scheme (D108; Viewer and Dashboard map; one pure rule, `map_scene::click_action`, applied by
   `map_scene::map_clicks`):** **left click** = the co-op marker (waypoint, session only, as before);
   **middle click** = route to the point (the navigation destination); **right click** = a context menu
@@ -462,7 +490,7 @@ a process-wide static: such tests go through `i18n::with_language`, which serial
 Minimap and Dashboard map & Viewer pages (seven cards each, eight on the Dashboard page with its
 Co-Op card; following the Dashboard, module off, every layer status), the Race lines card with
 either style and *Race road only*, the controls that came from Mini-Settings (D79) incl. the Map
-image card, the viewer's buttons (inside the tab, bottom right / left incl. the navigation sidebar button, Follow car only while
+image card, the viewer's buttons (inside the tab, bottom right / left incl. the navigation sidebar button and the treasure-chest button, Follow car only while
 manual, never overlapping the compass or the co-op list), the module selector at the window minimum (three pages), the remembered
 state (saved, not exported), old configs with `viewer_*` keys / `map_tab_page: "viewer"`, the road
 width range; the Map data
