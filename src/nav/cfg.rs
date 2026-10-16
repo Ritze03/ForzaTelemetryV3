@@ -138,7 +138,10 @@ pub struct NavConfig {
 
 impl Default for NavConfig {
     fn default() -> Self {
-        NavConfig { filters: RouteFilters::default(), curves: 0.0, destination: None, share_destination: true, follow_shared: true }
+        // D107: the user's own choice is what a new install gets: Road and Highway on, Dirt off
+        // (the routing core's own `RouteFilters::default()` keeps Dirt for the tests and callers
+        // that just want "a normal drive"). No destination: it is personal.
+        NavConfig { filters: RouteFilters { dirt: false, ..RouteFilters::default() }, curves: 0.0, destination: None, share_destination: true, follow_shared: true }
     }
 }
 
@@ -158,6 +161,8 @@ mod tests {
         assert_eq!((f.road, f.highway, f.dirt, f.trail, f.cross_country, f.jumps), (true, true, true, false, false, false));
         let c = NavConfig::default();
         assert_eq!((c.curves, c.destination, c.share_destination, c.follow_shared), (0.0, None, true, true));
+        // D107: a new install's saved filters have Dirt off (the user's own choice).
+        assert_eq!(c.filters, RouteFilters { dirt: false, ..f });
     }
 
     /// The values `coop.rs` puts on the wire (`DEST_ROAD`=1, `DEST_HIGHWAY`=2, `DEST_DIRT`=4,

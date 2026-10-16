@@ -243,11 +243,28 @@ fn synthetic_store_layers() -> Layers {
     L.get_or_init(|| Layers { status: LayerStatus::Ready, data: Some(harness_layers(true)) }).clone()
 }
 
+/// The HUD map config the map states were laid out for (D62-D100): a 500 m / 3 000 m view, the
+/// Tilted view with the arrow (not 3D), roads at most 10 px wide, POIs near the car only, race
+/// lines and tunnels at their old opacity. The app's own defaults changed in D107 (the user's:
+/// 100 m / 500 m, 3D, sedan, 100 px roads, ...), which would move the synthetic scenes (teammate
+/// positions, frame clipping with 100 px road ends) these states check, so they pin the old
+/// picture here.
+fn pinned_hud() -> OverlayConfig {
+    let mut c = OverlayConfig { zoom_driving_m: 500.0, zoom_stopped_m: 3000.0, ..Default::default() };
+    let l = &mut c.map_layers;
+    l.tilt.relief = crate::maprender::cfg::ReliefCfg::default();
+    l.roads.max_px = 10.0;
+    l.roads.styles.tunnel.alpha = 0.85;
+    l.race_lines.alpha = 0.85;
+    l.pois.near_only = true;
+    c
+}
+
 /// The D62 HUD map config, flat (the tilt switched off): the old flat checks apply to it.
 fn flat_hud() -> OverlayConfig {
-    let mut layers = MapLayerConfig::hud();
-    layers.tilt.on = false;
-    OverlayConfig { map_layers: layers, ..Default::default() }
+    let mut c = pinned_hud();
+    c.map_layers.tilt.on = false;
+    c
 }
 
 /// The map layers of the real install (project road types, no user override), or `None` without
@@ -293,7 +310,7 @@ fn real_spots(l: &MapLayers) -> Vec<(&'static str, f32, f32, f32, bool)> {
 /// rounded rect (radius 40), both with a solid, clearly coloured 4-6 px outline, and for the rect a
 /// blue plate showing through the half-transparent image.
 fn frame_cfg(kind: &str, tilted: bool) -> OverlayConfig {
-    let mut c = if tilted { OverlayConfig::default() } else { flat_hud() };
+    let mut c = if tilted { pinned_hud() } else { flat_hud() };
     c.map_border_opacity = 1.0;
     match kind {
         "circle" => {
@@ -515,9 +532,9 @@ fn render_spec_states() -> Result<(), String> {
         s.pkt.speed = 25.0;
         s
     };
-    let tilted = || base(OverlayConfig::default());
+    let tilted = || base(pinned_hud());
     let flat = || base(flat_hud());
-    let mut north = OverlayConfig::default();
+    let mut north = pinned_hud();
     north.map_north_up = true;
     let mut in_race = lcar(tilted(), 398.0, 20.0, 0.0);
     in_race.pkt.race_position = 2;
@@ -531,7 +548,7 @@ fn render_spec_states() -> Result<(), String> {
     in_race_unfocused.pkt.race_position = 2;
     let free = lcar(tilted(), 0.0, -60.0, 0.6);
     let hud_cfg = |f: &dyn Fn(&mut OverlayConfig)| {
-        let mut c = OverlayConfig::default();
+        let mut c = pinned_hud();
         f(&mut c);
         c
     };
@@ -792,7 +809,7 @@ fn render_spec_states() -> Result<(), String> {
                 println!("  real spot {name}: car ({x:.0}, {z:.0}) yaw {yaw:.2}");
                 let mut snap = lcar(tilted(), x, z, yaw);
                 snap.pkt.race_position = u8::from(in_race) * 3;
-                for (variant, cfg) in [("tilted", OverlayConfig::default()), ("flat", flat_hud())] {
+                for (variant, cfg) in [("tilted", pinned_hud()), ("flat", flat_hud())] {
                     snap.cfg = Arc::new(cfg);
                     let img = tile_on(&mut r, minimap::SIZE, s, GAME_BG, |p, xf| {
                         let mut anim = MapAnim::default();
@@ -1032,7 +1049,7 @@ fn world_map(terrain: &Terrain) -> ColorImage {
 
 /// The default HUD map config in the *3D* view mode, then `f`.
 fn cfg_3d(f: impl FnOnce(&mut OverlayConfig)) -> OverlayConfig {
-    let mut c = OverlayConfig::default();
+    let mut c = pinned_hud();
     c.map_layers.tilt.set_view_mode(ViewMode::Relief);
     f(&mut c);
     c
@@ -1593,7 +1610,7 @@ fn render_3d_states() -> Result<(), String> {
     written.push(save(&with_route, "composite_3d_nav_1080p")?);
     r.nav_fn = crate::nav::view;
     // Tilted again: the 3D objects are freed (and a later 3D switch starts afresh).
-    let tilted_comp = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, ..Default::default() }), ..comp.clone() };
+    let tilted_comp = HudSnapshot { cfg: Arc::new(OverlayConfig { fade: false, ..pinned_hud() }), ..comp.clone() };
     r.frame_at([1920, 1080], Some(&tilted_comp), false, NOW, sbg);
     if r.gl3d.status() != Gl3dStatus::Untried {
         failures.push(format!("frame_at: leaving 3D left the renderer {:?}", r.gl3d.status()));

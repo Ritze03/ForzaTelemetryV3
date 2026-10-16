@@ -162,11 +162,11 @@
   "minimap_px_per_m": 0.3722,
   "minimap_world_origin_x": -12540.0,
   "minimap_world_origin_z": 10738.0,
-  "minimap_zoom_driving_m": 1500.0,
-  "minimap_zoom_stopped_m": 4500.0,
+  "minimap_zoom_driving_m": 500.0,
+  "minimap_zoom_stopped_m": 6000.0,
   "minimap_quality": 100.0,
-  "minimap_fps_limit": 60.0,
-  "minimap_fps_limit_enabled": true,
+  "minimap_fps_limit": 120.0,
+  "minimap_fps_limit_enabled": false,
   "minimap_smooth_rotation": true,
   "minimap_use_movement_dir": true,
   "minimap_mirror_edges": true,
@@ -253,7 +253,8 @@
   "coop_list_gear": false,
   "coop_list_class": true,
   "overlay": {
-    "zoom_driving_m": 500.0,
+    "zoom_driving_m": 100.0,
+    "zoom_stopped_m": 500.0,
     "map_north_up": false,
     "map_plate_opacity": 0.0
   }

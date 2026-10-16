@@ -1004,7 +1004,7 @@ mod tests {
         use crate::maprender::ui::ROAD_PX_MAX;
         assert_eq!(ROAD_PX_MAX, 100.0);
         let mut c = MapLayerConfig::dashboard().roads;
-        assert_eq!(c.max_px, 10.0, "the default stays; the user tunes it");
+        assert_eq!(c.max_px, 100.0, "D107: the app's default is the user's own 100 px");
         c.max_px = ROAD_PX_MAX;
         c.min_px = 1.0;
         c.metres = 10.0;

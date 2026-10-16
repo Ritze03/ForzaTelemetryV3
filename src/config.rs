@@ -634,9 +634,9 @@ impl Default for OverlayConfig {
             gap_px: crate::hud::layout::GAP,
             speed_hold: false,
             compass: true,
-            // Same defaults as the Dashboard map (`minimap_zoom_*_m`), kept independent.
-            zoom_stopped_m: 3000.0,
-            zoom_driving_m: 500.0,
+            // The HUD minimap's own zoom radii (D107: the user's); the Dashboard map has its own.
+            zoom_stopped_m: 500.0,
+            zoom_driving_m: 100.0,
             // Tuned defaults (the HUD map rotates to the movement direction and follows the right stick).
             map_north_up: false,
             map_north_up_when_stopped: false,
@@ -1155,11 +1155,11 @@ impl Default for AppConfig {
             minimap_px_per_m: 0.3722,
             minimap_world_origin_x: -12540.0,
             minimap_world_origin_z: 10738.0,
-            minimap_zoom_driving_m: 1500.0,
-            minimap_zoom_stopped_m: 4500.0,
+            minimap_zoom_driving_m: 500.0,
+            minimap_zoom_stopped_m: 6000.0,
             minimap_quality: 100.0,
-            minimap_fps_limit: 60.0,
-            minimap_fps_limit_enabled: true,
+            minimap_fps_limit: 120.0,
+            minimap_fps_limit_enabled: false,
             minimap_smooth_rotation: true,
             minimap_use_movement_dir: true,
             minimap_look_stick: true,
@@ -1239,11 +1239,11 @@ impl Default for AppConfig {
             coop_autoconnect: false,
             coop_trail_fade_secs: 10.0,
             coop_trail_fade_m: 500.0,
-            coop_map_playerlist: false,
+            coop_map_playerlist: true,
             coop_list_distance: true,
             coop_list_speed: true,
-            coop_list_gear: true,
-            coop_list_class: false,
+            coop_list_gear: false,
+            coop_list_class: true,
             overlay: OverlayConfig::default(),
             overlay_page: OverlayPage::default(),
             map_tab_settings: false,
@@ -2593,7 +2593,7 @@ mod tests {
         let o = OverlayConfig::default();
         assert!(o.enabled && o.focus_only && o.rpm_label && o.coop_use_dashboard && !o.notif_gearbox_mode);
         assert_eq!((o.race_cell, o.notif_cell), (HudCell::BottomRight, HudCell::Center));
-        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 500.0)); // D71: the HUD map's 500 m radius
+        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 100.0)); // D107: the HUD map's 100 m radius (500 m stopped)
         // An older overlay / gamepad object with only some keys: the rest are the tuned defaults.
         let o: OverlayConfig = serde_json::from_str(r#"{ "scale": 1.5 }"#).unwrap();
         assert_eq!((o.scale, o.margin_px, o.race_cell), (1.5, 4.0, HudCell::BottomRight));
@@ -2723,17 +2723,19 @@ mod tests {
             }
         }
         let c: AppConfig = serde_json::from_value(val).unwrap();
-        assert_eq!((c.minimap_zoom_driving_m, c.minimap_zoom_stopped_m), (1500.0, 4500.0)); // D71
+        assert_eq!((c.minimap_zoom_driving_m, c.minimap_zoom_stopped_m), (500.0, 6000.0)); // D107
+        assert_eq!((c.minimap_fps_limit, c.minimap_fps_limit_enabled), (120.0, false)); // D107
         assert!(c.minimap_north_up_when_stopped && c.minimap_look_stick && c.minimap_smooth_rotation && c.minimap_use_movement_dir && c.minimap_mirror_edges);
         assert!(c.minimap_north_up && !c.minimap_show_compass);
         assert_eq!(c.minimap_layers, MapLayerConfig::dashboard());
-        assert!(c.minimap_layers.roads.on && c.minimap_layers.pois.on && !c.minimap_layers.tilt.on);
+        // D107: the Dashboard map starts in 3D.
+        assert!(c.minimap_layers.roads.on && c.minimap_layers.pois.on && c.minimap_layers.tilt.on && c.minimap_layers.tilt.relief.on);
         assert_eq!(c.minimap_layers.race_lines.mode, RaceLineMode::Current);
         // The HUD minimap (D62): 500 m radius (D71), heading-up, no plate, the dimmed satellite at
         // 50 / 50 / 50 and tilted at 55 deg with the car 85 % down, perspective 200 px at the
         // pill's height. From the embedded default and from the code default alike.
         for o in [&c.overlay, &OverlayConfig::default()] {
-            assert_eq!((o.zoom_driving_m, o.zoom_stopped_m, o.map_north_up, o.map_plate_opacity), (500.0, 3000.0, false, 0.0));
+            assert_eq!((o.zoom_driving_m, o.zoom_stopped_m, o.map_north_up, o.map_plate_opacity), (100.0, 500.0, false, 0.0)); // D107
             assert_eq!(o.map_layers, MapLayerConfig::hud());
             let (i, t) = (&o.map_layers.image, &o.map_layers.tilt);
             assert_eq!((i.opacity, i.brightness, i.saturation), (1.0, 0.5, 0.5)); // D71
@@ -3171,8 +3173,8 @@ mod recovery_tests {
 
     // ── navigation (phase L) ────────────────────────────────────────────
 
-    /// An old config without `nav` loads with the D92 defaults: Road / Highway / Dirt on, Trail /
-    /// Cross-country / Jumps off, fastest roads, no destination, both co-op switches on.
+    /// An old config without `nav` loads with the defaults (D92, D107): Road / Highway on, Dirt /
+    /// Trail / Cross-country / Jumps off, fastest roads, no destination, both co-op switches on.
     #[test]
     fn a_config_without_nav_gets_the_navigation_defaults() {
         let mut v = serde_json::to_value(AppConfig::default()).unwrap();
@@ -3180,7 +3182,7 @@ mod recovery_tests {
         let (c, reset) = AppConfig::parse(&v.to_string());
         assert!(reset.reset_keys.is_empty(), "a missing key is not an unreadable one: {:?}", reset.reset_keys);
         let n = c.nav;
-        assert_eq!((n.filters.road, n.filters.highway, n.filters.dirt), (true, true, true));
+        assert_eq!((n.filters.road, n.filters.highway, n.filters.dirt), (true, true, false));
         assert_eq!((n.filters.trail, n.filters.cross_country, n.filters.jumps), (false, false, false));
         assert_eq!((n.curves, n.destination, n.share_destination, n.follow_shared), (0.0, None, true, true));
     }

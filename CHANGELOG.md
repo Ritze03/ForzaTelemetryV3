@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.7.2] – 2026-10-16
+
+### Info
+- **New default map and navigation settings** — a new install (or a profile without map settings) now starts with the setup the developer uses: all three maps (HUD minimap, Dashboard map, Map-tab viewer) in 3D with the sedan and full hill shading, roads up to 100 px wide, more see-through tunnels, a fully opaque race line, the Dashboard map at 500 m driving / 6 000 m stopped without a render FPS limit and with the co-op player list on, the HUD minimap at 100 m / 500 m with points of interest not limited to the car's surroundings, and the navigation without Dirt roads (Road and Highway only). Your own saved settings are not changed, and *Reset map layers* now returns to these values.
+
 ## [0.7.1] – 2026-10-15
 
 ### Added

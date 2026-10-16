@@ -7,7 +7,7 @@ Decisions the user settled (do not re-open): filters **Road, Highway, Dirt (= of
 Cross-country, Jumps** and one slider **faster roads <-> more curves** (D83); the route goes from
 the car to a clicked destination, road speeds are *assumed per type* (no real speed data), the ETA
 uses the same speeds (D84); jump lines are one-way take-off -> landing (D41); Tunnel counts as
-asphalt (D37); D92 defaults: Road / Highway / Dirt on, Trail / Cross-country / Jumps off,
+asphalt (D37); D92 defaults: Road / Highway / Dirt on, Trail / Cross-country / Jumps off (D107: a new install saves **Dirt off** too, the user's own choice, see *Config*),
 turnarounds never routable, Other and unset follow Road, **no road is one-way except jumps**.
 
 ## 1. Routing core (`src/nav/`, L1)
@@ -637,11 +637,17 @@ and a profile switch keeps the live destination but takes the profile's filters)
 
 | key | default |
 |---|---|
-| `nav.filters.{road, highway, dirt}` | `true` |
-| `nav.filters.{trail, cross_country, jumps}` | `false` (D92) |
+| `nav.filters.{road, highway}` | `true` |
+| `nav.filters.{dirt, trail, cross_country, jumps}` | `false` (D92; Dirt was `true` until D107) |
 | `nav.curves` | `0.0` (fastest roads) |
 | `nav.destination` | `null` (world `[x, z]`; **saved**, so a trip survives a restart) |
 | `nav.share_destination`, `nav.follow_shared` | `true`, `true` |
+
+*Why (D107, the user, 2026-10-16):* "My current map and minimap settings plus my current navigation options should
+all be set as the default in the telemetry. So when someone has no settings yet, it should apply those." The
+destination is not part of it (personal, `null`). Only `NavConfig::default()` changed; the routing core's
+`RouteFilters::default()` (Road / Highway / Dirt) stays as "a normal road drive" for the tests and callers that
+need one.
 
 `nav_tab::sync` runs once per frame in `ForzaApp::update` before any tab draws:
 
