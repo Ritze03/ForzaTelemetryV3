@@ -2526,7 +2526,7 @@ fn sub_rect(r: egui::Rect, start: f32, end: f32) -> egui::Rect {
 // ── Mini Map ───────────────────────────────────────────────────────
 
 /// The Dashboard's Map widget: the shared map scene (`map_scene`, also the Map tab viewer's),
-/// centred on the car, plus the co-op waypoint click.
+/// centred on the car, plus the mouse scheme (`map_scene::map_clicks`).
 fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
     let rect = ui.available_rect_before_wrap();
     // Clickable in normal mode so co-op players can drop a shared waypoint; in Edit
@@ -2592,19 +2592,10 @@ fn show_minimap_widget(ui: &mut Ui, app: &ForzaApp) {
         app.minimap_pan.borrow_mut().reset();
     }
 
-    // ── Co-op shared waypoint ──────────────────────────────────────
-    // Left-click drops/moves a waypoint everyone in the session sees; right-click clears.
-    if !cfg.dashboard_edit_mode && app.coop.role() != crate::coop::Role::Off {
-        if map_resp.clicked() {
-            if let Some(m) = map_resp.interact_pointer_pos() {
-                if let Some([wx, wz]) = crate::ui::map_scene::pick(&cam, m) {
-                    app.coop.set_waypoint(Some((wx, wz)), cfg.coop_hue);
-                }
-            }
-        }
-        if map_resp.secondary_clicked() {
-            app.coop.set_waypoint(None, 0.0);
-        }
+    // ── Mouse: left = co-op marker, middle = route there, right = menu (D108) ──
+    // Not while the layout is edited (the grid owns the mouse there; the response only senses hover).
+    if !cfg.dashboard_edit_mode {
+        crate::ui::map_scene::map_clicks(ui, app, &map_resp, &cam);
     }
 }
 

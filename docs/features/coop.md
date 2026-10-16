@@ -183,7 +183,7 @@ Code: `src/coop.rs` (`start_trystero`, `generate_room_id`), `src/coop/{nostr,rtc
 
 ## Spectating from the GUI maps (D105)
 
-The co-op player list on the Dashboard map, the Map-tab Viewer and the Navigation tab's map is
+The co-op player list on the Dashboard map, the Map-tab Viewer is
 clickable: a teammate's row makes those maps follow their car (position, heading, 3D height) like the
 own one; the own row or the followed row again goes back. It reads the same `remote_players()`
 snapshot the list and the markers use, so a player who drops out of it (left, no packet for 3 s,

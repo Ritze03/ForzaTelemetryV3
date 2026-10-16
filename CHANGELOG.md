@@ -6,6 +6,13 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.7.2] – 2026-10-16
 
+### Added
+- **Mouse controls on the Dashboard map and the Map-tab viewer** — **left click** drops your co-op marker (as before), **middle click** routes you to the clicked point, and **right click** opens a menu at the pointer: Set marker here, Navigate here, Clear marker and Clear route (each only when it applies). Right click no longer clears your marker directly (use the menu), and Shift+click no longer sets the destination (Shift+drag still rotates and tilts the map).
+- **Navigation sidebar on the Map tab** — a small location-arrow button in the viewer's bottom right (where *Set destination* was) or the **N** key opens a side panel next to the map with the route status, distance and time, the road types, the faster-roads / more-curves slider and the co-op switches, with a short hint of the mouse controls at its bottom. It remembers whether it was open.
+
+### Removed
+- **The Navigation tab and the viewer's Set destination / Clear route buttons** — everything the tab had is in the new sidebar on the Map tab; the destination is set with the middle mouse button or the right-click menu, and cleared in the sidebar or the menu.
+
 ### Info
 - **New default map and navigation settings** — a new install (or a profile without map settings) now starts with the setup the developer uses: all three maps (HUD minimap, Dashboard map, Map-tab viewer) in 3D with the sedan and full hill shading, roads up to 100 px wide, more see-through tunnels, a fully opaque race line, the Dashboard map at 500 m driving / 6 000 m stopped without a render FPS limit and with the co-op player list on, the HUD minimap at 100 m / 500 m with points of interest not limited to the car's surroundings, and the navigation without Dirt roads (Road and Highway only). Your own saved settings are not changed, and *Reset map layers* now returns to these values.
 

@@ -47,7 +47,7 @@ pub struct Scene<'a> {
 
 /// Whose car the GUI maps follow (D105): the own car, or the teammate picked by a click in the
 /// co-op player list. One per app (`ForzaApp::spectate`), shared by the Dashboard map, the Map tab's
-/// Viewer and the Navigation tab's map, session state only (not in the config). Interior mutability
+/// Viewer, session state only (not in the config). Interior mutability
 /// because the Dashboard map draws from `&ForzaApp`.
 #[derive(Default)]
 pub struct Spectate {
@@ -1366,6 +1366,141 @@ pub fn draw(ui: &mut Ui, app: &ForzaApp, rect: Rect, texture: &egui::TextureHand
     cam
 }
 
+// ── clicks on a map (Dashboard map and Viewer, D108) ─────────────────────────────────────────
+
+/// A mouse click on a map.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Click {
+    Primary,
+    Middle,
+    Secondary,
+}
+
+/// What a click on a map does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClickAction {
+    /// The co-op marker (waypoint).
+    SetWaypoint,
+    /// Route there.
+    SetDestination,
+    /// Open the context menu at the pointer.
+    OpenMenu,
+    Nothing,
+}
+
+/// The one mouse scheme of the Dashboard map and the Viewer, kept free of egui so it can be tested.
+///
+/// Left = marker (the co-op waypoint, only in a co-op session, as it always was), middle = route
+/// to the point, right = a menu with both and their clears. *Why:* the user wanted a ping with
+/// the left button (what it already did) and the route on the middle button, and a right-click
+/// menu for the rest (D108).
+pub fn click_action(click: Click, in_session: bool) -> ClickAction {
+    match click {
+        Click::Primary if in_session => ClickAction::SetWaypoint,
+        Click::Primary => ClickAction::Nothing,
+        Click::Middle => ClickAction::SetDestination,
+        Click::Secondary => ClickAction::OpenMenu,
+    }
+}
+
+/// One entry of the right-click menu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuEntry {
+    SetMarker,
+    Navigate,
+    ClearMarker,
+    /// `shared`: the destination is the co-op room's, so Clear clears it for everyone.
+    ClearRoute { shared: bool },
+}
+
+/// The menu's entries. Markers exist only in a co-op session (Clear marker: only while this
+/// player has one); Clear route only while there is a destination (`route`: `Some(shared)`).
+pub fn menu_entries(in_session: bool, has_marker: bool, route: Option<bool>) -> Vec<MenuEntry> {
+    let mut v = Vec::new();
+    if in_session {
+        v.push(MenuEntry::SetMarker);
+    }
+    v.push(MenuEntry::Navigate);
+    if in_session && has_marker {
+        v.push(MenuEntry::ClearMarker);
+    }
+    if let Some(shared) = route {
+        v.push(MenuEntry::ClearRoute { shared });
+    }
+    v
+}
+
+/// A navigation change a map asked for. The Dashboard draws with `&ForzaApp`, so the maps queue
+/// them in `ForzaApp::nav_requests` and the app applies them after the frame's panels
+/// (`nav_tab::drain_requests`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum NavRequest {
+    Set([f32; 2]),
+    Clear,
+}
+
+/// Mouse input on a map, after it was drawn with camera `cam`: left click = marker, middle click =
+/// route there, right click = the menu. The world point is picked with [`pick`] (tilt, 3D and
+/// orbit included); the menu keeps the point of the moment of the right click while it is open,
+/// the view may move meanwhile. `resp` is the map's own response, allocated before anything drawn
+/// on top of it, so a click on a button or the player list never gets here.
+pub fn map_clicks(ui: &Ui, app: &ForzaApp, resp: &egui::Response, cam: &Camera) {
+    use egui::PointerButton as B;
+    let in_session = app.coop.role() != crate::coop::Role::Off;
+    let at = || resp.interact_pointer_pos().and_then(|m| pick(cam, m));
+    let menu_id = resp.id.with("menu_at");
+    let click = [(B::Primary, Click::Primary), (B::Middle, Click::Middle), (B::Secondary, Click::Secondary)]
+        .into_iter()
+        .find(|(b, _)| resp.clicked_by(*b))
+        .map(|(_, c)| c);
+    // The click that dismisses an open menu is not also a marker or a route.
+    let dismissing = resp.context_menu_opened() && click != Some(Click::Secondary);
+    if let Some(click) = click.filter(|_| !dismissing) {
+        match click_action(click, in_session) {
+            ClickAction::SetWaypoint => {
+                if let Some([x, z]) = at() {
+                    app.coop.set_waypoint(Some((x, z)), app.config.coop_hue);
+                }
+            }
+            ClickAction::SetDestination => {
+                if let Some(p) = at() {
+                    app.nav_requests.borrow_mut().push(NavRequest::Set(p));
+                }
+            }
+            ClickAction::OpenMenu => ui.data_mut(|d| d.insert_temp(menu_id, at())),
+            ClickAction::Nothing => {}
+        }
+    }
+    resp.context_menu(|ui| {
+        let at: Option<[f32; 2]> = ui.data(|d| d.get_temp::<Option<[f32; 2]>>(menu_id)).flatten();
+        let me = app.coop.my_id();
+        let has_marker = app.coop.waypoints().iter().any(|w| w.0 == me);
+        let view = crate::nav::view();
+        let route = (view.dest.is_some() || app.config.nav.destination.is_some())
+            .then(|| view.dest.as_ref().is_some_and(|d| matches!(d.source, crate::nav::DestSource::Shared { .. })));
+        for e in menu_entries(in_session, has_marker, route) {
+            let (label, needs_point) = match e {
+                MenuEntry::SetMarker => (tr("Set marker here"), true),
+                MenuEntry::Navigate => (tr("Navigate here"), true),
+                MenuEntry::ClearMarker => (tr("Clear marker"), false),
+                MenuEntry::ClearRoute { shared: true } => (tr("Clear for everyone"), false),
+                MenuEntry::ClearRoute { shared: false } => (tr("Clear route"), false),
+            };
+            if !ui.add_enabled(at.is_some() || !needs_point, egui::Button::new(label)).clicked() {
+                continue;
+            }
+            match (e, at) {
+                (MenuEntry::SetMarker, Some([x, z])) => app.coop.set_waypoint(Some((x, z)), app.config.coop_hue),
+                (MenuEntry::Navigate, Some(p)) => app.nav_requests.borrow_mut().push(NavRequest::Set(p)),
+                (MenuEntry::ClearMarker, _) => app.coop.set_waypoint(None, 0.0),
+                (MenuEntry::ClearRoute { .. }, _) => app.nav_requests.borrow_mut().push(NavRequest::Clear),
+                _ => {}
+            }
+            ui.close();
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1913,6 +2048,72 @@ mod tests {
         frame(&mut still, at(300.0, 300.0, Some(true)), true);
         let clicked = frame(&mut still, at(300.0, 300.0, Some(false)), true);
         assert!(clicked && still == ManualView::default());
+    }
+
+    /// The mouse scheme of both maps (D108): left = marker (co-op session only), middle = route
+    /// there (always), right = the menu.
+    #[test]
+    fn mouse_buttons_do_what_the_scheme_says() {
+        use Click::*;
+        use ClickAction::*;
+        assert_eq!(click_action(Primary, true), SetWaypoint);
+        assert_eq!(click_action(Primary, false), Nothing, "markers exist only in a co-op session");
+        for session in [false, true] {
+            assert_eq!(click_action(Middle, session), SetDestination);
+            assert_eq!(click_action(Secondary, session), OpenMenu);
+        }
+    }
+
+    /// The menu: Navigate always; the marker entries only in a session (Clear marker only with a
+    /// marker of one's own); Clear route only with a destination, "for everyone" when shared.
+    #[test]
+    fn the_menu_offers_what_applies() {
+        use MenuEntry::*;
+        assert_eq!(menu_entries(false, false, None), vec![Navigate]);
+        assert_eq!(menu_entries(false, true, None), vec![Navigate], "no markers outside a session");
+        assert_eq!(menu_entries(true, false, None), vec![SetMarker, Navigate]);
+        assert_eq!(menu_entries(true, true, None), vec![SetMarker, Navigate, ClearMarker]);
+        assert_eq!(menu_entries(false, false, Some(false)), vec![Navigate, ClearRoute { shared: false }]);
+        assert_eq!(menu_entries(true, true, Some(true)), vec![SetMarker, Navigate, ClearMarker, ClearRoute { shared: true }]);
+    }
+
+    /// The buttons reach the map's response as the scheme needs them: on a map that also drags,
+    /// a still left / middle / right press-release is a click of its own button (and of no other),
+    /// and a right click opens the context menu.
+    #[test]
+    fn each_mouse_button_clicks_the_map_on_its_own() {
+        use egui::{Event, Modifiers, PointerButton};
+        let ctx = egui::Context::default();
+        let mut t = 0.0_f64;
+        let mut frame = |ev: Vec<Event>| -> ([bool; 3], bool) {
+            t += 0.1;
+            let raw = egui::RawInput { screen_rect: Some(VIEW), time: Some(t), events: ev, ..Default::default() };
+            let mut out = ([false; 3], false);
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let resp = ui.allocate_rect(VIEW, egui::Sense::click_and_drag());
+                    out.0 = [PointerButton::Primary, PointerButton::Middle, PointerButton::Secondary].map(|b| resp.clicked_by(b));
+                    resp.context_menu(|ui| {
+                        ui.label("menu");
+                    });
+                    out.1 = resp.context_menu_opened();
+                });
+            });
+            out
+        };
+        let press = |button, pressed| Event::PointerButton { pos: pos2(300.0, 300.0), button, pressed, modifiers: Modifiers::default() };
+        frame(vec![Event::PointerMoved(pos2(300.0, 300.0))]);
+        for (i, b) in [PointerButton::Primary, PointerButton::Middle, PointerButton::Secondary].into_iter().enumerate() {
+            frame(vec![press(b, true)]);
+            let (clicked, menu) = frame(vec![press(b, false)]);
+            let mut want = [false; 3];
+            want[i] = true;
+            assert_eq!(clicked, want, "{b:?}");
+            assert_eq!(menu, b == PointerButton::Secondary, "{b:?}: only the right click opens the menu");
+            // Close the menu again for the next round.
+            frame(vec![Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::default() }]);
+            frame(vec![]);
+        }
     }
 
     /// The compass box is where `draw_compass` paints (disc of radius 11 at (18, 18) HUD units).

@@ -1400,11 +1400,18 @@ fn de(s: &str) -> Option<&'static str> {
         "This guide: Setup → Getting started → Open setup guide."
             => "Dieser Assistent: Setup → Erste Schritte → Einrichtungsassistent öffnen.",
 
-        // ── Navigation tab (phase L) ───────────────────────────────────
-        "Navigation" => "Navigation",
+        // ── Navigation sidebar (phase L, D108) ─────────────────────────
         "Route" => "Route",
         "Time" => "Zeit",
-        "Click the map to set a destination" => "Klicke auf die Karte, um ein Ziel zu setzen",
+        "Middle-click the map to set a destination" => "Klicke mit der mittleren Maustaste auf die Karte, um ein Ziel zu setzen",
+        "Left click: place a marker (co-op)" => "Linksklick: Markierung setzen (Koop)",
+        "Middle click: route to this point" => "Mittelklick: Route zu diesem Punkt",
+        "Right click: menu" => "Rechtsklick: Menü",
+        "Shift+drag: rotate and tilt" => "Umschalt+Ziehen: drehen und neigen",
+        "N: show or hide this panel" => "N: dieses Panel ein- oder ausblenden",
+        "Set marker here" => "Markierung hier setzen",
+        "Navigate here" => "Hierhin navigieren",
+        "Clear marker" => "Markierung löschen",
         "Waiting for the car's position" => "Warte auf die Position des Fahrzeugs",
         "Calculating…" => "Berechne…",
         "On route" => "Auf der Route",
@@ -1445,9 +1452,8 @@ fn de(s: &str) -> Option<&'static str> {
             => "Navigiere zum Ziel, das ein Mitspieler setzt, von deinem eigenen Auto aus und mit seinen Straßentypen. Aus: behalte dein eigenes Ziel.",
         "Shared destination set by" => "Geteiltes Ziel gesetzt von",
         "No shared destination" => "Kein geteiltes Ziel",
-        "Set destination" => "Ziel setzen",
-        "Click, then click the map to navigate there. Shift+click does the same without this button; right-click or Esc cancels."
-            => "Klicken, dann auf die Karte klicken, um dorthin zu navigieren. Umschalt+Klick macht dasselbe ohne diese Schaltfläche; Rechtsklick oder Esc bricht ab.",
+        "Navigation: the route, road types and the map controls (N)."
+            => "Navigation: die Route, Straßentypen und die Kartensteuerung (N).",
         "The map's settings (the Dashboard map & Viewer page of the Map tab)."
             => "Die Karteneinstellungen (die Seite Dashboard-Karte & Viewer im Karten-Tab).",
         "Navigation route" => "Navigationsroute",
