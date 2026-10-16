@@ -144,7 +144,8 @@ fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect) {
     }
 
     // Controls on top of the map (drawn after it, so they take the clicks).
-    let out = controls(ui, rect, app.map_tab.manual.is_manual(), follow.name.as_deref(), zoom_m, compass, app.config.map_nav_open);
+    let chest = if allow { chest_button(ui, app, car) } else { None };
+    let out = controls(ui, rect, app.map_tab.manual.is_manual(), follow.name.as_deref(), zoom_m, compass, app.config.map_nav_open, chest.as_ref().map(|c| c.icon));
     if out.follow {
         // Panned (or only zoomed): back to the car and the configured zoom, at once.
         app.map_tab.manual.reset();
@@ -157,6 +158,40 @@ fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect) {
     if out.nav {
         app.config.map_nav_open = !app.config.map_nav_open;
     }
+    if let (true, Some(c)) = (out.chest, &chest) {
+        // Stop following, show the chest at a 500 m radius (D109).
+        app.map_tab.manual.go_to(c.at, map_scene::CHEST_ZOOM_M, speed);
+    }
+}
+
+/// The game's chest icon in the POI atlas: its texture and UV rect.
+type Icon = Option<(egui::TextureId, Rect)>;
+
+/// The treasure-chest button's state: where it goes and the game's icon for it (`None` = the atlas
+/// has no icon, or is not uploaded: the button then shows a font glyph).
+struct ChestButton {
+    at: (f32, f32),
+    icon: Icon,
+}
+
+/// The chest button for this frame, or `None` while the current chest is not drawn on the viewer
+/// (`map_scene::chest_target` is the rule). Reads the same store, atlas and race focus the scene
+/// just drew with, so "shown" means what the map shows.
+fn chest_button(ui: &Ui, app: &ForzaApp, car: (f32, f32)) -> Option<ChestButton> {
+    let cfg = &app.config.minimap_layers;
+    if !cfg.pois.on {
+        return None;
+    }
+    let l = crate::maprender::layers();
+    let d = l.data.as_ref()?;
+    let focusing = app.map_tab.race_sel.borrow().focus_line().is_some_and(|i| i < d.races.lines.len());
+    let at = map_scene::chest_target(cfg, Some(&d.pois), car, crate::gamedata::poi::week_index_now(), focusing)?;
+    let atlas = app.minimap_icons.borrow_mut().ensure(ui.ctx(), d.icons.as_ref());
+    let icon = atlas.and_then(|a| {
+        let uv = a.rects.get(crate::maprender::style::cat_index("treasure_chest_current")?).copied().flatten()?;
+        Some((a.texture, uv))
+    });
+    Some(ChestButton { at, icon })
 }
 
 /// What the buttons over the viewer asked for this frame.
@@ -165,17 +200,21 @@ pub(crate) struct ControlsOut {
     pub follow: bool,
     pub settings: bool,
     pub nav: bool,
+    /// The treasure-chest button (D109); only drawn when the caller passed one.
+    pub chest: bool,
 }
 
 /// The viewer's buttons and zoom readout over the map: "Follow car" top left (only while the view
 /// is manual, like the Dashboard map's; right of the compass when that is on), the radius bottom
 /// left, bottom right "Settings" and, left of it, the navigation sidebar's location-arrow button
-/// (lit while the sidebar is open; more small buttons go further left). *Why bottom right:* the
+/// (lit while the sidebar is open) and, left of that, the treasure-chest button when `chest` is
+/// given (D109: the game's chest icon, else a gem glyph; it zooms to the current chest, see
+/// `chest_button`; more small buttons go further left). *Why bottom right:* the
 /// top right belongs to the co-op player list (D73). *Why only while manual:* a "Follow car" that
 /// is already following does nothing and only covers the map (user, D79). *Why no Clear route
 /// button here any more:* middle click replaced "Set destination", and Clear route is in the
 /// sidebar and the right-click menu (D108).
-fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zoom_m: f32, compass: bool, nav_open: bool) -> ControlsOut {
+fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zoom_m: f32, compass: bool, nav_open: bool, chest: Option<Icon>) -> ControlsOut {
     const M: f32 = 10.0;
     let mut out = ControlsOut::default();
     if manual {
@@ -199,6 +238,19 @@ fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zo
             .add(button.min_size(vec2(34.0, 0.0)))
             .on_hover_text(tr("Navigation: the route, road types and the map controls (N)."))
             .clicked();
+        if let Some(icon) = chest {
+            let button = match icon {
+                // The glyph buttons are one text line tall; the image matches that height.
+                Some((tex, uv)) => {
+                    let h = ui.text_style_height(&egui::TextStyle::Button);
+                    egui::Button::image(egui::Image::new(egui::load::SizedTexture::new(tex, vec2(h, h))).uv(uv))
+                        .fill(theme::BTN)
+                        .stroke(egui::Stroke::new(1.0, theme::BTNBD))
+                }
+                None => theme::secondary_button(icons::GEM),
+            };
+            out.chest = ui.add(button.min_size(vec2(34.0, 0.0))).on_hover_text(tr("Zoom to the treasure chest")).clicked();
+        }
     });
     let text = format!("{:.0} m", zoom_m);
     let font = egui::FontId::proportional(11.0);
@@ -568,14 +620,14 @@ mod tests {
                             // Following the car: no Follow car button. Panned or zoomed: it shows.
                             let out = render("map_viewer", w, h, |ui, _| {
                                 let rect = ui.available_rect_before_wrap();
-                                controls(ui, rect, false, None, 1500.0, compass, nav_open);
+                                controls(ui, rect, false, None, 1500.0, compass, nav_open, None);
                             });
                             check_panes(&out, w, "viewer controls, following");
                             let n = out.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Text(_))).count();
                             assert_eq!(n, 3, "{lang:?} at {w} px: while following only the two buttons and the radius show");
                             let out = render("map_viewer", w, h, |ui, _| {
                                 let rect = ui.available_rect_before_wrap();
-                                controls(ui, rect, true, None, 1500.0, compass, nav_open);
+                                controls(ui, rect, true, None, 1500.0, compass, nav_open, None);
                             });
                             check_panes(&out, w, "viewer controls");
                             // Text shapes in paint order: Follow car, Settings, the navigation button, the radius.
@@ -612,6 +664,50 @@ mod tests {
                 }
             });
         }
+    }
+
+    /// The treasure-chest button (D109): left of the navigation button on the bottom-right row, clear
+    /// of the radius readout and inside the tab, absent when not asked for; a real click on it is
+    /// reported. (Drawn here with the glyph fallback: the test context has no POI atlas; the image
+    /// variant only swaps the content.)
+    #[test]
+    fn chest_button_sits_left_of_the_navigation_button_and_clicks() {
+        use crate::i18n::{with_language, Language};
+        use std::cell::Cell;
+        for lang in [Language::English, Language::German] {
+            with_language(lang, || {
+                for w in [600.0, 1235.0] {
+                    let h = 500.0;
+                    let out = render("map_viewer", w, h, |ui, _| {
+                        let rect = ui.available_rect_before_wrap();
+                        controls(ui, rect, false, None, 1500.0, false, false, Some(None));
+                    });
+                    check_panes(&out, w, "viewer controls with the chest button");
+                    let labels: Vec<Rect> = out
+                        .shapes
+                        .iter()
+                        .filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.visual_bounding_rect()) } else { None })
+                        .collect();
+                    // Paint order: Settings, navigation, chest, radius.
+                    assert_eq!(labels.len(), 4, "{lang:?} at {w} px: settings, navigation, chest, radius");
+                    let (nav, chest, radius) = (labels[1], labels[2], labels[3]);
+                    assert!(chest.right() < nav.left() && chest.center().y > h * 0.75, "{lang:?} {w}: chest button left of navigation {chest:?}");
+                    assert!(chest.left() > radius.right() + 8.0, "{lang:?} {w}: chest button over the radius readout {chest:?}");
+                }
+            });
+        }
+        // A click on it comes back as `chest`; elsewhere on the row it does not.
+        let ctx = crate::ui::test_render::context();
+        let w = 1235.0;
+        let hit = Cell::new(false);
+        let mut page = |ui: &mut Ui| {
+            let rect = Rect::from_min_size(ui.max_rect().min, vec2(w, 500.0));
+            hit.set(hit.get() | controls(ui, rect, false, None, 1500.0, false, false, Some(None)).chest);
+        };
+        let out = frame(&ctx, w, vec![], &mut page);
+        let at = find_text(&out, crate::icons::GEM).expect("the chest button's glyph");
+        click(&ctx, w, at, &mut page);
+        assert!(hit.get(), "a click on the chest button is reported");
     }
 
     /// Both maps' pages (the shared `layers_ui`), plus the HUD page following the Dashboard and
@@ -915,6 +1011,10 @@ mod tests {
     /// Dashboard map's; the button then reads "Copied".
     #[test]
     fn clicking_copy_to_applies_the_request() {
+        crate::i18n::with_language(crate::i18n::Language::English, clicking_copy_body);
+    }
+
+    fn clicking_copy_body() {
         let ctx = crate::ui::test_render::context();
         let l = layers_ready();
         let mut cfg = AppConfig::default();
@@ -949,6 +1049,10 @@ mod tests {
     /// disabled (clicking them does nothing: the menu stays open, no "Copied", nothing written).
     #[test]
     fn copy_menu_blocks_the_following_minimap() {
+        crate::i18n::with_language(crate::i18n::Language::English, copy_menu_blocks_body);
+    }
+
+    fn copy_menu_blocks_body() {
         let ctx = crate::ui::test_render::context();
         let mut cfg = AppConfig::default();
         cfg.overlay.map_use_dashboard = true;
