@@ -97,7 +97,12 @@ partial nested object fills per field), `default_bindings()` for keyboard hotkey
 (`inject_missing_hotkeys` fills missing actions, skipping `HotkeyConfig::unbound`). A fresh
 install additionally starts from the bundled `assets/default-config.json` (older "getting
 started" snapshot, no overlay/gamepad/hotkeys keys), so features added since that snapshot take
-their defaults from the code.
+their defaults from the code. Keys the snapshot names (the `minimap_*` scalars, `coop_list_*`, the
+overlay's zoom radii) must agree with the code defaults: the snapshot wins on a fresh install.
+
+**Map and navigation defaults (0.7.2, D107).** The Map tab's settings (both maps' layers, view
+options, FPS limit, Co-Op list) and `AppConfig.nav` (without the destination) default to the user's
+own values of 2026-10-16; details and the *Why* in [[minimap]] ("Defaults") and [[navigation]].
 
 **Tuned defaults (0.4.1).** The settings added in this release (the whole Overlay tab,
 gamepad, backfire duration limit, look-around stick, Trystero co-op transport, the Hide HUD /

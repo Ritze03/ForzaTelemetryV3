@@ -1553,6 +1553,7 @@ mod tests {
         let mut l = MapLayerConfig::dashboard();
         l.tilt.on = true;
         l.tilt.relief.on = true;
+        l.tilt.car_y = 0.85; // the geometry these tests were written with (the default is 0.5)
         l
     }
 

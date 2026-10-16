@@ -242,6 +242,14 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
   as wide as it was in Setup, and the Map image card in the second. The page runs the Game Install
   check itself (`Fh6Setup::poll`).
 
+### Defaults (D107)
+
+What a new install shows on every map page is the user's own setup (3D on the HUD minimap, the
+Dashboard map and the Viewer, the sedan, 100 px roads, the Dashboard map at 500 m / 6 000 m, the HUD
+minimap at 100 m / 500 m, ...). The table with every value and the *Why* is in
+[minimap.md](minimap.md#configuration) ("Defaults = the user's own settings of 2026-10-16"); the *Reset map
+layers* buttons restore the same values (`MapLayerConfig::dashboard()` / `hud()`).
+
 ### Map settings are only here (D79)
 
 *Why (the user, 2026-10-09):* "make sure that all of the map settings are gone from the mini-settings

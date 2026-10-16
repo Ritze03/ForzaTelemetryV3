@@ -176,7 +176,7 @@ impl Default for RoadStyles {
             other: RoadTypeStyle::new(0x4ade80, 0.81, Solid, 1.0, 0x06260f),
             trail: RoadTypeStyle::new(0xfacc15, 0.75, Dashed, 1.0, 0x3a3000),
             crosscountry: RoadTypeStyle::new(0xa78bfa, 0.75, Solid, 1.0, 0x1e1240),
-            tunnel: RoadTypeStyle::new(0xe2e8f0, 0.94, Solid, 0.85, 0x0b0e14),
+            tunnel: RoadTypeStyle::new(0xe2e8f0, 0.94, Solid, 0.6, 0x0b0e14),
             jump: RoadTypeStyle::new(0xf43f5e, 0.875, Dashed, 1.0, 0x3a0610),
         }
     }
@@ -250,6 +250,21 @@ pub const POI_DEFAULT_ON: &[&str] = &[
     "drift_zone",
     "danger_sign",
     "treasure_chest_current",
+];
+
+/// The Dashboard map's categories in the app's defaults (D107: the user's own selection): the
+/// D71 list without barn finds and the aftermarket spots + boards. (Kept apart from
+/// [`POI_DEFAULT_ON`], the renderer's base list.)
+pub const POI_DASHBOARD_DEFAULT_ON: &[&str] = &[
+    "festival_site",
+    "house",
+    "speed_trap",
+    "speed_zone",
+    "trailblazer",
+    "drift_zone",
+    "danger_sign",
+    "treasure_chest_current",
+    "car_meet",
 ];
 
 /// The HUD minimap's default categories (D71): the ones that matter at a glance in a 300 m view.
@@ -638,7 +653,8 @@ impl LayerCategory {
 }
 
 /// Everything the shared renderer draws besides the markers (own arrow, co-op, compass).
-/// `Default` = the Dashboard map's defaults.
+/// `Default` is the renderer's neutral base (flat, arrow marker; the tests build on it); the
+/// **app's defaults** are [`MapLayerConfig::dashboard`] and [`MapLayerConfig::hud`].
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct MapLayerConfig {
@@ -652,21 +668,40 @@ pub struct MapLayerConfig {
 }
 
 impl MapLayerConfig {
-    /// Dashboard map: satellite at full strength, flat.
-    pub fn dashboard() -> Self {
-        Self::default()
+    /// What both maps share in the app's defaults (D107): roads up to 100 px wide, race lines
+    /// fully opaque, and the 3D look: relief on, hill shading at full strength, the sedan as the
+    /// own car. (The leaf `Default`s stay as they were: the renderer's tests build on them.)
+    fn with_default_look(mut self) -> Self {
+        self.roads.max_px = 100.0;
+        self.race_lines.alpha = 1.0;
+        self.tilt.relief.on = true;
+        self.tilt.relief.shading = 1.0;
+        self.tilt.relief.marker = MarkerStyle::Sedan;
+        self
     }
 
-    /// HUD minimap (D62, D71): satellite at full opacity but dimmed to 50 % brightness and
-    /// saturation so the vectors carry the picture, tilted 40 deg, POIs only near the car
-    /// (1 km) and only the [`POI_HUD_DEFAULT_ON`] kinds, hidden above a 3 km view.
+    /// Dashboard map and Viewer (D107: the user's own settings of 2026-10-16): satellite at full
+    /// strength, in 3D (tilted 55 deg, car halfway up the view), POIs everywhere within a 10 km
+    /// view, roads up to 100 px wide.
+    pub fn dashboard() -> Self {
+        let mut c = Self::default().with_default_look();
+        c.tilt.on = true;
+        c.tilt.car_y = 0.5;
+        c.pois.categories = POI_DASHBOARD_DEFAULT_ON.iter().map(|s| s.to_string()).collect();
+        c
+    }
+
+    /// HUD minimap (D62, D71, D107): satellite at full opacity but dimmed to 50 % brightness and
+    /// saturation so the vectors carry the picture, in 3D tilted 40 deg, only the
+    /// [`POI_HUD_DEFAULT_ON`] kinds of POIs (not limited to the car's surroundings) and hidden
+    /// above a 3 km view.
     pub fn hud() -> Self {
-        let mut c = Self::default();
+        let mut c = Self::default().with_default_look();
         c.image = ImageCfg { on: true, opacity: 1.0, brightness: 0.5, saturation: 0.5 };
         c.tilt.on = true;
         c.tilt.angle_deg = 40.0;
         c.pois.max_zoom_m = 3000.0;
-        c.pois.near_only = true;
+        c.pois.near_only = false;
         c.pois.radius_m = 1000.0;
         c.pois.categories = POI_HUD_DEFAULT_ON.iter().map(|s| s.to_string()).collect();
         c
@@ -734,10 +769,10 @@ mod tests {
         assert_eq!((d.race_lines.width_px, d.race_lines.alpha), (4.0, 0.85));
         assert_eq!((d.pois.size_px, d.pois.max_zoom_m), (32.0, 10000.0));
         assert_eq!((d.roads.metres, d.roads.min_px, d.roads.max_px, d.roads.base_px), (10.0, 1.0, 10.0, 3.0));
-        assert!(!d.tilt.on && MapLayerConfig::hud().tilt.on);
+        assert!(!d.tilt.on && MapLayerConfig::hud().tilt.on && MapLayerConfig::dashboard().tilt.on); // D107: the app's defaults tilt both
         assert_eq!(MapLayerConfig::hud().image.opacity, 1.0);
         assert_eq!(d.roads.styles.highway.width, 1.44);
-        assert_eq!(d.roads.styles.tunnel.alpha, 0.85);
+        assert_eq!(d.roads.styles.tunnel.alpha, 0.6); // D107
         for c in [&d, &MapLayerConfig::hud()] {
             assert_eq!(c.race_lines.focus.other_roads, OtherRoads::Muted);
             assert_eq!((c.race_lines.focus.mute_alpha, c.race_lines.focus.mute_width, c.race_lines.focus.mute_color), (0.25, 0.8, Rgb::hex(0xffffff)));
@@ -747,21 +782,26 @@ mod tests {
         assert!(RoadType::ALL.iter().filter(|t| **t != RoadType::Turnaround).all(|t| d.roads.styles.get(*t).is_some()));
     }
 
-    /// D71: the user's own map settings of 2026-10-08 are the code defaults.
+    /// D71 / D107: the user's own map settings are the app's defaults (D71 of 2026-10-08, replaced
+    /// by those of 2026-10-16 in D107).
     #[test]
-    fn defaults_are_the_users_settings_of_d71() {
+    fn defaults_are_the_users_settings_of_d107() {
         let cats = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let d = MapLayerConfig::dashboard();
-        assert_eq!(d.pois.categories, cats(&["barn_find", "car_meet", "festival_site", "house", "aftermarket_spot", "aftermarket_board", "speed_trap", "speed_zone", "trailblazer", "drift_zone", "danger_sign", "treasure_chest_current"]));
+        assert_eq!(d.pois.categories, cats(&["festival_site", "house", "speed_trap", "speed_zone", "trailblazer", "drift_zone", "danger_sign", "treasure_chest_current", "car_meet"]));
         assert_eq!((d.pois.max_zoom_m, d.pois.near_only, d.pois.radius_m), (10000.0, false, 2000.0));
         assert_eq!((d.image.opacity, d.image.brightness, d.image.saturation), (1.0, 1.0, 1.0));
-        assert!(!d.tilt.on);
+        // 3D, tilted 55 deg, the car halfway up the view, full hill shading, the sedan.
+        assert_eq!(d.tilt.view_mode(), ViewMode::Relief);
+        assert_eq!((d.tilt.angle_deg, d.tilt.car_y, d.tilt.relief.shading, d.tilt.relief.marker), (55.0, 0.5, 1.0, MarkerStyle::Sedan));
+        assert_eq!((d.roads.max_px, d.roads.styles.tunnel.alpha, d.race_lines.alpha), (100.0, 0.6, 1.0));
         assert_eq!((d.roads.styles.road.color, d.roads.styles.other.width, d.roads.casing_px), (Rgb::hex(0x38bdf8), 0.81, 1.4));
         let h = MapLayerConfig::hud();
         assert_eq!(h.pois.categories, cats(&["festival_site", "house", "speed_trap", "speed_zone", "trailblazer", "drift_zone", "danger_sign"]));
-        assert_eq!((h.pois.max_zoom_m, h.pois.near_only, h.pois.radius_m), (3000.0, true, 1000.0));
+        assert_eq!((h.pois.max_zoom_m, h.pois.near_only, h.pois.radius_m), (3000.0, false, 1000.0));
         assert_eq!((h.image.opacity, h.image.brightness, h.image.saturation), (1.0, 0.5, 0.5));
-        assert!(h.tilt.on && h.tilt.angle_deg == 40.0);
+        assert!(h.tilt.on && h.tilt.angle_deg == 40.0 && h.tilt.car_y == 0.85);
+        assert_eq!(h.tilt.view_mode(), ViewMode::Relief);
         assert_eq!(h.roads, d.roads);
         assert_eq!(h.race_lines, d.race_lines);
     }
@@ -860,9 +900,11 @@ mod tests {
         let r = ReliefCfg::default();
         assert_eq!((r.on, r.road_height, r.deck_m, r.exaggeration, r.shading, r.marker), (false, RoadHeight::Nodes, 3.0, 1.0, 0.35, MarkerStyle::Arrow));
         assert!(!r.car_orientation, "off by default: today's yaw-only look");
-        // Today's view modes stay: HUD tilted, Dashboard (and the Viewer) flat; 3D on neither.
-        assert_eq!(MapLayerConfig::hud().tilt.view_mode(), ViewMode::Tilted);
-        assert_eq!(MapLayerConfig::dashboard().tilt.view_mode(), ViewMode::Flat);
+        // D107: the app's defaults are 3D on the HUD, the Dashboard map and the Viewer; the
+        // renderer's own base (`MapLayerConfig::default()`) stays flat with the arrow.
+        assert_eq!(MapLayerConfig::hud().tilt.view_mode(), ViewMode::Relief);
+        assert_eq!(MapLayerConfig::dashboard().tilt.view_mode(), ViewMode::Relief);
+        assert_eq!(MapLayerConfig::default().tilt.view_mode(), ViewMode::Flat);
         let mut t = TiltCfg::default();
         assert_eq!(t.view_mode(), ViewMode::Flat);
         // `relief.on` alone does nothing without the tilt it implies.

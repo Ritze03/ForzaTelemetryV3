@@ -293,7 +293,7 @@ teammate arrows (the spec sheet's M2′ look), which were the HUD's own.
   `coop_hue`. *Why not reuse `ForzaApp::minimap_trails`:* the UI thread fills that and its
   loop stops while the game covers the window, i.e. exactly when the HUD is in use. The
   recording rules are the shared `minimap::trail_push`, so both buffers behave alike.
-  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 300 / 3000,
+  Zoom eases between **Zoom when driving** / **Zoom when stopped** (defaults 100 / 500 since D107,
   independent of the Dashboard map's unless reused); stopped = under 5 km/h for 1.5 s.
 - **Layers (I29b, D61/D62):** `minimap::draw` runs the shared renderer (`maprender`, see
   [[minimap]] "Shared renderer & layers") over a **camera** (`Camera::from_cfg(map_layers.tilt, ...)`:
@@ -329,7 +329,7 @@ Phase K (K3, plan D61/D65/D66). The Map tab's **View mode** card (`Flat / Tilted
 `map_layers.tilt.{on, relief.on}`, see [map-tab.md](map-tab.md)) can put the HUD minimap in **3D**: the
 satellite image draped on the game's height raster, the roads as ribbons at their nav heights with
 decks, drawn by the shared GL renderer (`maprender::gl3d`, reference: [[minimap]] "3D renderer").
-Default stays **Tilted**; 3D is opt-in.
+Default since D107: **3D** (it was Tilted); the view falls back to Tilted by itself while the terrain loads or if the GPU cannot do it, and on Windows until *Allow 3D on Windows* is on.
 
 - **Draw order (`hud/minimap.rs::draw`, 3D branch).** plate (as before) → the 3D scene as one egui
   paint callback over the pill (`gl3d::add_scene`, `corner_radius = Frame::radius * s`, 22 by default, the composite shader does
@@ -468,8 +468,8 @@ only Notifications), D90 finished the job (nothing map-related is left in Mini-S
 | `map_corner_radius` | 22 | Rounded rect only; clamped to half the shorter side. |
 | `map_border_width`, `map_border_color`, `map_border_opacity` | 3 px, `[12,17,27]`, 0.88 | The outline, drawn inside the frame; width 0 = none. |
 | `map_plate_color` | `[9,13,21]` | The plate's colour (its opacity is `map_plate_opacity`). |
-| `map_layers` | `MapLayerConfig::hud()` | What the map draws besides the markers: `image` (on, 50 / 50 / 50 %), `roads` (on, by type, per-type colour / width / dash / casing), `pois` (on, 32 px, categories, `max_zoom_m` 3000, `near_only` + `radius_m`, `gates`), `race_lines` (current race only, 4 px, marks), `tilt` (on, `angle_deg` 55, `perspective_px` 200 at the pill's 136 px, `car_y` 0.85, `taper` on). Every field `serde(default)`; edited on the Map tab's Minimap page (D63, moved D67). Follows the Dashboard's `minimap_layers` under `map_use_dashboard`. |
-| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 300 / 3000 | Compass and the two zoom radii. |
+| `map_layers` | `MapLayerConfig::hud()` | What the map draws besides the markers: `image` (on, 50 / 50 / 50 %), `roads` (on, by type, per-type colour / width / dash / casing), `pois` (on, 32 px, categories, `max_zoom_m` 3000, `near_only` off (D107) + `radius_m` 1000, `gates`), `race_lines` (current race only, 4 px, alpha 1.0, marks), `tilt` (on, `angle_deg` 40, `perspective_px` 200 at the pill's 136 px, `car_y` 0.85, `taper` on, `relief` on with hill shading 1.0 and the sedan: **3D** since D107). Every field `serde(default)`; edited on the Map tab's Minimap page (D63, moved D67). Follows the Dashboard's `minimap_layers` under `map_use_dashboard`. |
+| `compass`, `zoom_driving_m`, `zoom_stopped_m` | on / 100 / 500 (D107) | Compass and the two zoom radii. |
 | `coop_use_dashboard` | on | **Use Dashboard co-op settings**: the co-op fields below follow the Dashboard and their controls are hidden. |
 | `coop_teammates` | on | Draw teammates (and their trails). |
 | `coop_trails` | on | Trails behind each player, own included (the own one solo too, white). |
@@ -824,7 +824,7 @@ configured yet, for the whole Overlay tab. Where it differs from the former defa
 | `race_cell` (race / drift slot) | bottom-right (was top-left) |
 | `margin_px` | 4 (was 44) |
 | `rpm_label` | on (was off) |
-| `zoom_driving_m` | 300 (was 500, 1500 before; D62: the HUD map's radius with the layers) |
+| `zoom_driving_m` | 300 (was 500, 1500 before; D62: the HUD map's radius with the layers); 100 since D107 (stopped 500) |
 | `map_plate_opacity` | 0 (new: no plate behind the dimmed map) |
 | `map_use_movement_dir`, `map_look_stick` | on (were off) |
 | `coop_use_dashboard` | on (was off) |

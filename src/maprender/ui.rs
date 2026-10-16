@@ -1392,7 +1392,7 @@ mod tests {
         let relief = ReliefCfg { on: true, road_height: RoadHeight::Terrain, deck_m: 9.0, exaggeration: 2.5, shading: 0.9, marker: MarkerStyle::Sedan, car_orientation: false };
         c.overlay.map_layers.tilt.on = true;
         c.overlay.map_layers.tilt.relief = relief;
-        assert_eq!(c.minimap_layers.tilt.relief, ReliefCfg::default());
+        assert_eq!(c.minimap_layers.tilt.relief, MapLayerConfig::dashboard().tilt.relief);
         let before = c.clone();
         let done = apply_copy(&mut c, &req(MapId::Minimap, CopyWhat::Layer(LayerCategory::Tilt), &[MapId::Dashboard]));
         assert_eq!(done, vec![MapId::Dashboard]);

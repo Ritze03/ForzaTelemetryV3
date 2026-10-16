@@ -243,7 +243,7 @@ can't drift. `hud::map_shared` already shares the *markers*; `maprender` shares 
 
 | Module | What it holds |
 |---|---|
-| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt, the navigation route's look `nav_route`) and its serde; `::dashboard()` (= `Default`) and `::hud()`. |
+| `cfg.rs` | `MapLayerConfig` (image look, roads + per-type style, POIs, race lines incl. the in-race `focus`, tilt, the navigation route's look `nav_route`) and its serde; `::dashboard()` and `::hud()`: the app's defaults (D107; `Default` is only the renderer's neutral base: flat, arrow, which the tests build on). |
 | `data.rs` | `MapLayers { rev, roads, pois, races, icons, race_class, note }` (`Arc`s), `build_roads`, `RoadLayer::joins` (`Joins`: an `End` per chain end + the `Overpass`es, D81), `GameData::load` (nav + POIs + race lines + danger signs + icons), `PoiLayer` (250 m cell grid, the chests apart for the weekly pick), `RaceLayer` (100 m segment grid + arc length per point `cum`). |
 | `icontex.rs` | `IconTex`: uploads the store's icon pixels as a texture **per egui context** and builds that context's `IconAtlas`. |
 | `store.rs` | The process-wide loader / cache: `layers()`, `refresh_now()`, thread `map-layers`. |
@@ -338,8 +338,8 @@ the navigation destination pin, compass.
   The config has no entry for them; `RoadStyles::get(Turnaround)` is `None`.
 - **Width** (the demo's `roadBase`): `base = clamp(px_per_metre * metres, min_px, max_px)` when
   `scale_with_zoom`, else `base_px`; a type's line is `max(0.7, base * its factor)`, its casing that
-  plus `casing_px`. Defaults (D62): 10 m, 1 to 10 px, base 3 px, casing +1.4 px at alpha 1; factors road
-  1.0, highway 1.44, offroad 0.875, other 0.81, trail 0.75, cross-country 0.75, tunnel 0.94 (alpha .85),
+  plus `casing_px`. Defaults (D62): 10 m, 1 to 10 px (100 px in the app's defaults since D107), base 3 px, casing +1.4 px at alpha 1; factors road
+  1.0, highway 1.44, offroad 0.875, other 0.81, trail 0.75, cross-country 0.75, tunnel 0.94 (alpha 0.6 since D107, was .85),
   jump 0.875. At a 5 km radius (0.042 px/m on a 420 px map) the base is the 1 px
   minimum; at 300 m it is 7 px.
 - **Dashes**: dashed types (trail, jump) use the demo's `[6,4]` pattern scaled by `max(1, 0.6 w)`, but
@@ -502,7 +502,7 @@ renderers did it (2D lines: casing line then fill line; 3D: casing pass then fil
 `casing_alpha x alpha`, so *Outline opacity* still scales it), covering every pixel at most once.
 Alpha 1 takes exactly the paths of before (egui lines; the two 3D passes), so nothing changes for an
 opaque type. A type's casing never shows through its own fill, and two pieces of a type that meet do
-not blend twice. The tunnel keeps its see-through rule (drawn over everything, default alpha 0.85).
+not blend twice. The tunnel keeps its see-through rule (drawn over everything, default alpha 0.6 since D107, 0.85 before).
 
 - **2D / Tilted (`paint2d::strip`, `casing_strips`, `fill_strip`):** a translucent type is not drawn
   with egui lines but with triangle strips along the same projected, thinned, tapered pieces: the
@@ -553,18 +553,18 @@ not blend twice. The tunnel keeps its see-through rule (drawn over everything, d
   slot 0 (grey, alpha 0.6) is always translucent, so the pass always runs; it only touches that slot's
   vertices.
   **Tunnels** (a range of their own per tile, drawn last without the depth test) with a translucent
-  tunnel (the default 0.85, the race road's tunnel stretches) are drawn into a **second depth buffer**
+  tunnel (the default 0.6, was 0.85; the race road's tunnel stretches) are drawn into a **second depth buffer**
   (`Fbo::depth_tunnel`, swapped in as the framebuffer's depth attachment and cleared, then swapped
   back): still over everything (nothing in it but tunnels), but now depth-sorted among themselves, so
   their casing, fill and crossing tunnels blend once. An opaque tunnel keeps the old no-depth-test
-  draw in draw order. The race road, the thin race line (`RaceCfg::alpha`, 0.85) and the navigation
+  draw in draw order. The race road, the thin race line (`RaceCfg::alpha`, 1.0 since D107, 0.85 before) and the navigation
   route go through the same `draw_roads`, so their tunnel stretches (and the thin line) are covered too.
   *Why depth + stencil and not draw-order sorting:* the roads are static GPU meshes drawn per tile in
   one go; there is no per-frame CPU ordering to hang a back-to-front sort on, and "nearest wins" is
   what a map wants (the highest rank on top at a junction, as with opaque roads).
 - **Measured** (release, real install, RX 7900 XTX, `cargo test --release gl3d_real_install_scenes
   -- --ignored --nocapture`, "PERF opacity" lines, median of 20 frames; draws are the whole scene's):
-  the default style (only the tunnel at 0.85, plus the untyped slot) costs +0.007 ... +0.015 ms of GPU
+  the default style (only the tunnel at 0.6 since D107, plus the untyped slot) costs +0.007 ... +0.015 ms of GPU
   over every type opaque (HUD city 500 m x3 0.048 -> 0.057 ms, Dashboard city 1.5 km 0.107 -> 0.122 ms,
   Viewer island 8 km 0.070 -> 0.085 ms) and within the CPU noise (~+0.05 ms; +4 ... +76 draws of 31 ... 750); with
   every type at 0.5 the same (the tiles' triangles are drawn twice more, the terrain dominates the
@@ -573,7 +573,7 @@ not blend twice. The tunnel keeps its see-through rule (drawn over everything, d
   (the ribbons: 3 strips of 4 columns per piece instead of 2 lines); at 1.5 km 1.3 + 0.6; HUD tilted
   at 300 m 0.35 + 0.09. That is the worst case, every road type translucent in the busiest part of the
   island; one translucent type costs about its share of the roads' vertices (not measured on its
-  own). The default (opaque types, the tunnels' 0.85) draws the same lines as before, ribbons
+  own). The default (opaque types, the tunnels' translucency) draws the same lines as before, ribbons
   only where tunnels are.
 - **Tests:** `paint2d::tests::a_translucent_road_is_see_through_everywhere_not_darker` (a software
   composite of the tessellated shapes over a known background: the fill is `alpha` of its colour, the
@@ -589,7 +589,7 @@ not blend twice. The tunnel keeps its see-through rule (drawn over everything, d
 
 Modes: `off`, `current` (default), `nearest`, `near` (within `radius_m`, default 1 500 m), `all`
 (40 000-vertex budget). Drawn as a **race road** by default (D80, below); with
-`race_lines.route = "line"` as the thin line of before: 4 px, alpha .85. One colour for every race, `RaceCfg::color` (default `#f97316`, orange), with start /
+`race_lines.route = "line"` as the thin line of before: 4 px, alpha 1.0 (.85 before D107). One colour for every race, `RaceCfg::color` (default `#f97316`, orange), with start /
 finish marks (green dot + chequered flag for sprints, chequered flag for circuits).
 *Why one colour (D88; the user, 2026-10-10):* "Sprints and circuits should have the same color."
 (It replaces D86's separate circuit and sprint colours. Old configs: `circuit_color` is read as `color`
@@ -886,7 +886,7 @@ over all lines. Release on the real install (39 242 road segments): route 5555 (
 mapping (tested). Tilted, it is a **flat perspective of the 2D map** done on the CPU, the equivalent of
 the demo's CSS `perspective(P) rotateX(a)` about the car: a plane offset `(x, y)` px from the car
 (y down) lands at `(x, y cos a) * P / (P - y sin a)`, and the horizon is `P / tan a` above the car
-(defaults: a = 55 deg Dashboard / 40 deg HUD (D71), P = 200 px, car 85 % down the view). The image is the visible part of the plane
+(defaults: a = 55 deg Dashboard / 40 deg HUD (D71), P = 200 px, car 50 % down the view on the Dashboard map and 85 % on the HUD, D107). The image is the visible part of the plane
 in 24 x 24 cells, each projected and cut to the map outline, every vertex's UV taken from the inverse
 projection (egui interpolates UVs affinely inside a triangle; a perspective is not affine, hence the
 subdivision). Every layer vertex goes through the same `Camera::project`, so roads, race lines and POIs
@@ -925,8 +925,8 @@ Polish (I29b):
 
 K1 lays the CPU foundation of the shared 3D renderer (D61); the GL scene itself (`maprender::gl3d`,
 K2) and the call sites (K3 HUD, K4 Dashboard + Viewer, K5 settings card) come after. Nothing here
-draws yet, and no maps' behaviour changed: the defaults keep today's views (HUD tilted, Dashboard
-and Viewer flat). Design: phase K scout (`design.md`, kept by the lead); this section is the
+draws yet, and no maps' behaviour changed: the defaults kept the views of that day (HUD tilted, Dashboard
+and Viewer flat; since D107 all three default to 3D, see "Defaults"). Design: phase K scout (`design.md`, kept by the lead); this section is the
 reference for what exists.
 
 **View modes** (`cfg::ViewMode`, derived by `TiltCfg::view_mode()`): `Flat` (`tilt.on` off),
@@ -937,8 +937,8 @@ tilt category (`LayerCategory::Tilt`, D68) copies the 3D settings with it. *Why 
 category:* the angle, perspective and car position of the tilted view **are** the 3D camera's pitch,
 FOV and car position, so the two are one set of settings. Fields and defaults (design questions
 answered with the recommendations, to be revisited after the user has seen it): `on` false on all
-three maps, `road_height` `Nodes` (`RoadHeight::{Nodes, Terrain}`; serde `"nodes"` / `"terrain"`),
-`deck_m` 3.0 (0..20), `exaggeration` 1.0 (0.5..3), `shading` 0.35 (0..1); `ReliefCfg::sane()` clamps
+three maps (D107: the app's defaults turn it on for all three, `MapLayerConfig::dashboard()` / `hud()`; `ReliefCfg::default()` itself stays off), `road_height` `Nodes` (`RoadHeight::{Nodes, Terrain}`; serde `"nodes"` / `"terrain"`),
+`deck_m` 3.0 (0..20), `exaggeration` 1.0 (0.5..3), `shading` 0.35 (0..1; 1.0 in the app's defaults, D107); `ReliefCfg::sane()` clamps
 hand-edited values. The sea is flat at y 100 and not configurable.
 
 **Terrain** (`maprender/terrain.rs`, `docs/game-data/fh6-terrain.md`): the filled 8 m `HeightGrid`
@@ -1390,8 +1390,8 @@ a tunnel they ran over the hill above it.
   segment, ≤ 400 points per player); all freed by `Gl3d::destroy`. GLSL 330 core / 300 es as before.
 - **Config (D78):** `ReliefCfg::marker: MarkerStyle { Arrow (default), Sedan }` (`serde(default)`,
   snake_case `"arrow"` / `"sedan"`), the **Car marker** row in the View mode card's 3D section, per map;
-  "Copy to…" on that card copies it (it travels with `TiltCfg`). *Why Arrow by default:* it keeps
-  today's look until the user picks the car. D100 adds `ReliefCfg::car_orientation` (bool, default
+  "Copy to…" on that card copies it (it travels with `TiltCfg`). *Why Arrow by default:* it kept
+  today's look until the user picks the car (D107: the app's defaults now pick the sedan, the user's choice; `ReliefCfg::default()` stays Arrow). D100 adds `ReliefCfg::car_orientation` (bool, default
   false; a config from before has no key = off) as the **Car orientation** checkbox right under it,
   same per-map storage and Copy-to path.
 
@@ -1544,18 +1544,32 @@ Every field has `serde(default)`, colours are `"#rrggbb"`, POI categories are a 
 | | Dashboard | HUD |
 |---|---|---|
 | Satellite image | on, 100 % opacity / brightness / saturation | on, opacity 100 %, brightness and saturation 50 % |
-| Roads, per type | on, "by type" colours | same |
-| POIs | on, hidden above a 10 km view, everywhere: barn finds, car meets, festival sites, houses, aftermarket spots + boards, speed traps, speed zones, trailblazers, drift zones, danger signs, current-season treasure chest; every other kind off but selectable | on, hidden above a 3 km view, only within 1 km of the car: festival sites, houses, speed traps, speed zones, trailblazers, drift zones, danger signs |
-| Race lines | current | current |
-| Tilt | off | on (40 deg, P 200 at 136 px, car 85 %, taper on) |
+| Roads, per type | on, "by type" colours; width limit 100 px (D107); tunnel opacity 0.6 (D107) | same |
+| POIs | on, hidden above a 10 km view, everywhere: festival sites, houses, speed traps, speed zones, trailblazers, drift zones, danger signs, current-season treasure chest, car meets (D107: no barn finds, no aftermarket spots / boards); every other kind off but selectable | on, hidden above a 3 km view, not limited to the car's surroundings since D107 (`near_only` off; the radius, 1 km, applies when switched on): festival sites, houses, speed traps, speed zones, trailblazers, drift zones, danger signs |
+| Race lines | current; thin-line opacity 1.0 (D107) | same |
+| View mode | **3D** (D107): tilt on, 55 deg, P 200 at 136 px, car 50 % down the view, taper on, relief on, hill shading 100 %, car marker sedan, car orientation off | **3D** (D107): 40 deg, P 200 at 136 px, car 85 %, taper on, relief on, hill shading 100 %, sedan, car orientation off |
 | Navigation route (`nav_route`, phase L) | on, `#d946ef`, width 1.0 | same |
-| Existing keys (D62, D71) | radius 1 500 m driving / 4 500 m stopped, north-up (also when stopped), no compass | 500 m driving (3 000 m stopped), heading-up, no minimap plate (`map_plate_opacity` 0) |
+| Existing keys (D62, D71, D107) | radius 500 m driving / 6 000 m stopped, north-up (also when stopped), no compass; Render FPS limit off (120 fps when switched on) | 100 m driving (500 m stopped), heading-up, no minimap plate (`map_plate_opacity` 0) |
 
-The existing Dashboard keys (`minimap_zoom_*_m`, `minimap_north_up`, `minimap_show_compass`) changed
+The existing Dashboard keys (`minimap_zoom_*_m`, `minimap_fps_limit*`, `minimap_north_up`, `minimap_show_compass`) changed
 **defaults only**: fresh installs get them from the embedded `assets/default-config.json` and
 `AppConfig::default()`; a saved config keeps its own values.
 
-Defaults = the user's own settings of 2026-10-08 (D71; they replaced the demo-export values of D62: POI list, zoom radii, HUD image opacity and tilt angle).
+**Defaults = the user's own settings of 2026-10-16 (D107).** *Why (the user, 2026-10-16):* "My current map and
+minimap settings plus my current navigation options should all be set as the default in the telemetry. So
+when someone has no settings yet, it should apply those." The previous defaults were the user's settings of
+2026-10-08 (D71; they replaced the demo-export values of D62). Where the values live: the layers in
+`MapLayerConfig::dashboard()` / `hud()` (`maprender/cfg.rs`; the roads' tunnel opacity in `RoadStyles::default()`
+so *Reset road styles* gives it too), the scalar `minimap_*` keys and the HUD's own `overlay.zoom_*_m` in both
+`AppConfig::default()` / `OverlayConfig::default()` **and** the embedded `assets/default-config.json` (the
+fresh-install snapshot wins over the code default for keys it names; the two must agree), the Co-Op list on
+the Dashboard map page (player list on, columns: distance, speed, class; not gear) in the same two places,
+the navigation filters in `NavConfig::default()` (see [navigation.md](navigation.md)). *Why `MapLayerConfig::default()`
+stayed neutral (flat, arrow, 10 px roads, ...):* it is the renderer's base that ~40 render and GL tests build
+on; the app's defaults are the two constructors, which the *Reset map layers* buttons use as well. Not taken over, on
+purpose: the map image calibration (`minimap_px_per_m`, `minimap_world_origin_*`: a constant of the map image,
+already identical), the Minimap frame, HUD layout, the Dashboard's widget list, hotkeys, co-op identity and every
+machine-specific key.
 
 ### Performance
 
