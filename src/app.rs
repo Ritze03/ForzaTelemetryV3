@@ -245,7 +245,6 @@ pub enum Tab {
     Dashboard,
     Overlay,
     Map,
-    Navigation,
     Backfire,
     Gearbox,
     PowerCurve,
@@ -330,7 +329,6 @@ fn tab_title(tab: Tab) -> &'static str {
         Tab::Dashboard => "Dashboard",
         Tab::Overlay => "Overlay",
         Tab::Map => "Map",
-        Tab::Navigation => "Navigation",
         Tab::PowerCurve => "Power Curve",
         Tab::Coop => "Co-Op",
         Tab::Backfire => "Backfire",
@@ -350,8 +348,8 @@ const PILL_FONT: f32 = 12.5;
 /// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
 /// so the tabs only shift once, uniformly, when the bar itself gets narrow.
 fn max_pill_width(ui: &egui::Ui) -> f32 {
-    const TABS: [Tab; 12] = [
-        Tab::Dashboard, Tab::Overlay, Tab::Map, Tab::Navigation, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
+    const TABS: [Tab; 11] = [
+        Tab::Dashboard, Tab::Overlay, Tab::Map, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
         Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog, Tab::Debug,
     ];
     TABS.iter()
@@ -597,12 +595,15 @@ pub struct ForzaApp {
     pub map_data: crate::ui::map_data::MapData,
     /// Map tab viewer state (view centre, zoom, follow); not saved.
     pub map_tab: crate::ui::map_tab::MapTabState,
-    /// Navigation tab state: its own map view, and the bookkeeping that keeps `config.nav` and the
-    /// navigator (`nav::`) in step (see `ui::nav_tab::NavState`).
+    /// Navigation bookkeeping that keeps `config.nav` and the navigator (`nav::`) in step (see
+    /// `ui::nav_tab::NavState`; the sidebar of the Map tab's viewer is its UI).
     pub nav_ui: crate::ui::nav_tab::NavState,
+    /// Destination changes the maps asked for while they drew from `&ForzaApp` (middle click,
+    /// right-click menu, D108); applied after the panels, see `ui::nav_tab::drain_requests`.
+    pub nav_requests: std::cell::RefCell<Vec<crate::ui::map_scene::NavRequest>>,
     /// The Dashboard map's temporary pan / zoom (D72). A `RefCell`: the widget draws from `&ForzaApp`.
     pub minimap_pan: std::cell::RefCell<crate::ui::map_scene::ManualView>,
-    /// Whose car the GUI maps (Dashboard map, Viewer, Navigation tab) follow: a teammate picked in the
+    /// Whose car the GUI maps (Dashboard map, Viewer) follow: a teammate picked in the
     /// co-op player list, else the own car (D105). Session state, shared by all of them.
     pub spectate: crate::ui::map_scene::Spectate,
     /// The 3D map renderer's state on this window's GL context (K4): the one `Gl3dHandle` the
@@ -966,6 +967,7 @@ impl ForzaApp {
             map_data: Default::default(),
             map_tab: Default::default(),
             nav_ui: Default::default(),
+            nav_requests: Default::default(),
             minimap_pan: Default::default(),
             spectate: Default::default(),
             map3d: Default::default(),
@@ -1940,7 +1942,6 @@ impl eframe::App for ForzaApp {
                     (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
                     (Tab::Overlay,     icons::OVERLAY,    "Overlay"),
                     (Tab::Map,         icons::MAP,        "Map"),
-                    (Tab::Navigation,  icons::NAVIGATION, "Navigation"),
                     (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
                     (Tab::Coop,        icons::USERS,      "Co-Op"),
                     (Tab::Backfire,    icons::BOLT,       "Backfire"),
@@ -2766,7 +2767,6 @@ impl eframe::App for ForzaApp {
             Tab::Dashboard => crate::ui::dashboard::show(ui, self),
             Tab::Overlay => crate::ui::overlay_tab::show(ui, self),
             Tab::Map => crate::ui::map_tab::show(ui, self),
-            Tab::Navigation => crate::ui::nav_tab::show(ui, self),
             Tab::Backfire => crate::ui::backfire::show_backfire(ui, self),
             Tab::Gearbox => crate::ui::gearbox::show_gearbox(ui, self),
             Tab::PowerCurve => crate::ui::power_curve::show(ui, self),
@@ -2776,6 +2776,8 @@ impl eframe::App for ForzaApp {
             Tab::Changelog => crate::ui::changelog::show(ui, self),
             Tab::Debug => crate::ui::debug_tab::show(ui, self),
         });
+
+        crate::ui::nav_tab::drain_requests(self);
 
         crate::ui::onboarding::show(ctx, self);
         crate::ui::settings::input_perm_modal(ctx, self);

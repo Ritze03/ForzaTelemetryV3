@@ -3,7 +3,10 @@
 //! *Viewer* (the tab's default view): the map fills the whole tab, drawn by the shared scene
 //! (`map_scene`, the same code as the Dashboard's Map widget) with the **Dashboard map's settings**
 //! (`minimap_layers`, `minimap_*`; D73: the viewer has none of its own). Drag pans, the wheel
-//! zooms, "Follow car" keeps the car centred.
+//! zooms, "Follow car" keeps the car centred. The mouse scheme (`map_scene::click_action`): left
+//! click = co-op marker, middle click = route there, right click = a menu (D108). The navigation
+//! sidebar (`nav_tab::sidebar`) opens at the viewer's right from the location-arrow button bottom
+//! right or with N (`map_nav_open`, remembered, never exported).
 //!
 //! *Settings* (the cog on the viewer; "Back to map" returns): a module selector, the Overlay
 //! tab's control, over the pages Minimap · Dashboard map & Viewer · Map data. The first two moved
@@ -47,10 +50,6 @@ pub struct MapTabState {
     pub manual: ManualView,
     /// The viewer's own race-line selection state (see `racesel`).
     pub race_sel: RefCell<RaceSel>,
-    /// The viewer's "Set destination" button is armed: the next left click sets the destination
-    /// (the click itself, a right click or Esc disarms). Not used by the Navigation tab, whose
-    /// every click sets it.
-    pub dest_armed: bool,
 }
 
 
@@ -64,78 +63,33 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
 
 fn viewer(ui: &mut Ui, app: &mut ForzaApp) {
     app.ensure_map_image();
-    let rect = ui.available_rect_before_wrap();
-    map_pane(ui, app, rect, MapPane::Viewer);
-}
-
-/// Which tab a [`map_pane`] belongs to: they draw the same scene with the same settings (D73) but
-/// keep their own view state and read a click differently ([`click_action`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum MapPane {
-    /// The Map tab's viewer: left-click = co-op waypoint, right-click = clear it; the destination
-    /// is set with Shift+click or the "Set destination" button.
-    Viewer,
-    /// The Navigation tab's map: every left click sets the destination.
-    Navigation,
-}
-
-fn state(app: &mut ForzaApp, which: MapPane) -> &mut MapTabState {
-    match which {
-        MapPane::Viewer => &mut app.map_tab,
-        MapPane::Navigation => &mut app.nav_ui.map,
+    // N shows / hides the sidebar: app-local (only while this tab is shown, never a global
+    // hotkey), and not while a text field has the keyboard.
+    if !ui.ctx().wants_keyboard_input() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N)) {
+        app.config.map_nav_open = !app.config.map_nav_open;
     }
-}
-
-fn state_ref(app: &ForzaApp, which: MapPane) -> &MapTabState {
-    match which {
-        MapPane::Viewer => &app.map_tab,
-        MapPane::Navigation => &app.nav_ui.map,
+    let full = ui.available_rect_before_wrap();
+    let (map, side) = if app.config.map_nav_open {
+        let (m, s) = crate::ui::nav_tab::split(full);
+        (m, Some(s))
+    } else {
+        (full, None)
+    };
+    // Each pane is a pane of its own, clipped (the Panes rule).
+    if let Some(side) = side {
+        ui.scope_builder(UiBuilder::new().max_rect(side), |ui| {
+            ui.shrink_clip_rect(side);
+            crate::ui::nav_tab::sidebar(ui, app, side);
+        });
     }
+    ui.scope_builder(UiBuilder::new().max_rect(map), |ui| {
+        ui.shrink_clip_rect(map);
+        map_pane(ui, app, map);
+    });
 }
 
-/// A click on a map pane.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Click {
-    Primary,
-    Secondary,
-}
-
-/// What a click on a map pane does.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ClickAction {
-    SetDestination,
-    SetWaypoint,
-    ClearWaypoint,
-    /// Leave the armed "Set destination" mode without doing anything else.
-    Disarm,
-    Nothing,
-}
-
-/// The one rule for clicks on the two maps, kept free of egui so it can be tested.
-///
-/// * Navigation tab: a left click sets the destination, nothing else (D84).
-/// * Viewer: a plain left click is the co-op waypoint and a right click clears it, as before the
-///   navigation existed; **Shift+left** or an **armed** "Set destination" button makes the left
-///   click set the destination instead; while armed a right click only disarms (it does not clear
-///   the waypoint). Waypoints exist only in a co-op session.
-///
-/// *Why not a right-click menu:* the right click already clears the waypoint, and a menu would
-/// change that; the toggle button is discoverable and works without co-op.
-pub(crate) fn click_action(pane: MapPane, click: Click, shift: bool, armed: bool, in_session: bool) -> ClickAction {
-    match (pane, click) {
-        (MapPane::Navigation, Click::Primary) => ClickAction::SetDestination,
-        (MapPane::Navigation, Click::Secondary) => ClickAction::Nothing,
-        (MapPane::Viewer, Click::Primary) if shift || armed => ClickAction::SetDestination,
-        (MapPane::Viewer, Click::Primary) if in_session => ClickAction::SetWaypoint,
-        (MapPane::Viewer, Click::Secondary) if armed => ClickAction::Disarm,
-        (MapPane::Viewer, Click::Secondary) if in_session => ClickAction::ClearWaypoint,
-        (MapPane::Viewer, _) => ClickAction::Nothing,
-    }
-}
-
-/// One map pane filling `rect`: pan / zoom input, the scene, clicks, and the buttons on top.
-/// Shared by the Map tab's viewer and the Navigation tab's map.
-pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPane) {
+/// The viewer's map filling `rect`: pan / zoom input, the scene, clicks, and the buttons on top.
+fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect) {
     // The viewer is the Dashboard map's twin (D73): same layers, same view options, same yaw
     // (incl. the right-stick look), same base zoom.
     let allow = app.config.minimap_allow_pan_zoom;
@@ -151,16 +105,12 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
     // the same frame.
     if allow {
         let v = ViewIn { layers: &app.config.minimap_layers, yaw, rect, car, base_zoom_m, speed, now: ui.input(|i| i.time) };
-        // (Not `state()`: `v` borrows the config, a disjoint field.)
-        let st = match which {
-            MapPane::Viewer => &mut app.map_tab,
-            MapPane::Navigation => &mut app.nav_ui.map,
-        };
-        st.manual.interact(ui, &resp, &v);
+        // (Not through a helper: `v` borrows the config, a disjoint field.)
+        app.map_tab.manual.interact(ui, &resp, &v);
     } else {
-        state(app, which).manual.reset_all();
+        app.map_tab.manual.reset_all();
     }
-    let manual = state_ref(app, which).manual;
+    let manual = app.map_tab.manual;
     let (centre, zoom_m) = manual.view(car, base_zoom_m);
     // The Shift+drag orbit (D106) on top of the base heading and tilt; the compass shows while it
     // is on, even if switched off in the settings: it is the way back.
@@ -176,110 +126,56 @@ pub(crate) fn map_pane(ui: &mut Ui, app: &mut ForzaApp, rect: Rect, which: MapPa
             zoom_m,
             mirror: cfg.minimap_mirror_edges,
             compass,
-            race_sel: &state_ref(app, which).race_sel,
+            race_sel: &app.map_tab.race_sel,
         };
         map_scene::draw(ui, app, rect, texture, &scene)
     });
     if allow && map_scene::compass_clicked(ui, rect) {
-        state(app, which).manual.reset_orbit();
+        app.map_tab.manual.reset_orbit();
     }
     if app.spectate.take_changed() {
         // A player-list click on this map: show the new target at once (the zoom stays).
-        state(app, which).manual.recentre();
+        app.map_tab.manual.recentre();
     }
 
-    // Clicks. Waypoints exist only in a co-op session.
-    let in_session = app.coop.role() != crate::coop::Role::Off;
-    let (shift, esc) = ui.input(|i| (i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
-    if esc {
-        state(app, which).dest_armed = false;
-    }
-    let armed = state_ref(app, which).dest_armed;
-    if (armed || which == MapPane::Navigation) && resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-    }
+    // Clicks: left = marker, middle = route there, right = the menu (the Dashboard map's scheme).
     if let Some(cam) = &cam {
-        let click = if resp.clicked() {
-            Some(Click::Primary)
-        } else if resp.secondary_clicked() {
-            Some(Click::Secondary)
-        } else {
-            None
-        };
-        if let Some(click) = click {
-            let at = || resp.interact_pointer_pos().and_then(|m| map_scene::pick(cam, m));
-            match click_action(which, click, shift, armed, in_session) {
-                ClickAction::SetDestination => {
-                    if let Some(w) = at() {
-                        crate::ui::nav_tab::set_destination(app, w);
-                        state(app, which).dest_armed = false;
-                    }
-                }
-                ClickAction::SetWaypoint => {
-                    if let Some([wx, wz]) = at() {
-                        app.coop.set_waypoint(Some((wx, wz)), app.config.coop_hue);
-                    }
-                }
-                ClickAction::ClearWaypoint => app.coop.set_waypoint(None, 0.0),
-                ClickAction::Disarm => state(app, which).dest_armed = false,
-                ClickAction::Nothing => {}
-            }
-        }
+        map_scene::map_clicks(ui, app, &resp, cam);
     }
 
     // Controls on top of the map (drawn after it, so they take the clicks).
-    let dest_now = crate::nav::view().dest;
-    let has_dest = dest_now.is_some();
-    let shared = dest_now.is_some_and(|d| matches!(d.source, crate::nav::DestSource::Shared { .. }));
-    if which == MapPane::Navigation && !has_dest {
-        crate::ui::nav_tab::hint_pill(ui, rect);
-    }
-    let dest_btn = (which == MapPane::Viewer).then(|| DestButton { armed: state_ref(app, which).dest_armed, has_dest, shared });
-    let is_manual = state_ref(app, which).manual.is_manual();
-    let out = controls(ui, rect, is_manual, follow.name.as_deref(), zoom_m, compass, dest_btn);
+    let out = controls(ui, rect, app.map_tab.manual.is_manual(), follow.name.as_deref(), zoom_m, compass, app.config.map_nav_open);
     if out.follow {
         // Panned (or only zoomed): back to the car and the configured zoom, at once.
-        state(app, which).manual.reset();
+        app.map_tab.manual.reset();
     }
     if out.settings {
         app.config.map_tab_settings = true;
         app.config.map_tab_page = MapPage::DashboardMap;
         app.current_tab = crate::app::Tab::Map;
     }
-    if out.arm {
-        let st = state(app, which);
-        st.dest_armed = !st.dest_armed;
-    }
-    if out.clear {
-        crate::ui::nav_tab::clear_destination(app);
+    if out.nav {
+        app.config.map_nav_open = !app.config.map_nav_open;
     }
 }
 
-/// The viewer's "Set destination" toggle and, while a route exists, "Clear route".
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DestButton {
-    pub armed: bool,
-    pub has_dest: bool,
-    /// The destination is the co-op room's: Clear clears it for everyone (as on the Navigation tab).
-    pub shared: bool,
-}
-
-/// What the buttons over a map pane asked for this frame.
+/// What the buttons over the viewer asked for this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ControlsOut {
     pub follow: bool,
     pub settings: bool,
-    pub arm: bool,
-    pub clear: bool,
+    pub nav: bool,
 }
 
-/// The pane's buttons and zoom readout over the map: "Follow car" top left (only while the view
+/// The viewer's buttons and zoom readout over the map: "Follow car" top left (only while the view
 /// is manual, like the Dashboard map's; right of the compass when that is on), the radius bottom
-/// left, bottom right "Settings" and, in the viewer, "Set destination" (a toggle) with "Clear
-/// route" beside it while a route exists. *Why bottom right:* the top right belongs to the co-op
-/// player list (D73). *Why only while manual:* a "Follow car" that is already following does
-/// nothing and only covers the map (user, D79).
-fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zoom_m: f32, compass: bool, dest: Option<DestButton>) -> ControlsOut {
+/// left, bottom right "Settings" and, left of it, the navigation sidebar's location-arrow button
+/// (lit while the sidebar is open; more small buttons go further left). *Why bottom right:* the
+/// top right belongs to the co-op player list (D73). *Why only while manual:* a "Follow car" that
+/// is already following does nothing and only covers the map (user, D79). *Why no Clear route
+/// button here any more:* middle click replaced "Set destination", and Clear route is in the
+/// sidebar and the right-click menu (D108).
+fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zoom_m: f32, compass: bool, nav_open: bool) -> ControlsOut {
     const M: f32 = 10.0;
     let mut out = ControlsOut::default();
     if manual {
@@ -297,20 +193,12 @@ fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zo
             .add(theme::secondary_button(format!("{}  {}", icons::COG, tr("Settings"))))
             .on_hover_text(tr("The map's settings (the Dashboard map & Viewer page of the Map tab)."))
             .clicked();
-        if let Some(d) = dest {
-            let label = format!("{}  {}", icons::NAVIGATION, tr("Set destination"));
-            let button = if d.armed { theme::primary_button(label) } else { theme::secondary_button(label) };
-            out.arm = ui
-                .add(button)
-                .on_hover_text(tr("Click, then click the map to navigate there. Shift+click does the same without this button; right-click or Esc cancels."))
-                .clicked();
-            if d.has_dest {
-                let label = if d.shared { tr("Clear for everyone") } else { tr("Clear route") };
-                let b = ui.add(theme::secondary_button(format!("{}  {}", icons::TIMES, label)));
-                let tip = if d.shared { tr("Clears the destination for the whole co-op room.") } else { tr("Clears the destination and its route.") };
-                out.clear = b.on_hover_text(tip).clicked();
-            }
-        }
+        let label = icons::NAVIGATION.to_string();
+        let button = if nav_open { theme::primary_button(label) } else { theme::secondary_button(label) };
+        out.nav = ui
+            .add(button.min_size(vec2(34.0, 0.0)))
+            .on_hover_text(tr("Navigation: the route, road types and the map controls (N)."))
+            .clicked();
     });
     let text = format!("{:.0} m", zoom_m);
     let font = egui::FontId::proportional(11.0);
@@ -666,44 +554,38 @@ mod tests {
 
     /// The pane's buttons and readout stay inside the tab at the window minimum and wider, in
     /// both languages, and never overlap each other, the compass (top left) or the co-op player
-    /// list (top right). The Settings button sits bottom right (D73); in the viewer "Set
-    /// destination" (and "Clear route" while a route exists) sit to its left.
+    /// list (top right). The Settings button sits bottom right (D73) with the navigation
+    /// sidebar's button to its left (D108), clear of the radius readout.
     #[test]
     fn viewer_controls_stay_inside_the_tab() {
         use crate::i18n::{with_language, Language};
-        // (what the viewer adds, text shapes it adds)
-        let dests = [
-            (None, 0),
-            (Some(DestButton { armed: false, has_dest: false, shared: false }), 1),
-            (Some(DestButton { armed: true, has_dest: true, shared: true }), 2),
-        ];
         for lang in [Language::English, Language::German] {
             with_language(lang, || {
                 for w in [600.0, 700.0, 1000.0, 1235.0] {
                     for compass in [false, true] {
-                        for (dest, extra) in dests {
+                        for nav_open in [false, true] {
                             let h = 500.0;
                             // Following the car: no Follow car button. Panned or zoomed: it shows.
                             let out = render("map_viewer", w, h, |ui, _| {
                                 let rect = ui.available_rect_before_wrap();
-                                controls(ui, rect, false, None, 1500.0, compass, dest);
+                                controls(ui, rect, false, None, 1500.0, compass, nav_open);
                             });
                             check_panes(&out, w, "viewer controls, following");
                             let n = out.shapes.iter().filter(|c| matches!(&c.shape, egui::Shape::Text(_))).count();
-                            assert_eq!(n, 2 + extra, "{lang:?} at {w} px: while following only the buttons and the radius show");
+                            assert_eq!(n, 3, "{lang:?} at {w} px: while following only the two buttons and the radius show");
                             let out = render("map_viewer", w, h, |ui, _| {
                                 let rect = ui.available_rect_before_wrap();
-                                controls(ui, rect, true, None, 1500.0, compass, dest);
+                                controls(ui, rect, true, None, 1500.0, compass, nav_open);
                             });
                             check_panes(&out, w, "viewer controls");
-                            // Text shapes in paint order: Follow car, Settings, [Set destination, [Clear route]], the radius.
+                            // Text shapes in paint order: Follow car, Settings, the navigation button, the radius.
                             let labels: Vec<Rect> = out
                                 .shapes
                                 .iter()
                                 .filter_map(|c| if let egui::Shape::Text(t) = &c.shape { Some(t.visual_bounding_rect()) } else { None })
                                 .collect();
-                            assert_eq!(labels.len(), 3 + extra, "{lang:?} at {w} px: follow, settings, destination buttons, radius");
-                            let (follow, settings, radius) = (labels[0], labels[1], *labels.last().unwrap());
+                            assert_eq!(labels.len(), 4, "{lang:?} at {w} px: follow, settings, navigation, radius");
+                            let (follow, settings, nav, radius) = (labels[0], labels[1], labels[2], labels[3]);
                             for (i, a) in labels.iter().enumerate() {
                                 for b in &labels[i + 1..] {
                                     assert!(!a.intersects(*b), "{lang:?} at {w} px: labels touch: {a:?} / {b:?}");
@@ -713,11 +595,9 @@ mod tests {
                             assert!(follow.center().x < w * 0.5 && follow.center().y < h * 0.25, "{lang:?} {w}: follow top left {follow:?}");
                             assert!(settings.center().x > w * 0.5 && settings.center().y > h * 0.75, "{lang:?} {w}: settings bottom right {settings:?}");
                             assert!(radius.center().x < w * 0.5 && radius.center().y > h * 0.75, "{lang:?} {w}: radius bottom left {radius:?}");
-                            // The destination buttons sit left of Settings, on the same row, clear of the radius.
-                            for b in &labels[2..labels.len() - 1] {
-                                assert!(b.right() < settings.left() && b.center().y > h * 0.75, "{lang:?} {w}: destination button beside Settings {b:?}");
-                                assert!(b.left() > radius.right() + 8.0, "{lang:?} {w}: destination button over the radius readout {b:?}");
-                            }
+                            // The navigation button sits left of Settings, on the same row, clear of the radius.
+                            assert!(nav.right() < settings.left() && nav.center().y > h * 0.75, "{lang:?} {w}: navigation button beside Settings {nav:?}");
+                            assert!(nav.left() > radius.right() + 8.0, "{lang:?} {w}: navigation button over the radius readout {nav:?}");
                             // The co-op list: top right, up to ~320 px wide and 9 rows (17 px each) tall.
                             let list = Rect::from_min_size(pos2(w - 320.0 - 6.0, 6.0), vec2(320.0, 10.0 + 17.0 * 9.0));
                             assert!(!list.intersects(settings), "{lang:?} at {w} px: settings under the co-op list");
@@ -732,39 +612,6 @@ mod tests {
                 }
             });
         }
-    }
-
-    /// The click rule of the two maps (D84): the Navigation tab's left click always sets the
-    /// destination; the viewer keeps left = waypoint and right = clear waypoint and adds Shift+click
-    /// and the armed button for the destination; armed, a right click only disarms.
-    #[test]
-    fn clicks_on_the_maps_do_what_each_map_promises() {
-        use Click::{Primary, Secondary};
-        use ClickAction::*;
-        for shift in [false, true] {
-            for armed in [false, true] {
-                for session in [false, true] {
-                    assert_eq!(click_action(MapPane::Navigation, Primary, shift, armed, session), SetDestination, "nav tab, any left click");
-                    assert_eq!(click_action(MapPane::Navigation, Secondary, shift, armed, session), Nothing, "nav tab: the right click does nothing");
-                }
-            }
-        }
-        let v = |c, shift, armed, session| click_action(MapPane::Viewer, c, shift, armed, session);
-        // Plain clicks: the waypoint, only in a session.
-        assert_eq!(v(Primary, false, false, true), SetWaypoint);
-        assert_eq!(v(Primary, false, false, false), Nothing);
-        assert_eq!(v(Secondary, false, false, true), ClearWaypoint);
-        assert_eq!(v(Secondary, false, false, false), Nothing);
-        // Shift+click or the armed button: the destination, with or without a session.
-        for session in [false, true] {
-            assert_eq!(v(Primary, true, false, session), SetDestination);
-            assert_eq!(v(Primary, false, true, session), SetDestination);
-            assert_eq!(v(Primary, true, true, session), SetDestination);
-            // Armed: the right click cancels and leaves the waypoint alone.
-            assert_eq!(v(Secondary, false, true, session), Disarm);
-        }
-        // Shift + right click is still the waypoint clear.
-        assert_eq!(v(Secondary, true, false, true), ClearWaypoint);
     }
 
     /// Both maps' pages (the shared `layers_ui`), plus the HUD page following the Dashboard and
@@ -951,12 +798,28 @@ mod tests {
         let mut c = AppConfig::default();
         c.map_tab_settings = true;
         c.map_tab_page = MapPage::MapData;
+        c.map_nav_open = true;
         let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert!(back.map_tab_settings);
         assert_eq!(back.map_tab_page, MapPage::MapData);
+        assert!(back.map_nav_open);
         let all = vec![true; crate::config::KEY_GROUPS.len()];
         let json = crate::config::export_selected(&c, &all);
-        assert!(!json.contains("map_tab_settings") && !json.contains("map_tab_page"));
+        assert!(!json.contains("map_tab_settings") && !json.contains("map_tab_page") && !json.contains("map_nav_open"));
+    }
+
+    /// The Navigation tab is gone (D108): a config from before it (no `map_nav_open`) loads with
+    /// the sidebar closed, and one that still names the old tab (the app never saved the current
+    /// tab, but a hand-edited or future key must not matter) loads without being unreadable.
+    #[test]
+    fn an_old_config_loads_with_the_navigation_sidebar_closed() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("map_nav_open");
+        v["current_tab"] = "Navigation".into();
+        let c: AppConfig = serde_json::from_value(v).expect("an unknown key is ignored, a missing one defaulted");
+        assert!(!c.map_nav_open);
+        assert!(!serde_json::to_string(&c).unwrap().contains("current_tab"));
+        assert!(!AppConfig::default().map_nav_open, "closed by default");
     }
 
     /// The viewer has no settings of its own (D73): a new config has no `viewer_*` keys, and

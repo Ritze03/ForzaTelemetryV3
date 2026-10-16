@@ -19,8 +19,8 @@ and the new Map tab). It should just reset, once the player starts driving again
 The map fills the tab, drawn by the **same scene code as the Dashboard's Map widget**
 (`map_scene::draw`, extracted from `dashboard::show_minimap_widget`; the shared renderer
 `maprender::draw_base` + `draw_layers`, D61): satellite image, roads, POIs, race lines, trails, co-op
-teammates, the own arrow, shared waypoints (click drops one, right-click clears, as on the
-Dashboard map), the navigation route and destination pin, compass, the co-op player list. It uses the Dashboard's already loaded map
+teammates, the own arrow, shared waypoints (left click drops one; the Viewer and the Dashboard map share one mouse scheme, D108,
+below), the navigation route and destination pin, compass, the co-op player list. It uses the Dashboard's already loaded map
 texture (`app.minimap_texture`) and POI icons (`app.minimap_icons`): no second copy.
 `ForzaApp::ensure_map_image` starts the load when the Dashboard map module is off (the startup
 load skips it), and reloads when the season changed under such a texture. Without an install the
@@ -47,7 +47,7 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   at the moment". Before, it was always there (lit while following) and, with nothing manual,
   pressing it froze the view; that freeze (`ManualView::pin_centre`) is gone with the button.
 - **Spectate a teammate** (D105): in a co-op session, a click on a row of the co-op player list
-  (top right of `map_scene::draw`) makes every **GUI** map (Dashboard map, Viewer, Navigation tab's
+  (top right of `map_scene::draw`) makes every **GUI** map (Dashboard map, Viewer,
   map; **not** the HUD Minimap) follow that teammate's car exactly as it follows the own one: view
   centre, heading (heading-up / tilted / 3D camera), zoom (driven by *their* speed: the
   stopped / driving zoom and ease-to-north), the 3D camera height, near-only POIs, and the manual
@@ -86,17 +86,22 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   should be able to click on the players in the top right on the co-op screen and then basically
   inspect them or like uh spectate them so I can like it automatically follows their car the same
   way it would follow my car".
-- **Set destination** (bottom right, left of Settings; phase L): a toggle button. Armed (accent
-  fill, crosshair cursor) the next left click sets the navigation destination and disarms; a right
-  click or Esc disarms. **Shift+left-click** sets it without arming. A plain left click stays the
-  co-op waypoint and a right click still clears it. **Clear route** appears beside it while a
-  destination exists. The rule is one pure function, `map_tab::click_action(pane, click, shift,
-  armed, in_session)`, tested by `clicks_on_the_maps_do_what_each_map_promises`. *Why a toggle and not
-  a right-click menu:* the right click already clears the waypoint and a menu would change that;
-  the button is discoverable and works without co-op (waypoints need a session). The Navigation
-  tab's map is the same code (`map_tab::map_pane`, `MapPane::Navigation`, its own view state
-  `NavState.map`) where every left click sets the destination; see `docs/features/navigation.md`.
-  The small Dashboard map widget has no click handling for it (D84).
+- **Navigation sidebar button** (bottom right, left of Settings; D108, it replaced the *Set destination*
+  toggle of phase L): a small location-arrow button (lit while open) that opens the **navigation
+  sidebar** beside the map, right side; **N** does the same while the Viewer is shown. The sidebar
+  holds the old Navigation tab's cards and a controls hint at its bottom; layout, the *why* and the
+  persisted `map_nav_open` are in `docs/features/navigation.md` section 4. There is no *Clear route*
+  button on the map any more (the sidebar and the right-click menu have it). Leave room left of it for
+  further small buttons.
+- **Mouse scheme (D108; Viewer and Dashboard map; one pure rule, `map_scene::click_action`, applied by
+  `map_scene::map_clicks`):** **left click** = the co-op marker (waypoint, session only, as before);
+  **middle click** = route to the point (the navigation destination); **right click** = a context menu
+  at the pointer: *Set marker here*, *Navigate here*, *Clear marker*, *Clear route* (each only when it
+  applies). The picked world point is the one under the pointer at the moment of the right click
+  (`pick`: flat, tilted, 3D, orbit). **Shift+click is no longer the destination** (it is a plain left
+  click), right click no longer clears the marker directly (menu entry), and no mouse input while the
+  Dashboard is in layout-edit mode. Details and the *why* (the user's words) in
+  `docs/features/navigation.md` section 4. The HUD Minimap has no mouse.
 - **Settings** (**bottom right**, cog) switches the tab to the settings mode. The zoom radius is shown
   bottom left. *Why bottom right (the user, 2026-10-09):* "the settings are in the top right, but
   that's also where the co-op thingy draws ... just move the settings button to the bottom right."
@@ -136,7 +141,7 @@ player drives off again. Shared by the Dashboard map and the viewer: one state t
   Dashboard's value is what the user tuned for the map; the temporary manual zoom resets to it.
 - **Option, default on:** `minimap_allow_pan_zoom` (Map tab, Dashboard map & Viewer page; one
   switch for both). Off = no pan / zoom sensing, the
-  old click-only behaviour (the Dashboard map keeps its waypoint click).
+  old click-only behaviour (clicks, the middle click and the right-click menu stay on both maps).
 - **In 3D** (View mode 3D, phase K, K4) pan and wheel zoom anchor on the **terrain surface under the
   pointer**, not the car-height plane. `map_scene::draw` leaves the drawn 3D look in the egui context,
   keyed by the map's `Ui`, and `ManualView::interact` solves for the view centre that keeps the
@@ -157,7 +162,7 @@ player drives off again. Shared by the Dashboard map and the viewer: one state t
 
 ### Shift+drag: rotate and tilt the camera (D106)
 
-On the three GUI maps (Dashboard map, Map-tab Viewer, Navigation tab's map; **not** the HUD
+On the two GUI maps (Dashboard map, Map-tab Viewer; **not** the HUD
 Minimap) **Shift + drag** (primary button) orbits the camera around the view centre. Plain drag
 still pans, the wheel still zooms; both work with an orbit on. The user (D106): *"There should be
 panning in the map in the GUI so I should be able to hold like shift and then move my mouse to like
@@ -178,23 +183,23 @@ the camera).
   has no tilt; tilting it "temporarily" would silently switch the map to another view mode and
   make the drag mean two different things. Switch the View mode to Tilted / 3D to tilt.
 - **Session state, per map** (`ManualView::orbit`, next to pan and zoom: the Dashboard map,
-  the Viewer and the Navigation tab's map each have their own; not saved). It is an offset applied
+  the Viewer each have their own; not saved). It is an offset applied
   to the camera for the frame (`ManualView::orbited` gives the effective heading and a layers
   config whose `tilt.angle_deg` carries the override; the saved `minimap_layers.tilt` is never
   written). Default = no rotation, configured tilt: the HUD Minimap never sees it and renders
   unchanged. Everything that needs the camera takes the orbited one: the scene, markers, compass,
-  pan / zoom anchoring and the picking (`pick`: destination, waypoint), so a click lands under
+  pan / zoom anchoring and the picking (`pick`: destination, marker, menu), so a click lands under
   the pointer with the orbit on (test `picking_round_trips_with_an_orbit`).
 - **Click vs. drag:** egui's drag threshold. A **Shift+click** without movement stays a click
-  (Viewer: set destination); a Shift+drag is never a click and never pans (test
+  (a plain left click: the marker); a Shift+drag is never a click and never pans (test
   `shift_drag_orbits_plain_drag_pans_and_a_click_is_a_click`). The Shift state is read each frame,
   so releasing Shift mid-drag continues as a pan.
 - **Reset: click the compass** (`map_scene::compass_clicked`; its tooltip says *Shift+drag to
   rotate and tilt the map. Click to reset.*). **The compass is drawn while an orbit is on even if
   switched off in the settings** (it is also the indicator that the map is turned, and the reset
   handle), and the Follow button moves aside for it as for the normal compass. *Why not a
-  double-click:* Shift+click sets the destination in the Viewer, so Shift+double-click would set
-  it twice. **Follow car does not reset the orbit** and neither does the drive-off snap-back
+  double-click:* a Shift+click is a left click (a marker), so Shift+double-click would drop it
+  twice. **Follow car does not reset the orbit** and neither does the drive-off snap-back
   (`ManualView::reset` keeps it; `reset_all`, used when "Allow pan and zoom" is off, drops it):
   those are about *where* the view is, and a rotation the user chose should survive them. The
   Follow button is not shown for an orbit alone (`is_manual` ignores it). The tooltip of the
@@ -299,7 +304,7 @@ saved road types were ignored").
 - **Navigation route** (phase L, below Roads): **On**, **Colour** (default fuchsia `#d946ef`),
   **Width** (factor, 0.5-3, 1 = a little wider than a highway), per map (`MapLayerConfig::nav_route`,
   `LayerCategory::NavRoute`) with its own Copy to…. Only how the route is drawn; the route itself is
-  set and routed from the Navigation tab. Hidden in races regardless.
+  set (middle click / menu) and routed from the navigation sidebar. Hidden in races regardless.
 - **Image:** satellite on/off, opacity, brightness, saturation (approximate, a grey veil); HUD
   only: **Map plate opacity** (`overlay.map_plate_opacity`, the minimap's own plate, not the
   General tab's *Plate opacity*); the same field is also on the Overlay tab -> Minimap page
@@ -457,7 +462,7 @@ a process-wide static: such tests go through `i18n::with_language`, which serial
 Minimap and Dashboard map & Viewer pages (seven cards each, eight on the Dashboard page with its
 Co-Op card; following the Dashboard, module off, every layer status), the Race lines card with
 either style and *Race road only*, the controls that came from Mini-Settings (D79) incl. the Map
-image card, the viewer's buttons (inside the tab, bottom right / left incl. Set destination / Clear route, Follow car only while
+image card, the viewer's buttons (inside the tab, bottom right / left incl. the navigation sidebar button, Follow car only while
 manual, never overlapping the compass or the co-op list), the module selector at the window minimum (three pages), the remembered
 state (saved, not exported), old configs with `viewer_*` keys / `map_tab_page: "viewer"`, the road
 width range; the Map data

@@ -1,35 +1,33 @@
-//! The Navigation tab (phase L, D83-D85): road-type filters, the faster-roads <-> more-curves
-//! slider, the route's status / distance / ETA, the co-op switches, and a map where every left
-//! click sets the destination. See `docs/features/navigation.md` section 4.
+//! The navigation sidebar of the Map tab's viewer (D108; it was the Navigation tab, phase L,
+//! D83-D85): road-type filters, the faster-roads <-> more-curves slider, the route's status /
+//! distance / ETA and the co-op switches, with the controls as a hint at its bottom. See
+//! `docs/features/navigation.md` section 4. (The file keeps its name from the tab it used to be.)
 //!
 //! Three jobs live here, kept apart so each can be tested without the app:
 //!
-//! * the **tab** ([`show`] / [`left_cards`]): a fixed-width left pane of cards and the map pane
-//!   (`map_tab::map_pane`, the Map tab viewer's code with the Dashboard map's settings, D73);
+//! * the **sidebar** ([`sidebar`] / [`left_cards`]): a fixed-width pane of cards at the right of
+//!   the viewer, which `map_tab::viewer` shrinks the map for;
 //! * the **bridge** between `AppConfig.nav` and the navigator ([`sync`], [`set_destination`],
-//!   [`clear_destination`]): the config is what is saved, the navigator (`nav::`) is what routes;
+//!   [`clear_destination`], [`drain_requests`]): the config is what is saved, the navigator
+//!   (`nav::`) is what routes;
 //! * the **co-op sharing** rule ([`room_op`]): when a destination set or cleared here also goes to
 //!   the room, and when the room's own is cleared.
 
-use egui::{pos2, vec2, Color32, FontId, Rect, Ui, UiBuilder};
+use egui::{pos2, vec2, Color32, Rect, Ui, UiBuilder};
 
 use crate::app::ForzaApp;
 use crate::i18n::tr;
 use crate::nav::{self, DestSource, NavConfig, NavStatus, NavView, RoutePrefs};
 use crate::theme;
 use crate::ui::coop::hue_color;
-use crate::ui::map_tab::{self, MapPane, MapTabState};
 use crate::ui::overlay_tab::{control_row, status_line};
 
 // ── state and the config <-> navigator bridge ─────────────────────────────────────────────────
 
-/// Navigation state that is not saved: the tab's own map view, and what the app last told the
-/// navigator.
+/// Navigation state that is not saved: what the app last told the navigator, and the co-op
+/// bookkeeping.
 #[derive(Default)]
 pub struct NavState {
-    /// The Navigation tab's map: its own pan / zoom and race-line selection (the Map tab's viewer
-    /// has another), with the Dashboard map's settings.
-    pub map: MapTabState,
     /// The last `NavView::local_cleared_seq` the config has taken over (0 = nothing arrived yet;
     /// the counter starts at 0 in this process, so a destination loaded from the config at start
     /// is never mistaken for an arrived one).
@@ -214,7 +212,20 @@ fn push_inputs(app: &mut ForzaApp) {
     }
 }
 
-/// A click on a map: this is the destination now. Saved, handed to the navigator at once, and
+/// Apply what the maps queued this frame (`ForzaApp::nav_requests`: the Dashboard map draws from
+/// `&ForzaApp` and cannot call [`set_destination`] itself).
+pub fn drain_requests(app: &mut ForzaApp) {
+    use crate::ui::map_scene::NavRequest;
+    let reqs = std::mem::take(&mut *app.nav_requests.borrow_mut());
+    for r in reqs {
+        match r {
+            NavRequest::Set(p) => set_destination(app, p),
+            NavRequest::Clear => clear_destination(app),
+        }
+    }
+}
+
+/// A middle click or "Navigate here" on a map: this is the destination now. Saved, handed to the navigator at once, and
 /// shared with the room when that is on.
 pub(crate) fn set_destination(app: &mut ForzaApp, pos: [f32; 2]) {
     app.config.nav.destination = Some(pos);
@@ -342,26 +353,38 @@ fn room_info(app: &ForzaApp) -> Option<RoomInfo> {
     Some(RoomInfo { name, hue: d.hue, mine })
 }
 
-// ── the tab ───────────────────────────────────────────────────────────────────────────────────
+// ── the sidebar ───────────────────────────────────────────────────────────────────────────────
 
-/// Width of the left pane at most (D83 layout), and its share of the tab on a narrow window.
-const LEFT_MAX_W: f32 = 360.0;
-const LEFT_SHARE: f32 = 0.4;
+/// Width of the sidebar at most, and its share of the viewer on a narrow window.
+const SIDE_MAX_W: f32 = 340.0;
+const SIDE_SHARE: f32 = 0.4;
 const GAP: f32 = 8.0;
 
-/// The two panes of the tab: the cards on the left, the map filling the rest.
+/// The two panes of the viewer with the sidebar open: the map filling the left, the sidebar on
+/// the right. *Why the right and beside the map, not over it:* the top left holds the compass and
+/// Follow car, the top right the co-op player list and the bottom right the buttons, all inside
+/// the map; beside it nothing of the map is covered and the buttons stay clear of the cards.
 pub(crate) fn split(full: Rect) -> (Rect, Rect) {
-    let w = (full.width() * LEFT_SHARE).min(LEFT_MAX_W);
-    let left = Rect::from_min_size(full.min, vec2(w, full.height()));
-    let right = Rect::from_min_max(pos2(full.left() + w + GAP, full.top()), full.max);
-    (left, right)
+    let w = (full.width() * SIDE_SHARE).min(SIDE_MAX_W);
+    let map = Rect::from_min_max(full.min, pos2(full.right() - w - GAP, full.bottom()));
+    let side = Rect::from_min_size(pos2(full.right() - w, full.top()), vec2(w, full.height()));
+    (map, side)
 }
 
-pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    app.ensure_map_image();
-    let full = ui.available_rect_before_wrap();
-    let (left, right) = split(full);
+/// The controls, one line each (shown at the bottom of the sidebar). The same mapping as
+/// `map_scene::click_action`.
+pub(crate) fn hint_lines() -> [&'static str; 5] {
+    [
+        tr("Left click: place a marker (co-op)"),
+        tr("Middle click: route to this point"),
+        tr("Right click: menu"),
+        tr("Shift+drag: rotate and tilt"),
+        tr("N: show or hide this panel"),
+    ]
+}
 
+/// The sidebar in `rect`: the cards (scrolling) over the controls hint, which stays at the bottom.
+pub fn sidebar(ui: &mut Ui, app: &mut ForzaApp, rect: Rect) {
     let view = nav::view();
     let pane = PaneIn {
         pending: app.config.nav.destination.is_some() && view.dest.is_none(),
@@ -370,14 +393,19 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         room: room_info(app),
         use_mph: app.config.use_mph,
     };
+    let (cards, hint) = split_hint(ui, rect);
     let mut cfg = app.config.nav.clone();
     let out = ui
-        .scope_builder(UiBuilder::new().max_rect(left), |ui| {
-            ui.shrink_clip_rect(left);
+        .scope_builder(UiBuilder::new().max_rect(cards), |ui| {
+            ui.shrink_clip_rect(cards);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| left_cards(ui, &mut cfg, &pane)).inner
         })
         .inner;
     app.config.nav = cfg;
+    ui.scope_builder(UiBuilder::new().max_rect(hint), |ui| {
+        ui.shrink_clip_rect(hint);
+        hint_text(ui, hint);
+    });
 
     if out.prefs_changed {
         app.nav_ui.resend = true;
@@ -389,15 +417,30 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
         clear_destination(app);
     }
     push_inputs(app);
-
-    // The map pane: a pane of its own, clipped (the Panes rule).
-    ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
-        ui.shrink_clip_rect(right);
-        map_tab::map_pane(ui, app, right, MapPane::Navigation);
-    });
 }
 
-/// What the left pane draws from.
+const HINT_FONT: f32 = 11.0;
+const HINT_PAD: f32 = 8.0;
+
+fn hint_galley(ui: &Ui, width: f32) -> std::sync::Arc<egui::Galley> {
+    let text = hint_lines().join("\n");
+    ui.painter().layout(text, egui::FontId::proportional(HINT_FONT), theme::TEXT_DIM, (width - 2.0 * HINT_PAD).max(40.0))
+}
+
+/// `rect` cut into the cards' area and the hint's strip at its bottom.
+fn split_hint(ui: &Ui, rect: Rect) -> (Rect, Rect) {
+    let h = (hint_galley(ui, rect.width()).size().y + 2.0 * HINT_PAD).min(rect.height() * 0.5);
+    let cards = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - h));
+    (cards, Rect::from_min_max(pos2(rect.left(), rect.bottom() - h), rect.max))
+}
+
+fn hint_text(ui: &Ui, strip: Rect) {
+    let g = hint_galley(ui, strip.width());
+    ui.painter().hline(strip.x_range(), strip.top() + 0.5, egui::Stroke::new(1.0, theme::BORDER));
+    ui.painter().galley(pos2(strip.left() + HINT_PAD, strip.top() + HINT_PAD), g, theme::TEXT_DIM);
+}
+
+/// What the cards draw from.
 pub(crate) struct PaneIn<'a> {
     pub view: &'a NavView,
     /// This player's own destination is saved but the navigator has not published it yet.
@@ -407,7 +450,7 @@ pub(crate) struct PaneIn<'a> {
     pub use_mph: bool,
 }
 
-/// What the left pane's controls asked for.
+/// What the cards' controls asked for.
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct PaneOut {
     pub clear: bool,
@@ -440,7 +483,7 @@ impl PaneIn<'_> {
     }
 }
 
-/// The four cards of the left pane. `nav` is edited in place.
+/// The four cards of the sidebar. `nav` is edited in place.
 pub(crate) fn left_cards(ui: &mut Ui, nav: &mut NavConfig, p: &PaneIn) -> PaneOut {
     ui.spacing_mut().item_spacing.y = 0.0; // card() owns the 8px inter-card gap
     let mut out = PaneOut::default();
@@ -455,7 +498,7 @@ pub(crate) fn left_cards(ui: &mut Ui, nav: &mut NavConfig, p: &PaneIn) -> PaneOu
 fn status_text(s: NavStatus) -> (Color32, &'static str) {
     use crate::nav::Endpoint;
     match s {
-        NavStatus::Idle => (theme::FAINT, tr("Click the map to set a destination")),
+        NavStatus::Idle => (theme::FAINT, tr("Middle-click the map to set a destination")),
         NavStatus::WaitingForCar => (theme::WARN, tr("Waiting for the car's position")),
         NavStatus::Routing => (theme::WARN, tr("Calculating…")),
         NavStatus::Ok => (theme::GOOD, tr("On route")),
@@ -594,18 +637,6 @@ fn coop_card(ui: &mut Ui, nav: &mut NavConfig, p: &PaneIn, out: &mut PaneOut) {
             }
         });
     });
-}
-
-/// A faint hint at the bottom of the Navigation tab's map while there is no destination. Left
-/// out on a narrow map, where it would run into the buttons.
-pub(crate) fn hint_pill(ui: &Ui, rect: Rect) {
-    if rect.width() < 520.0 {
-        return;
-    }
-    let g = ui.painter().layout_no_wrap(tr("Click the map to set a destination").to_string(), FontId::proportional(12.0), theme::TEXT_DIM);
-    let at = pos2(rect.center().x - g.size().x / 2.0, rect.bottom() - 10.0 - g.size().y - 5.0);
-    ui.painter().rect_filled(Rect::from_min_size(at, g.size()).expand2(vec2(10.0, 5.0)), 10.0, Color32::from_black_alpha(150));
-    ui.painter().galley(at, g, theme::TEXT_DIM);
 }
 
 #[cfg(test)]
@@ -820,12 +851,39 @@ mod tests {
     fn the_two_panes_split_without_overlap() {
         for w in [600.0, 700.0, 1000.0, 1235.0, 1920.0] {
             let full = Rect::from_min_size(pos2(8.0, 8.0), vec2(w, 600.0));
-            let (l, r) = split(full);
-            assert!(l.width() <= LEFT_MAX_W && l.width() <= w * LEFT_SHARE + 0.01);
-            assert_eq!(l.left(), full.left());
-            assert_eq!(r.right(), full.right());
-            assert!((r.left() - l.right() - GAP).abs() < 0.01, "an 8px gap at {w}");
-            assert!(!l.intersects(r));
+            let (map, side) = split(full);
+            assert!(side.width() <= SIDE_MAX_W && side.width() <= w * SIDE_SHARE + 0.01);
+            assert_eq!(map.left(), full.left());
+            assert_eq!(side.right(), full.right());
+            assert!((side.left() - map.right() - GAP).abs() < 0.01, "an 8px gap at {w}");
+            assert!(!map.intersects(side));
+            assert!(map.width() > w * 0.5, "the map keeps most of the viewer at {w}");
+        }
+    }
+
+    /// The hint at the bottom lists the five controls, in both languages (each line translated),
+    /// and fits the sidebar at its narrowest and widest without eating the cards' area.
+    #[test]
+    fn the_hint_names_every_control_and_fits_the_sidebar() {
+        let en = hint_lines();
+        assert_eq!(en.len(), 5);
+        let de = with_language(Language::German, hint_lines);
+        for (e, d) in en.iter().zip(de.iter()) {
+            assert_ne!(e, d, "'{e}' has a German text");
+        }
+        for lang in [Language::English, Language::German] {
+            with_language(lang, || {
+                let ctx = crate::ui::test_render::context();
+                for w in [240.0, 340.0] {
+                    let _ = crate::ui::test_render::run(&ctx, w, 700.0, |ui| {
+                        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(w, 700.0));
+                        let (cards, hint) = split_hint(ui, rect);
+                        assert!(hint.height() >= 5.0 * HINT_FONT && hint.height() <= rect.height() * 0.5, "{lang:?} {w}: hint {hint:?}");
+                        assert_eq!(cards.bottom(), hint.top());
+                        assert_eq!(hint.bottom(), rect.bottom());
+                    });
+                }
+            });
         }
     }
 
@@ -865,14 +923,14 @@ mod tests {
         v
     }
 
-    /// The four cards stay inside the left pane at its narrowest and widest, in both languages,
+    /// The four cards stay inside the sidebar at its narrowest and widest, in both languages,
     /// in every status and with a shared destination (read-only filters, long names).
     #[test]
     fn the_left_pane_stays_inside_its_panes() {
         for lang in [Language::English, Language::German] {
             with_language(lang, || {
-                // The pane is 40% of the tab up to 360 px: ~240 px at the window minimum.
-                for pane_w in [240.0, 280.0, 360.0] {
+                // The sidebar is 40% of the viewer up to 340 px: ~240 px at the window minimum.
+                for pane_w in [240.0, 280.0, 340.0] {
                     let w = pane_w + 16.0; // + the test panel's margins
                     for in_session in [false, true] {
                         for (name, view, _, room) in states() {

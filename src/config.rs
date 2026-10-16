@@ -1105,7 +1105,11 @@ pub struct AppConfig {
     /// Selected page of the Map tab's settings (UI memory, [`EXPORT_EXCLUDE`]).
     #[serde(default)]
     pub map_tab_page: MapPage,
-    /// Navigation (phase L, D83-D85): the Navigation tab's road-type filters, the faster /
+    /// The navigation sidebar on the Map tab's viewer is open (UI memory, [`EXPORT_EXCLUDE`];
+    /// the location-arrow button bottom right and the N key toggle it, D108).
+    #[serde(default)]
+    pub map_nav_open: bool,
+    /// Navigation (phase L, D83-D85): the navigation sidebar's road-type filters, the faster /
     /// more-curves slider, this player's destination and the two co-op switches. Not exported
     /// with presets ([`EXPORT_EXCLUDE`]): the destination is a personal trip.
     #[serde(default)]
@@ -1248,6 +1252,7 @@ impl Default for AppConfig {
             overlay_page: OverlayPage::default(),
             map_tab_settings: false,
             map_tab_page: MapPage::default(),
+            map_nav_open: false,
             nav: Default::default(),
         }
     }
@@ -1551,7 +1556,7 @@ const OVERLAY_KEYS: &[&str] = &["overlay"];
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
 const EXPORT_EXCLUDE: &[&str] = &[
-    "active_profile", "input_perm_dont_remind", "onboarding_done", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page", "nav",
+    "active_profile", "input_perm_dont_remind", "onboarding_done", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page", "map_nav_open", "nav",
 ];
 
 /// One selectable group in the export/import tree.
@@ -1903,7 +1908,7 @@ impl AppConfig {
             }
         };
         // UI memory, not part of a profile
-        let (page, map_settings, map_page) = (self.overlay_page, self.map_tab_settings, self.map_tab_page);
+        let (page, map_settings, map_page, nav_open) = (self.overlay_page, self.map_tab_settings, self.map_tab_page, self.map_nav_open);
         let onboarding_done = self.onboarding_done; // machine state: a profile snapshot must not re-open the guide
         let destination = self.nav.destination; // a trip, not a setting: a profile switch must not bring an old one back
         let reset = match serde_json::from_str::<serde_json::Value>(&data) {
@@ -1911,7 +1916,7 @@ impl AppConfig {
             Ok(overlay) => apply_preset_overlay(self, overlay),
             Err(_) => vec!["<invalid JSON>".to_string()],
         };
-        (self.overlay_page, self.map_tab_settings, self.map_tab_page) = (page, map_settings, map_page);
+        (self.overlay_page, self.map_tab_settings, self.map_tab_page, self.map_nav_open) = (page, map_settings, map_page, nav_open);
         self.onboarding_done = onboarding_done;
         self.nav.destination = destination;
         if !reset.is_empty() {

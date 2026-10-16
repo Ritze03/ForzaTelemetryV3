@@ -317,7 +317,7 @@ line **minus `CUT_BEHIND_M` (9 m)** along the route (D104; 0 at least), as segme
 **written for every packet** and read together with `line` (both under the view's one lock, so a new
 route never shows with the old route's progress). The maps cut the line there ([`NavProgress::u`] =
 `seg + t` for the 3D mesh, `NavLine::remaining` for 2D), so every map (HUD Minimap, Dashboard map,
-Viewer, Navigation tab; flat, tilted, 3D) agrees. `CUT_BEHIND_M` is the car's length (~5 m) plus ~4 m
+Viewer; flat, tilted, 3D) agrees. `CUT_BEHIND_M` is the car's length (~5 m) plus ~4 m
 margin, a fixed guess (`ponytail:` in `follow.rs`); "behind" is along the route, so a car driving
 the wrong way gets the margin on its nose (from the lead-in). *Why (the user (D104): "When I'm driving away from the route, it always takes a whole node length until it actually fills the like normal road with the route color again. Plus, the route coloring of the road should cover the whole length of my car with some extra, and it should be rounded at the end and not just cut off straight."):* the cut used to be the car's
 centre, so the car's rear half stood on the plain road. `Dest { x, z, source: Local | Shared { setter, hue }, prefs }`. `NavStatus`: `Idle`,
@@ -554,25 +554,54 @@ four fractions of one segment, a rewind brings the route back, one mesh build fo
 render_3d_states -- --ignored`): route + pin in 3D, shared ring, tilted, flat, halfway along (the first half gone, in 3D and 2D), hidden in a race and
 when switched off, and through `Renderer::frame_at` with `nav_fn`.
 
-## 4. Navigation tab and Viewer destination (`src/ui/nav_tab.rs`, `src/ui/map_tab.rs`, L5)
+## 4. Navigation sidebar and the mouse scheme (`src/ui/nav_tab.rs`, `src/ui/map_tab.rs`, `src/ui/map_scene.rs`, L5, D108)
 
-*Spectating (D105):* the Navigation tab's map and the Viewer follow a teammate picked in the co-op
-player list instead of the own car (`docs/features/map-tab.md`). Only the camera moves: the route is
-still routed from, cut at and progressed by the **own** car, and the Navigation tab's route readout
-is unchanged.
+*History:* until D108 this was a top-level **Navigation tab** with its own map, plus a *Set destination*
+button on the Viewer. The user (D108): "The navigation page should become just a small button in the
+bottom right where a set destination currently is and should open the side menu just on the normal map
+screen that we already have." The tab, its map (`app.nav_ui.map`, `MapPane::Navigation`), the idle hint
+pill and the Viewer's *Set destination* / *Clear route* buttons are gone; `Tab::Navigation` no longer
+exists. (The current tab is not saved in the config, so an old config needs no migration: the app
+always starts on the Dashboard. The file keeps the name `nav_tab.rs`.)
 
-`Tab::Navigation` sits between Map and Power Curve (icon `icons::NAVIGATION`, fa-location-arrow
-`U+F124`, checked present in the bundled Nerd Font; title "Navigation"). No Mini-Settings page.
+*Spectating (D105):* the Viewer follows a teammate picked in the co-op player list instead of the
+own car (`docs/features/map-tab.md`). Only the camera moves: the route is still routed from, cut at
+and progressed by the **own** car, and the sidebar's route readout is unchanged.
+
+### The sidebar and how it opens
+
+The sidebar belongs to the Map tab's **Viewer** (not to the Dashboard map: the Dashboard has no room
+for it and no buttons). It opens
+
+* with the small **location-arrow button** (`icons::NAVIGATION`, fa-location-arrow `U+F124`) in the
+  Viewer's bottom right, left of *Settings* (the spot *Set destination* had; lit, i.e. primary
+  coloured, while the sidebar is open; tooltip names the N key), and
+* with the **N key** while the Map tab's Viewer is shown (`map_tab::viewer`: app-local, consumed only
+  there, ignored while a text field has the keyboard (`ctx.wants_keyboard_input()`), never a global
+  hotkey; not active in the Map tab's settings mode).
+
+Open / closed is `AppConfig.map_nav_open` (default closed): UI memory like `map_tab_page`: saved,
+in `EXPORT_EXCLUDE` (presets never carry it), kept across a profile switch.
+
+*Why on the right, beside the map rather than over it (`nav_tab::split`):* the Viewer's top left holds the
+compass and *Follow car*, the top right the co-op player list, the bottom right the buttons; all of
+those are inside the map's rect. Putting the sidebar next to the map (the map shrinks to the rest)
+covers none of them and keeps the buttons clear of the cards; an overlay would have sat on the
+player list. The map keeps at least 60 % of the Viewer. (The button therefore moves left with the
+map's edge when the sidebar opens.)
 
 ### Layout (Panes rule)
 
-Two panes with an 8 px gap (`nav_tab::split`): the **left pane** is `min(360 px, 40 % of the tab)`
-wide, one vertical `ScrollArea` of four `theme::card`s (spacing zeroed, the card owns the gap), clipped
-to its rect; the **right pane** is the map, filling the rest, also clipped. (`theme::columns` is
-equal halves only, hence the manual rect pair.) No helper text under options: explanations are
-tooltips (D21).
+`nav_tab::split(full) -> (map, side)`: the **sidebar** is `min(340 px, 40 % of the Viewer)` wide at the
+right, an 8 px gap, the **map** fills the rest; both are clipped panes. The sidebar is a vertical
+`ScrollArea` of four `theme::card`s (spacing zeroed, the card owns the gap) over a fixed **controls
+hint** strip at its bottom (`TEXT_DIM`, 11 px, five lines from `hint_lines()`, at most half the
+sidebar's height): *Left click: place a marker (co-op)* / *Middle click: route to this point* /
+*Right click: menu* / *Shift+drag: rotate and tilt* / *N: show or hide this panel*. *Why:* the user
+asked for "a hint at the bottom of it, to tell the user". No helper text under options:
+explanations are tooltips (D21).
 
-1. **ROUTE**: status line (dot colour + text, `status_text`: *Click the map to set a destination* /
+1. **ROUTE**: status line (dot colour + text, `status_text`: *Middle-click the map to set a destination* /
    *Waiting for the car's position* / *Calculating…* / *On route* / *No road near the car* / *No road near
    the destination* / *No route with these road types* / *No road data (needs your Forza Horizon 6
    install)* / *Paused during a race* / *Arrived*), *Set by <name>* with the setter's colour dot while a
@@ -598,36 +627,52 @@ than "edit and ignore":* the route really is computed with the setter's values; 
 controls that do nothing would lie. A destination this player shared themselves comes back from the
 room as "shared" too, but it is theirs (`RoomInfo::mine`), so their controls stay editable.
 
-### The map pane
+### The map
 
-`map_tab::map_pane(ui, app, rect, MapPane)` is the Map tab viewer's code made reusable (input, scene
-via `map_scene::draw`, clicks, buttons); the viewer calls it with `MapPane::Viewer`, this tab with
-`MapPane::Navigation` and its own `MapTabState` (`app.nav_ui.map`: pan / zoom / race selection, not
-shared with the viewer). **It draws with the Dashboard map & Viewer settings** (D73: layers, view
-mode incl. 3D, north-up, allow pan and zoom): the tab has none of its own, and its **Settings**
-button opens that page of the Map tab. *Why:* one map look everywhere, and the user wanted every map
-setting on the Map tab (D79). Pan / zoom is the Viewer's (drag, wheel, *Follow car* while manual), and so is the **Shift+drag
-orbit** (D106, [map-tab.md](map-tab.md#shiftdrag-rotate-and-tilt-the-camera-d106); own state in
-`app.nav_ui.map`; the compass click resets it). On this tab Shift+click still sets the destination
-(a click, not a drag), and the destination pick uses the orbited camera.
-A faint hint pill *Click the map to set a destination* shows at the bottom while there is none (not
-on a map narrower than 520 px).
+The Viewer's `map_tab::map_pane` (input, scene via `map_scene::draw`, clicks, buttons) draws with the
+**Dashboard map & Viewer settings** (D73: layers, view mode incl. 3D, north-up, allow pan and zoom);
+its **Settings** button opens that page of the Map tab. Pan / zoom, *Follow car* while manual and the
+**Shift+drag orbit** (D106, [map-tab.md](map-tab.md#shiftdrag-rotate-and-tilt-the-camera-d106)) are the
+Viewer's; the destination pick uses the orbited camera.
 
-### Clicks: how they are disambiguated
+### Mouse scheme (both GUI maps: Viewer and Dashboard map)
 
-One pure function, `map_tab::click_action(pane, click, shift, armed, in_session)`:
+*Why (the user, D108, correcting his first request):* "Right now we can do markers on the map by just
+left clicking points on the map and that is considered the ping for now or call it marker whatever and
+then my middle mouse button should create a route to the clicked destination that's different from my
+previous request and that's how I want it." The first request had been: left click = route, middle
+click = ping, right click = a menu with "set marker, navigation and stuff". Scope: "Map tab +
+Dashboard map". The HUD minimap has no mouse.
 
-| | Navigation tab | Viewer |
-|---|---|---|
-| left click | **set destination** | waypoint (only in a co-op session); **set destination** if Shift is held or the *Set destination* button is armed |
-| right click | nothing | clear waypoint (in a session); while armed: just disarm |
-| *Clear route* button | (the ROUTE card's) | shown while there is a destination; reads *Clear for everyone* (with a tooltip) while the destination is the room's, as on the tab |
-| Esc | - | disarms |
+One pure function, `map_scene::click_action(click, in_session)`, applied by `map_scene::map_clicks`
+(called by the Viewer and by `dashboard::show_minimap_widget`, never in the Dashboard's layout-edit
+mode, where the response senses hover only):
 
-The destination point is `map_scene::pick(&cam, pos)` (2D / tilted / 3D terrain ray-march), the same
-as a waypoint. A drag is a pan, not a click (egui). Armed state is `MapTabState::dest_armed` (viewer
-only, not saved); armed shows a primary-coloured button and a crosshair cursor. The Dashboard map
-widget has no click handling for destinations (D84 names the tab and the Viewer only).
+| click | does |
+|---|---|
+| **left** | the co-op **marker** (waypoint), exactly as before; only in a co-op session |
+| **middle** | **route here**: sets the destination to the clicked point (local; shared in co-op under the existing `room_op` rules), with or without a session |
+| **right** | a **context menu** (egui `Response::context_menu`) at the pointer: *Set marker here* (session only), *Navigate here*, *Clear marker* (session, and only while this player has a marker), *Clear route* (while there is a destination; *Clear for everyone* when it is the room's) |
+
+(`map_scene::menu_entries` decides the entries; tested.) The world point of *Set marker here* /
+*Navigate here* is `map_scene::pick(&cam, pos)` (2D / tilted / 3D terrain ray-march, orbit included)
+**at the moment of the right click**, kept in egui's temp memory while the menu is open, so a moving
+view (following the car) does not shift it; without a point (3D: the pointer was over the sky) those two
+entries are greyed. The click that dismisses an open menu is not also a marker or a route (it is
+ignored while `context_menu_opened()`). A drag is a pan, not a click (egui); clicks on the buttons and
+the player list never reach the map (they are drawn after it and hit first).
+
+**Shift+click:** no longer sets the destination (it was the Viewer's alias for it). *Why removed:*
+middle click replaced it, and Shift is the orbit's modifier (Shift+drag, D106), so keeping a Shift
+meaning on the plain click was an ambiguity; a Shift+click is now just a left click (a marker).
+**Right click** no longer clears the marker directly; that moved into the menu (*Clear marker*). The
+Viewer's *Set destination* button (and its armed mode, `dest_armed`, Esc) and the *Clear route* button
+bottom right are gone: *Clear route* is in the sidebar and the menu. *Why no bottom-right Clear
+button:* keep the corner for small buttons (the sidebar's, later more); two routes to clear were enough.
+
+The Dashboard draws from `&ForzaApp`, so `map_clicks` does not call `nav_tab::set_destination`
+itself: it queues a `map_scene::NavRequest` in `ForzaApp::nav_requests` and the app applies them right
+after the panels (`nav_tab::drain_requests`, same frame).
 
 ### Config and the bridge to the navigator
 
@@ -649,7 +694,7 @@ destination is not part of it (personal, `null`). Only `NavConfig::default()` ch
 `RouteFilters::default()` (Road / Highway / Dirt) stays as "a normal road drive" for the tests and callers that
 need one.
 
-`nav_tab::sync` runs once per frame in `ForzaApp::update` before any tab draws:
+`nav_tab::sync` runs once per frame in `ForzaApp::update` before any tab draws (the sidebar is only on screen with the Viewer, the sync is not):
 
 1. **Arrival:** `take_arrival(seen, view.local_cleared_seq, nav::local_destination(), &mut cfg.nav.destination)`
    (also run by `take_arrival_now` in `on_exit` before the final save: an arrival while the game
@@ -665,7 +710,7 @@ need one.
    just cleared on arrival, in the gap before step 1 sees it. A NaN slider is clamped so it never
    looks "changed".
 
-`nav_tab::set_destination(app, pos)` (a click) and `clear_destination(app)` (the Clear buttons) write
+`nav_tab::set_destination(app, pos)` (a middle click or *Navigate here*) and `clear_destination(app)` (the Clear buttons / menu entry) write
 the config, push at once and do the co-op part below.
 
 ### Co-op behaviour as built (D85, D92)
@@ -674,7 +719,7 @@ The decision is the pure `room_op(event, nav_cfg, ctx) -> Option<RoomOp>` (teste
 adapter `room_event` fills `RoomCtx` from `CoopState::destination()` / `my_id()` / `nav::view()` and
 calls `CoopState::set_destination` / `clear_destination`, which do nothing outside a session):
 
-* **Set** (a click): sent to the room when *Share my destination* is on, with the player colour
+* **Set** (a middle click / *Navigate here*): sent to the room when *Share my destination* is on, with the player colour
   (`coop_hue`), `filters.to_bits()` and `curves`.
 * **A teammate cleared this player's shared destination** ("Clear for everyone"): the own saved copy
   (the destination the share came from) is cleared too (`cleared_by_teammate`, from the room's
@@ -692,7 +737,7 @@ calls `CoopState::set_destination` / `clear_destination`, which do nothing outsi
   without the resend the new filters would not apply). Debounced to the pointer release
   (`NavState::resend`), so a slider drag sends one message.
 * **Receiving** needs no UI: the listener thread hands the room's destination to the tracker (section
-  5); the tab only displays it. A teammate's destination overrides this player's own while
+  5); the sidebar only displays it. A teammate's destination overrides this player's own while
   *Follow shared destinations* is on; the own one and the own filters are back when it ends.
 * **Joined** with a destination already set (set before the session, or saved from the last run):
   sent once per session, 3 s (`JOIN_GRACE`) after the session is up and this player is in the roster,
@@ -701,16 +746,18 @@ calls `CoopState::set_destination` / `clear_destination`, which do nothing outsi
   handshake; a saved destination from yesterday must not replace the group's current one (one slot,
   last write wins), and the joiner then follows the room's instead. A host starting a session with a
   destination shares it (the room is empty). A reconnect does not repeat it.
-* A click while a teammate's destination is followed and sharing is off sets
+* A middle click while a teammate's destination is followed and sharing is off sets
   the own destination but the teammate's keeps winning (one slot, last write wins; Clear first).
 
 Tests: `ui::nav_tab::tests` (bridge: startup does not clear, arrival clears once, same-frame click is
 kept, only changed inputs are pushed; `room_op` table incl. outside a session and the join share;
 `join_due` once per session after the grace; `cleared_by_teammate`; formatting; the split;
-the four cards stay inside the pane at 240 / 280 / 360 px in English and German over every status incl.
-a shared destination with a very long name; read-only followed filters), `ui::map_tab::tests`
-(`clicks_on_the_maps_do_what_each_map_promises`, `viewer_controls_stay_inside_the_tab` with the new
-buttons), `config::tests` (NavConfig defaults, partial / bad nav, not exported, profile keeps the
+the four cards stay inside the sidebar at 240 / 280 / 340 px in English and German over every status incl.
+a shared destination with a very long name; read-only followed filters; the hint's lines are all
+translated and fit), `ui::map_scene::tests` (`mouse_buttons_do_what_the_scheme_says`,
+`the_menu_offers_what_applies`, `each_mouse_button_clicks_the_map_on_its_own`), `ui::map_tab::tests`
+(`viewer_controls_stay_inside_the_tab` with the sidebar button, `remembered_state_is_saved_but_not_exported`
+incl. `map_nav_open`), `config::tests` (NavConfig defaults, partial / bad nav, not exported, profile keeps the
 destination), `maprender::ui::tests` (Copy to… incl. the Navigation route card).
 
 ## 5. Co-op shared destination (wire format in L4a; adoption in L2)
