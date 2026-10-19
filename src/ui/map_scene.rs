@@ -1517,7 +1517,7 @@ pub fn map_clicks(ui: &Ui, app: &ForzaApp, resp: &egui::Response, cam: &Camera) 
                 MenuEntry::SetMarker => (tr("Set marker here"), true),
                 MenuEntry::Navigate => (tr("Navigate here"), true),
                 MenuEntry::ClearMarker => (tr("Clear marker"), false),
-                MenuEntry::ClearRoute { shared: true } => (tr("Clear for everyone"), false),
+                MenuEntry::ClearRoute { shared: true } => (tr("Clear route for everyone"), false),
                 MenuEntry::ClearRoute { shared: false } => (tr("Clear route"), false),
             };
             if !ui.add_enabled(at.is_some() || !needs_point, egui::Button::new(label)).clicked() {
