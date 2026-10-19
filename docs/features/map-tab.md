@@ -96,7 +96,9 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
 - **Treasure-chest button** (D109; bottom right, left of the navigation button, same size): zooms
   the Viewer to the **current treasure chest** with a **500 m** view radius. Icon: the game's chest
   icon from the POI atlas (the `treasure_chest_current` category's UV rect, the same texture the POI
-  renderer draws; `app.minimap_icons`), a gem glyph (`icons::GEM`) when the atlas has none.
+  renderer draws; `app.minimap_icons`) filling the button: side = sibling button height - 4 px, the
+  button's vertical padding cut to 2 px so the row stays aligned (*Why:* one text line tall looked
+  tiny next to the glyph buttons), a gem glyph (`icons::GEM`) when the atlas has none.
   Tooltip "Zoom to the treasure chest".
   - **Which chest:** `PoiLayer::current_chest(week_index_now())`, the one `treasure_chest_current`
     draws (chest number = week - 52, see `docs/features/minimap.md`). Always exactly one (or none

@@ -1426,6 +1426,7 @@ fn de(s: &str) -> Option<&'static str> {
         "a teammate" => "einem Mitspieler",
         "Clear route" => "Route löschen",
         "Clear for everyone" => "Für alle löschen",
+        "Clear route for everyone" => "Route für alle löschen",
         "Clears the destination for the whole co-op room." => "Löscht das Ziel für den ganzen Koop-Raum.",
         "Clears the destination and its route." => "Löscht das Ziel und seine Route.",
         "Dirt" => "Schotter",

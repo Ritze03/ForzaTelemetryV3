@@ -652,7 +652,7 @@ mode, where the response senses hover only):
 |---|---|
 | **left** | the co-op **marker** (waypoint), exactly as before; only in a co-op session |
 | **middle** | **route here**: sets the destination to the clicked point (local; shared in co-op under the existing `room_op` rules), with or without a session |
-| **right** | a **context menu** (egui `Response::context_menu`) at the pointer: *Set marker here* (session only), *Navigate here*, *Clear marker* (session, and only while this player has a marker), *Clear route* (while there is a destination; *Clear for everyone* when it is the room's) |
+| **right** | a **context menu** (egui `Response::context_menu`) at the pointer: *Set marker here* (session only), *Navigate here*, *Clear marker* (session, and only while this player has a marker), *Clear route* (while there is a destination; *Clear route for everyone* when it is the room's) |
 
 (`map_scene::menu_entries` decides the entries; tested.) The world point of *Set marker here* /
 *Navigate here* is `map_scene::pick(&cam, pos)` (2D / tilted / 3D terrain ray-march, orbit included)

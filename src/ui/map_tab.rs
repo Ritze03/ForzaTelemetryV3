@@ -240,10 +240,14 @@ fn controls(ui: &mut Ui, rect: Rect, manual: bool, follow_name: Option<&str>, zo
             .clicked();
         if let Some(icon) = chest {
             let button = match icon {
-                // The glyph buttons are one text line tall; the image matches that height.
+                // The glyph buttons are text height + 2 x the vertical padding tall. The image fills that
+                // height minus a 2 px margin; this button's vertical padding is cut to 2 px so it stays
+                // exactly as tall as its siblings.
                 Some((tex, uv)) => {
-                    let h = ui.text_style_height(&egui::TextStyle::Button);
-                    egui::Button::image(egui::Image::new(egui::load::SizedTexture::new(tex, vec2(h, h))).uv(uv))
+                    let full = ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y;
+                    ui.spacing_mut().button_padding.y = 2.0;
+                    let side = full - 4.0;
+                    egui::Button::image(egui::Image::new(egui::load::SizedTexture::new(tex, vec2(side, side))).uv(uv))
                         .fill(theme::BTN)
                         .stroke(egui::Stroke::new(1.0, theme::BTNBD))
                 }
