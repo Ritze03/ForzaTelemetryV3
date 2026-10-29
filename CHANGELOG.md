@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [Unreleased]
+
+### Fixed
+- **Installer builds with stable when rustup has no default toolchain**: `install.sh` now installs the stable toolchain and builds with it instead of failing with "rustup could not choose a version of cargo to run"; your rustup default stays untouched.
+
 ## [0.2.4] – 2026-09-28
 
 ### Added
