@@ -36,7 +36,7 @@ pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
             // Layout first when narrow: it's the one card you can't find by scrolling past settings.
             cards_page(ui, app, &[&[general], &[monitor], &[layout]], &[&[layout], &[general, monitor]]);
         }
-        OverlayPage::Minimap => cards_page(ui, app, &[&[minimap], &[], &[]], &[&[minimap], &[]]),
+        OverlayPage::Minimap => cards_page(ui, app, &[&[minimap, minimap_rendering], &[], &[]], &[&[minimap, minimap_rendering], &[]]),
         OverlayPage::Cluster => cards_page(ui, app, &[&[cluster], &[], &[]], &[&[cluster], &[]]),
         OverlayPage::Race => cards_page(ui, app, &[&[race], &[drift], &[]], &[&[race], &[drift]]),
         OverlayPage::Notifications => cards_page(ui, app, &[&[notifications], &[], &[]], &[&[notifications], &[]]),
@@ -665,10 +665,14 @@ fn layout_grid(ui: &mut Ui, o: &mut OverlayConfig, sel: &mut Option<Module>) {
 // ── Module cards ─────────────────────────────────────────────────────────────
 
 fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
+    minimap_card(ui, &mut app.config.overlay);
+}
+
+fn minimap_rendering(ui: &mut Ui, app: &mut ForzaApp) {
     let mut open_map_tab = false;
-    minimap_card(ui, &mut app.config.overlay, &mut open_map_tab);
+    minimap_rendering_card(ui, &mut app.config, &mut open_map_tab);
     if open_map_tab {
-        // The layers live on the Map tab's settings mode, Minimap page.
+        // The full set lives on the Map tab's settings mode, Minimap page.
         app.current_tab = crate::app::Tab::Map;
         app.config.map_tab_settings = true;
         app.config.map_tab_page = crate::config::MapPage::Minimap;
@@ -676,9 +680,10 @@ fn minimap(ui: &mut Ui, app: &mut ForzaApp) {
 }
 
 /// The Minimap module's frame (D75): shape, size, corner radius, outline and background. What
-/// the map shows is on the Map tab (the button jumps there). Sizes are HUD design px (1080p,
+/// the map shows is on the Map tab (the "Minimap rendering" card below has the essentials and a
+/// button that jumps there). Sizes are HUD design px (1080p,
 /// scaled with the resolution and the HUD scale like the Layout card's).
-fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig, open_map_tab: &mut bool) {
+fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig) {
     module_card(ui, o, tr("Minimap frame"), |o| &mut o.minimap_on, None, |ui, o| {
         let shape_tip = tr("A circle takes its diameter from the width alone.");
         control_row_tip(ui, tr("Shape"), shape_tip, |ui| {
@@ -717,11 +722,63 @@ fn minimap_card(ui: &mut Ui, o: &mut OverlayConfig, open_map_tab: &mut bool) {
         if ui.add(theme::secondary_button(tr("Reset frame"))).clicked() {
             o.reset_map_frame();
         }
-        let layers_tip = tr("What the map shows (image, roads, POIs, race lines, tilt) and how it moves is set on the Map tab → Minimap.");
-        if ui.add(theme::secondary_button(tr("Map layers…"))).on_hover_text(layers_tip).clicked() {
-            *open_map_tab = true;
-        }
     });
+}
+
+/// The few map settings a new user needs, under the frame card (D110). They edit the same fields
+/// as the Map tab → Minimap page (no sync); "Advanced settings…" opens that page for the rest.
+/// With "Use Dashboard map settings" on, the minimap draws the Dashboard's values, so the map rows
+/// show those greyed (the rule of `map_tab::minimap_page`); likewise the Co-Op rows with "Use
+/// Dashboard co-op settings" (everything on, `OverlayConfig::effective`). Neither checkbox is
+/// here, they stay on the Map tab. Plain `theme::card`, not `module_card`: the module's on/off
+/// switch is the frame card's. Greyed with the overlay or the module off, like the frame card.
+fn minimap_rendering_card(ui: &mut Ui, cfg: &mut crate::config::AppConfig, open_map_tab: &mut bool) {
+    use crate::maprender::ui::{race_lines_toggle, view_mode_control, zoom_rows, ViewCfg};
+    let follow = cfg.overlay.map_use_dashboard;
+    let on = cfg.overlay.enabled && cfg.overlay.minimap_on;
+    let mut layers = if follow { cfg.minimap_layers.clone() } else { cfg.overlay.map_layers.clone() };
+    let mut view = if follow { ViewCfg::of_app(cfg) } else { ViewCfg::of_overlay(&cfg.overlay) };
+    let mut win3d = cfg.overlay.map_3d_windows;
+    let o = &mut cfg.overlay;
+    ui.add_enabled_ui(on, |ui| {
+        theme::card(ui, tr("Minimap rendering"), |ui| {
+            if follow {
+                status_line(ui, theme::FAINT, tr("The map follows the Dashboard map's settings."));
+            }
+            ui.add_enabled_ui(!follow, |ui| {
+                view_mode_control(ui, &mut layers.tilt, Some(&mut win3d));
+                ui.add_space(4.0);
+                zoom_rows(ui, &mut view);
+                theme::checkbox_row(ui, &mut view.north_up, tr("Lock map north-up"));
+                theme::checkbox_row(ui, &mut layers.image.on, tr("Satellite image"));
+                ui.add_enabled_ui(layers.image.on, |ui| pct_row(ui, tr("Opacity"), &mut layers.image.opacity, 0.0, 100.0, 1.0, None));
+                theme::checkbox_row(ui, &mut layers.roads.on, tr("Show roads"));
+                race_lines_toggle(ui, &mut layers.race_lines);
+                theme::checkbox_row(ui, &mut layers.pois.on, tr("Show points of interest"));
+            });
+            ui.add_space(2.0);
+            ui.label(theme::section_label(tr("Co-Op")));
+            let coop_follow = o.coop_use_dashboard;
+            let (mut mates, mut trails) = if coop_follow { (true, true) } else { (o.coop_teammates, o.coop_trails) };
+            ui.add_enabled_ui(!coop_follow, |ui| {
+                theme::checkbox_row(ui, &mut mates, tr("Show co-op teammates"));
+                theme::checkbox_row(ui, &mut trails, tr("Show trails"));
+            });
+            if !coop_follow {
+                (o.coop_teammates, o.coop_trails) = (mates, trails);
+            }
+            ui.add_space(4.0);
+            let tip = tr("Everything else the map shows (road widths and colours, points of interest by category, 3D options, co-op fades) is set on the Map tab → Minimap.");
+            if ui.add(theme::secondary_button(tr("Advanced settings…"))).on_hover_text(tip).clicked() {
+                *open_map_tab = true;
+            }
+        });
+    });
+    if !follow {
+        o.map_layers = layers;
+        view.apply_overlay(o);
+    }
+    o.map_3d_windows = win3d;
 }
 
 fn cluster(ui: &mut Ui, app: &mut ForzaApp) {
@@ -999,7 +1056,7 @@ pub(crate) mod tests {
     #[test]
     fn card_pages_stay_inside_their_panes() {
         let layout: Card = |u, o| layout_card(u, o);
-        let minimap: Card = |u, o| minimap_card(u, o, &mut false);
+        let minimap: Card = |u, o| minimap_card(u, o);
         let cluster: Card = |u, o| cluster_card(u, o, false);
         let race: Card = |u, o| race_card(u, o);
         let drift: Card = |u, o| drift_card(u, o);
@@ -1046,7 +1103,7 @@ pub(crate) mod tests {
                         let out = render(&format!("overlay_minimap_{lang:?}_{shape:?}_{on}"), w, 900.0, |ui, _| {
                             theme::columns(ui, if w >= THREE_COLS_MIN_W { 3 } else { 2 }, |uis| {
                                 uis[0].spacing_mut().item_spacing.y = 0.0;
-                                minimap_card(&mut uis[0], &mut o, &mut false);
+                                minimap_card(&mut uis[0], &mut o);
                             });
                         });
                         let n = check_panes(&out, w, &format!("minimap {lang:?} {shape:?}"));
@@ -1057,8 +1114,44 @@ pub(crate) mod tests {
         }
     }
 
+    /// The whole Minimap page (D110: the frame card and the "Minimap rendering" card under it) stays
+    /// inside its pane at every width, in both languages, followed or not, 3D or not, enabled or
+    /// greyed; it is two cards in one column, and rendering it changes no setting.
+    #[test]
+    fn minimap_page_with_rendering_card_stays_inside_its_pane() {
+        use crate::config::AppConfig;
+        use crate::i18n::{with_language, Language};
+        for lang in [Language::English, Language::German] {
+            with_language(lang, || {
+                for w in WIDTHS {
+                    for (follow, coop_follow, on, relief) in
+                        [(false, false, true, false), (false, false, true, true), (true, true, true, false), (false, true, false, true)]
+                    {
+                        let mut c = AppConfig::default();
+                        c.overlay.map_use_dashboard = follow;
+                        c.overlay.coop_use_dashboard = coop_follow;
+                        c.overlay.minimap_on = on;
+                        c.overlay.map_layers.tilt.set_view_mode(if relief { crate::maprender::cfg::ViewMode::Relief } else { crate::maprender::cfg::ViewMode::Flat });
+                        let (before, before_dash) = (c.overlay.clone(), c.minimap_layers.clone());
+                        let three = w >= THREE_COLS_MIN_W;
+                        let out = render(&format!("overlay_minimap_rendering_{lang:?}_{follow}_{on}_{relief}"), w, 1200.0, |ui, _| {
+                            theme::columns(ui, if three { 3 } else { 2 }, |uis| {
+                                uis[0].spacing_mut().item_spacing.y = 0.0;
+                                minimap_card(&mut uis[0], &mut c.overlay);
+                                minimap_rendering_card(&mut uis[0], &mut c, &mut false);
+                            });
+                        });
+                        let n = check_panes(&out, w, &format!("minimap rendering {lang:?}"));
+                        assert_eq!(n, 2, "{lang:?} at {w} px");
+                        assert_eq!((before, before_dash), (c.overlay.clone(), c.minimap_layers.clone()), "{lang:?} at {w} px: drawing the card must not change a setting");
+                    }
+                }
+            });
+        }
+    }
+
     /// The Minimap page edits the frame fields, the Reset button restores exactly the defaults
-    /// (and leaves the map layers alone), and "Map layers…" asks for the Map tab.
+    /// (and leaves the map layers alone), and the frame card has no Map tab button any more.
     #[test]
     fn minimap_frame_reset_restores_the_pill_and_keeps_the_layers() {
         let mut o = OverlayConfig::default();

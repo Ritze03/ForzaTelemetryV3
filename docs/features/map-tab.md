@@ -256,7 +256,9 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
   (D63-D66) with identical content (the Dashboard page was renamed *Dashboard map & Viewer* in D73); the Map data card from Setup. The Overlay tab keeps the HUD
   modules only (General, Drive cluster, Race / Drift, Notifications), including the Minimap
   module's cell in its Layout card and, since D75, its **Minimap frame** (shape, size, outline,
-  background).
+  background), plus (D110) a short **Minimap rendering** card of the essentials (view mode, zoom,
+  north-up, image, roads, race lines, POIs, co-op teammates / trails) that edits this page's fields;
+  its **Advanced settings…** button opens this Minimap page. See [overlay.md](overlay.md).
 - **Remembered across restarts:** `map_tab_settings` (settings vs viewer) and `map_tab_page`
   (`config::MapPage`), both in `config::EXPORT_EXCLUDE`, like `overlay_page` (where the user
   last looked is not a setting; kept across a profile switch). An old `overlay_page` of
