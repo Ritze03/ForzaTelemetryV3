@@ -831,14 +831,33 @@ pub fn load_car_calibrations() -> HashMap<i32, CarCalibration> {
         if path.exists() {
             backup_bad_file(&path); // unreadable as text: keep it before a save replaces it
         }
+        car_calibration_trees().remove(&path);
         return HashMap::new();
     };
     let (map, lossy) = parse_car_calibrations(&data);
-    if lossy {
-        // The next save drops what we couldn't read; keep the original.
-        backup_bad_file(&path);
+    // A JSON object: entries and fields this build can't read stay in the file (see
+    // `merge_for_save`, applied by `save_car_calibrations`), so nothing is lost and no backup is
+    // needed. Anything else is replaced by the next save: keep the original.
+    let raw = serde_json::from_str::<serde_json::Value>(&data).ok().filter(|v| v.is_object());
+    match (raw, serde_json::to_value(&map)) {
+        (Some(raw), Ok(loaded)) => {
+            car_calibration_trees().insert(path, FwdTrees::new(raw, loaded, &[]));
+        }
+        _ => {
+            car_calibration_trees().remove(&path);
+            if lossy {
+                backup_bad_file(&path);
+            }
+        }
     }
     map
+}
+
+/// The save-merge trees of the calibration file (one per path: the tests use their own data
+/// dirs). Process-global because `save_car_calibrations` is a free function.
+fn car_calibration_trees() -> std::sync::MutexGuard<'static, HashMap<PathBuf, FwdTrees>> {
+    static TREES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, FwdTrees>>> = std::sync::OnceLock::new();
+    TREES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Per-entry parse: a bad entry (or a file that isn't a JSON object) loses only itself.
@@ -863,8 +882,18 @@ pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    if let Ok(data) = serde_json::to_string_pretty(map) {
-        std::fs::write(&path, data).ok();
+    let Ok(cur) = serde_json::to_value(map) else { return };
+    let merged = car_calibration_trees().get(&path).and_then(|t| t.merged(&cur));
+    let text = match &merged {
+        Some(m) => serde_json::to_string_pretty(m),
+        None => serde_json::to_string_pretty(map),
+    };
+    if let Ok(data) = text {
+        if std::fs::write(&path, data).is_ok() {
+            if let Some(t) = car_calibration_trees().get_mut(&path) {
+                t.committed(merged.unwrap_or_else(|| cur.clone()), cur);
+            }
+        }
     }
 }
 
@@ -1114,6 +1143,10 @@ pub struct AppConfig {
     /// with presets ([`EXPORT_EXCLUDE`]): the destination is a personal trip.
     #[serde(default)]
     pub nav: crate::nav::NavConfig,
+    /// What the file held when this config was loaded (forward compatibility, see
+    /// [`merge_for_save`]). Never serialized; cloned along with the config.
+    #[serde(skip)]
+    pub(crate) fwd: ForwardCompat,
 }
 
 impl Default for AppConfig {
@@ -1254,6 +1287,7 @@ impl Default for AppConfig {
             map_tab_page: MapPage::default(),
             map_nav_open: false,
             nav: Default::default(),
+            fwd: Default::default(),
         }
     }
 }
@@ -1305,6 +1339,187 @@ pub const PRESET_DATA: &[&str] = &[
     include_str!("../assets/configs/ritze.json"),
 ];
 
+// ── Forward compatibility: settings an older build does not understand survive its save ──
+//
+// The user switches between builds. An older build used to drop every key it does not know
+// (and reset every value it cannot parse, e.g. a new enum variant) on its next save, so going
+// back to the newer build lost those settings. Now the save is a three-way merge of JSON
+// trees, see [`merge_for_save`]. Why JSON-level and not `#[serde(flatten)]` on the ~65 config
+// structs: flatten is invasive and interacts badly with the lenient per-key probe.
+
+/// Settings this build deliberately dropped (full dotted paths). They are not "unknown to an
+/// older build" but "retired by this one", so they are stripped on load instead of being kept
+/// for a build that might want them. Add a path here whenever a field is removed from a config
+/// struct.
+const RETIRED_KEYS: &[&str] = &[
+    // D73: the viewer shares the Dashboard map's settings
+    "viewer_layers", "viewer_north_up", "viewer_mirror_edges", "viewer_show_compass",
+    "viewer_allow_pan_zoom", "viewer_zoom_m",
+    // D101: the "Active if" gate mode
+    "hotkeys.gate_mode",
+    // older removals, found in the repository history
+    "brake_downshift_pct", "car_show_cylinders", "car_widget_show_position",
+    "car_widget_show_rotation", "dashboard_block_width", "dsg_gear_max_speeds",
+    "dsg_kickdown_on_full_throttle", "dsg_max_rpm_type", "dynamic_width", "game_mode",
+    "max_rpm_measured", "modern_bar_content", "tire_slip_style", "upshift_delay_ms",
+    // D88: one race colour per map (the old `circuit_color` is renamed by `migrate_circuit_color`)
+    "minimap_layers.race_lines.sprint_color", "overlay.map_layers.race_lines.sprint_color",
+];
+
+/// Remove [`RETIRED_KEYS`] from a raw config tree.
+fn strip_retired(raw: &mut serde_json::Value) {
+    fn remove(node: &mut serde_json::Value, path: &[&str]) {
+        match path {
+            [] => {}
+            [last] => {
+                if let Some(obj) = node.as_object_mut() {
+                    obj.remove(*last);
+                }
+            }
+            [head, rest @ ..] => {
+                if let Some(child) = node.get_mut(*head) {
+                    remove(child, rest);
+                }
+            }
+        }
+    }
+    for path in RETIRED_KEYS {
+        remove(raw, &path.split('.').collect::<Vec<_>>());
+    }
+}
+
+/// Bring a raw config / profile / preset tree to the current shape: the value fix-ups below,
+/// then [`strip_retired`]. This runs on the tree that is kept as the file's `raw` side of the
+/// save merge, so **a migration that reads an old key must remove it**: a kept `compact_tabs`
+/// would re-run its migration on every load and overwrite the user's `top_bar_style`.
+fn normalize_raw(raw: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = raw else { return };
+    // The now-removed "Light" theme falls back to Dark.
+    if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
+        map.insert("theme".to_string(), serde_json::json!("Dark"));
+    }
+    // Migrate the old `compact_tabs` bool to the `top_bar_style` enum so an existing config
+    // keeps its look (checked -> Simple, unchecked -> Legacy). The old key is then gone.
+    if let Some(old) = map.remove("compact_tabs") {
+        if let Some(compact) = old.as_bool() {
+            map.insert(
+                "top_bar_style".to_string(),
+                serde_json::json!(if compact { "Simple" } else { "Legacy" }),
+            );
+        }
+    }
+    migrate_tire_display_style(map);
+    migrate_circuit_color(map);
+    strip_retired(raw);
+}
+
+/// Does a reset `reset` (path reported by [`from_value_lenient`]: `key`, `key.inner` or
+/// `key[i]`) touch `path`: the same node, an ancestor of it, or an array element inside it?
+fn reset_covers(resets: &[String], path: &str) -> bool {
+    resets.iter().any(|r| {
+        r == path
+            || r.strip_prefix(path).is_some_and(|rest| rest.starts_with('['))
+            || path.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+    })
+}
+
+/// The save merge. `raw` is what the file held at load (after migrations), `loaded` what this
+/// build made of it (`to_value` right after the load), `cur` the live config now. `resets` are
+/// the paths [`from_value_lenient`] could not read and replaced by defaults at load. Returns the
+/// tree to write. Walking the three together (objects recursed, everything else a leaf):
+/// - an object key in `raw` but in neither `loaded` nor `cur` is unknown to this build: kept;
+/// - a leaf in a reset path that the user did not change this session (`cur == loaded`) gets
+///   `raw`'s value back (a value an older build could not parse, e.g. a new enum variant);
+/// - everything else is `cur`: a changed value, a new key, and a key the user deleted this
+///   session (a map entry: in `raw` and `loaded`, not in `cur`, so it stays deleted).
+///
+/// Arrays are leaves: taken whole, `cur` if changed, else `raw` where a reset touched them.
+/// Why a reset list at all: without it every difference between `raw` and `loaded` would win,
+/// and values this build normalized on purpose (the widgets it injects, an `alias`ed old enum
+/// spelling) would be written back in their old form forever.
+pub fn merge_for_save(raw: &serde_json::Value, loaded: &serde_json::Value, cur: &serde_json::Value, resets: &[String]) -> serde_json::Value {
+    merge_at("", raw, loaded, cur, resets)
+}
+
+fn merge_at(path: &str, raw: &serde_json::Value, loaded: &serde_json::Value, cur: &serde_json::Value, resets: &[String]) -> serde_json::Value {
+    use serde_json::Value;
+    let (Value::Object(r), Value::Object(l), Value::Object(c)) = (raw, loaded, cur) else {
+        return if cur == loaded && reset_covers(resets, path) { raw.clone() } else { cur.clone() };
+    };
+    let mut out = serde_json::Map::new();
+    for (k, cv) in c {
+        let sub = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+        let v = match (r.get(k), l.get(k)) {
+            (Some(rv), Some(lv)) => merge_at(&sub, rv, lv, cv, resets),
+            // not in `loaded`: new this session (or a key that was dropped at load and is back)
+            _ => cv.clone(),
+        };
+        out.insert(k.clone(), v);
+    }
+    for (k, rv) in r {
+        if !c.contains_key(k) && !l.contains_key(k) {
+            out.insert(k.clone(), rv.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// The trees behind [`merge_for_save`] for one file. Empty (`raw` not an object) = nothing to
+/// preserve, the save writes the live config as is.
+#[derive(Clone, Default)]
+struct FwdTrees {
+    raw: serde_json::Value,
+    loaded: serde_json::Value,
+    resets: Vec<String>,
+}
+
+impl FwdTrees {
+    /// `raw` is the file's tree, already normalized. `resets` the lenient load's reset paths;
+    /// `<all>` (the whole file was unusable) means there is nothing to preserve.
+    fn new(raw: serde_json::Value, loaded: serde_json::Value, resets: &[String]) -> Self {
+        if !raw.is_object() || resets.iter().any(|k| k == "<all>" || k == "<invalid JSON>") {
+            return Self::default();
+        }
+        // `active_profile` is machine state: a garbage value there is replaced, never kept.
+        let resets = resets.iter().filter(|k| *k != "active_profile").cloned().collect();
+        Self { raw, loaded, resets }
+    }
+
+    /// The tree to write for the live config `cur`; `None` = write `cur` itself (nothing to keep).
+    fn merged(&self, cur: &serde_json::Value) -> Option<serde_json::Value> {
+        if !self.raw.is_object() {
+            return None;
+        }
+        let m = merge_for_save(&self.raw, &self.loaded, cur, &self.resets);
+        (m != *cur).then_some(m)
+    }
+
+    /// After a successful write: the file now holds `written`, the live config was `cur`.
+    fn committed(&mut self, written: serde_json::Value, cur: serde_json::Value) {
+        if self.raw.is_object() {
+            self.raw = written;
+            self.loaded = cur;
+        }
+    }
+}
+
+/// [`FwdTrees`] of a [`AppConfig`]: behind a mutex because `save` takes `&self`. A clone of the
+/// config carries a copy of the trees.
+#[derive(Default)]
+pub struct ForwardCompat(std::sync::Mutex<FwdTrees>);
+
+impl Clone for ForwardCompat {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(self.lock().clone()))
+    }
+}
+
+impl ForwardCompat {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FwdTrees> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// Rewrite the removed `tire_display_style` values ("Separate", "Combined")
 /// onto the surviving "Tires" variant so older saved configs and presets keep
 /// a valid value instead of failing to deserialize.
@@ -1326,10 +1541,13 @@ fn migrate_circuit_color(map: &mut serde_json::Map<String, serde_json::Value>) {
         let Some(race) = layers.and_then(|l| l.get_mut("race_lines")).and_then(|r| r.as_object_mut()) else { return };
         if race.contains_key("color") {
             race.remove("circuit_color");
-        } else if let Some(c) = race.get_mut("circuit_color") {
+        } else if let Some(mut c) = race.remove("circuit_color") {
             if c.as_str().is_some_and(|s| s.eq_ignore_ascii_case("#38bdf8")) {
-                *c = serde_json::json!("#f97316");
+                c = serde_json::json!("#f97316");
             }
+            // Renamed here (the serde alias would read it too) so the old key does not stay in
+            // the kept raw tree next to `color`: serde rejects a field and its alias together.
+            race.insert("color".to_string(), c);
         }
     }
     fix(map.get_mut("minimap_layers"));
@@ -1461,9 +1679,7 @@ fn backup_bad_file(path: &Path) -> Option<PathBuf> {
 /// Overlay `overlay`'s keys onto `cfg`. Keys whose value can't be read keep `cfg`'s current
 /// value; the returned list names them (empty = everything applied).
 fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) -> Vec<String> {
-    if let serde_json::Value::Object(ref mut m) = overlay {
-        migrate_tire_display_style(m);
-    }
+    normalize_raw(&mut overlay);
     let Ok(mut base) = serde_json::to_value(&*cfg) else { return Vec::new(); };
     if let (
         serde_json::Value::Object(base_map),
@@ -1473,7 +1689,9 @@ fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) -> 
         for (k, v) in over { base_map.insert(k, v); }
     }
     let (new_cfg, reset) = from_value_lenient(base, cfg);
+    let fwd = cfg.fwd.clone(); // a preset is not a fresh load: the file's trees stay
     *cfg = new_cfg;
+    cfg.fwd = fwd;
     inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
     // A preset/profile replaces the whole `hotkeys` object; an older one lacks newer
     // actions (e.g. Hide HUD), so fill them like `load()` does (respects `unbound`).
@@ -1744,9 +1962,12 @@ impl AppConfig {
         if unusable {
             eprintln!("config.json is not usable as a whole; recovering from the profile mirror");
         } else if !recovery.reset_keys.is_empty() {
-            eprintln!("config.json: reset unreadable settings to defaults: {}", recovery.reset_keys.join(", "));
+            eprintln!("config.json: using defaults for settings this build can't read (kept in the file): {}", recovery.reset_keys.join(", "));
         }
-        recovered |= unusable || !recovery.reset_keys.is_empty();
+        // Unreadable *values* (typically written by a newer build) are not repaired: they stay
+        // in the file (see `merge_for_save`), so they need neither a backup nor a rewrite. A
+        // garbage `active_profile` is replaced by the guess below, that does.
+        recovered |= unusable || recovery.reset_keys.iter().any(|k| k == "active_profile");
         // `save()` mirrors the live config into profiles/<active>.json, so when config.json is
         // unusable the last good state is still in the active profile's file. Prefer it over
         // defaults. The previous active profile's name comes from the broken text, else the
@@ -1806,9 +2027,13 @@ impl AppConfig {
     /// *leniently* (see [`from_value_lenient`]): one unreadable value resets only itself.
     fn parse(data: &str) -> (Self, ConfigRecovery) {
         let default = Self::default();
-        let Ok(mut val) = serde_json::from_str::<serde_json::Value>(data) else {
+        let Ok(mut raw) = serde_json::from_str::<serde_json::Value>(data) else {
             return (default, ConfigRecovery { json_invalid: true, reset_keys: Vec::new() });
         };
+        // The migrations run on the file's own tree, which is also what the save merge keeps
+        // (see `normalize_raw`); the defaults are only filled into the copy that is parsed.
+        normalize_raw(&mut raw);
+        let mut val = raw.clone();
         // Merge: fill any missing keys (e.g. newly added fields) with their default values
         // so that adding a new config field never silently resets the entire config.
         if let Ok(def_val) = serde_json::to_value(&default) {
@@ -1822,28 +2047,30 @@ impl AppConfig {
                 }
             }
         }
-        // If theme is the now-removed "Light" value, fall back to Dark gracefully
-        if let serde_json::Value::Object(ref mut map) = val {
-            if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
-                map.insert("theme".to_string(), serde_json::json!("Dark"));
-            }
-            // Migrate the old `compact_tabs` bool to the `top_bar_style` enum so an
-            // existing config keeps its look (checked → Simple, unchecked → Legacy).
-            if let Some(compact) = map.get("compact_tabs").and_then(|v| v.as_bool()) {
-                map.insert(
-                    "top_bar_style".to_string(),
-                    serde_json::json!(if compact { "Simple" } else { "Legacy" }),
-                );
-            }
-            migrate_tire_display_style(map);
-            migrate_circuit_color(map);
-        }
         let (mut cfg, reset_keys) = from_value_lenient(val, &default);
         // Ensure every widget kind has at least one entry in the layout.
         // New kinds added to WidgetKind won't appear in old saved configs otherwise.
         inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
         inject_missing_hotkeys(&mut cfg.hotkeys);
+        if let Ok(loaded) = serde_json::to_value(&cfg) {
+            *cfg.fwd.lock() = FwdTrees::new(raw, loaded, &reset_keys);
+        }
         (cfg, ConfigRecovery { json_invalid: false, reset_keys })
+    }
+
+    /// What `save` writes: `(file text, tree written, tree of the live config)`. The live
+    /// config merged with what the file held that this build does not know (see
+    /// [`merge_for_save`]); with nothing to keep, plain `to_string_pretty(self)`, so the file
+    /// keeps the struct's field order (a merged tree is written key-sorted).
+    fn render_for_save(&self) -> Option<(String, serde_json::Value, serde_json::Value)> {
+        let cur = serde_json::to_value(self).ok()?;
+        let merged = self.fwd.lock().merged(&cur);
+        let text = match &merged {
+            Some(m) => serde_json::to_string_pretty(m),
+            None => serde_json::to_string_pretty(self),
+        }
+        .ok()?;
+        Some((text, merged.unwrap_or_else(|| cur.clone()), cur))
     }
 
     pub fn save(&self) {
@@ -1851,8 +2078,10 @@ impl AppConfig {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).ok();
         }
-        if let Ok(data) = serde_json::to_string_pretty(self) {
-            std::fs::write(&path, &data).ok();
+        if let Some((data, written, cur)) = self.render_for_save() {
+            if std::fs::write(&path, &data).is_ok() {
+                self.fwd.lock().committed(written, cur);
+            }
             // Continuous save: mirror the live config into the active profile file so
             // the outgoing profile is always already saved before any switch.
             let pp = profile_path(&self.active_profile);
@@ -1911,17 +2140,29 @@ impl AppConfig {
         let (page, map_settings, map_page, nav_open) = (self.overlay_page, self.map_tab_settings, self.map_tab_page, self.map_nav_open);
         let onboarding_done = self.onboarding_done; // machine state: a profile snapshot must not re-open the guide
         let destination = self.nav.destination; // a trip, not a setting: a profile switch must not bring an old one back
+        let mut raw = None;
         let reset = match serde_json::from_str::<serde_json::Value>(&data) {
             // full snapshot = overlay every key
-            Ok(overlay) => apply_preset_overlay(self, overlay),
+            Ok(mut overlay) => {
+                normalize_raw(&mut overlay);
+                raw = Some(overlay.clone());
+                apply_preset_overlay(self, overlay)
+            }
             Err(_) => vec!["<invalid JSON>".to_string()],
         };
         (self.overlay_page, self.map_tab_settings, self.map_tab_page, self.map_nav_open) = (page, map_settings, map_page, nav_open);
         self.onboarding_done = onboarding_done;
         self.nav.destination = destination;
+        // A profile load is a fresh load: the profile file's own trees are what the next save
+        // keeps (its unknown keys, its values this build could not read).
+        if let (Some(raw), Ok(loaded)) = (raw, serde_json::to_value(&*self)) {
+            *self.fwd.lock() = FwdTrees::new(raw, loaded, &reset);
+        }
         if !reset.is_empty() {
             eprintln!("profile {}: could not read: {}", path.display(), reset.join(", "));
-            if !backed_up {
+            // Unreadable values stay in the file; only a file that is not applied at all
+            // (invalid JSON, or values that fail in combination) is rewritten by the save.
+            if !backed_up && reset.iter().any(|k| k == "<all>" || k == "<invalid JSON>") {
                 backup_bad_file(path);
             }
         }
@@ -2886,7 +3127,7 @@ mod recovery_tests {
     }
 
     #[test]
-    fn profile_with_one_bad_value_applies_the_rest_and_is_backed_up() {
+    fn profile_with_one_unreadable_value_applies_the_rest_and_keeps_it_in_the_file() {
         let dir = temp_dir("profile");
         let path = dir.join("Racing.json");
         let mut m = saved_json();
@@ -2899,9 +3140,12 @@ mod recovery_tests {
         cfg.apply_profile_file(&path);
         assert_eq!(cfg.grid_cols, 33, "good values applied");
         assert!(cfg.top_bar_style == before, "bad value keeps the live config's");
-        let backups = bad_files(&dir, "Racing.json");
-        assert_eq!(backups.len(), 1);
-        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), text);
+        // The value is not repaired but kept: the save that follows a profile load writes it back
+        // (forward compatibility), so there is nothing to back up.
+        assert!(bad_files(&dir, "Racing.json").is_empty());
+        let written = cfg.render_for_save().unwrap().1;
+        assert_eq!(written["top_bar_style"], "NoSuchStyle");
+        assert_eq!(written["grid_cols"], 33);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3251,5 +3495,364 @@ mod recovery_tests {
         live.apply_profile_file(&path);
         assert_eq!(live.nav.destination, Some([1.0, 2.0]), "the live trip stays");
         assert!(live.nav.filters.jumps, "the profile's filters apply");
+    }
+}
+
+/// Forward compatibility: what an older build does not understand survives its load -> save
+/// cycle (see [`merge_for_save`]). Most tests go through `parse()` and `render_for_save()`
+/// (no IO); the file tests use a private temp dir.
+#[cfg(test)]
+mod forward_compat_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// The default config as a JSON object, to be edited into "a file a newer build wrote".
+    fn file_tree() -> Value {
+        serde_json::to_value(AppConfig::default()).unwrap()
+    }
+
+    /// The tree `save()` would write for `cfg`.
+    fn saved(cfg: &AppConfig) -> Value {
+        cfg.render_for_save().unwrap().1
+    }
+
+    /// The file text `save()` would write.
+    fn saved_text(cfg: &AppConfig) -> String {
+        cfg.render_for_save().unwrap().0
+    }
+
+    fn load(tree: &Value) -> (AppConfig, Vec<String>) {
+        let (cfg, rec) = AppConfig::parse(&tree.to_string());
+        (cfg, rec.reset_keys)
+    }
+
+    fn use_data_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("forza-fwd-test-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(d.join("profiles")).unwrap();
+        TEST_DATA_DIR.with(|c| *c.borrow_mut() = Some(d.clone()));
+        d
+    }
+
+    fn count_bad(dir: &Path) -> usize {
+        let n = |d: &Path| std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".bad-")).count();
+        n(dir) + n(&dir.join("profiles"))
+    }
+
+    #[test]
+    fn unknown_top_level_and_nested_keys_survive_load_and_save() {
+        let mut t = file_tree();
+        t["test123"] = json!({ "a": [1, 2, 3], "b": "x" });
+        t["overlay"]["test_nested"] = json!(7);
+        t["minimap_layers"]["tilt"]["future_field"] = json!("hello");
+        let (mut cfg, reset) = load(&t);
+        assert!(reset.is_empty(), "{reset:?}");
+        let s = saved(&cfg);
+        assert_eq!(s["test123"], t["test123"]);
+        assert_eq!(s["overlay"]["test_nested"], 7);
+        assert_eq!(s["minimap_layers"]["tilt"]["future_field"], "hello");
+        // A changed known value is saved next to them, and a second generation keeps them too.
+        cfg.grid_cols += 1;
+        let s = saved(&cfg);
+        assert_eq!(s["grid_cols"], cfg.grid_cols);
+        assert_eq!(s["test123"], t["test123"]);
+        let (mut again, reset) = AppConfig::parse(&saved_text(&cfg));
+        assert!(reset.reset_keys.is_empty());
+        again.grid_cols += 1;
+        let s = saved(&again);
+        assert_eq!(s["test123"], t["test123"]);
+        assert_eq!(s["minimap_layers"]["tilt"]["future_field"], "hello");
+        assert_eq!(s["grid_cols"], cfg.grid_cols + 1);
+    }
+
+    #[test]
+    fn a_save_with_nothing_to_keep_is_the_plain_struct_text() {
+        let (cfg, _) = load(&file_tree());
+        assert!(cfg.fwd.lock().merged(&serde_json::to_value(&cfg).unwrap()).is_none());
+        assert_eq!(saved_text(&cfg), serde_json::to_string_pretty(&cfg).unwrap(), "same bytes as before (field order)");
+    }
+
+    #[test]
+    fn an_unknown_enum_value_survives_unless_the_user_changed_that_field() {
+        let mut t = file_tree();
+        t["top_bar_style"] = json!("FutureStyle");
+        let (mut cfg, reset) = load(&t);
+        assert_eq!(reset, vec!["top_bar_style".to_string()]);
+        assert!(cfg.top_bar_style == TopBarStyle::default(), "this build runs on its default meanwhile");
+        assert_eq!(saved(&cfg)["top_bar_style"], "FutureStyle", "kept, not overwritten by the default");
+        // Even a changed neighbour does not touch it.
+        cfg.grid_cols += 1;
+        assert_eq!(saved(&cfg)["top_bar_style"], "FutureStyle");
+        // The user picks a style: that wins, and the file is plain again.
+        cfg.top_bar_style = TopBarStyle::Legacy;
+        let s = saved(&cfg);
+        assert_eq!(s["top_bar_style"], "Legacy");
+        let (cfg2, reset) = load(&s);
+        assert!(reset.is_empty() && cfg2.top_bar_style == TopBarStyle::Legacy);
+    }
+
+    #[test]
+    fn an_unreadable_nested_value_keeps_its_whole_group_but_not_the_users_edits() {
+        let mut t = file_tree();
+        t["minimap_layers"]["race_lines"]["mode"] = json!("FutureMode");
+        t["minimap_layers"]["race_lines"]["color"] = json!("#123456");
+        t["minimap_layers"]["roads"]["on"] = json!(!AppConfig::default().minimap_layers.roads.on);
+        let (mut cfg, reset) = load(&t);
+        assert_eq!(reset, vec!["minimap_layers.race_lines".to_string()]);
+        let s = saved(&cfg);
+        assert_eq!(s["minimap_layers"]["race_lines"]["mode"], "FutureMode");
+        assert_eq!(s["minimap_layers"]["race_lines"]["color"], "#123456", "the group's other values come back too");
+        // The user edits one field of that group: only that field is theirs.
+        cfg.minimap_layers.race_lines.color.0 = [0xab, 0xcd, 0xef];
+        let s = saved(&cfg);
+        assert_eq!(s["minimap_layers"]["race_lines"]["color"], "#abcdef");
+        assert_eq!(s["minimap_layers"]["race_lines"]["mode"], "FutureMode");
+        assert_eq!(s["minimap_layers"]["roads"]["on"], t["minimap_layers"]["roads"]["on"]);
+    }
+
+    #[test]
+    fn an_unreadable_value_makes_no_backup_and_no_rewrite_on_load() {
+        let dir = use_data_dir("noback");
+        let mut t = file_tree();
+        t["top_bar_style"] = json!("FutureStyle");
+        t["test123"] = json!(1);
+        std::fs::write(AppConfig::path(), t.to_string()).unwrap();
+        let cfg = AppConfig::load();
+        AppConfig::load();
+        assert_eq!(count_bad(&dir), 0, "the value stays in the file, nothing to back up");
+        cfg.save();
+        let text = std::fs::read_to_string(AppConfig::path()).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["top_bar_style"], "FutureStyle");
+        assert_eq!(v["test123"], 1);
+        let mirror: Value = serde_json::from_str(&std::fs::read_to_string(profile_path(&cfg.active_profile)).unwrap()).unwrap();
+        assert_eq!(mirror["test123"], 1, "the profile mirror keeps it too");
+        assert_eq!(count_bad(&dir), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_map_entry_the_user_removed_stays_removed() {
+        let (mut cfg, reset) = load(&file_tree());
+        assert!(reset.is_empty());
+        assert!(saved(&cfg)["hotkeys"]["bindings"].get("ToggleGearbox").is_some());
+        cfg.hotkeys.bindings.remove(&HotkeyAction::ToggleGearbox);
+        let s = saved(&cfg);
+        assert!(s["hotkeys"]["bindings"].get("ToggleGearbox").is_none());
+        assert!(s["hotkeys"]["bindings"].get("ToggleBackfire").is_some(), "the others stay");
+        // With an unknown key beside it (so the merge path really runs) it is still gone.
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        let (mut cfg, _) = load(&t);
+        cfg.hotkeys.bindings.remove(&HotkeyAction::ToggleGearbox);
+        let s = saved(&cfg);
+        assert!(s["hotkeys"]["bindings"].get("ToggleGearbox").is_none());
+        assert_eq!(s["test123"], 1);
+    }
+
+    #[test]
+    fn compact_tabs_migrates_once_and_is_gone_so_the_users_choice_sticks() {
+        let mut t = file_tree();
+        t.as_object_mut().unwrap().remove("top_bar_style");
+        t["compact_tabs"] = json!(true);
+        let (mut cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        assert!(cfg.top_bar_style == TopBarStyle::Simple, "migrated");
+        cfg.top_bar_style = TopBarStyle::Legacy; // the user's own choice afterwards
+        let s = saved(&cfg);
+        assert!(s.get("compact_tabs").is_none(), "retired key not written back");
+        assert_eq!(s["top_bar_style"], "Legacy");
+        let (cfg2, _) = load(&s);
+        assert!(cfg2.top_bar_style == TopBarStyle::Legacy, "a kept compact_tabs would have overwritten it");
+    }
+
+    #[test]
+    fn unchanged_migrated_values_are_written_migrated() {
+        let mut t = file_tree();
+        t["tire_display_style"] = json!("Combined");
+        t["theme"] = json!("Light");
+        let (cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        let s = saved(&cfg);
+        assert_eq!(s["tire_display_style"], "Tires");
+        assert_eq!(s["theme"], "Dark");
+    }
+
+    #[test]
+    fn retired_keys_are_not_kept() {
+        let mut t = file_tree();
+        t["viewer_zoom_m"] = json!(2500.0);
+        t["viewer_layers"] = json!({ "x": 1 });
+        t["hotkeys"]["gate_mode"] = json!("WindowFocus");
+        t["minimap_layers"]["race_lines"]["sprint_color"] = json!("#111111");
+        t["test123"] = json!(1);
+        let (cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        let s = saved(&cfg);
+        assert!(s.get("viewer_zoom_m").is_none() && s.get("viewer_layers").is_none());
+        assert!(s["hotkeys"].get("gate_mode").is_none());
+        assert!(s["minimap_layers"]["race_lines"].get("sprint_color").is_none());
+        assert_eq!(s["test123"], 1, "while an unknown one is");
+    }
+
+    #[test]
+    fn the_old_circuit_color_key_is_renamed_not_kept_next_to_color() {
+        let mut t = file_tree();
+        let race = t["minimap_layers"]["race_lines"].as_object_mut().unwrap();
+        race.remove("color");
+        race.insert("circuit_color".into(), json!("#123456"));
+        t["test123"] = json!(1);
+        let (mut cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        assert_eq!(cfg.minimap_layers.race_lines.color.0, [0x12, 0x34, 0x56]);
+        cfg.grid_cols += 1;
+        let s = saved(&cfg);
+        assert!(s["minimap_layers"]["race_lines"].get("circuit_color").is_none());
+        assert_eq!(s["minimap_layers"]["race_lines"]["color"], "#123456");
+        let (_, reset) = load(&s);
+        assert!(reset.is_empty(), "no field/alias clash on the next load: {reset:?}");
+    }
+
+    #[test]
+    fn the_embedded_default_config_has_nothing_unknown() {
+        let (cfg, rec) = AppConfig::parse(DEFAULT_CONFIG_JSON);
+        assert!(rec.reset_keys.is_empty(), "{:?}", rec.reset_keys);
+        assert!(cfg.fwd.lock().merged(&serde_json::to_value(&cfg).unwrap()).is_none(), "default-config.json holds an unknown or retired key");
+    }
+
+    #[test]
+    fn a_profile_load_is_a_fresh_load_with_its_own_unknown_keys() {
+        let dir = use_data_dir("profile");
+        let mut a = file_tree();
+        a["only_in_a"] = json!(1);
+        a["grid_cols"] = json!(21);
+        let pa = dir.join("profiles").join("A.json");
+        std::fs::write(&pa, a.to_string()).unwrap();
+        let mut b = file_tree();
+        b["only_in_b"] = json!(2);
+        let pb = dir.join("profiles").join("B.json");
+        std::fs::write(&pb, b.to_string()).unwrap();
+
+        let mut cfg = AppConfig::default();
+        cfg.nav.destination = Some([1.0, 2.0]);
+        cfg.apply_profile_file(&pa);
+        let s = saved(&cfg);
+        assert_eq!((&s["only_in_a"], &s["grid_cols"]), (&json!(1), &json!(21)));
+        assert_eq!(s["nav"]["destination"], json!([1.0, 2.0]), "the live trip is not replaced by the profile's");
+        cfg.apply_profile_file(&pb);
+        let s = saved(&cfg);
+        assert_eq!(s["only_in_b"], 2);
+        assert!(s.get("only_in_a").is_none(), "the other profile's unknown keys do not leak across");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_preset_import_keeps_the_loaded_files_unknown_keys() {
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        let (mut cfg, _) = load(&t);
+        apply_preset(&mut cfg, r#"{ "grid_cols": 9 }"#);
+        let s = saved(&cfg);
+        assert_eq!(s["grid_cols"], 9);
+        assert_eq!(s["test123"], 1);
+    }
+
+    #[test]
+    fn a_clone_carries_the_trees() {
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        let (cfg, _) = load(&t);
+        assert_eq!(saved(&cfg.clone())["test123"], 1);
+    }
+
+    #[test]
+    fn an_unusable_file_keeps_nothing() {
+        let (cfg, rec) = AppConfig::parse("{ broken");
+        assert!(rec.json_invalid);
+        assert!(cfg.fwd.lock().merged(&serde_json::to_value(&cfg).unwrap()).is_none());
+    }
+
+    #[test]
+    fn save_commits_the_trees_so_the_next_save_diffs_against_what_was_written() {
+        let dir = use_data_dir("commit");
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        t["top_bar_style"] = json!("FutureStyle");
+        std::fs::write(AppConfig::path(), t.to_string()).unwrap();
+        let mut cfg = AppConfig::load();
+        cfg.top_bar_style = TopBarStyle::Simple;
+        cfg.save();
+        // Back to the value that equalled the load-time default: still the user's, not the file's.
+        cfg.top_bar_style = TopBarStyle::default();
+        cfg.save();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(AppConfig::path()).unwrap()).unwrap();
+        assert_eq!(v["top_bar_style"], serde_json::to_value(TopBarStyle::default()).unwrap());
+        assert_eq!(v["test123"], 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── the pure merge ──
+
+    #[test]
+    fn merge_keeps_unknown_drops_deleted_and_takes_changed() {
+        let raw = json!({ "keep": 1, "unknown": { "x": 1 }, "gone": 2, "chg": 3, "map": { "a": 1, "b": 2, "zz": 9 } });
+        let loaded = json!({ "keep": 1, "gone": 2, "chg": 3, "map": { "a": 1, "b": 2 } });
+        let cur = json!({ "keep": 1, "chg": 4, "map": { "a": 1 }, "new": true });
+        let m = merge_for_save(&raw, &loaded, &cur, &[]);
+        assert_eq!(m, json!({ "keep": 1, "unknown": { "x": 1 }, "chg": 4, "map": { "a": 1, "zz": 9 }, "new": true }));
+    }
+
+    #[test]
+    fn merge_restores_only_where_a_reset_says_the_load_replaced_the_value() {
+        let raw = json!({ "a": "Future", "b": "Old", "arr": [1, 2, 3], "o": { "x": "Future", "y": 5 } });
+        let loaded = json!({ "a": "Dflt", "b": "Dflt", "arr": [1, 2], "o": { "x": "Dflt", "y": 6 } });
+        let cur = loaded.clone();
+        let resets = vec!["a".to_string(), "arr[2]".to_string(), "o.x".to_string()];
+        let m = merge_for_save(&raw, &loaded, &cur, &resets);
+        assert_eq!(m, json!({ "a": "Future", "b": "Dflt", "arr": [1, 2, 3], "o": { "x": "Future", "y": 6 } }));
+        // A changed array is the user's whole.
+        let mut cur2 = cur.clone();
+        cur2["arr"] = json!([2]);
+        assert_eq!(merge_for_save(&raw, &loaded, &cur2, &resets)["arr"], json!([2]));
+    }
+
+    #[test]
+    fn reset_paths_cover_ancestors_and_array_elements() {
+        let r = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(reset_covers(&r(&["a.b"]), "a.b.c"));
+        assert!(reset_covers(&r(&["a.b"]), "a.b"));
+        assert!(reset_covers(&r(&["w[3]"]), "w"));
+        assert!(!reset_covers(&r(&["a.b"]), "a"));
+        assert!(!reset_covers(&r(&["a.b"]), "a.bc"));
+        assert!(!reset_covers(&r(&["w[3]"]), "ww"));
+    }
+
+    // ── the calibrations file ──
+
+    #[test]
+    fn car_calibrations_keep_unreadable_entries_and_unknown_fields_but_not_removed_cars() {
+        let dir = use_data_dir("cals");
+        let good = json!({ "gear_redline_speeds": [1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0], "max_rpm": 7000.0, "future": "x" });
+        let text = json!({ "100": good, "200": good, "300": { "max_rpm": "fast" }, "abc": 1 }).to_string();
+        std::fs::write(car_calibrations_path(), &text).unwrap();
+        let mut map = load_car_calibrations();
+        assert_eq!(map.len(), 2);
+        assert_eq!(count_bad(&dir), 0, "an object file loses nothing, so no backup");
+        map.get_mut(&100).unwrap().max_rpm = 6500.0;
+        map.remove(&200);
+        save_car_calibrations(&map);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(car_calibrations_path()).unwrap()).unwrap();
+        assert_eq!(v["100"]["max_rpm"], 6500.0);
+        assert_eq!(v["100"]["future"], "x", "unknown field of a known entry");
+        assert!(v.get("200").is_none(), "removed in the session");
+        assert_eq!(v["300"], json!({ "max_rpm": "fast" }), "unreadable entry kept");
+        assert_eq!(v["abc"], 1);
+        // Garbage as a whole is replaced, with a backup.
+        std::fs::write(car_calibrations_path(), "garbage").unwrap();
+        assert!(load_car_calibrations().is_empty());
+        assert_eq!(count_bad(&dir), 1);
+        save_car_calibrations(&HashMap::new());
+        assert_eq!(std::fs::read_to_string(car_calibrations_path()).unwrap().trim(), "{}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

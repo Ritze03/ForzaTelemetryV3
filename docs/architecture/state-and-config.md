@@ -66,8 +66,9 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
 2. **Mutate** — the UI (Settings tab, dashboard mini-settings cog popup, per-tab
    controls) writes directly into `app.config.*` fields; there's no central "set and
    save" wrapper.
-3. **Save** — `AppConfig::save()` serializes the whole struct back to pretty JSON and
-   writes `config.json` **and** mirrors the same bytes into
+3. **Save** — `AppConfig::save()` serializes the whole struct back to pretty JSON (merged with
+   what the file held that this build does not know, see [[settings]] "Forward compatibility")
+   and writes `config.json` **and** mirrors the same bytes into
    `profiles/<active_profile>.json` (the Profile Manager's continuous-save — see
    [[profiles]]). Triggers: (a) **autosave** — `config::AutoSave::due`, polled each frame
    from `ForzaApp::update`, compares the config's compact JSON with the last written copy at
@@ -134,13 +135,15 @@ are the templates to copy:
 - **Field replaced by a different field/type** — the `compact_tabs: bool` →
   `top_bar_style: TopBarStyle` fix-up in `load()` (`config.rs:699`): if the old bool key
   is present, translate it into the new enum's string value (`true` → `"Simple"`,
-  `false` → `"Legacy"`) and insert that under the new key. The old key is simply left
-  in the map afterward (harmless — `AppConfig` has no field for it, so serde ignores
-  unknown keys on deserialize).
+  `false` → `"Legacy"`) and insert that under the new key, **and remove the old key**
+  (`normalize_raw`): the raw tree is kept for the save merge ([[settings]] "Forward
+  compatibility"), and a kept `compact_tabs` would re-run on every load.
 
 **Checklist when you remove/rename a field or enum value:**
-1. Add a migration in `AppConfig::load()` (raw-JSON rewrite, following the patterns
-   above).
+1. Add a migration in `normalize_raw` (raw-JSON rewrite, following the patterns
+   above; run by `parse()`, `apply_preset_overlay` and the profile load). It must **remove**
+   the old key it reads. A removed field also goes into `RETIRED_KEYS` (otherwise it is
+   kept in the file as "unknown" forever).
 2. If the same field/value can appear in a preset, also handle it in
    `apply_preset_overlay` (`config.rs:543`) — `migrate_tire_display_style` is applied
    there specifically because presets are hand-edited/shared JSON, not just

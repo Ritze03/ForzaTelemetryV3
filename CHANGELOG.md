@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.7.3] – 2026-11-03
+
+### Fixed
+- **Switching between app versions no longer loses settings** — an older version used to throw away every setting it did not know (and reset every value it could not read, such as a new option of a drop-down) the next time it saved, so going back to the newer version found them gone. Settings an older version does not understand now stay in `config.json`, your profiles and the saved gearbox calibrations untouched, and a version that does understand them uses them again. This protects your settings starting with this version: versions released before it still drop them when they save, so if you switch back to one of those, back up your settings folder first.
+
 ## [0.7.2] – 2026-10-16
 
 ### Added
