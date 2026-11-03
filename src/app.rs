@@ -1,13 +1,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use egui::{Context, Pos2, Vec2};
 
 use crate::config::{AppConfig, SpeedDeltaMode};
 use crate::engines::{load_engines, EngineRecord};
-use crate::focus::{FocusDetector, FocusParams};
+use crate::focus::{FocusDetector, FocusParams, MonitorParams};
+use crate::overlay::DisabledReason;
 use crate::hotkeys::HotkeyListener;
 use crate::input::InputSender;
 use crate::listeners::backfire::BackfireView;
@@ -17,14 +18,21 @@ use crate::listeners::power_capture::{PowerCapture, PowerCurveSnapshot};
 use crate::listeners::sprint_timer::SprintTimer;
 use crate::listeners::worker::{Command, ListenerHandle};
 use crate::network::{start_receiver, NetworkHandle};
+use crate::minimap::{
+    current_season, decode_and_cache_season, load_map_color_image, map_cache_path,
+    season_display_name, MapLoadError, Season,
+};
 use crate::packet::ForzaPacket;
 use crate::telemetry::TelemetryState;
 
-/// Whether a global hotkey should fire. Fires when our app is focused (unless a
-/// text field is capturing keys), or when our app is not focused but the game is.
-/// A third app focused → ignore. See the global-hotkeys spec §7.
+/// Whether a global hotkey should fire (D101): only while the game window is focused, as the
+/// window-focus detector sees it (`FocusDetector::hotkeys_ok`: fail-open when detection
+/// can't answer, and our own window never counts as the game). Our app being in front, or
+/// telemetry being live, does not open the gate. The one thing that still closes it from our
+/// side: a text field of ours capturing keys (`our_focused && wants_text`), for the case
+/// where the detector can't tell our window from the game's. See `docs/features/hotkeys.md`.
 pub(crate) fn global_hotkey_allowed(our_focused: bool, wants_text: bool, game_focused: bool) -> bool {
-    if our_focused { !wants_text } else { game_focused }
+    game_focused && !(our_focused && wants_text)
 }
 
 /// The global-scope bindings the capture backend should match against.
@@ -32,51 +40,19 @@ pub(crate) fn global_bindings(
     cfg: &crate::config::AppConfig,
 ) -> Vec<(crate::keymap::HotkeyBinding, crate::config::HotkeyAction)> {
     use crate::config::HotkeyScope;
-    cfg.hotkeys
+    // Action order (not HashMap order): actions sharing a key fire in a stable sequence.
+    let mut v: Vec<_> = cfg
+        .hotkeys
         .bindings
         .iter()
         .filter(|(a, _)| a.scope() == HotkeyScope::Global)
         .map(|(a, b)| (*b, *a))
-        .collect()
+        .collect();
+    v.sort_by_key(|(_, a)| a.order());
+    v
 }
 
-// ── Season detection ──────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Season {
-    Spring,
-    Summer,
-    Autumn,
-    Winter,
-}
-
-pub fn current_season() -> Season {
-    // Spring started 2026-06-12 14:30:00 UTC (7:30 AM PDT). Unix: 1749738600.
-    // Cycle repeats weekly: Spring → Summer → Autumn → Winter.
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let secs = now - 1_749_738_600_i64;
-    if secs < 0 {
-        return Season::Spring;
-    }
-    match (secs / 604_800) % 4 {
-        0 => Season::Spring,
-        1 => Season::Summer,
-        2 => Season::Autumn,
-        _ => Season::Winter,
-    }
-}
-
-fn season_map_bytes(season: Season) -> &'static [u8] {
-    match season {
-        Season::Spring => include_bytes!("../assets/maps/spring.jpg"),
-        Season::Summer => include_bytes!("../assets/maps/summer.jpg"),
-        Season::Autumn => include_bytes!("../assets/maps/autumn.jpg"),
-        Season::Winter => include_bytes!("../assets/maps/winter.jpg"),
-    }
-}
+// ── Minimap map loading ───────────────────────────────────────────
 
 /// Message type sent from the map-loading background thread to the main thread.
 pub enum MapLoadMessage {
@@ -84,105 +60,25 @@ pub enum MapLoadMessage {
     CacheBuildStarted { names: Vec<String> },
     /// One season's cache was just written; carry its name so the UI can remove it.
     CacheBuilt { name: String },
-    /// All necessary caches are built and the current season's image is ready.
-    Done(Option<(egui::ColorImage, [u32; 2])>),
-}
-
-fn season_display_name(season: Season) -> &'static str {
-    match season {
-        Season::Spring => "Spring",
-        Season::Summer => "Summer",
-        Season::Autumn => "Autumn",
-        Season::Winter => "Winter",
-    }
-}
-
-fn map_cache_path(season: Season, quality_pct: u32) -> std::path::PathBuf {
-    crate::config::app_data_dir()
-        .join("map_cache")
-        .join(format!(
-            "{}_q{}.bin",
-            season_display_name(season).to_lowercase(),
-            quality_pct
-        ))
-}
-
-fn try_load_map_cache(path: &std::path::Path) -> Option<(egui::ColorImage, [u32; 2])> {
-    let data = std::fs::read(path).ok()?;
-    if data.len() < 16 {
-        return None;
-    }
-    let orig_w = u32::from_le_bytes(data[0..4].try_into().ok()?);
-    let orig_h = u32::from_le_bytes(data[4..8].try_into().ok()?);
-    let w = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
-    let h = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
-    if data.len() != 16 + w * h * 4 {
-        return None;
-    }
-    let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &data[16..]);
-    Some((color_image, [orig_w, orig_h]))
-}
-
-fn write_map_cache(path: &std::path::Path, orig: [u32; 2], scaled: [u32; 2], rgba: &[u8]) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let mut buf = Vec::with_capacity(16 + rgba.len());
-    buf.extend_from_slice(&orig[0].to_le_bytes());
-    buf.extend_from_slice(&orig[1].to_le_bytes());
-    buf.extend_from_slice(&scaled[0].to_le_bytes());
-    buf.extend_from_slice(&scaled[1].to_le_bytes());
-    buf.extend_from_slice(rgba);
-    let _ = std::fs::write(path, buf);
-}
-
-/// Decodes the JPEG for `season` and writes the binary cache file.
-/// No-ops if the cache already exists. Does NOT return the image data.
-fn decode_and_cache_season(season: Season, quality: f32) {
-    let quality_pct = quality.round() as u32;
-    let cache_file = map_cache_path(season, quality_pct);
-    if cache_file.exists() {
-        return;
-    }
-    let bytes = season_map_bytes(season);
-    let Ok(img) = image::load_from_memory(bytes) else {
-        return;
-    };
-    let orig_size = [img.width(), img.height()];
-    let rgba = if quality >= 99.9 {
-        img.into_rgba8()
-    } else {
-        let nw = ((orig_size[0] as f32 * quality / 100.0) as u32).max(1);
-        let nh = ((orig_size[1] as f32 * quality / 100.0) as u32).max(1);
-        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
-            .into_rgba8()
-    };
-    let (w, h) = rgba.dimensions();
-    write_map_cache(&cache_file, orig_size, [w, h], rgba.as_raw());
-}
-
-/// Loads the current season's map. Always reads from cache (building it first if needed).
-fn load_map_color_image(season: Season, quality: f32) -> Option<(egui::ColorImage, [u32; 2])> {
-    decode_and_cache_season(season, quality);
-    try_load_map_cache(&map_cache_path(season, quality.round() as u32))
+    /// All necessary caches are built and the current season's image is ready, or why not
+    /// (typically: no FH6 install to read the map tiles from).
+    Done(Result<(egui::ColorImage, [u32; 2]), MapLoadError>),
 }
 
 /// Background thread entry point. Builds any missing caches in parallel across all 4 seasons,
 /// sending a `CacheBuilt` message for each completion, then loads the current season's image
 /// from cache and sends `Done`.
 fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoadMessage>) {
-    let all_seasons = [
-        Season::Spring,
-        Season::Summer,
-        Season::Autumn,
-        Season::Winter,
-    ];
+    let all_seasons = crate::minimap::ALL_SEASONS;
     let quality_pct = quality.round() as u32;
 
+    // Without an install nothing can be built (a missing cache then ends in `Done(Err)`, which
+    // the widget shows as "needs your install"), so don't flash the "creating cache" screen.
+    let have_install = crate::gamedata::install::find_media(None).is_some();
     let to_build: Vec<Season> = all_seasons
         .iter()
         .copied()
-        .filter(|&s| !map_cache_path(s, quality_pct).exists())
+        .filter(|&s| have_install && !map_cache_path(s, quality_pct).exists())
         .collect();
 
     if !to_build.is_empty() {
@@ -201,7 +97,9 @@ fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoa
             .map(|season| {
                 let tx = tx.clone();
                 std::thread::spawn(move || {
-                    decode_and_cache_season(season, quality);
+                    if let Err(e) = decode_and_cache_season(season, quality) {
+                        eprintln!("map: {} cache failed: {e}", season_display_name(season));
+                    }
                     let _ = tx.send(MapLoadMessage::CacheBuilt {
                         name: season_display_name(season).to_string(),
                     });
@@ -216,28 +114,6 @@ fn map_load_thread(current_season: Season, quality: f32, tx: mpsc::Sender<MapLoa
 
     let result = load_map_color_image(current_season, quality);
     let _ = tx.send(MapLoadMessage::Done(result));
-}
-
-// ── Minimap helpers ───────────────────────────────────────────────
-
-/// Returns the yaw angle the minimap should orient to.
-/// If `use_movement_dir` and the car is moving, derives heading from velocity vector.
-fn minimap_target_yaw(pkt: &crate::packet::ForzaPacket, use_movement_dir: bool) -> f32 {
-    if use_movement_dir && pkt.speed > 1.0 {
-        pkt.yaw + f32::atan2(pkt.velocity_x, pkt.velocity_z)
-    } else {
-        pkt.yaw
-    }
-}
-
-/// Linearly interpolates between two angles, taking the shortest arc.
-fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    let mut diff = (b - a).rem_euclid(TAU);
-    if diff > PI {
-        diff -= TAU;
-    }
-    a + diff * t
 }
 
 // ── Session stats ──────────────────────────────────────────────────
@@ -367,6 +243,8 @@ pub struct DashboardResizeState {
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tab {
     Dashboard,
+    Overlay,
+    Map,
     Backfire,
     Gearbox,
     PowerCurve,
@@ -374,6 +252,7 @@ pub enum Tab {
     Coop,
     Settings,
     Changelog,
+    Debug,
 }
 
 /// Which page the mini-settings popup shows. `General` is a global page not tied
@@ -448,6 +327,8 @@ fn tab_button(
 fn tab_title(tab: Tab) -> &'static str {
     match tab {
         Tab::Dashboard => "Dashboard",
+        Tab::Overlay => "Overlay",
+        Tab::Map => "Map",
         Tab::PowerCurve => "Power Curve",
         Tab::Coop => "Co-Op",
         Tab::Backfire => "Backfire",
@@ -455,6 +336,7 @@ fn tab_title(tab: Tab) -> &'static str {
         Tab::EngineSwaps => "Engine Swaps",
         Tab::Settings => "Setup",
         Tab::Changelog => "What's New",
+        Tab::Debug => "Debug",
     }
 }
 
@@ -466,9 +348,9 @@ const PILL_FONT: f32 = 12.5;
 /// jumping sideways when you switch to a longer/shorter tab name — the slot is fixed,
 /// so the tabs only shift once, uniformly, when the bar itself gets narrow.
 fn max_pill_width(ui: &egui::Ui) -> f32 {
-    const TABS: [Tab; 8] = [
-        Tab::Dashboard, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
-        Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog,
+    const TABS: [Tab; 11] = [
+        Tab::Dashboard, Tab::Overlay, Tab::Map, Tab::Backfire, Tab::Gearbox, Tab::PowerCurve,
+        Tab::EngineSwaps, Tab::Coop, Tab::Settings, Tab::Changelog, Tab::Debug,
     ];
     TABS.iter()
         .map(|&t| {
@@ -527,7 +409,6 @@ pub enum DashboardSubTab {
     Inputs,
     Boost,
     Graphs,
-    MiniMap,
 }
 
 /// Modal dialog state for the Profile Manager (Settings → PROFILES).
@@ -543,21 +424,19 @@ pub enum ProfileDialog {
     Import, // large two-pane import dialog
 }
 
-/// Nested sub-tabs inside the mini-settings "Map" tab.
-#[derive(PartialEq, Clone, Copy, Default)]
-pub enum MiniMapTab {
-    #[default]
-    General,
-    Coop,
-}
-
 /// Last-known non-paused position of a co-op player, so a paused player can still
-/// be drawn at their last spot. (Class/PI travel in the packet — see push_local.)
+/// be drawn at their last spot. (Class/PI travel in the packet — see coop::outgoing.)
 #[derive(Clone, Copy)]
 pub struct CoopSeen {
     pub x: f32,
+    /// Height (telemetry y) at that spot: the 3D map draws a paused teammate there.
+    pub y: f32,
     pub z: f32,
     pub yaw: f32,
+    /// Last known pitch / roll, with the yaw: the 3D map's Car orientation option draws a
+    /// paused teammate at its last attitude (D100).
+    pub pitch: f32,
+    pub roll: f32,
     /// Last non-empty car class/PI (a paused game transmits zeros — keep the
     /// previous real values so the player list doesn't fall back to "D 0").
     pub car_class: i32,
@@ -568,6 +447,8 @@ pub struct CoopSeen {
 
 pub struct ForzaApp {
     pub config: AppConfig,
+    /// Decides when a changed setting is written to disk (`AppConfig::save`), see `update`.
+    autosave: crate::config::AutoSave,
     pub engines: Vec<EngineRecord>,
     pub labels: crate::labels::Labels,
     pub telemetry: TelemetryState,
@@ -581,9 +462,24 @@ pub struct ForzaApp {
     pub dsg: DsgView,
     input: InputSender,
     pub hotkeys: HotkeyListener,
+    /// Controller backend; `gamepad.right_stick()` is the shared right-stick vector.
+    pub gamepad: crate::gamepad::Gamepad,
     pub focus: Arc<FocusDetector>,
-    /// Settings-tab rebind state: the action currently capturing a new key.
+    /// Hotkey rebind state (Setup → Hotkey, Overlay → Hide HUD): the action capturing a new
+    /// key. The key itself is taken by [`ForzaApp::capture_rebind`].
     pub rebinding: Option<crate::config::HotkeyAction>,
+    /// Setup → Controller: the action whose controller binding is waiting for a pad press.
+    pub pad_rebinding: Option<crate::config::HotkeyAction>,
+    /// The armed rebind button's id and rect, refreshed by [`ForzaApp::track_rebind_button`]
+    /// each frame it's drawn: a press anywhere else cancels the capture (the tab mockup).
+    rebind_button: Option<(egui::Id, egui::Rect)>,
+    /// The tab shown last frame; a tab switch drops the rebind capture and the Overlay
+    /// layout selection so neither acts on keys pressed elsewhere.
+    last_tab: Tab,
+    /// Hide HUD hotkey state, copied from `ListenerView::hud_hidden` (Overlay tab hint).
+    pub hud_hidden: bool,
+    /// Race / drift mode, copied from `ListenerView::hud_mode` (Debug tab).
+    pub hud_mode: crate::overlay::snapshot::HudMode,
     /// Detect-button countdown deadline (active-window auto-fill).
     pub detect_until: Option<std::time::Instant>,
     /// Last Custom-preview / Detect result for the settings page.
@@ -607,7 +503,6 @@ pub struct ForzaApp {
     pub max_boost_psi: f32,
     pub max_speed_kmh: f32,
     pub cached_engine_max_rpm: f64,
-    pub fi_detected: bool,
     /// Highest RPM seen while making power (>0 W) — the dynamically detected redline. Per-car.
     /// Measured on the listener thread (the gearbox needs it there); this is the UI's copy.
     pub dynamic_max_rpm: f32,
@@ -644,10 +539,15 @@ pub struct ForzaApp {
     pub page_settings_opacity: f32,
     pub page_settings_tab: PageSettingsTab,
     pub page_dashboard_sub_tab: DashboardSubTab,
-    pub page_map_sub_tab: MiniMapTab,
     // Profile Manager UI state (Settings → PROFILES). `*_sel` vecs align to
     // crate::config::KEY_GROUPS by index.
     pub profile_dialog: ProfileDialog,       // modal New / Duplicate / Rename / Delete / Export / Import
+    pub input_probe: crate::input::InputProbe, // D13: cached input-permission probe (Setup + startup modal)
+    pub input_perm_modal_open: bool,         // D13: permissions modal currently showing
+    pub onboarding: Option<crate::ui::onboarding::State>, // I17/D33: first-run guide, Some while open (opened at launch while `config.onboarding_done` is false, or from Setup)
+    pub input_prev_missing: bool,            // anything was missing at the previous refresh (modal re-shows on a transition into missing)
+    pub input_perm_copied: Option<(usize, Instant)>, // D13: which fix command was just copied
+    pub input_probe_task: crate::input::ProbeTask, // runs the input probe on a thread (it open()s every /dev/input node, ~150 ms); 2 s throttle
     pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
     pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
@@ -681,12 +581,57 @@ pub struct ForzaApp {
     pub minimap_cached_car_z: f32,
     pub minimap_cached_yaw: f32,
     pub minimap_cached_raw_yaw: f32, // always raw pkt.yaw, for arrow orientation
+    pub minimap_cached_pitch: f32, // raw pkt.pitch / roll with it: the 3D car marker's Car orientation (D100)
+    pub minimap_cached_roll: f32,
+    pub minimap_look: crate::minimap::LookAround, // right-stick look-around; owns the drawn view yaw
     pub minimap_smoothed_yaw: f32,   // lerped yaw used for actual rendering
     minimap_img_receiver: Option<Receiver<MapLoadMessage>>,
+    /// The map editor's local web server (I26b), once started; `None` = never started / stopped.
+    /// See `start_map_editor`.
+    map_editor: Option<crate::mapedit::MapServer>,
+    /// The start mode `map_editor` was started with (a running server cannot change it).
+    map_editor_mode: Option<crate::mapedit::StartFrom>,
+    /// Map tab → Map data page state (status check, start-mode choice, confirm).
+    pub map_data: crate::ui::map_data::MapData,
+    /// Map tab viewer state (view centre, zoom, follow); not saved.
+    pub map_tab: crate::ui::map_tab::MapTabState,
+    /// Navigation bookkeeping that keeps `config.nav` and the navigator (`nav::`) in step (see
+    /// `ui::nav_tab::NavState`; the sidebar of the Map tab's viewer is its UI).
+    pub nav_ui: crate::ui::nav_tab::NavState,
+    /// Destination changes the maps asked for while they drew from `&ForzaApp` (middle click,
+    /// right-click menu, D108); applied after the panels, see `ui::nav_tab::drain_requests`.
+    pub nav_requests: std::cell::RefCell<Vec<crate::ui::map_scene::NavRequest>>,
+    /// The Dashboard map's temporary pan / zoom (D72). A `RefCell`: the widget draws from `&ForzaApp`.
+    pub minimap_pan: std::cell::RefCell<crate::ui::map_scene::ManualView>,
+    /// Whose car the GUI maps (Dashboard map, Viewer) follow: a teammate picked in the
+    /// co-op player list, else the own car (D105). Session state, shared by all of them.
+    pub spectate: crate::ui::map_scene::Spectate,
+    /// The 3D map renderer's state on this window's GL context (K4): the one `Gl3dHandle` the
+    /// Dashboard map and the Map-tab viewer share, destroyed in `on_exit`.
+    pub map3d: crate::ui::map_scene::Map3d,
+    /// Events of `map_editor` (polled once a frame in `poll_map_editor`).
+    map_editor_rx: Option<Receiver<crate::mapedit::MapEvent>>,
+    /// The last `Saved` / `Error` event of the map editor, for the Setup card (I27) to show.
+    /// There is no app-side toast to use instead.
+    pub map_editor_last: Option<crate::mapedit::MapEvent>,
+    /// Why the last map load failed (shown instead of the spinner while no load is running).
+    pub minimap_error: Option<MapLoadError>,
+    /// The `fh6_install_dir` last handed to `gamedata::install::set_user_dir`.
+    fh6_dir_applied: String,
+    /// Debug tab's car-name DB (background-loaded on first open).
+    pub debug_cars: crate::ui::debug_tab::CarDbState,
+    /// Setup → Game Install: background check of the configured / auto-detected install.
+    pub fh6_setup: crate::ui::settings::Fh6Setup,
     pub minimap_cache_progress: Option<Vec<String>>, // display names of seasons still being built
     /// Recent world-space path per player (key "local" or a co-op UUID), for map trails.
-    /// Only maintained/drawn while in a co-op session.
-    pub minimap_trails: HashMap<String, VecDeque<(f32, f32, Instant)>>,
+    /// The own trail is kept solo too (drawn white); teammates' only in a co-op session.
+    pub minimap_trails: HashMap<String, crate::minimap::Trail>,
+    /// Which race lines the Dashboard map draws (`maprender::RaceSel`); a `RefCell` because the
+    /// map widget only gets `&ForzaApp`.
+    pub minimap_race_sel: std::cell::RefCell<crate::maprender::RaceSel>,
+    /// The Dashboard context's own upload of the POI icons (the HUD has another; GL objects are
+    /// never shared between the two contexts).
+    pub minimap_icons: std::cell::RefCell<crate::maprender::icontex::IconTex>,
     /// Last non-paused telemetry per player (key "local" or a co-op UUID), so a
     /// paused player still shows at their last spot with their real class/PI.
     pub coop_last_pos: HashMap<String, CoopSeen>,
@@ -713,6 +658,78 @@ pub struct ForzaApp {
     /// Last `ListenerView::toggle_gen` this UI has adopted — see `worker.rs`.
     last_toggle_gen: u64,
     _network: NetworkHandle,
+    overlay: OverlayRuntime,
+}
+
+/// HUD overlay state for the Overlay tab (I9). Linux and Windows; elsewhere always `Off`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+pub enum OverlayStatus {
+    /// `overlay.enabled` is off (or the `FORZA_OVERLAY_TEST` dev pattern owns the overlay).
+    #[default]
+    Off,
+    /// Waiting for the overlay thread to connect and set up EGL (≤ 5 s).
+    Starting,
+    Running,
+    /// Couldn't start; the reason is user-facing. Retried when the overlay is re-enabled.
+    Disabled(DisabledReason),
+    /// Was running, then its thread exited (connection lost, repeated EGL failures). Also
+    /// retried by re-enabling.
+    Stopped,
+}
+
+/// The app's end of the overlay (see [`ForzaApp::sync_overlay`]).
+#[derive(Default)]
+struct OverlayRuntime {
+    status: OverlayStatus,
+    /// Focus-detector params last pushed; the overlay settings are part of them.
+    focus_params: Option<FocusParams>,
+    /// `overlay.enabled` as last acted on (false while the dev pattern runs).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    wanted: bool,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    handle: Option<crate::overlay::OverlayHandle>,
+    /// Result of an in-flight `OverlayHandle::spawn` on its helper thread.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pending: Option<Receiver<Result<crate::overlay::OverlayHandle, DisabledReason>>>,
+}
+
+/// Drop (= shut down + join) the overlay off the UI thread: the join waits for its current
+/// frame, which must not stall ours. If the thread can't spawn, the handle drops here.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn drop_overlay_async(h: crate::overlay::OverlayHandle) {
+    let _ = std::thread::Builder::new().name("overlay-drop".into()).spawn(move || drop(h));
+}
+
+/// The reason shown when the overlay thread itself can't start (the platform's own variant).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn overlay_thread_error(e: String) -> DisabledReason {
+    if cfg!(target_os = "windows") { DisabledReason::Win32(e) } else { DisabledReason::Wayland(e) }
+}
+
+/// Whether anything can fire a global action: a keyboard binding or an enabled pad binding.
+fn has_global_binding(cfg: &AppConfig) -> bool {
+    !global_bindings(cfg).is_empty() || (cfg.gamepad.enabled && !cfg.gamepad.bindings.is_empty())
+}
+
+/// The focus detector's params. It runs whenever a global hotkey / pad binding exists (D101:
+/// they fire only with the game focused), for the input gate, and whenever the overlay is on:
+/// its `focus_only` (D5) and its monitor detection (D18) need a real answer. An idle
+/// detector fails open (always "focused"), so it must not idle while hotkeys are bound.
+fn focus_params(cfg: &AppConfig) -> FocusParams {
+    let o = &cfg.overlay;
+    FocusParams {
+        method: cfg.hotkeys.focus_method,
+        custom_cmd: cfg.hotkeys.custom_cmd.clone(),
+        game_match: cfg.hotkeys.game_match.clone(),
+        poll_hz: cfg.hotkeys.focus_poll_hz,
+        enabled: cfg.hotkeys.input_focus_gate || o.enabled || has_global_binding(cfg),
+        monitor: (cfg!(any(target_os = "linux", target_os = "windows")) && o.enabled).then(|| MonitorParams {
+            method: o.monitor_method,
+            cmd: o.monitor_cmd.clone(),
+            fixed: o.monitor_fixed.clone(),
+        }),
+    }
 }
 
 /// Speed Trace window length, in accepted-sample ("active") seconds.
@@ -732,6 +749,12 @@ fn trace_step(dt_wall: Option<f32>, t_active: f32) -> Option<f32> {
 }
 
 impl ForzaApp {
+    /// The Dashboard map's yaw without the look-around offset: 0 when locked north-up, else the
+    /// (eased) heading-up yaw. The drawn view yaw is `minimap_look.view_yaw(this)`.
+    pub fn minimap_base_yaw(&self) -> f32 {
+        if self.config.minimap_north_up { 0.0 } else { self.minimap_smoothed_yaw }
+    }
+
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut fonts = egui::FontDefinitions::default();
         // Geist family, copied from the ritz launcher (licences in assets/fonts/):
@@ -756,6 +779,11 @@ impl ForzaApp {
         crate::theme::apply(&_cc.egui_ctx);
 
         let config = AppConfig::load();
+        // The map loaders (here and on the overlay thread) find the install through this.
+        crate::gamedata::install::set_user_dir(
+            Some(config.fh6_install_dir.trim()).filter(|d| !d.is_empty()).map(Into::into),
+        );
+        let fh6_dir_applied = config.fh6_install_dir.clone();
         let engines = load_engines();
 
         // Two hops: UDP thread → listener thread (Backfire + gearbox) → UI. The second hop
@@ -781,27 +809,56 @@ impl ForzaApp {
         };
 
         let initial_zoom = config.minimap_zoom_stopped_m;
-        let config_coop_name = config.coop_name.clone();
-        let config_coop_hue = config.coop_hue;
-        let config_coop_buffer_ms = config.coop_buffer_ms;
         let config_coop_last_code = config.coop_last_code.clone();
 
         // Hotkeys: shared "input allowed" flag, focus detector, capture backend.
         let input_allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let focus = Arc::new(FocusDetector::new(FocusParams {
-            method: config.hotkeys.focus_method,
-            custom_cmd: config.hotkeys.custom_cmd.clone(),
-            game_match: config.hotkeys.game_match.clone(),
-            poll_hz: config.hotkeys.focus_poll_hz,
-            enabled: config.hotkeys.input_focus_gate
-                || config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
-        }));
+        let focus = Arc::new(FocusDetector::new(focus_params(&config)));
         let (hotkeys, hotkey_rx) = HotkeyListener::new(global_bindings(&config));
+        let gamepad = crate::gamepad::Gamepad::spawn(
+            hotkeys.action_sender(),
+            hotkeys.rebind_guard(),
+            crate::gamepad::PadParams::from_config(&config.gamepad),
+        );
+        // The sender first: its constructor waits briefly for the virtual device build, so the
+        // probe below sees "created / failed" instead of guessing from an open() test.
         let mut input = InputSender::new();
         input.set_focus_gate(input_allowed.clone());
+        // The probe runs on a thread (it open()s every /dev/input node: ~150 ms with many
+        // devices, which would stall startup). Until its first result arrives (a few frames)
+        // everything reads "fine" and no modal is up; the result then goes through the same
+        // transition rule as every later one, so a missing permission still opens the modal.
+        let input_probe = crate::input::InputProbe::default();
+        let input_prev_missing = false;
+        let input_perm_modal_open = false;
+        // I17/D33: a fresh install (embedded default config) opens the setup guide; an existing config never does.
+        let onboarding = (!config.onboarding_done).then(crate::ui::onboarding::State::new);
+        let mut input_probe_task = crate::input::ProbeTask::default();
+        {
+            let (kbs, ready) = (hotkeys.active_keyboards(), input.uinput_ready());
+            input_probe_task.spawn(move || crate::input::probe(kbs, ready));
+        }
 
         // The listener thread owns Backfire, the gearbox, the per-car calibrations and the
         // global hotkeys, so they all keep running when the window stops being drawn.
+        let mut coop = crate::coop::CoopState::new(
+            &config.coop_name,
+            config.coop_hue,
+            config.coop_buffer_ms,
+        );
+        // Rejoin the last Trystero room (opt-in; Cloudflare codes are per-session, so
+        // there is nothing to rejoin there).
+        if config.coop_autoconnect
+            && config.coop_transport == crate::config::CoopTransport::Trystero
+            && !config.coop_room.trim().is_empty()
+        {
+            coop.start_trystero(
+                config.coop_room.trim(),
+                &config.coop_name,
+                config.coop_hue,
+                config.coop_buffer_ms,
+            );
+        }
         let listener = crate::listeners::worker::spawn(
             packet_rx,
             hotkey_rx,
@@ -809,9 +866,11 @@ impl ForzaApp {
             input_allowed,
             focus.clone(),
             config.clone(),
+            coop.reader(),
         );
 
         Self {
+            autosave: crate::config::AutoSave::new(&config, std::time::Instant::now()),
             config,
             engines,
             labels: crate::labels::Labels::load(&_cc.egui_ctx),
@@ -822,8 +881,14 @@ impl ForzaApp {
             dsg: DsgView::default(),
             input,
             hotkeys,
+            gamepad,
             focus,
             rebinding: None,
+            pad_rebinding: None,
+            rebind_button: None,
+            last_tab: Tab::Dashboard,
+            hud_hidden: false,
+            hud_mode: Default::default(),
             detect_until: None,
             focus_preview: String::new(),
             power_capture: PowerCapture::new(),
@@ -838,7 +903,6 @@ impl ForzaApp {
             max_boost_psi: 0.0,
             max_speed_kmh: 0.0,
             cached_engine_max_rpm: 0.0,
-            fi_detected: false,
             dynamic_max_rpm: 0.0,
             wheel_radius_est: [0.33; 4],
             icon_center_cache: crate::iconcache::IconCenterCache::new(),
@@ -859,8 +923,13 @@ impl ForzaApp {
             page_settings_opacity: 0.5,
             page_settings_tab: PageSettingsTab::Tab(Tab::Dashboard),
             page_dashboard_sub_tab: DashboardSubTab::default(),
-            page_map_sub_tab: MiniMapTab::default(),
             profile_dialog: ProfileDialog::None,
+            input_probe,
+            input_perm_modal_open,
+            onboarding,
+            input_prev_missing,
+            input_perm_copied: None,
+            input_probe_task,
             profile_dialog_focus: false,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
@@ -888,25 +957,42 @@ impl ForzaApp {
             minimap_cached_car_z: 0.0,
             minimap_cached_yaw: 0.0,
             minimap_cached_raw_yaw: 0.0,
+            minimap_cached_pitch: 0.0,
+            minimap_cached_roll: 0.0,
+            minimap_look: Default::default(),
             minimap_smoothed_yaw: 0.0,
             minimap_img_receiver: map_rx,
+            map_editor: None,
+            map_editor_mode: None,
+            map_data: Default::default(),
+            map_tab: Default::default(),
+            nav_ui: Default::default(),
+            nav_requests: Default::default(),
+            minimap_pan: Default::default(),
+            spectate: Default::default(),
+            map3d: Default::default(),
+            map_editor_rx: None,
+            map_editor_last: None,
+            debug_cars: Default::default(),
+            fh6_setup: Default::default(),
             minimap_cache_progress: None,
+            minimap_error: None,
+            fh6_dir_applied,
             minimap_trails: HashMap::new(),
+            minimap_race_sel: Default::default(),
+            minimap_icons: Default::default(),
             coop_last_pos: HashMap::new(),
             trace_history: VecDeque::new(),
             trace_active_secs: 0.0,
             trace_last_sample: None,
-            coop: crate::coop::CoopState::new(
-                &config_coop_name,
-                config_coop_hue,
-                config_coop_buffer_ms,
-            ),
+            coop,
             coop_join_input: config_coop_last_code,
             coop_copied_at: None,
             packet_tx,
             listener,
             last_toggle_gen: 0,
             _network: network,
+            overlay: OverlayRuntime::default(),
         }
     }
 
@@ -917,6 +1003,150 @@ impl ForzaApp {
         self._network = start_receiver(port, self.packet_tx.clone());
         self.config.listen_port = port;
     }
+
+    /// The Map tab needs the map image: start loading it when nothing has (the Dashboard map module
+    /// is off, so the startup load was skipped) or when the season changed under a texture the
+    /// update loop's own season check leaves alone (module off). A failed load stays failed here;
+    /// Reload Map / a changed install folder retry it.
+    pub fn ensure_map_image(&mut self) {
+        if self.minimap_img_receiver.is_some() {
+            return;
+        }
+        let season = current_season();
+        let stale = self.minimap_texture.is_some() && season != self.minimap_loaded_season;
+        if (self.minimap_texture.is_some() && !stale) || self.minimap_error.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<MapLoadMessage>();
+        let q = self.config.minimap_quality;
+        std::thread::spawn(move || map_load_thread(season, q, tx));
+        if stale {
+            self.minimap_texture = None;
+        }
+        self.minimap_img_receiver = Some(rx);
+        self.minimap_loaded_season = season;
+    }
+
+    /// Reload the map image now (the Map tab's "Reload map"); `rebuild` deletes the image cache
+    /// first ("Rebuild map cache"). The image is built again at `minimap_quality`.
+    pub fn reload_map_image(&mut self, rebuild: bool) {
+        if rebuild {
+            let _ = std::fs::remove_dir_all(crate::config::app_data_dir().join("map_cache"));
+            self.minimap_cache_progress = None;
+        }
+        let (tx, rx) = mpsc::channel::<MapLoadMessage>();
+        let (s, q) = (current_season(), self.config.minimap_quality);
+        std::thread::spawn(move || map_load_thread(s, q, tx));
+        self.minimap_texture = None;
+        self.minimap_error = None;
+        self.minimap_img_receiver = Some(rx);
+        self.minimap_loaded_season = s;
+    }
+
+    /// The Dashboard map module was switched on or off (Map tab → Dashboard map & Viewer → *Show
+    /// Dashboard map*; it was Mini-Settings → Dashboard → Modules → Map until D90): load the map
+    /// image when it came on and nothing holds one, drop the texture when it went off.
+    pub fn dashboard_map_toggled(&mut self) {
+        if self.config.disabled_modules.contains(&crate::config::WidgetKind::MiniMap) {
+            self.minimap_texture = None;
+            self.minimap_img_receiver = None;
+        } else if self.minimap_texture.is_none() && self.minimap_img_receiver.is_none() {
+            let (tx, rx) = mpsc::channel::<MapLoadMessage>();
+            let (s, q) = (current_season(), self.config.minimap_quality);
+            std::thread::spawn(move || map_load_thread(s, q, tx));
+            self.minimap_error = None;
+            self.minimap_img_receiver = Some(rx);
+            self.minimap_loaded_season = s;
+        }
+    }
+
+    /// Open the map editor in the browser (I26b). Starts the local server and builds the map data
+    /// on a background thread first (the browser opens when that is done: `MapEvent::Ready`, see
+    /// `poll_map_editor`); with a server already running in the same `start_from` mode it just
+    /// re-opens its page. **Why a mode switch restarts the server:** `start_from` only applies to
+    /// a fresh server, so the other mode needs a new one (the old browser tab stops working,
+    /// which is fine). Problems land in `map_editor_last` as `MapEvent::Error`.
+    pub fn start_map_editor(&mut self, ctx: &Context, start_from: crate::mapedit::StartFrom) {
+        use crate::mapedit::{MapEvent, MapServerState};
+        if let Some(server) = &self.map_editor {
+            if self.map_editor_mode != Some(start_from) {
+                self.stop_map_editor();
+            } else {
+                match server.state() {
+                    MapServerState::Ready => {
+                        ctx.open_url(egui::OpenUrl::new_tab(server.url()));
+                        return;
+                    }
+                    MapServerState::Preparing { .. } => return, // Ready will open it
+                    MapServerState::Failed(_) => self.stop_map_editor(), // retry from scratch
+                }
+            }
+        }
+        let Some(media) = crate::gamedata::install::find_media(None) else {
+            self.map_editor_last = Some(MapEvent::Error("FH6 install not found".into()));
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        match crate::mapedit::MapServer::start(ctx.clone(), media, start_from, tx) {
+            Ok(server) => {
+                self.map_editor = Some(server);
+                self.map_editor_mode = Some(start_from);
+                self.map_editor_rx = Some(rx);
+                self.map_editor_last = None;
+            }
+            Err(e) => self.map_editor_last = Some(MapEvent::Error(format!("could not start the map editor server: {e}"))),
+        }
+    }
+
+    /// Stop the map editor's server (an open editor tab stops working).
+    pub fn stop_map_editor(&mut self) {
+        self.map_editor = None;
+        self.map_editor_mode = None;
+        self.map_editor_rx = None;
+    }
+
+    /// State of the map editor server for the Setup card: `None` = not running.
+    pub fn map_editor_state(&self) -> Option<crate::mapedit::MapServerState> {
+        self.map_editor.as_ref().map(|s| s.state())
+    }
+
+    /// The editor's URL (contains the session token: open it, don't show or log it).
+    #[allow(dead_code)] // nothing displays the secret URL; the browser is opened from poll_map_editor
+    pub fn map_editor_url(&self) -> Option<&str> {
+        self.map_editor.as_ref().map(|s| s.url())
+    }
+
+    /// The road types the app uses now, as the running editor server knows them (updated on every
+    /// Save, before the window repaints). `None` while no server runs or it is still preparing:
+    /// use `gamedata::roadtypes::RoadTypes::current` then.
+    pub fn map_editor_current(&self) -> Option<Arc<crate::gamedata::roadtypes::Current>> {
+        self.map_editor.as_ref().and_then(|s| s.current())
+    }
+
+    /// Once a frame: drain the map editor's events (open the browser on `Ready`, remember
+    /// `Saved` / `Error` in `map_editor_last`).
+    fn poll_map_editor(&mut self, ctx: &Context) {
+        use crate::mapedit::MapEvent;
+        let Some(rx) = &self.map_editor_rx else { return };
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                MapEvent::Ready { url } => ctx.open_url(egui::OpenUrl::new_tab(url)),
+                ev @ (MapEvent::Saved { .. } | MapEvent::Error(_)) => {
+                    if matches!(ev, MapEvent::Saved { .. }) {
+                        // Show the new road types on the maps now, not up to a second later.
+                        crate::maprender::refresh_now();
+                    }
+                    self.map_editor_last = Some(ev);
+                }
+            }
+        }
+    }
+
+    /// Whether the virtual keyboard for key sending really exists (`None` = still starting).
+    pub fn uinput_ready(&self) -> Option<bool> { self.input.uinput_ready() }
+
+    /// Retry a failed virtual-keyboard build now (Setup -> Re-check).
+    pub fn recheck_uinput(&self) { self.input.recheck(); }
 
     /// True while Backfire's simulated keypress may still be echoing back in
     /// telemetry as a fake accel value. The window is anchored by the input
@@ -946,16 +1176,17 @@ impl ForzaApp {
         }
     }
 
-    /// Clear the RPM (redline) calibration + engagement (tab button; the Reset-RPM hotkey
-    /// does the same on the listener thread): forgets the detected redline and sets the box
-    /// hands-off until the driver's next manual upshift re-locks it. The per-gear speed map
-    /// is left intact. The listener thread owns the calibration, so this is a command — the
-    /// UI's copy catches up with the next snapshot.
+    /// Clear the RPM (redline) calibration + engagement (tab button; the "Clear RPM
+    /// calibration" hotkey / pad action does the same on the listener thread): forgets the
+    /// detected redline and sets the box hands-off until the driver's next manual upshift
+    /// re-locks it. The per-gear speed map is left intact. The listener thread owns the
+    /// calibration, so this is a command — the UI's copy catches up with the next snapshot.
     pub fn clear_rpm_calibration(&self) {
         self.listener.send(Command::ClearRpmCalibration);
     }
 
-    /// Clear the per-gear speed map (tab button only). The detected redline is left intact.
+    /// Clear the per-gear speed map (tab button; the "Clear gear map" hotkey / pad action does
+    /// the same). The detected redline is left intact.
     pub fn clear_gear_map(&self) {
         self.listener.send(Command::ClearGearMap);
     }
@@ -964,14 +1195,178 @@ impl ForzaApp {
     /// after any hotkey/detection setting changes.
     pub fn sync_hotkeys(&mut self) {
         self.hotkeys.set_bindings(global_bindings(&self.config));
-        self.focus.set_params(FocusParams {
-            method: self.config.hotkeys.focus_method,
-            custom_cmd: self.config.hotkeys.custom_cmd.clone(),
-            game_match: self.config.hotkeys.game_match.clone(),
-            poll_hz: self.config.hotkeys.focus_poll_hz,
-            enabled: self.config.hotkeys.input_focus_gate
-                || self.config.hotkeys.gate_mode == crate::config::GateMode::WindowFocus,
+        let p = focus_params(&self.config);
+        self.focus.set_params(p.clone());
+        self.overlay.focus_params = Some(p);
+    }
+
+    pub fn overlay_status(&self) -> &OverlayStatus {
+        &self.overlay.status
+    }
+
+    /// Hotkey capture while `rebinding` is armed, for every rebind button (Setup → Hotkey and
+    /// the Overlay tab's Hide HUD row): Esc cancels, Backspace / Delete unbind ("Not set", D28), any
+    /// other bindable key binds with the modifiers held. Runs before the tabs are drawn, so a
+    /// tab's own capture code never sees the key. Returns true while a capture is armed, so
+    /// the key doesn't also fire an in-app hotkey.
+    ///
+    /// The capture disarms (without binding) on a primary press anywhere but the armed button,
+    /// and whenever another widget holds keyboard focus (a text field) — so a key meant for
+    /// something else never rebinds silently. Tab switches disarm it in `update`. A key that
+    /// ends the capture (bind / Backspace / Delete / Esc) is consumed, so it doesn't also act elsewhere.
+    fn capture_rebind(&mut self, ctx: &Context) -> bool {
+        use crate::keymap::{HotKey, HotkeyBinding, Mods};
+        let Some(action) = self.rebinding else { return false };
+        let button = self.rebind_button;
+        let pressed_elsewhere = ctx.input(|i| {
+            i.pointer.primary_pressed()
+                && !matches!((button, i.pointer.interact_pos()), (Some((_, r)), Some(p)) if r.contains(p))
         });
+        // `wants_keyboard_input`, except the armed button itself (it may hold keyboard focus
+        // when armed via Tab + Enter).
+        let other_focus = ctx.memory(|m| m.focused()).is_some_and(|f| Some(f) != button.map(|(id, _)| id));
+        if pressed_elsewhere || other_focus {
+            self.rebinding = None;
+            self.rebind_button = None;
+            return false;
+        }
+        let pressed = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, m)) = pressed else { return true };
+        match key {
+            egui::Key::Escape => {}
+            egui::Key::Backspace | egui::Key::Delete => {
+                self.config.hotkeys.unbind(action);
+                self.sync_hotkeys();
+            }
+            k => {
+                // Not a bindable key (e.g. a lone modifier arrives as none): keep waiting.
+                let Some(hk) = HotKey::from_egui(k) else { return true };
+                let mods = Mods { ctrl: m.ctrl, alt: m.alt, shift: m.shift, sup: false };
+                self.config.hotkeys.bind(action, HotkeyBinding { mods, key: hk });
+                self.sync_hotkeys();
+            }
+        }
+        ctx.input_mut(|i| {
+            i.events.retain(|e| !matches!(e, egui::Event::Key { key: k, pressed: true, .. } if *k == key))
+        });
+        self.rebinding = None;
+        self.rebind_button = None;
+        true
+    }
+
+    /// Called by a rebind button right after it's drawn (and its click handled): while its
+    /// action is the armed one, remember where it is for [`Self::capture_rebind`].
+    pub fn track_rebind_button(&mut self, action: crate::config::HotkeyAction, resp: &egui::Response) {
+        if self.rebinding == Some(action) {
+            self.rebind_button = Some((resp.id, resp.rect));
+        }
+    }
+
+    /// Once a frame: keep the focus detector's overlay inputs current (the Overlay tab and
+    /// profile loads edit them without calling `sync_hotkeys`), then start/stop the overlay
+    /// thread to follow `overlay.enabled`.
+    fn sync_overlay(&mut self) {
+        let p = focus_params(&self.config);
+        if self.overlay.focus_params.as_ref() != Some(&p) {
+            self.focus.set_params(p.clone());
+            self.overlay.focus_params = Some(p);
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.sync_overlay_thread();
+    }
+
+    /// Start on enable, stop on disable, collect the spawn result, notice a dead thread.
+    /// Failures aren't retried until the next off → on, so a missing layer-shell costs one
+    /// probe, not one per frame.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn sync_overlay_thread(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        // The dev test pattern (main.rs) owns the overlay while it's requested.
+        let want = self.config.overlay.enabled && !crate::overlay::dev_test_requested();
+        if want != self.overlay.wanted {
+            self.overlay.wanted = want;
+            if !want {
+                self.detach_overlay();
+                self.overlay.status = OverlayStatus::Off;
+            } else if self.overlay.pending.is_some() {
+                self.overlay.status = OverlayStatus::Starting; // re-enabled mid-start: reuse it
+            } else if self.overlay.handle.is_none() {
+                self.start_overlay();
+            }
+        }
+        if let Some(rx) = &self.overlay.pending {
+            let result = match rx.try_recv() {
+                Ok(r) => r,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    Err(overlay_thread_error("overlay thread didn't start".into()))
+                }
+            };
+            self.overlay.pending = None;
+            match (want, result) {
+                (true, Ok(h)) => self.attach_overlay(h),
+                (true, Err(reason)) => self.overlay.status = OverlayStatus::Disabled(reason),
+                (false, Ok(h)) => drop_overlay_async(h), // disabled while starting
+                (false, Err(_)) => {}
+            }
+        }
+        if self.overlay.handle.as_ref().is_some_and(|h| h.is_dead()) {
+            self.detach_overlay();
+            self.overlay.status = OverlayStatus::Stopped;
+        }
+    }
+
+    /// `OverlayHandle::spawn` blocks for up to 5 s waiting for the compositor, so it runs on
+    /// a helper thread and [`Self::sync_overlay_thread`] polls the result.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn start_overlay(&mut self) {
+        let opts = crate::overlay::OverlayOptions {
+            output: self.focus.monitor_output(),
+            test_pattern: false,
+            coop: Some(self.coop.reader()),
+        };
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("overlay-start".into()).spawn(move || {
+            // A dropped receiver (app closing) drops the handle here, which shuts it down.
+            let _ = tx.send(crate::overlay::OverlayHandle::spawn(opts));
+        });
+        self.overlay.status = match spawned {
+            Ok(_) => {
+                self.overlay.pending = Some(rx);
+                OverlayStatus::Starting
+            }
+            Err(e) => OverlayStatus::Disabled(overlay_thread_error(e.to_string())),
+        };
+    }
+
+    /// Feed the running overlay: snapshots + wakes from the listener thread, output changes
+    /// from the focus thread's monitor detection (which re-sends the current output to a
+    /// new sink on its next tick).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn attach_overlay(&mut self, h: crate::overlay::OverlayHandle) {
+        let waker = h.waker();
+        self.listener.set_hud_sink(Some(crate::overlay::snapshot::HudSink::new(h.slot(), move || waker.wake()).with_stick(self.gamepad.clone())));
+        let sender = h.sender();
+        self.focus.set_output_sink(Some(Box::new(move |name| {
+            sender.send(crate::overlay::OverlayCmd::SetOutput(name))
+        })));
+        self.overlay.handle = Some(h);
+        self.overlay.status = OverlayStatus::Running;
+    }
+
+    /// Unhook the feeds first, so nothing targets the overlay as it shuts down, then drop it.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn detach_overlay(&mut self) {
+        if let Some(h) = self.overlay.handle.take() {
+            self.listener.set_hud_sink(None);
+            self.focus.set_output_sink(None);
+            drop_overlay_async(h);
+        }
     }
 
     /// Copy the listener thread's published state into our local copy, if it's free right
@@ -989,6 +1384,9 @@ impl ForzaApp {
         self.dsg = view.dsg;
         self.backfire = view.backfire;
         self.dynamic_max_rpm = view.dynamic_max_rpm;
+        self.hud_hidden = view.hud_hidden;
+        self.hud_mode = view.hud_mode;
+        self.telemetry.packets_per_sec = view.pps;
         if view.toggle_gen != self.last_toggle_gen {
             self.last_toggle_gen = view.toggle_gen;
             self.config.dsg_enabled = view.dsg_enabled;
@@ -1022,7 +1420,6 @@ impl ForzaApp {
                 self.max_boost_psi = 0.0;
                 self.max_speed_kmh = 0.0;
                 self.cached_engine_max_rpm = 0.0;
-                self.fi_detected = false;
                 self.wheel_radius_est = [0.33; 4];
                 // The gearbox's own per-car reset (calibration, shift state, saved profile)
                 // happens on the listener thread — it saw this packet first.
@@ -1038,9 +1435,6 @@ impl ForzaApp {
                 self.cached_num_cylinders = pkt.num_cylinders;
                 if pkt.engine_max_rpm > 0.0 {
                     self.cached_engine_max_rpm = pkt.engine_max_rpm as f64;
-                }
-                if pkt.boost > 0.05 {
-                    self.fi_detected = true;
                 }
                 if pkt.speed >= 0.1 {
                     self.max_power_ps = self.max_power_ps.max(pkt.power_ps());
@@ -1152,17 +1546,7 @@ impl ForzaApp {
                 .update(&pkt, accel_s, accel_e, decel_s, decel_e);
             // Backfire + the gearbox already ran on this packet, on the listener thread.
 
-            // Co-Op: relay our locally-received telemetry to peers. A paused game
-            // zeroes car class/PI, so carry over the cached values (same as the Car
-            // widget) so peers keep showing our real class while we're paused.
-            if pkt.is_paused() && self.cached_car_pi != 0 {
-                let mut out = pkt.clone();
-                out.car_class = self.cached_car_class;
-                out.car_performance_index = self.cached_car_pi;
-                self.coop.push_local(&out);
-            } else {
-                self.coop.push_local(&pkt);
-            }
+            // Co-Op's outgoing relay runs on the listener thread too (see worker.rs).
 
             self.telemetry.update(pkt);
         }
@@ -1175,54 +1559,31 @@ impl ForzaApp {
         }
     }
 
-    /// Append current positions to each player's map trail. Only active during a
-    /// co-op session (local + remotes); cleared otherwise so solo behaviour is unchanged.
+    /// Append current positions to each player's map trail. The own trail (`"local"`) is
+    /// recorded always (solo too, drawn white); teammates' only during a co-op session.
+    /// Session start/end keeps the own trail's points (only its colour follows the state) and
+    /// drops the teammates' trails and last-known spots when it ends.
     fn update_minimap_trails(&mut self) {
         use std::collections::HashSet;
-        const MIN_MOVE: f32 = 4.0; // metres between recorded points
-        const MAX_PTS: usize = 400;
-        const TELEPORT: f32 = 300.0; // jump this far in one packet ⇒ clear the trail
-
-        if self.coop.role() == crate::coop::Role::Off {
-            if !self.minimap_trails.is_empty() {
-                self.minimap_trails.clear();
-            }
-            if !self.coop_last_pos.is_empty() {
-                self.coop_last_pos.clear();
-            }
-            return;
+        let in_session = self.coop.role() != crate::coop::Role::Off;
+        if !in_session && !self.coop_last_pos.is_empty() {
+            self.coop_last_pos.clear();
         }
 
         // Drop points older than the fade window so trails stay bounded by time too.
         let max_age = Duration::from_secs_f32(self.config.coop_trail_fade_secs.max(0.5));
         let now = Instant::now();
+        // Recording rules (spacing, teleport reset, cap) live in `minimap::trail_push`, shared
+        // with the HUD Minimap's own trail buffer.
+        // The height is recorded too: the 3D map draws the trail at it (D77).
         fn push(
-            trails: &mut HashMap<String, VecDeque<(f32, f32, Instant)>>,
+            trails: &mut HashMap<String, crate::minimap::Trail>,
             key: String,
-            x: f32,
-            z: f32,
+            p: &crate::packet::ForzaPacket,
             now: Instant,
             max_age: Duration,
         ) {
-            let dq = trails.entry(key).or_default();
-            match dq.back() {
-                Some(&(px, pz, _)) => {
-                    let moved = (px - x).hypot(pz - z);
-                    if moved >= TELEPORT {
-                        dq.clear(); // teleport (fast-travel / reset) — drop the stale line
-                        dq.push_back((x, z, now));
-                    } else if moved >= MIN_MOVE {
-                        dq.push_back((x, z, now));
-                    }
-                }
-                None => dq.push_back((x, z, now)),
-            }
-            while dq.front().is_some_and(|&(_, _, t)| now.duration_since(t) > max_age) {
-                dq.pop_front();
-            }
-            if dq.len() > MAX_PTS {
-                dq.pop_front();
-            }
+            crate::minimap::trail_push(trails.entry(key).or_default(), p.position_x, p.position_y, p.position_z, now, max_age);
         }
 
         // Remember each player's last useful telemetry: position only from
@@ -1231,15 +1592,21 @@ impl ForzaApp {
         fn remember(seen: &mut HashMap<String, CoopSeen>, key: &str, p: &crate::packet::ForzaPacket) {
             let e = seen.entry(key.to_string()).or_insert(CoopSeen {
                 x: p.position_x,
+                y: p.position_y,
                 z: p.position_z,
                 yaw: p.yaw,
+                pitch: p.pitch,
+                roll: p.roll,
                 car_class: p.car_class,
                 pi: p.car_performance_index,
             });
             if !p.is_paused() {
                 e.x = p.position_x;
+                e.y = p.position_y;
                 e.z = p.position_z;
                 e.yaw = p.yaw;
+                e.pitch = p.pitch;
+                e.roll = p.roll;
             }
             if p.car_performance_index != 0 {
                 e.car_class = p.car_class;
@@ -1250,30 +1617,19 @@ impl ForzaApp {
         let mut present: HashSet<String> = HashSet::new();
         present.insert("local".to_string());
         if let Some(pkt) = &self.telemetry.latest {
-            remember(&mut self.coop_last_pos, "local", pkt);
+            if in_session {
+                remember(&mut self.coop_last_pos, "local", pkt);
+            }
             // Skip paused games (car at origin) so we don't draw a line to (0,0).
             if pkt.is_race_on != 0 && !pkt.is_paused() {
-                push(
-                    &mut self.minimap_trails,
-                    "local".to_string(),
-                    pkt.position_x,
-                    pkt.position_z,
-                    now,
-                    max_age,
-                );
+                push(&mut self.minimap_trails, "local".to_string(), pkt, now, max_age);
             }
         }
-        for (info, rp) in self.coop.remote_players() {
+        let remotes = if in_session { self.coop.remote_players() } else { Vec::new() };
+        for (info, rp) in remotes {
             remember(&mut self.coop_last_pos, &info.id, &rp);
             if !rp.is_paused() {
-                push(
-                    &mut self.minimap_trails,
-                    info.id.clone(),
-                    rp.position_x,
-                    rp.position_z,
-                    now,
-                    max_age,
-                );
+                push(&mut self.minimap_trails, info.id.clone(), &rp, now, max_age);
             }
             present.insert(info.id);
         }
@@ -1283,13 +1639,43 @@ impl ForzaApp {
 }
 
 impl eframe::App for ForzaApp {
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.config.language);
+        // 3D maps (K4): a failed 3D context is retried when a 3D map comes back on screen. The GL
+        // context is current during `update`.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.map3d.begin_frame(frame.gl().map(|g| &**g));
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        let _ = frame;
+        // Persist any setting changed since the last write (within ~1 s). Edit sites like the
+        // Window Detection text box never call `save()` themselves, and `on_exit` only runs on
+        // a graceful close, so without this a kill / crash / compositor close lost the edit.
+        // Why the repaint: egui only runs `update` on demand, so an edit made right after a
+        // check (check skipped, nothing else repainting) would sit unsaved until the next input.
+        let now = std::time::Instant::now();
+        if let Some(wait) = self.autosave.recheck_in(now) {
+            ctx.request_repaint_after(wait);
+        }
+        if self.autosave.due(&self.config, now) {
+            self.config.save();
+        }
         self.sync_listener_view();
+        self.sync_overlay();
+        self.gamepad.set_params(crate::gamepad::PadParams::from_config(&self.config.gamepad));
         self.drain_packets();
         // Advance co-op jitter buffers so remote player positions are ready to draw.
         self.coop.tick();
+        // Navigation: config -> navigator, local arrival -> config (before any tab draws).
+        crate::ui::nav_tab::sync(self, ctx);
         self.update_minimap_trails();
+        // Live input status (every ~2 s): Setup lights, the modal's self-close and re-show.
+        crate::ui::settings::refresh_input_facts(self, false);
+        if self.input_probe_task.in_flight() {
+            // Nothing else may be repainting (idle window): come back for the result.
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
+        self.poll_map_editor(ctx);
 
         // Poll minimap image receiver — drain all pending messages this frame
         if self.minimap_img_receiver.is_some() {
@@ -1306,7 +1692,9 @@ impl eframe::App for ForzaApp {
                     }
                     Ok(MapLoadMessage::Done(result)) => {
                         self.minimap_cache_progress = None;
-                        if let Some((img, orig_size)) = result {
+                        self.minimap_error = None;
+                        match result {
+                          Ok((img, orig_size)) => {
                             self.minimap_orig_size = orig_size;
                             self.minimap_texture = Some(ctx.load_texture(
                                 "minimap",
@@ -1315,20 +1703,46 @@ impl eframe::App for ForzaApp {
                                     magnification: egui::TextureFilter::Linear,
                                     minification: egui::TextureFilter::Linear,
                                     wrap_mode: egui::TextureWrapMode::MirroredRepeat,
-                                    mipmap_mode: None,
+                                    mipmap_mode: Some(egui::TextureFilter::Linear),
                                 },
                             ));
+                          }
+                          Err(e) => {
+                            eprintln!("map: load failed: {e}");
+                            self.minimap_error = Some(e);
+                          }
                         }
                         self.minimap_img_receiver = None;
                         break;
                     }
                     Err(mpsc::TryRecvError::Disconnected) => {
                         self.minimap_cache_progress = None;
+                        self.minimap_error = Some(MapLoadError::Decode("map loader thread stopped".into()));
                         self.minimap_img_receiver = None;
                         break;
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                 }
+            }
+        }
+
+        // The install folder (Setup → Game Install) changed: hand it to the loaders, and retry a
+        // map load that failed for want of an install.
+        if self.config.fh6_install_dir != self.fh6_dir_applied {
+            self.fh6_dir_applied = self.config.fh6_install_dir.clone();
+            crate::gamedata::install::set_user_dir(
+                Some(self.fh6_dir_applied.trim()).filter(|d| !d.is_empty()).map(Into::into),
+            );
+            if self.minimap_error.is_some()
+                && self.minimap_img_receiver.is_none()
+                && !self.config.disabled_modules.contains(&crate::config::WidgetKind::MiniMap)
+            {
+                let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
+                let (s, q) = (current_season(), self.config.minimap_quality);
+                std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
+                self.minimap_error = None;
+                self.minimap_img_receiver = Some(map_rx);
+                self.minimap_loaded_season = s;
             }
         }
 
@@ -1347,6 +1761,7 @@ impl eframe::App for ForzaApp {
                 map_load_thread(season_now, q, map_tx);
             });
             self.minimap_texture = None;
+            self.minimap_error = None;
             self.minimap_img_receiver = Some(map_rx);
             self.minimap_loaded_season = season_now;
         }
@@ -1371,8 +1786,10 @@ impl eframe::App for ForzaApp {
                         self.minimap_cached_car_x = pkt.position_x;
                         self.minimap_cached_car_z = pkt.position_z;
                         self.minimap_cached_yaw =
-                            minimap_target_yaw(pkt, self.config.minimap_use_movement_dir);
+                            crate::minimap::target_yaw(pkt, self.config.minimap_use_movement_dir);
                         self.minimap_cached_raw_yaw = pkt.yaw;
+                        self.minimap_cached_pitch = pkt.pitch;
+                        self.minimap_cached_roll = pkt.roll;
                     }
                 }
             }
@@ -1380,31 +1797,41 @@ impl eframe::App for ForzaApp {
 
         // Shared "stopped" state: under 5 km/h for at least 1.5 s. Both the
         // ease-to-north and the zoom-out read it, so they kick in together.
-        let speed_kmh = self
-            .telemetry
-            .latest
-            .as_ref()
-            .map(|p| p.speed * 3.6)
-            .unwrap_or(0.0);
-        let minimap_stopped = if speed_kmh >= 5.0 {
+        // A spectated teammate (D105) stands in for the own car in everything the GUI maps' view
+        // follows: stopped / driving, heading, zoom.
+        let spectated = crate::ui::map_scene::spectated(self);
+        let speed_kmh = match &spectated {
+            Some(s) => s.speed * 3.6,
+            None => self.telemetry.latest.as_ref().map(|p| p.speed * 3.6).unwrap_or(0.0),
+        };
+        let minimap_stopped = if speed_kmh >= crate::minimap::STOPPED_KMH {
             self.minimap_stopped_at = None;
             false
         } else {
             let stopped_at = self.minimap_stopped_at.get_or_insert_with(Instant::now);
-            stopped_at.elapsed().as_secs_f32() >= 1.5
+            stopped_at.elapsed().as_secs_f32() >= crate::minimap::STOPPED_SECS
         };
 
-        // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame
-        {
+        // Smooth rotation: lerp minimap_smoothed_yaw toward the latest target every frame.
+        // `base_target` = where the map's own yaw (`minimap_base_yaw`) is heading, for the
+        // look-around's release (see `minimap::LookAround::step`).
+        let base_target = {
             // In heading-up mode, ease the map to north once the car has been stopped.
             let stopped_north = self.config.minimap_north_up_when_stopped && minimap_stopped;
 
-            let target = if let Some(ref pkt) = self.telemetry.latest {
+            // The heading the view turns to: the spectated teammate's, else the own car's.
+            let heading = spectated.as_ref().map(|s| s.target_yaw);
+            if let (Some(h), true) = (heading, self.spectate.take_snap()) {
+                self.minimap_smoothed_yaw = h; // just picked: no spin from the old heading
+            }
+            let target = if let Some(h) = heading {
+                if stopped_north { 0.0 } else { h }
+            } else if let Some(ref pkt) = self.telemetry.latest {
                 if pkt.is_race_on != 0 {
                     if stopped_north {
                         0.0
                     } else {
-                        minimap_target_yaw(pkt, self.config.minimap_use_movement_dir)
+                        crate::minimap::target_yaw(pkt, self.config.minimap_use_movement_dir)
                     }
                 } else {
                     self.minimap_smoothed_yaw
@@ -1415,24 +1842,39 @@ impl eframe::App for ForzaApp {
 
             // Ease-to-north always animates (that's the whole point); otherwise honour the setting.
             if self.config.minimap_smooth_rotation || stopped_north {
-                let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-                let lerp_t = (6.0 * dt).min(1.0);
-                self.minimap_smoothed_yaw = lerp_angle(self.minimap_smoothed_yaw, target, lerp_t);
+                let dt = ctx.input(|i| i.unstable_dt);
+                self.minimap_smoothed_yaw = crate::minimap::ease_yaw(self.minimap_smoothed_yaw, target, dt);
             } else {
-                self.minimap_smoothed_yaw = self.minimap_cached_yaw;
+                self.minimap_smoothed_yaw = heading.unwrap_or(self.minimap_cached_yaw);
             }
+            if self.config.minimap_north_up {
+                0.0
+            } else if self.config.minimap_smooth_rotation || stopped_north {
+                target
+            } else {
+                self.minimap_smoothed_yaw
+            }
+        };
+
+        // Look-around: the view yaw under the right stick. Held: heading + stick angle,
+        // whatever the base does underneath; released: eases back to the base.
+        {
+            let dt = ctx.input(|i| i.unstable_dt);
+            let stick = self.gamepad.right_stick();
+            let heading = spectated.as_ref().map_or(self.minimap_cached_yaw, |s| s.target_yaw);
+            let (enabled, base) = (self.config.minimap_look_stick, self.minimap_base_yaw());
+            self.minimap_look.step(stick, enabled, heading, base, base_target, dt);
         }
 
         // Smooth minimap zoom: immediate zoom-in when driving, 1.5 s delay before zooming out
         {
-            let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-            let lerp_t = (3.0 * dt).min(1.0);
+            let dt = ctx.input(|i| i.unstable_dt);
             if minimap_stopped {
-                self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
-                    + self.config.minimap_zoom_stopped_m * lerp_t;
-            } else if speed_kmh >= 5.0 {
-                self.minimap_current_zoom = self.minimap_current_zoom * (1.0 - lerp_t)
-                    + self.config.minimap_zoom_driving_m * lerp_t;
+                self.minimap_current_zoom = crate::minimap::ease_zoom(
+                    self.minimap_current_zoom, self.config.minimap_zoom_stopped_m, dt);
+            } else if speed_kmh >= crate::minimap::STOPPED_KMH {
+                self.minimap_current_zoom = crate::minimap::ease_zoom(
+                    self.minimap_current_zoom, self.config.minimap_zoom_driving_m, dt);
             }
             // else: under 5 km/h but not yet 1.5 s — hold the current zoom.
         }
@@ -1447,7 +1889,14 @@ impl eframe::App for ForzaApp {
         // ── Hotkeys ────────────────────────────────────────────────
         // App-focused actions: matched from config against egui input (only
         // delivered while our window is focused → inherently UI-only).
-        {
+        if self.current_tab != self.last_tab {
+            self.last_tab = self.current_tab;
+            self.rebinding = None;
+            if self.pad_rebinding.take().is_some() { self.gamepad.cancel_capture(); }
+            crate::ui::overlay_tab::clear_layout_selection(ctx);
+        }
+        let capturing = self.capture_rebind(ctx);
+        if !capturing {
             use crate::config::{HotkeyAction, HotkeyScope};
             let m = ctx.input(|i| i.modifiers);
             for action in HotkeyAction::ALL.iter().copied() {
@@ -1459,7 +1908,7 @@ impl eframe::App for ForzaApp {
                 if pressed { self.run_app_hotkey(action); }
             }
         }
-        // Global actions (G / B / Reset-RPM) and the synthetic-input focus gate are handled
+        // Global actions (G / B / Clear RPM / Clear gear map / Hide HUD) and the synthetic-input focus gate are handled
         // on the listener thread — they have to keep working while this loop isn't running.
         // Detect button: when the 3s countdown elapses, capture the active window.
         if let Some(t) = self.detect_until {
@@ -1491,6 +1940,8 @@ impl eframe::App for ForzaApp {
                 let style = self.config.top_bar_style;
                 let left = [
                     (Tab::Dashboard,   icons::DASHBOARD,  "Dashboard"),
+                    (Tab::Overlay,     icons::OVERLAY,    "Overlay"),
+                    (Tab::Map,         icons::MAP,        "Map"),
                     (Tab::PowerCurve,  icons::LINE_CHART, "Power Curve"),
                     (Tab::Coop,        icons::USERS,      "Co-Op"),
                     (Tab::Backfire,    icons::BOLT,       "Backfire"),
@@ -1499,10 +1950,11 @@ impl eframe::App for ForzaApp {
                 ];
                 let right = [
                     (Tab::Settings,  icons::COG,      "Setup"),
+                    (Tab::Debug,     icons::BUG,      "Debug"),
                     (Tab::Changelog, icons::BULLHORN, "What's New"),
                 ];
-                // right_to_left adds items right→left, so Setup ends up rightmost and
-                // What's New lands to its left.
+                // right_to_left adds items right→left, so Setup stays rightmost (where
+                // users expect it), Debug sits just left of it, then What's New.
                 ui.horizontal(|ui| {
                     ui.set_min_height(30.0);
                     match style {
@@ -1592,45 +2044,125 @@ impl eframe::App for ForzaApp {
                                 });
                             });
                     };
-                    // LEFT: connection status + pps
-                    // NO_SIGNAL renders wider than its glyph advance, so it needs an
-                    // extra space to match PLUG's visual gap.
-                    let (color, label) = if self.telemetry.is_connected {
-                        (crate::theme::GOOD, format!("{} {}", icons::PLUG, tr("Connected")))
+                    // LEFT: connection status + pps, then the Co-Op indicator.
+                    // With text on: icon + "Connected"/"Disconnected" word; icon-only
+                    // otherwise (PLUG green / NO_SIGNAL red, ink-centred in a fixed box,
+                    // the word moves to a hover tooltip). The pps stays — it's a number.
+                    // Co-Op icon-only: USERS + player count, state carried by colour
+                    // (WARN while connecting, GOOD once everyone is connected).
+                    // Why: colour carries the state so icon-only mode stays readable.
+                    // NO_SIGNAL renders wider than its glyph advance, so the text variant
+                    // needs an extra space to match PLUG's visual gap.
+                    let show_text = self.config.status_bar_show_text;
+                    let (color, icon, word) = if self.telemetry.is_connected {
+                        (crate::theme::GOOD, icons::PLUG, tr("Connected"))
                     } else {
-                        (crate::theme::DANGER, format!("{}  {}", icons::NO_SIGNAL, tr("Disconnected")))
+                        (crate::theme::DANGER, icons::NO_SIGNAL, tr("Disconnected"))
                     };
                     // Connection status + pps are informational, not content to
-                    // select/copy — disable text selection on just these two labels.
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(label).color(color))
-                            .selectable(false),
-                    );
-                    if self.telemetry.is_connected {
-                        // Right-align in a 3-wide field so the label doesn't shift
-                        // as the packet rate gains or loses a digit.
-                        ui.add(
-                            egui::Label::new(format!(
-                                "  {:>3.0} pps",
-                                self.telemetry.packets_per_sec
-                            ))
-                            .selectable(false),
-                        );
+                    // select/copy — disable text selection on these labels.
+                    // The whole group (icon [+ word] + rate) is ONE hover zone whose
+                    // tooltip spells out state and rate ("packets per second", never
+                    // "pps"). Why: icon-only drops the " pps" unit, so the tooltip is
+                    // the only place the unit is explained.
+                    let connected = self.telemetry.is_connected;
+                    let pps = self.telemetry.packets_per_sec;
+                    let group = ui.scope(|ui| {
+                        if show_text {
+                            let sep = if connected { " " } else { "  " };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{icon}{sep}{word}")).color(color),
+                                )
+                                .selectable(false),
+                            );
+                            if connected {
+                                // Right-align in a 3-wide field so the label doesn't shift
+                                // as the packet rate gains or loses a digit.
+                                ui.add(
+                                    egui::Label::new(format!("  {:>3.0} pps", pps))
+                                        .selectable(false),
+                                );
+                            }
+                        } else {
+                            // Number sits directly against its icon (no item spacing).
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let font = egui::FontId::proportional(14.0);
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::hover());
+                            let pos = self
+                                .icon_center_cache
+                                .centered_pos(ui, icon, font.clone(), rect.center());
+                            ui.painter()
+                                .text(pos, egui::Align2::LEFT_TOP, icon, font, color);
+                            if connected {
+                                // Fixed 3-digit-wide, left-aligned box so the Co-Op icon
+                                // doesn't shift as the rate changes digit count.
+                                let nfont = egui::TextStyle::Body.resolve(ui.style());
+                                let w = ui
+                                    .painter()
+                                    .layout_no_wrap("000".into(), nfont.clone(), color)
+                                    .size()
+                                    .x;
+                                let (nrect, _) = ui.allocate_exact_size(
+                                    egui::vec2(w, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().text(
+                                    nrect.left_center(),
+                                    egui::Align2::LEFT_CENTER,
+                                    format!("{:.0}", pps),
+                                    nfont,
+                                    color,
+                                );
+                            }
+                        }
+                    });
+                    if ui.rect_contains_pointer(group.response.rect) {
+                        let mut tip = word.to_string();
+                        if connected {
+                            tip.push_str(&format!("\n{:.0} {}", pps, tr("packets per second")));
+                        }
+                        show_center_tooltip(ui, group.response.rect, tip);
                     }
 
                     // Co-Op indicator (visible from any tab)
                     let coop_role = self.coop.role();
                     if coop_role != crate::coop::Role::Off {
-                        ui.separator();
-                        let (c, verb) = match coop_role {
-                            crate::coop::Role::Host => (crate::theme::ACCENT, tr("Hosting")),
-                            _ => (crate::theme::GOOD, tr("Joined")),
+                        if self.config.status_bar_show_text {
+                            ui.separator();
+                        }
+                        let connecting = self.coop.is_connecting();
+                        let verb = match coop_role {
+                            crate::coop::Role::Host => tr("Hosting"),
+                            _ => tr("Joined"),
                         };
                         let n = self.coop.roster().len();
-                        ui.colored_label(
-                            c,
-                            format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
-                        );
+                        let state = if connecting { tr("Connecting…") } else { tr("Connected") };
+                        let full = format!("{} · {} {} · {}", verb, n, tr("players"), state);
+                        if show_text {
+                            // Hosting keeps its accent colour once up; WARN while connecting.
+                            let c = if connecting {
+                                crate::theme::WARN
+                            } else if coop_role == crate::coop::Role::Host {
+                                crate::theme::ACCENT
+                            } else {
+                                crate::theme::GOOD
+                            };
+                            let resp = ui.colored_label(
+                                c,
+                                format!("{}  {} · {} {}", icons::USERS, verb, n, tr("players")),
+                            );
+                            if resp.hovered() {
+                                show_center_tooltip(ui, resp.rect, full);
+                            }
+                        } else {
+                            let c = if connecting { crate::theme::WARN } else { crate::theme::GOOD };
+                            let resp = ui.colored_label(c, format!("{}  {}", icons::USERS, n));
+                            if resp.hovered() {
+                                show_center_tooltip(ui, resp.rect, full);
+                            }
+                        }
                     }
 
                     // CENTER: Backfire + Automatic Gearbox indicators, centered on the
@@ -1769,6 +2301,7 @@ impl eframe::App for ForzaApp {
                         ui.selectable_value(&mut self.page_settings_tab, PageSettingsTab::General, tr("General"));
                         for (tab, lbl) in [
                             (Tab::Dashboard,    "Dashboard"),
+                            (Tab::Overlay,      "Overlay"),
                             (Tab::Backfire,     "Backfire"),
                             (Tab::Gearbox,      "Gearbox"),
                             (Tab::PowerCurve,   "Power Graph"),
@@ -1825,7 +2358,6 @@ impl eframe::App for ForzaApp {
                                     (DashboardSubTab::Inputs,      "Inputs"),
                                     (DashboardSubTab::Boost,       "Boost"),
                                     (DashboardSubTab::Graphs,      "Power Graph"),
-                                    (DashboardSubTab::MiniMap,     "Map"),
                                 ] {
                                     ui.selectable_value(&mut self.page_dashboard_sub_tab, sub, tr(lbl));
                                 }
@@ -1895,7 +2427,7 @@ impl eframe::App for ForzaApp {
                                         WidgetKind::Inputs, WidgetKind::Car, WidgetKind::Engine,
                                         WidgetKind::Position, WidgetKind::Race,
                                         WidgetKind::Tires, WidgetKind::GForce, WidgetKind::Suspension,
-                                        WidgetKind::MiniMap, WidgetKind::CoopPlayers, WidgetKind::Trace,
+                                        WidgetKind::CoopPlayers, WidgetKind::Trace,
                                         WidgetKind::Boost, WidgetKind::SessionStats,
                                         WidgetKind::PowerGraph, WidgetKind::BoostGraph,
                                     ] {
@@ -1908,24 +2440,9 @@ impl eframe::App for ForzaApp {
                                         if resp.changed() {
                                             if enabled {
                                                 self.config.disabled_modules.retain(|k| k != &kind);
-                                                if kind == WidgetKind::MiniMap
-                                                    && self.minimap_texture.is_none()
-                                                    && self.minimap_img_receiver.is_none()
-                                                {
-                                                    let (tx, rx) = mpsc::channel::<MapLoadMessage>();
-                                                    let s = current_season();
-                                                    let q = self.config.minimap_quality;
-                                                    std::thread::spawn(move || { map_load_thread(s, q, tx); });
-                                                    self.minimap_img_receiver = Some(rx);
-                                                    self.minimap_loaded_season = s;
-                                                }
                                             } else {
                                                 if !self.config.disabled_modules.contains(&kind) {
                                                     self.config.disabled_modules.push(kind.clone());
-                                                }
-                                                if kind == WidgetKind::MiniMap {
-                                                    self.minimap_texture = None;
-                                                    self.minimap_img_receiver = None;
                                                 }
                                             }
                                         }
@@ -2170,154 +2687,21 @@ impl eframe::App for ForzaApp {
                                     ui.add_space(8.0);
                                     crate::ui::power_curve::options_ui(ui, &mut self.config);
                                 }
-                                DashboardSubTab::MiniMap => {
-                                    ui.horizontal(|ui| {
-                                        for (sub, lbl) in [
-                                            (MiniMapTab::General, "General"),
-                                            (MiniMapTab::Coop,    "Co-Op"),
-                                        ] {
-                                            ui.selectable_value(&mut self.page_map_sub_tab, sub, tr(lbl));
-                                        }
-                                    });
-                                    ui.separator();
-                                    ui.add_space(6.0);
-                                    match self.page_map_sub_tab {
-                                    MiniMapTab::General => {
-                                    ui.horizontal(|ui| {
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_fps_limit_enabled, tr("Render FPS limit"));
-                                        if self.config.minimap_fps_limit_enabled {
-                                            ui.add(
-                                                egui::Slider::new(&mut self.config.minimap_fps_limit, 5.0..=120.0)
-                                                    .step_by(1.0)
-                                                    .suffix(" fps"),
-                                            );
-                                        }
-                                    });
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up, tr("Lock map north-up")).on_hover_text("F10");
-                                    if !self.config.minimap_north_up {
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_north_up_when_stopped, tr("North up when stopped"));
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_smooth_rotation, tr("Smooth rotation"));
-                                        crate::theme::styled_checkbox(ui, &mut self.config.minimap_use_movement_dir, tr("Use movement direction as rotation"));
-                                    }
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_mirror_edges, tr("Mirror map at edges"));
-                                    crate::theme::styled_checkbox(ui, &mut self.config.minimap_show_compass, tr("Show compass"));
-                                    ui.add_space(4.0);
-                                    ui.label(tr("Zoom when driving (radius, metres)"));
-                                    ui.add(
-                                        egui::Slider::new(&mut self.config.minimap_zoom_driving_m, 50.0..=3000.0)
-                                            .suffix(" m"),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(tr("Zoom when stopped (radius, metres)"));
-                                    ui.add(
-                                        egui::Slider::new(&mut self.config.minimap_zoom_stopped_m, 500.0..=6000.0)
-                                            .suffix(" m"),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.label(tr("Image quality"));
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            egui::Slider::new(&mut self.config.minimap_quality, 20.0..=100.0)
-                                                .step_by(5.0)
-                                                .suffix("%"),
-                                        );
-                                        if ui.button(tr("Reload Map")).clicked() {
-                                            let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
-                                            let s = current_season();
-                                            let q = self.config.minimap_quality;
-                                            std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
-                                            self.minimap_texture = None;
-                                            self.minimap_img_receiver = Some(map_rx);
-                                            self.minimap_loaded_season = s;
-                                        }
-                                        if ui.button(tr("Rebuild Map Cache")).clicked() {
-                                            let cache_dir = crate::config::app_data_dir().join("map_cache");
-                                            let _ = std::fs::remove_dir_all(&cache_dir);
-                                            let (map_tx, map_rx) = mpsc::channel::<MapLoadMessage>();
-                                            let s = current_season();
-                                            let q = self.config.minimap_quality;
-                                            std::thread::spawn(move || { map_load_thread(s, q, map_tx); });
-                                            self.minimap_texture = None;
-                                            self.minimap_cache_progress = None;
-                                            self.minimap_img_receiver = Some(map_rx);
-                                            self.minimap_loaded_season = s;
-                                        }
-                                    });
-                                    ui.label(
-                                        egui::RichText::new(tr("100% = full resolution; lower = faster load. Cache makes repeat loads near-instant."))
-                                            .size(11.0)
-                                            .color(egui::Color32::GRAY),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.collapsing(tr("Advanced calibration"), |ui| {
-                                        ui.add_space(4.0);
-                                        ui.label(
-                                            egui::RichText::new(tr(
-                                                "Tune if the car dot is misaligned with the map.\n\
-                                                 Default values are derived from in-game reference points."
-                                            ))
-                                            .size(11.0)
-                                            .color(egui::Color32::GRAY),
-                                        );
-                                        ui.add_space(6.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("Pixels per metre"));
-                                            ui.add(
-                                                egui::DragValue::new(&mut self.config.minimap_px_per_m)
-                                                    .speed(0.001)
-                                                    .range(0.01..=10.0),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("World origin X (m at pixel 0)"));
-                                            ui.add(
-                                                egui::DragValue::new(&mut self.config.minimap_world_origin_x)
-                                                    .speed(10.0),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(tr("World origin Z (m at pixel 0)"));
-                                            ui.add(
-                                                egui::DragValue::new(&mut self.config.minimap_world_origin_z)
-                                                    .speed(10.0),
-                                            );
-                                        });
-                                        ui.add_space(4.0);
-                                        if ui.button(tr("Reset to defaults")).clicked() {
-                                            self.config.minimap_px_per_m = 0.3722;
-                                            self.config.minimap_world_origin_x = -12540.0;
-                                            self.config.minimap_world_origin_z = 10738.0;
-                                        }
-                                    });
-                                    }
-                                    MiniMapTab::Coop => {
-                                        ui.label(crate::theme::section_label(tr("Tracer fade")));
-                                        ui.add_space(4.0);
-                                        ui.label(tr("Fade after (time)"));
-                                        ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_secs, 1.0..=60.0).suffix(" s"));
-                                        ui.add_space(4.0);
-                                        ui.label(tr("Fade after (distance)"));
-                                        ui.add(egui::Slider::new(&mut self.config.coop_trail_fade_m, 50.0..=3000.0).suffix(" m"));
-                                        ui.label(
-                                            egui::RichText::new(tr("Tracers fade out with whichever comes first — age or distance behind the player."))
-                                                .size(11.0).color(egui::Color32::GRAY),
-                                        );
-                                        ui.add_space(10.0);
-                                        ui.separator();
-                                        ui.add_space(6.0);
-                                        crate::theme::styled_checkbox(ui, &mut self.config.coop_map_playerlist, tr("Show player list on map"));
-                                        ui.add_enabled_ui(self.config.coop_map_playerlist, |ui| {
-                                            ui.add_space(2.0);
-                                            ui.label(egui::RichText::new(tr("Columns")).size(11.0).color(egui::Color32::GRAY));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_distance, tr("Distance"));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_speed, tr("Speed"));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_gear, tr("Gear"));
-                                            crate::theme::styled_checkbox(ui, &mut self.config.coop_list_class, tr("Car class"));
-                                        });
-                                    }
-                                    }
-                                }
                             }
+                        }
+                        PageSettingsTab::Tab(Tab::Overlay) => {
+                            // The HUD minimap and co-op map settings live on the Map tab (D79);
+                            // only the notifications stay here.
+                            let o = &mut self.config.overlay;
+                            ui.label(crate::theme::section_label(tr("Notifications")));
+                            ui.add_space(4.0);
+                            crate::theme::styled_checkbox(ui, &mut o.notif_on, tr("Show notifications"));
+                            ui.add_enabled_ui(o.notif_on, |ui| {
+                                crate::theme::styled_checkbox(ui, &mut o.notif_gearbox_toggle, tr("Gearbox on / off"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_gearbox_mode, tr("Gearbox mode changed"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_backfire, tr("Backfire on / off"));
+                                crate::theme::styled_checkbox(ui, &mut o.notif_calibration, tr("Calibration started / shift / done"));
+                            });
                         }
                         PageSettingsTab::Tab(Tab::PowerCurve) => {
                             crate::ui::power_curve::options_ui(ui, &mut self.config);
@@ -2381,6 +2765,8 @@ impl eframe::App for ForzaApp {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.current_tab {
             Tab::Dashboard => crate::ui::dashboard::show(ui, self),
+            Tab::Overlay => crate::ui::overlay_tab::show(ui, self),
+            Tab::Map => crate::ui::map_tab::show(ui, self),
             Tab::Backfire => crate::ui::backfire::show_backfire(ui, self),
             Tab::Gearbox => crate::ui::gearbox::show_gearbox(ui, self),
             Tab::PowerCurve => crate::ui::power_curve::show(ui, self),
@@ -2388,7 +2774,18 @@ impl eframe::App for ForzaApp {
             Tab::Coop => crate::ui::coop::show(ui, self),
             Tab::Settings => crate::ui::settings::show(ui, self),
             Tab::Changelog => crate::ui::changelog::show(ui, self),
+            Tab::Debug => crate::ui::debug_tab::show(ui, self),
         });
+
+        crate::ui::nav_tab::drain_requests(self);
+
+        crate::ui::onboarding::show(ctx, self);
+        crate::ui::settings::input_perm_modal(ctx, self);
+
+        // Mute every hotkey / pad source while a rebind capture is armed (keyboard, Hide HUD or
+        // pad), and for a short grace after it ends. Mirrored last in the frame so the click
+        // that armed it and the key that ended it are both seen; see `RebindGuard`.
+        self.hotkeys.rebind_guard().set_active(self.rebinding.is_some() || self.pad_rebinding.is_some());
 
         // Hand the listener thread this frame's config plus the two focus facts only egui
         // knows (the global-hotkey gate needs them). Pushed unconditionally — it's one
@@ -2398,7 +2795,9 @@ impl eframe::App for ForzaApp {
             &self.config,
             self.last_toggle_gen,
             ctx.input(|i| i.focused),
-            ctx.wants_keyboard_input(),
+            // A rebind capture counts as text input: the key being bound mustn't also fire
+            // its current global action (G toggling the gearbox, H hiding the HUD).
+            ctx.wants_keyboard_input() || self.rebinding.is_some(),
         );
 
         // FPS limiter
@@ -2409,7 +2808,15 @@ impl eframe::App for ForzaApp {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        // The 3D renderer's GL objects go first, while the context is still alive and current
+        // (eframe destroys its painter right after this returns).
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let Some(gl) = gl {
+            self.map3d.destroy(gl);
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        let _ = gl;
         // Pick up a hotkey toggle we may never have been drawn to see (quitting from a
         // minimized window), so the saved config matches what the user last pressed. Unlike
         // the per-frame sync this one blocks: there is no next frame to retry on, and the
@@ -2417,15 +2824,58 @@ impl eframe::App for ForzaApp {
         if let Some(view) = self.listener.view_now() {
             self.adopt_listener_view(view);
         }
+        // Likewise an arrival noticed while the window was covered: no frame took it over yet.
+        crate::ui::nav_tab::take_arrival_now(self);
         self.config.save();
         // The listener thread owns the per-car calibrations — let it flush them and stop.
         self.listener.shutdown();
+        // Blocking this time: the join tears the layer surface down cleanly before exit.
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let Some(h) = self.overlay.handle.take() {
+            self.focus.set_output_sink(None);
+            drop(h);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::trace_step;
+
+    /// D79: Mini-Settings has no map settings (they live on the Map tab). A source check, since
+    /// the window is built inline in `ForzaApp::update`: none of the map controls' labels may be
+    /// drawn from `app.rs` any more. (`test_support` strings are looked up in the text before the
+    /// tests module only.)
+    #[test]
+    fn mini_settings_has_no_map_controls() {
+        let src = include_str!("app.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").expect("tests module")];
+        for label in [
+            "Lock map north-up", "North up when stopped", "Mirror map at edges", "Rotate with right stick",
+            "Show compass", "Allow pan and zoom", "Zoom when driving", "Zoom when stopped", "Render FPS limit",
+            "Image quality", "Reload Map", "Rebuild Map Cache", "Advanced calibration", "Tracer fade",
+            "Show player list on map", "Use Dashboard map settings", "Use Dashboard co-op settings",
+            "Show co-op teammates", "Show shared waypoints", "Show trails",
+        ] {
+            assert!(!src.contains(&format!("tr(\"{label}")), "Mini-Settings still draws the map control \"{label}\"");
+        }
+    }
+
+    /// D90: the Mini-Settings window body (labels aside) touches no map or co-op-map config and no
+    /// map state: the Dashboard map's on/off switch (Modules -> Map) was the last one left.
+    #[test]
+    fn mini_settings_window_touches_no_map_config() {
+        let src = include_str!("app.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").expect("tests module")];
+        let a = src.find("egui::Window::new(\"page_settings_win\")").expect("Mini-Settings window");
+        let body = &src[a..a + src[a..].find("let hovered = win_resp").expect("end of window")];
+        for needle in [
+            "minimap_", "map_layers", "WidgetKind::MiniMap", "config.overlay.map_", "o.map_", "o.minimap_",
+            "coop_trail", "coop_map_playerlist", "coop_list_", "coop_teammates", "coop_waypoints", "coop_trails",
+        ] {
+            assert!(!body.contains(needle), "Mini-Settings window still uses `{needle}`");
+        }
+    }
 
     #[test]
     fn trace_step_first_sample_starts_at_current_axis_time() {
@@ -2450,22 +2900,71 @@ mod tests {
 
 #[cfg(test)]
 mod hotkey_tests {
-    use super::global_hotkey_allowed;
+    use super::{focus_params, global_hotkey_allowed};
+    use crate::config::{AppConfig, HotkeyAction};
+    use crate::focus::evaluate;
+
+    /// The whole global gate as the listener thread runs it: one detector query result,
+    /// the UI facts, and (ignored since D101) whether telemetry is live.
+    fn fires(query: Result<&str, &str>, our_focused: bool, wants_text: bool, _telemetry_live: bool) -> bool {
+        let v = evaluate(&query.map(String::from).map_err(String::from), "Forza");
+        global_hotkey_allowed(our_focused, wants_text, v.hotkeys_ok())
+    }
 
     #[test]
-    fn fires_when_app_focused_and_not_typing() {
-        assert!(global_hotkey_allowed(true, false, false));
+    fn game_focused_fires() {
+        assert!(fires(Ok("steam_app_1 Forza Horizon 6"), false, false, true));
+        assert!(fires(Ok("steam_app_1 Forza Horizon 6"), false, false, false));
     }
     #[test]
-    fn blocked_when_app_focused_but_typing() {
-        assert!(!global_hotkey_allowed(true, true, false));
+    fn our_app_focused_does_not_fire_global() {
+        // Our title contains the default match "Forza", but it is not the game.
+        assert!(!fires(Ok("Forza Telemetry V3"), true, false, true));
+        // A detector that does not match us either way.
+        assert!(!fires(Ok("kitty"), true, false, true));
     }
     #[test]
-    fn fires_when_not_ours_but_game_focused() {
-        assert!(global_hotkey_allowed(false, false, true));
+    fn telemetry_live_with_third_app_focused_does_not_fire() {
+        assert!(!fires(Ok("firefox Mozilla Firefox"), false, false, true));
     }
     #[test]
-    fn blocked_when_third_app_focused() {
-        assert!(!global_hotkey_allowed(false, false, false));
+    fn detector_error_fails_open() {
+        assert!(fires(Err("hyprctl: not found"), false, false, false));
+        assert!(fires(Err("unsupported platform"), true, false, false));
+        assert!(fires(Err("empty custom command"), false, false, true));
+    }
+    #[test]
+    fn text_field_capture_still_blocks() {
+        assert!(!fires(Ok("Forza Horizon 6"), true, true, false));
+        assert!(!fires(Err("x"), true, true, false));
+        // A stale "typing" fact without our window focused cannot block the game.
+        assert!(global_hotkey_allowed(false, true, true));
+    }
+    #[test]
+    fn in_app_scope_is_not_global() {
+        use crate::config::HotkeyScope;
+        assert_eq!(HotkeyAction::MiniSettings.scope(), HotkeyScope::AppFocused);
+        assert_eq!(HotkeyAction::DashboardEdit.scope(), HotkeyScope::AppFocused);
+        assert_eq!(HotkeyAction::ToggleGearbox.scope(), HotkeyScope::Global);
+    }
+    #[test]
+    fn detector_runs_while_global_hotkeys_are_bound() {
+        let mut cfg = AppConfig::default();
+        cfg.overlay.enabled = false;
+        cfg.hotkeys.input_focus_gate = false;
+        assert!(focus_params(&cfg).enabled, "default bindings -> detector on");
+        cfg.hotkeys.bindings.retain(|a, _| a.scope() == crate::config::HotkeyScope::AppFocused);
+        cfg.gamepad.enabled = false;
+        assert!(!focus_params(&cfg).enabled, "nothing global to gate -> idle");
+        cfg.gamepad.enabled = true;
+        assert!(focus_params(&cfg).enabled, "a pad binding is a global action too");
+    }
+    #[test]
+    fn old_config_with_gate_mode_still_loads() {
+        let hk: crate::config::HotkeyConfig =
+            serde_json::from_str(r#"{"gate_mode":"WindowFocus","game_match":"Forza","focus_poll_hz":4.0}"#).unwrap();
+        assert_eq!(hk.game_match, "Forza");
+        let hk: crate::config::HotkeyConfig = serde_json::from_str(r#"{"gate_mode":"TelemetryLive"}"#).unwrap();
+        assert!(!hk.bindings.is_empty());
     }
 }

@@ -27,7 +27,7 @@ for free. See `docs/superpowers/specs/2026-07-16-profile-manager-design.md`.
   `load_profile` overlays the target snapshot and re-asserts `active_profile`.
 - **New** (`new_profile`) — snapshots the *current* live settings as the starting point,
   then switches to the new profile. **On Windows only**, a new profile also defaults to
-  `gate_mode = WindowFocus` ("Game window focused") and `input_focus_gate = true` ("Only
+  `input_focus_gate = true` ("Only
   send inputs when game focused"). This override is New-only — duplicate and import don't
   apply it.
 - **Duplicate** (`duplicate_profile_as`) — copies the active snapshot under a chosen name

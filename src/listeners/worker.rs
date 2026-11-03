@@ -7,8 +7,9 @@
 //! means the game loses its synthetic keypresses the moment the window is covered. Both
 //! features must not depend on redraws, so they run here instead, straight off the UDP
 //! channel, together with the state they need (per-car calibration, the detected redline,
-//! the packet rate) and the global hotkeys that toggle them. Every packet is then handed to
-//! the UI, which keeps doing everything else in `ForzaApp::drain_packets`.
+//! the packet rate) and the global hotkeys that toggle them. Co-Op's outgoing relay runs here
+//! for the same reason (peers must see us move while the game covers the window). Every
+//! packet is then handed to the UI, which keeps doing everything else in `ForzaApp::drain_packets`.
 //!
 //! **Synchronisation** is three one-way mailboxes, each with its own mutex, plus an mpsc
 //! channel for one-shot commands. No lock is ever held across a blocking call, disk IO or
@@ -26,6 +27,11 @@
 //! - **commands** ([`Command`]) go down an `mpsc` channel, which never blocks the sender and
 //!   never drops a one-shot the user asked for (a calibration reset, shutdown).
 //!
+//! - **listener → overlay** (optional, attached with [`ListenerHandle::set_hud_sink`]): a
+//!   [`HudSnapshot`](crate::overlay::snapshot::HudSnapshot) written latest-wins into the
+//!   overlay's slot plus a wake ping — on every packet (D17: one redraw per packet) and
+//!   whenever the visibility target changes without one (pause/timeout/focus/Hide HUD).
+//!
 //! Why so loose: the UI may show a one-frame-stale value, which is fine because nothing in
 //! it is critical, while the loop that actually drives the game is never affected by the UI.
 
@@ -37,25 +43,32 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::{
-    load_car_calibrations, save_car_calibrations, AppConfig, CarCalibration, GateMode,
+    load_car_calibrations, save_car_calibrations, AppConfig, CarCalibration,
     HotkeyAction,
 };
+use crate::coop::CoopReader;
 use crate::focus::FocusDetector;
 use crate::input::InputSender;
 use crate::listeners::backfire::{BackfireListener, BackfireView};
+use crate::listeners::calib::next_max_rpm;
 use crate::listeners::dsg::{DsgListener, DsgView};
+use crate::listeners::houses::{House, HousePoller};
+use crate::listeners::hud::{hud_paused, HudTracker, PauseRule, VisFacts};
+use crate::listeners::notify::Notifier;
+use crate::overlay::snapshot::{hud_clock, HudSink};
 use crate::packet::ForzaPacket;
 
-/// Loop cadence when no packet arrives — also the worst-case shutdown latency.
+/// Loop cadence when no packet arrives — also the worst-case shutdown latency, and the
+/// granularity at which the HUD notices a lost stream (hidden 2.0–2.2 s after the last
+/// packet) or a focus change while no packets arrive.
 const IDLE_POLL: Duration = Duration::from_millis(200);
-/// No packet for this long ⇒ telemetry isn't live (the `TelemetryLive` hotkey gate).
-const STALE_AFTER: Duration = Duration::from_secs(2);
 /// How long a pushed [`ToListener::our_focused`] / `wants_text` stays believable.
 ///
 /// They only change when the UI is drawn, and a hidden window is never drawn — so without
-/// an expiry they would freeze at whatever the last visible frame said, and the global
-/// hotkey gate would be stuck open (bare `G`/`B`/`F` typed in *any* other app would toggle
-/// the gearbox or wipe the calibration) or stuck shut (if a text field had focus). After
+/// an expiry they would freeze at whatever the last visible frame said: a frozen `wants_text`
+/// would keep the global hotkey gate shut for as long as the window stays hidden (before D101
+/// a frozen "focused" also held it open, so bare `G`/`B`/`F` typed in *any* other app
+/// toggled the gearbox; the gate now needs the game focused either way). After
 /// this long with no push we treat the window as neither focused nor typing, which is what
 /// a hidden window actually is; the gate then falls back to "is the game focused?".
 ///
@@ -69,6 +82,12 @@ const FOCUS_FACTS_TTL: Duration = Duration::from_secs(1);
 /// the queue fills and the **oldest** are dropped, so a restore replays at most this many
 /// packets instead of minutes of stale telemetry (and the queue can't grow without bound).
 pub const UI_BACKLOG_CAP: usize = 200;
+
+/// Largest packet-time step the navigator counts for one packet (ms): a stalled loop or the
+/// first packet after a long gap is one step of this, not seconds spent "off the route".
+const NAV_DT_CAP_MS: u128 = 250;
+/// How often the co-op shared destination is looked at (one lock of the co-op state).
+const NAV_COOP_POLL_MS: u64 = 100;
 
 /// Everything the UI displays out of the listener thread.
 #[derive(Clone, Default)]
@@ -84,6 +103,58 @@ pub struct ListenerView {
     /// Bumped on every hotkey toggle. The UI adopts the two flags whenever it sees a new
     /// generation, and echoes the generation back in [`ToListener::ack_gen`].
     pub toggle_gen: u64,
+    /// Hide HUD hotkey state (D16). Listener-owned runtime state, not config: nothing the
+    /// UI pushes can overwrite it, so it needs no `toggle_gen` protection, and it resets to
+    /// shown on restart.
+    pub hud_hidden: bool,
+    /// Race-vs-drift mode from the DSG listener's classifier (always running, unlike the
+    /// HUD's own copy which only runs while the overlay is on). Shown in the Debug tab.
+    pub hud_mode: crate::overlay::snapshot::HudMode,
+    /// Packets per second as the listener thread measures it on receipt (1 s windows; `0.0`
+    /// once no packet arrived for [`PpsMeter::STALE`]). The status bar shows this: the UI
+    /// thread's own count depends on when frames drain the queue, so any UI stall made it swing.
+    pub pps: f32,
+}
+
+/// Packets-per-second over 1 s windows, counted when each packet is received.
+struct PpsMeter {
+    /// Last finished window's rate.
+    rate: f32,
+    count: u32,
+    since: Instant,
+    last: Option<Instant>,
+}
+
+impl PpsMeter {
+    /// No packet for this long and [`Self::published`] reads 0: `rate` only moves on a packet,
+    /// so it would otherwise stay frozen at the last value after the game stops sending.
+    const STALE: Duration = Duration::from_secs(2);
+
+    fn new(now: Instant) -> Self {
+        Self { rate: 0.0, count: 0, since: now, last: None }
+    }
+
+    fn on_packet(&mut self, now: Instant) {
+        // After a silence (game paused / closed) the open window would make the first packet
+        // back report 1 / gap; start a fresh one instead.
+        if self.last.is_some_and(|t| now.duration_since(t) > Duration::from_secs(1)) {
+            self.count = 0;
+            self.since = now;
+        }
+        self.last = Some(now);
+        self.count += 1;
+        let elapsed = now.duration_since(self.since).as_secs_f32();
+        if elapsed >= 1.0 {
+            self.rate = self.count as f32 / elapsed;
+            self.count = 0;
+            self.since = now;
+        }
+    }
+
+    /// The value for the UI: `rate`, or 0 when the stream stopped.
+    fn published(&self, now: Instant) -> f32 {
+        if self.last.is_some_and(|t| now.duration_since(t) < Self::STALE) { self.rate } else { 0.0 }
+    }
 }
 
 /// What the UI hands the thread each frame.
@@ -102,11 +173,17 @@ struct ToListener {
 }
 
 /// One-shot requests from the UI. Sent over a channel so none is ever lost.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // SetHudSink: the overlay exists on Linux and Windows only
 pub enum Command {
-    /// Clear the detected redline + engagement; keeps the per-gear speed map.
+    /// Clear the detected redline + engagement; keeps the per-gear speed map. Same as the
+    /// "Clear RPM calibration" hotkey / controller action.
     ClearRpmCalibration,
-    /// Clear the per-gear speed map; keeps the detected redline.
+    /// Clear the per-gear speed map; keeps the detected redline. Same as the "Clear gear map"
+    /// hotkey / controller action.
     ClearGearMap,
+    /// Attach (`Some`) or detach (`None`) the HUD overlay's mailbox. With none attached the
+    /// listener builds no snapshots.
+    SetHudSink(Option<HudSink>),
     /// Flush the per-car calibrations and end the loop.
     Shutdown,
 }
@@ -173,6 +250,12 @@ impl ListenerHandle {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    /// Attach the overlay (`Some`) or detach it (`None`); see [`Command::SetHudSink`].
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay exists on Linux and Windows only
+    pub fn set_hud_sink(&self, sink: Option<HudSink>) {
+        self.send(Command::SetHudSink(sink));
+    }
+
     /// Ask the thread to flush calibrations and stop, then wait for it (≤ `IDLE_POLL`).
     pub fn shutdown(&mut self) {
         let _ = self.cmd_tx.send(Command::Shutdown);
@@ -191,6 +274,7 @@ pub fn spawn(
     input_allowed: Arc<AtomicBool>,
     focus: Arc<FocusDetector>,
     cfg: AppConfig,
+    coop: CoopReader,
 ) -> ListenerHandle {
     let view = Arc::new(Mutex::new(ListenerView {
         dsg_enabled: cfg.dsg_enabled,
@@ -214,6 +298,7 @@ pub fn spawn(
             view: view_t,
             inbox: inbox_t,
             cfg,
+            coop,
         })
     });
 
@@ -238,6 +323,7 @@ struct Ctx {
     view: Arc<Mutex<ListenerView>>,
     inbox: Arc<Mutex<Option<ToListener>>>,
     cfg: AppConfig,
+    coop: CoopReader,
 }
 
 fn run(ctx: Ctx) {
@@ -252,6 +338,7 @@ fn run(ctx: Ctx) {
         view,
         inbox,
         mut cfg,
+        coop,
     } = ctx;
 
     let mut dsg = DsgListener::new();
@@ -264,12 +351,37 @@ fn run(ctx: Ctx) {
     let mut wants_text = false;
     // When the UI last pushed; None = never. Ages out via FOCUS_FACTS_TTL.
     let mut last_push: Option<Instant> = None;
-    // Own packet-rate measurement (Backfire's dynamic press length needs it). The UI's
-    // `TelemetryState::packets_per_sec` is computed per frame and stops when frames do.
-    let mut pps = 0.0_f32;
-    let mut pps_count = 0_u32;
-    let mut pps_since = Instant::now();
-    let mut last_packet: Option<Instant> = None;
+    // Own packet-rate measurement (Backfire's dynamic press length needs it; the status bar
+    // shows it too, via `ListenerView::pps`). It lives here, not on the UI thread, because the
+    // UI drains in batches whenever a frame stalls, which made a UI-side count swing.
+    let mut pps = PpsMeter::new(Instant::now());
+    // HUD overlay: per-packet derived state, the attached mailbox, the Hide HUD toggle, and
+    // the last published visibility (a change without a packet still has to be published).
+    let mut hud = HudTracker::new();
+    let mut hud_sink: Option<HudSink> = None;
+    let mut hud_hidden = false;
+    let mut hud_visible = false;
+    let mut hud_force = false;
+    let mut hud_cfg = Arc::new(cfg.overlay.effective(&cfg));
+    // D26 on-HUD messages; `in_race` = race position ≠ 0 on the last race-on packet.
+    let mut notifier = Notifier::default();
+    let mut in_race = false;
+    // The car on the last packet while the game is running and not paused (Calibration started).
+    let mut driving_car: Option<i32> = None;
+    // Player-house positions for the experimental pause rule (D103): refreshed at most once a
+    // second and only while the setting is on, borrowed by every per-packet pause check.
+    let mut houses_poller = HousePoller::default();
+    let mut houses: Arc<[House]> = Arc::from([]);
+    // Co-Op: (class, PI) of the last race-on packet, restored into paused packets.
+    let mut coop_car = (-1, 0);
+    // Navigation (`nav`): progress / off-route / re-route per packet, here and not in the UI
+    // because the UI loop stops while the game covers the window. The route itself is computed
+    // on the `nav-route` thread; while no destination exists a tick is one atomic load.
+    let mut nav = crate::nav::Tracker::global();
+    let nav_start = Instant::now();
+    let mut nav_prev_pkt: Option<Instant> = None;
+    let mut nav_coop_seq = u64::MAX;
+    let mut nav_coop_next = 0_u64;
 
     loop {
         // ── UI → listener: config + focus facts ────────────────────────────
@@ -280,7 +392,19 @@ fn run(ctx: Ctx) {
                 our_focused = msg.our_focused;
                 wants_text = msg.wants_text;
                 last_push = Some(Instant::now());
+                if msg.cfg.overlay.enabled && !cfg.overlay.enabled {
+                    hud.reset(); // no stale "previous packet" from before it was off
+                    // why: enabling should show the HUD; a hidden state left over from
+                    // before would make it look broken.
+                    hud_hidden = false;
+                }
                 cfg = msg.cfg;
+                // The HUD draws with the effective config (Dashboard values where "Use Dashboard ...
+                // settings" is ticked), so the renderer never branches on those flags.
+                let eff = cfg.overlay.effective(&cfg);
+                if *hud_cfg != eff {
+                    hud_cfg = Arc::new(eff);
+                }
                 if stale_toggles {
                     cfg.dsg_enabled = dsg_on;
                     cfg.backfire_enabled = bf_on;
@@ -293,13 +417,18 @@ fn run(ctx: Ctx) {
         for cmd in cmd_rx.try_iter() {
             match cmd {
                 Command::ClearRpmCalibration => {
-                    dsg.reset_state();
-                    dynamic_max_rpm = 0.0;
+                    clear_rpm_calibration(&mut dsg, &mut dynamic_max_rpm);
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
                 Command::ClearGearMap => {
                     dsg.reset_calibration();
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
+                }
+                Command::SetHudSink(sink) => {
+                    hud_sink = sink;
+                    hud_force = true; // the new sink gets a snapshot right away
                 }
                 Command::Shutdown => stop = true,
             }
@@ -312,12 +441,8 @@ fn run(ctx: Ctx) {
         // Here rather than in the frame loop: an auto-shifter the user can't switch off
         // while the window is hidden would be worse than one that stops.
         while let Ok(action) = hotkeys.try_recv() {
-            let game_focused = match cfg.hotkeys.gate_mode {
-                GateMode::TelemetryLive => {
-                    last_packet.map(|t| t.elapsed() < STALE_AFTER).unwrap_or(false)
-                }
-                GateMode::WindowFocus => focus.focused(),
-            };
+            // D101: only the focused game window (the detector; fail-open on a query error).
+            let game_focused = focus.hotkeys_ok();
             // Stale focus facts mean the UI hasn't been drawn for a while — i.e. the window
             // is hidden, so it is neither focused nor typing. See FOCUS_FACTS_TTL.
             let fresh = last_push.map(|t| t.elapsed() < FOCUS_FACTS_TTL).unwrap_or(false);
@@ -335,11 +460,20 @@ fn run(ctx: Ctx) {
                     toggle_gen += 1;
                 }
                 HotkeyAction::ResetCalibration => {
-                    dsg.reset_state();
-                    dynamic_max_rpm = 0.0;
+                    clear_rpm_calibration(&mut dsg, &mut dynamic_max_rpm);
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
                     persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
                 }
-                _ => {}
+                HotkeyAction::ClearGearMap => {
+                    dsg.reset_calibration();
+                    notifier.calibration_reset(&cfg.overlay, last_car_ordinal, hud_clock());
+                    persist_calibration(&mut cals, last_car_ordinal, &dsg, dynamic_max_rpm);
+                }
+                // why: ignored while the overlay is off. The key may double as a game key
+                // (H = FH6's horn), and an invisible flip would leave the next enable blank.
+                HotkeyAction::HideHud if cfg.overlay.enabled => hud_hidden = !hud_hidden,
+                HotkeyAction::HideHud => {}
+                HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => {}
             }
         }
 
@@ -351,17 +485,40 @@ fn run(ctx: Ctx) {
         );
 
         // ── One packet. The only blocking call, and no lock is held across it. ──
-        match udp.recv_timeout(IDLE_POLL) {
+        // A message queued above (reset hotkey / command) goes out at once instead of after
+        // the idle wait, packet or no packet.
+        let poll = if notifier.has_fresh() { Duration::from_millis(1) } else { IDLE_POLL };
+        houses_poller.tick(cfg.experimental_pause_detection, Instant::now(), &mut houses);
+        let pause = PauseRule { experimental: cfg.experimental_pause_detection, houses: &houses };
+        let mut got_packet = false;
+        let mut nav_sample = None;
+        match udp.recv_timeout(poll) {
             Ok(pkt) => {
-                last_packet = Some(Instant::now());
-                pps_count += 1;
-                let elapsed = pps_since.elapsed().as_secs_f32();
-                if elapsed >= 1.0 {
-                    pps = pps_count as f32 / elapsed;
-                    pps_count = 0;
-                    pps_since = Instant::now();
+                got_packet = true;
+                // Tracked whenever the overlay is enabled, attached or not, so a lap
+                // started before the overlay came up still has its trace.
+                if cfg.overlay.enabled {
+                    hud.on_packet(&pkt, &cfg.overlay, pause, hud_clock());
                 }
+                pps.on_packet(Instant::now());
 
+                if pkt.is_race_on != 0 {
+                    in_race = pkt.race_position != 0;
+                }
+                // Same pause rule as the HUD (includes race-on).
+                driving_car = (!hud_paused(&pkt, pause) && pkt.car_ordinal != 0)
+                    .then_some(pkt.car_ordinal);
+                let nav_now = Instant::now();
+                let dt_ms = nav_prev_pkt.map_or(0, |t| nav_now.duration_since(t).as_millis().min(NAV_DT_CAP_MS) as u32);
+                nav_prev_pkt = Some(nav_now);
+                nav_sample = Some(crate::nav::CarSample {
+                    x: pkt.position_x,
+                    y: pkt.position_y,
+                    z: pkt.position_z,
+                    dt_ms,
+                    driving: driving_car.is_some(),
+                    in_race,
+                });
                 if pkt.car_ordinal != 0 && pkt.car_ordinal != last_car_ordinal {
                     last_car_ordinal = pkt.car_ordinal;
                     dsg.reset_calibration();
@@ -378,29 +535,25 @@ fn run(ctx: Ctx) {
                             dynamic_max_rpm = cal.max_rpm;
                         }
                     }
+                    // "Calibration started" for an uncalibrated new car comes from the level
+                    // rule in `Notifier::watch` (car change = new episode), not from here.
                 }
 
-                // Dynamic redline: highest RPM seen while the engine is making power,
-                // ignoring handbrake / slipping tyres (>0.5) — those inflate RPM without
+                // Dynamic redline: highest RPM seen before the first manual upshift, ignoring
+                // handbrake / slipping tyres (>0.5) — those inflate RPM without
                 // real road speed. The gearbox's only redline source, so it lives here.
-                if pkt.is_race_on != 0
-                    && pkt.power > 0.0
-                    && pkt.hand_brake == 0
-                    && pkt.tire_slip_ratio_fl.abs() <= 0.5
-                    && pkt.tire_slip_ratio_fr.abs() <= 0.5
-                    && pkt.tire_slip_ratio_rl.abs() <= 0.5
-                    && pkt.tire_slip_ratio_rr.abs() <= 0.5
-                {
-                    dynamic_max_rpm = dynamic_max_rpm.max(pkt.current_engine_rpm);
-                }
+                // The conditions live in `listeners/calib.rs` (shared with the Debug tab).
+                // Locked once the box is engaged (`dsg.engaged`): only Clear RPM calibration, a car
+                // change or a restored profile changes it. See `MaxRpmChecks::unlocked`.
+                dynamic_max_rpm = next_max_rpm(dynamic_max_rpm, &pkt, dsg.engaged);
 
-                backfire.update(&pkt, &cfg, &input, pps);
+                backfire.update(&pkt, &cfg, &input, pps.rate);
                 // No grace here: `echo_grace` exists for consumers that read the window a
                 // frame late behind an FPS limit, and this thread reads it the instant the
                 // packet lands. See `backfire::echo_grace`.
                 let suppress_gearbox_accel =
                     cfg.dsg_ignore_backfire_accel && input.synthetic_active(Duration::ZERO);
-                dsg.update(&pkt, &cfg, &input, dynamic_max_rpm, suppress_gearbox_accel);
+                dsg.update(&pkt, &cfg, &input, dynamic_max_rpm, suppress_gearbox_accel, pause);
 
                 // Opt-in: keep the in-memory per-car calibration current; written to its own
                 // file on car change and on exit.
@@ -417,7 +570,11 @@ fn run(ctx: Ctx) {
                     );
                 }
 
-                // Everything else (stats, Co-Op, telemetry, widgets) stays UI-side. Hand the
+                // Co-Op relay to peers. Here, not in `drain_packets`, because the UI loop stops
+                // while the game covers the window — exactly while we're driving.
+                coop.push_local(&crate::coop::outgoing(&pkt, &mut coop_car));
+
+                // Everything else (stats, telemetry, widgets) stays UI-side. Hand the
                 // packet over and drop the oldest if the UI isn't draining (hidden window);
                 // the lock covers only the push, never the processing above or below.
                 if let Ok(mut q) = to_ui.lock() {
@@ -431,6 +588,53 @@ fn run(ctx: Ctx) {
             Err(RecvTimeoutError::Disconnected) => break, // app dropped its sender
         }
 
+        // ── Navigation: the room's shared destination, then the tracker (packet or idle tick) ──
+        let nav_now = nav_start.elapsed().as_millis() as u64;
+        if nav_now >= nav_coop_next {
+            nav_coop_next = nav_now + NAV_COOP_POLL_MS;
+            let seq = coop.destination_seq();
+            if seq != nav_coop_seq {
+                nav_coop_seq = seq;
+                nav.set_shared(nav_now, coop.destination().map(|d| crate::nav::SharedIn {
+                    x: d.x,
+                    z: d.z,
+                    hue: d.hue,
+                    filter_bits: d.filters(),
+                    curve: d.curve,
+                    ts: d.ts,
+                    setter: d.setter_name,
+                }));
+            }
+        }
+        nav.tick(nav_now, nav_sample.as_ref());
+
+        // ── D26: queue what changed (hotkeys and UI settings alike). ──
+        notifier.watch(&cfg, in_race, dsg.engaged, dsg.gear_redline_speeds[1] > 0.0, dsg.gear1_seq, dynamic_max_rpm, driving_car, hud_clock());
+        hud_force |= notifier.take_new(); // a message must reach the HUD even without a packet
+
+        // ── listener → overlay: every packet, plus any visibility change without one. ──
+        if let Some(sink) = &hud_sink {
+            let now = hud_clock();
+            let facts = VisFacts {
+                enabled: cfg.overlay.enabled,
+                hud_hidden,
+                focus_only: cfg.overlay.focus_only,
+                game_focused: focus.focused(),
+                ..Default::default()
+            };
+            // The gearbox's redline counts once the DSG itself trusts it: after the first
+            // manual upshift (or a restored profile). Runs with the DSG switched off too.
+            let calibrated = if dsg.engaged { dynamic_max_rpm } else { 0.0 };
+            let mut snap = hud.snapshot(facts, &hud_cfg, &cfg, calibrated, now);
+            notifier.hold_unseen(snap.visible, now);
+            snap.notifications = notifier.items().to_vec();
+            if got_packet || hud_force || snap.visible != hud_visible {
+                hud_visible = snap.visible;
+                hud_force = false;
+                sink.publish(snap);
+            }
+        }
+
         // ── listener → UI: overwrite the mailbox from our local copy, then unlock. ──
         // A plain `lock` is fine: the UI only ever holds this for a clone, so the longest
         // possible wait is a memcpy — never a draw, a packet or disk IO.
@@ -442,6 +646,9 @@ fn run(ctx: Ctx) {
                 dsg_enabled: cfg.dsg_enabled,
                 backfire_enabled: cfg.backfire_enabled,
                 toggle_gen,
+                hud_hidden,
+                hud_mode: dsg.hud_mode,
+                pps: pps.published(Instant::now()),
             };
         }
     }
@@ -449,6 +656,14 @@ fn run(ctx: Ctx) {
     if cfg.dsg_save_calibration {
         save_car_calibrations(&cals);
     }
+}
+
+/// Forget the detected redline and the engagement (the box goes hands-off until the next
+/// manual upshift); the per-gear speed map stays. Shared by the hotkey / controller action and
+/// the tab button. (The gear map is cleared by `DsgListener::reset_calibration`.)
+fn clear_rpm_calibration(dsg: &mut DsgListener, dynamic_max_rpm: &mut f32) {
+    dsg.reset_state();
+    *dynamic_max_rpm = 0.0;
 }
 
 /// Rewrite (or drop) the saved per-car profile to match the live calibration, so a car
@@ -471,4 +686,80 @@ fn persist_calibration(
         cals.remove(&car_ordinal);
     }
     save_car_calibrations(cals);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pps_meter_measures_the_stream_and_reads_zero_when_it_stops() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut m = PpsMeter::new(t0);
+        assert_eq!(m.published(t0), 0.0, "no packet yet");
+        // 70 Hz-ish (every 14 ms) for 2.5 s.
+        for i in 1..=178 {
+            m.on_packet(ms(i * 14));
+        }
+        let r = m.published(ms(178 * 14));
+        assert!((r - 71.0).abs() < 2.0, "got {r}");
+        // Stream stops: still the old rate for a moment, then 0.
+        assert!(m.published(ms(178 * 14 + 1_000)) > 0.0);
+        assert_eq!(m.published(ms(178 * 14 + 2_500)), 0.0);
+    }
+
+    #[test]
+    fn pps_meter_restarts_its_window_after_a_gap() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut m = PpsMeter::new(t0);
+        m.on_packet(ms(10));
+        // Silent for 30 s, then a steady 100 Hz: must not report ~1/30 for the first window.
+        for i in 0..=200 {
+            m.on_packet(ms(30_000 + i * 10));
+        }
+        assert!((m.rate - 100.0).abs() < 2.0, "got {}", m.rate);
+    }
+
+    #[test]
+    fn clearing_rpm_calibration_keeps_the_gear_map() {
+        let mut dsg = DsgListener::new();
+        dsg.gear_redline_speeds[1] = 60.0;
+        dsg.engaged = true;
+        let mut max_rpm = 8500.0_f32;
+
+        clear_rpm_calibration(&mut dsg, &mut max_rpm);
+
+        assert_eq!(max_rpm, 0.0, "redline cleared");
+        assert!(!dsg.engaged, "engagement cleared");
+        assert_eq!(dsg.gear_redline_speeds[1], 60.0, "gear map kept");
+    }
+
+    #[test]
+    fn clearing_gear_map_keeps_the_rpm_calibration() {
+        let mut dsg = DsgListener::new();
+        dsg.gear_redline_speeds[1] = 60.0;
+        dsg.gear_redline_speeds[2] = 100.0;
+        dsg.engaged = true;
+        let max_rpm = 8500.0_f32;
+
+        dsg.reset_calibration(); // what Command::ClearGearMap / the hotkey run
+
+        assert!(dsg.gear_redline_speeds.iter().all(|&s| s == 0.0), "gear map cleared");
+        assert!(dsg.engaged, "engagement kept");
+        assert_eq!(max_rpm, 8500.0, "redline kept");
+    }
+
+    #[test]
+    fn both_clears_together_leave_nothing_to_persist() {
+        // One key bound to both actions fires both, in either order.
+        let mut dsg = DsgListener::new();
+        dsg.gear_redline_speeds[1] = 60.0;
+        let mut max_rpm = 8500.0_f32;
+        clear_rpm_calibration(&mut dsg, &mut max_rpm);
+        dsg.reset_calibration();
+        // Mirrors persist_calibration's condition (the file write itself is not exercised).
+        assert!(!(dsg.gear_redline_speeds[1] > 0.0 || max_rpm > 0.0));
+    }
 }

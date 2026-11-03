@@ -1,0 +1,566 @@
+//! The overlay thread: its own Wayland connection, a calloop loop, one full-output
+//! `Layer::Overlay` surface that exists only while shown, and frame-callback pacing.
+//!
+//! Visibility: the HUD follows `HudSnapshot::visible` (create on visible, keep drawing the
+//! renderer's fade-out on hidden, destroy once it ends); the dev test pattern follows
+//! `OverlayCmd::Show`/`Hide`.
+
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::channel::{Channel, Event};
+use smithay_client_toolkit::reexports::calloop::ping::PingSource;
+use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle, RegistrationToken};
+use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
+use smithay_client_toolkit::reexports::client::globals::{registry_queue_init, GlobalList};
+use smithay_client_toolkit::reexports::client::protocol::{wl_output::{self, WlOutput}, wl_surface::WlSurface};
+use smithay_client_toolkit::reexports::client::{Connection, EventQueue, QueueHandle};
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+};
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::{delegate_compositor, delegate_layer, delegate_output, delegate_registry, registry_handlers};
+
+use super::gl::{Gl, WinSurface};
+use super::render::Renderer;
+use super::pacing::next_wake;
+use super::snapshot::{HudSnapshot, SnapshotSlot};
+use super::{capability, DisabledReason, OverlayCmd, OverlayOptions};
+
+/// Layer namespace, for compositor rules (e.g. Hyprland `no_anim`).
+const NAMESPACE: &str = "forza-telemetry-hud";
+
+/// Consecutive make_current/swap failures before the overlay gives up (lost context or GPU
+/// reset: every swap fails, so recreating the surface forever would only spam stderr).
+const MAX_EGL_FAILURES: u8 = 3;
+
+/// How long a committed frame may go without its `wl_surface.frame` callback before the overlay
+/// stops waiting for callbacks (see [`Overlay::callbacks_dead`]).
+const FRAME_CALLBACK_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// `FORZA_OVERLAY_NO_FRAME_WAIT=1`: never wait for frame callbacks (A/B switch for a compositor
+/// or driver that does not deliver them). `FORZA_OVERLAY_DEBUG=1`: also read the rendered frame
+/// back and log how many pixels are not transparent. Both are developer / bug-report switches.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The mapped surface. Field order is drop order: the EGL surface (and its
+/// `wl_egl_window`) must go before the `wl_surface` the layer surface owns.
+struct Live {
+    egl: Option<WinSurface>,
+    layer: LayerSurface,
+    output: WlOutput,
+    size: [u32; 2],
+    /// When the layer surface was created (log timing: how long until the first frame).
+    created: Instant,
+    /// Frames committed on this surface.
+    frames: u64,
+}
+
+pub(super) struct Overlay {
+    registry: RegistryState,
+    outputs: OutputState,
+    compositor: CompositorState,
+    layer_shell: LayerShell,
+    qh: QueueHandle<Overlay>,
+    handle: LoopHandle<'static, Overlay>,
+    // Drop order (see `impl Drop for Overlay`): `live` (window surface) is already gone, then
+    // `renderer` (painter, needs the context current), then `gl` (context, eglTerminate).
+    live: Option<Live>,
+    renderer: Renderer,
+    gl: Option<Gl>,
+    slot: SnapshotSlot,
+    latest: Option<HudSnapshot>,
+    /// A surface is wanted. Test pattern: set by `Show`/`Hide`. HUD: set by a visible
+    /// snapshot, cleared once the fade-out has finished (see [`Overlay::follow_snapshot`]).
+    visible: bool,
+    /// Output name to show on; `None` = the first output.
+    target: Option<String>,
+    test_pattern: bool,
+    /// A redraw is wanted (new packet, configure, or the animation timer fired).
+    dirty: bool,
+    /// A frame callback is outstanding: the compositor hasn't shown our last frame yet.
+    frame_pending: bool,
+    last_ping: Option<Instant>,
+    /// The one pending animation timer (see [`next_wake`]).
+    anim_timer: Option<RegistrationToken>,
+    egl_failures: u8,
+    exit: bool,
+    /// The compositor does not deliver frame callbacks (none within [`FRAME_CALLBACK_TIMEOUT`] of a
+    /// commit, or `FORZA_OVERLAY_NO_FRAME_WAIT`): render on pings / the animation timer without
+    /// waiting for them. Cleared when one arrives. Why: `frame_pending` waits for the callback, so
+    /// a callback that never comes (a compositor that thinks the surface is not visible, a driver
+    /// that swallows it) would leave the first, fully transparent fade-in frame on screen forever,
+    /// silently.
+    callbacks_dead: bool,
+    no_frame_wait: bool,
+    debug: bool,
+    /// The watchdog behind `callbacks_dead` (one per commit).
+    frame_watchdog: Option<RegistrationToken>,
+    /// A "target output not found" line was logged and nothing has changed since.
+    warned_no_output: bool,
+}
+
+impl Drop for Overlay {
+    /// Runs on every path (shutdown, init error, panic): detach and drop the window surface
+    /// so the remaining fields drop with the context current surfaceless.
+    fn drop(&mut self) {
+        self.destroy_surface();
+    }
+}
+
+struct Wl {
+    conn: Connection,
+    globals: GlobalList,
+    queue: EventQueue<Overlay>,
+}
+
+fn connect() -> Result<Wl, DisabledReason> {
+    let err = |e: &dyn std::fmt::Display| DisabledReason::Wayland(e.to_string());
+    let conn = Connection::connect_to_env().map_err(|e| err(&e))?;
+    let (globals, queue) = registry_queue_init(&conn).map_err(|e| err(&e))?;
+    Ok(Wl { conn, globals, queue })
+}
+
+/// Thread body. Reports startup success/failure on `ready`, then runs until Shutdown or
+/// until the handle's command sender is dropped.
+pub(super) fn run(
+    opts: OverlayOptions,
+    cmds: Channel<OverlayCmd>,
+    ping: PingSource,
+    slot: SnapshotSlot,
+    ready: mpsc::Sender<Result<(), DisabledReason>>,
+) {
+    let (mut event_loop, mut state) = match init(opts, cmds, ping, slot) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
+    let _ = ready.send(Ok(()));
+    while !state.exit {
+        if let Err(e) = event_loop.dispatch(None, &mut state) {
+            eprintln!("overlay: event loop stopped: {e}");
+            break;
+        }
+    }
+    // Teardown is structural: Overlay's Drop releases the surface, then the painter and EGL
+    // drop in field order. `Gl` holds its own connection clone, so the wl_display outlives it.
+    drop(state);
+    drop(event_loop);
+}
+
+#[allow(clippy::type_complexity)]
+fn init(
+    opts: OverlayOptions,
+    cmds: Channel<OverlayCmd>,
+    ping: PingSource,
+    slot: SnapshotSlot,
+) -> Result<(EventLoop<'static, Overlay>, Overlay), DisabledReason> {
+    let display = std::env::var("WAYLAND_DISPLAY").ok();
+    // Probes run in order, each only when the ones before it passed; capability() names the
+    // first failure. WAYLAND_DISPLAY is checked before connecting because connect_to_env
+    // falls back to "wayland-0" and could reach a stray socket from an X11 session.
+    let wl = if display.as_deref().is_some_and(|d| !d.is_empty()) { Some(connect()?) } else { None };
+    let layer_shell = wl.as_ref().and_then(|w| LayerShell::bind(&w.globals, &w.queue.handle()).ok());
+    let gpu = match (&wl, &layer_shell) {
+        (Some(w), Some(_)) => Gl::new(&w.conn).and_then(|gl| Ok((Renderer::new(gl.glow.clone(), opts.coop.clone())?, gl))),
+        _ => Err(String::new()),
+    };
+    capability(display.as_deref(), layer_shell.is_some(), gpu.as_ref().err().map(String::as_str))?;
+    let (Some(Wl { conn, globals, mut queue }), Some(layer_shell), Ok(gpu)) = (wl, layer_shell, gpu) else {
+        return Err(DisabledReason::Wayland("startup probe mismatch".into())); // unreachable
+    };
+
+    // `gpu` stays one tuple until moved into `state`: a tuple drops its fields in order, so an
+    // early `?` below still drops the painter (renderer) before Gl terminates EGL.
+    let err = |e: &dyn std::fmt::Display| DisabledReason::Wayland(e.to_string());
+    let event_loop = EventLoop::<Overlay>::try_new().map_err(|e| err(&e))?;
+    let handle = event_loop.handle();
+    let qh = queue.handle();
+    let mut state = Overlay {
+        registry: RegistryState::new(&globals),
+        outputs: OutputState::new(&globals, &qh),
+        compositor: CompositorState::bind(&globals, &qh).map_err(|e| err(&e))?,
+        layer_shell,
+        qh,
+        handle: handle.clone(),
+        live: None,
+        renderer: gpu.0,
+        gl: Some(gpu.1),
+        slot,
+        latest: None,
+        visible: false,
+        target: opts.output,
+        test_pattern: opts.test_pattern,
+        dirty: false,
+        frame_pending: false,
+        last_ping: None,
+        anim_timer: None,
+        egl_failures: 0,
+        exit: false,
+        callbacks_dead: env_flag("FORZA_OVERLAY_NO_FRAME_WAIT"),
+        no_frame_wait: env_flag("FORZA_OVERLAY_NO_FRAME_WAIT"),
+        debug: env_flag("FORZA_OVERLAY_DEBUG"),
+        frame_watchdog: None,
+        warned_no_output: false,
+    };
+    // One roundtrip so output names are known before the first Show.
+    queue.roundtrip(&mut state).map_err(|e| err(&e))?;
+    state.log_outputs();
+
+    WaylandSource::new(conn, queue).insert(handle.clone()).map_err(|e| err(&e.error))?;
+    handle
+        .insert_source(cmds, |ev, _, s: &mut Overlay| match ev {
+            Event::Msg(cmd) => s.command(cmd),
+            Event::Closed => s.exit = true,
+        })
+        .map_err(|e| err(&e.error))?;
+    // Per-packet wake-up (D17): one redraw per ping, coalesced by calloop.
+    handle
+        .insert_source(ping, |_, _, s: &mut Overlay| {
+            s.last_ping = Some(Instant::now());
+            if let Some(t) = s.anim_timer.take() {
+                s.handle.remove(t); // packets are driving frames again
+            }
+            s.dirty = true;
+            s.follow_snapshot();
+            s.maybe_render();
+        })
+        .map_err(|e| err(&e.error))?;
+    Ok((event_loop, state))
+}
+
+impl Overlay {
+    fn command(&mut self, cmd: OverlayCmd) {
+        match cmd {
+            OverlayCmd::Show => {
+                self.visible = true;
+                self.ensure_surface(None);
+            }
+            OverlayCmd::Hide => {
+                self.visible = false;
+                self.destroy_surface();
+            }
+            OverlayCmd::SetOutput(name) => {
+                self.target = name;
+                // A layer surface can't move between outputs: recreate it on the new one.
+                if self.live.as_ref().is_some_and(|l| Some(&l.output) != self.pick_output(None).as_ref()) {
+                    self.destroy_surface();
+                }
+                self.ensure_surface(None);
+            }
+            OverlayCmd::Shutdown => self.exit = true,
+        }
+    }
+
+    fn pick_output(&self, skip: Option<&WlOutput>) -> Option<WlOutput> {
+        let mut all = self.outputs.outputs().filter(|o| Some(o) != skip);
+        match &self.target {
+            Some(name) => all.find(|o| self.outputs.info(o).and_then(|i| i.name).as_deref() == Some(name)),
+            None => all.next(),
+        }
+    }
+
+    /// `NAME (logical WxH, scale S, mode WxH)` for logs.
+    fn describe_output(&self, o: &WlOutput) -> String {
+        let Some(i) = self.outputs.info(o) else { return "(no info yet)".into() };
+        let name = i.name.as_deref().unwrap_or("?");
+        let logical = i.logical_size.map_or("?".into(), |(w, h)| format!("{w}x{h}"));
+        let mode = i.modes.iter().find(|m| m.current).map_or("?".into(), |m| format!("{}x{}", m.dimensions.0, m.dimensions.1));
+        format!("{name} (logical {logical}, scale {}, mode {mode})", i.scale_factor)
+    }
+
+    /// One line with every output the compositor lists, so a wrong monitor name is obvious.
+    fn log_outputs(&self) {
+        let all: Vec<String> = self.outputs.outputs().map(|o| self.describe_output(&o)).collect();
+        eprintln!("overlay: outputs: {}", all.join(", "));
+    }
+
+    /// Create the layer surface if shown, missing, and the target output exists. It is
+    /// drawn once the compositor's first configure arrives.
+    fn ensure_surface(&mut self, skip: Option<&WlOutput>) {
+        if !self.visible || self.live.is_some() {
+            return;
+        }
+        let Some(output) = self.pick_output(skip) else {
+            if !self.warned_no_output {
+                self.warned_no_output = true;
+                eprintln!("overlay: HUD wanted but no output named {:?} (target); waiting", self.target);
+                self.log_outputs();
+            }
+            return;
+        };
+        self.warned_no_output = false;
+        eprintln!("overlay: creating the layer surface on {}", self.describe_output(&output));
+        // Click-through: an *empty* input region. `None` would mean "everything" and eat all input.
+        let Ok(region) = Region::new(&self.compositor) else { return };
+        let wl_surface = self.compositor.create_surface(&self.qh);
+        wl_surface.set_input_region(Some(region.wl_region()));
+        let layer = self.layer_shell.create_layer_surface(&self.qh, wl_surface, Layer::Overlay, Some(NAMESPACE), Some(&output));
+        layer.set_anchor(Anchor::all());
+        layer.set_size(0, 0); // fill the output
+        layer.set_exclusive_zone(-1); // ignore other surfaces' exclusive zones (bars)
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.commit(); // no buffer yet: asks for the first configure
+        self.live = Some(Live { egl: None, layer, output, size: [0, 0], created: Instant::now(), frames: 0 });
+    }
+
+    /// Unmap by destroying: while an overlay-layer surface is mapped, Hyprland disables
+    /// direct scanout/tearing on that output, so an invisible-but-mapped surface still costs.
+    /// The EGL context and painter stay alive (surfaceless) so a re-show re-uploads nothing.
+    fn destroy_surface(&mut self) {
+        if let Some(Live { egl, layer, .. }) = self.live.take() {
+            if let Some(gl) = &self.gl {
+                gl.release();
+            }
+            drop(egl); // eglDestroySurface + wl_egl_window_destroy
+            drop(layer); // layer role, then wl_surface
+        }
+        self.frame_pending = false;
+        if let Some(t) = self.frame_watchdog.take() {
+            self.handle.remove(t);
+        }
+    }
+
+    /// Take the listener's latest snapshot, if the slot is free (else keep the previous one).
+    fn refresh_snapshot(&mut self) {
+        if let Ok(slot) = self.slot.try_lock() {
+            self.latest.clone_from(&slot);
+        }
+    }
+
+    /// The listener's visibility target (HUD mode; no snapshot yet = hidden).
+    fn target_visible(&self) -> bool {
+        self.latest.as_ref().is_some_and(|s| s.visible)
+    }
+
+    /// HUD mode, on each wake: the surface follows `snapshot.visible`. Visible → create the
+    /// surface if missing (the renderer fades it in). Hidden → keep the surface and keep
+    /// drawing the renderer's fade-out; [`Self::maybe_render`] destroys it once a frame
+    /// reports the fade done. Hidden with no surface → nothing to fade. The test pattern
+    /// ignores snapshots and follows Show/Hide.
+    // ponytail: a compositor that keeps sending `closed` gets a new surface on every visible
+    // wake (~60 Hz); none of the target compositors do that. Add a backoff if one does.
+    fn follow_snapshot(&mut self) {
+        if self.test_pattern {
+            return;
+        }
+        self.refresh_snapshot();
+        if self.target_visible() {
+            self.visible = true;
+            self.ensure_surface(None);
+        } else if self.live.is_none() {
+            self.visible = false;
+        }
+    }
+
+    fn maybe_render(&mut self) {
+        if self.exit || (self.frame_pending && !self.callbacks_dead) || !self.dirty {
+            return;
+        }
+        self.refresh_snapshot();
+        let (Some(live), Some(gl)) = (&self.live, &self.gl) else { return };
+        let Some(egl) = &live.egl else { return };
+        let ask_callback = !self.frame_pending; // one outstanding callback at most (a probe while dead)
+        let (debug, nth) = (self.debug, live.frames);
+        let result = gl.make_current(egl).map(|()| {
+            let wl = live.layer.wl_surface();
+            if ask_callback {
+                wl.frame(&self.qh, wl.clone()); // before the swap, which commits
+            }
+            let animating = self.renderer.frame(live.size, self.latest.as_ref(), self.test_pattern);
+            if debug && (nth < 3 || nth % 300 == 0) {
+                eprintln!("overlay: frame {nth}: {}", self.renderer.alpha_stats(live.size));
+            }
+            animating
+        });
+        match result.and_then(|animating| gl.swap(egl).map(|()| animating)) {
+            Ok(animating) => {
+                self.frame_pending = true;
+                self.dirty = false;
+                self.egl_failures = 0;
+                let visible = self.latest.as_ref().is_some_and(|s| s.visible);
+                if let Some(live) = self.live.as_mut() {
+                    if live.frames == 0 {
+                        eprintln!(
+                            "overlay: first frame committed {} ms after the layer surface was created ({}x{}, visible={visible})",
+                            live.created.elapsed().as_millis(),
+                            live.size[0],
+                            live.size[1],
+                        );
+                    }
+                    live.frames += 1;
+                }
+                self.arm_frame_watchdog();
+                if !self.test_pattern && !animating && !self.target_visible() {
+                    // Fade-out finished: a hidden HUD has no surface at all, since a mapped
+                    // overlay layer costs direct scanout/tearing (and, observed, VRR).
+                    self.visible = false;
+                    self.arm_anim_timer(None);
+                    self.destroy_surface();
+                    return;
+                }
+                let wake = next_wake(animating, self.last_ping.map(|t| t.elapsed()));
+                self.arm_anim_timer(wake);
+            }
+            Err(e) => self.egl_failed(&e),
+        }
+    }
+
+    /// Count an EGL failure (swap, or surface creation on configure). Below the cap, rebuild the
+    /// surface so the next configure retries; at the cap, stop the thread (`is_dead()`).
+    fn egl_failed(&mut self, e: &dyn std::fmt::Display) {
+        self.egl_failures += 1;
+        if self.egl_failures >= MAX_EGL_FAILURES {
+            // Lost context / GPU reset: stop the thread; the handle reports is_dead().
+            eprintln!("overlay: {e}; {MAX_EGL_FAILURES} EGL failures in a row, shutting the overlay down");
+            self.exit = true;
+            return;
+        }
+        // Usually EGL_BAD_SURFACE / BAD_NATIVE_WINDOW: rebuild the surface.
+        eprintln!("overlay: {e}; recreating the surface");
+        self.destroy_surface();
+        self.ensure_surface(None);
+    }
+
+    /// After a commit: if its frame callback has not come within [`FRAME_CALLBACK_TIMEOUT`], log it
+    /// once and stop waiting for callbacks (`callbacks_dead`), rendering on the next wake instead.
+    fn arm_frame_watchdog(&mut self) {
+        if let Some(t) = self.frame_watchdog.take() {
+            self.handle.remove(t);
+        }
+        if self.callbacks_dead {
+            return;
+        }
+        let timer = Timer::from_duration(FRAME_CALLBACK_TIMEOUT);
+        match self.handle.insert_source(timer, |_, _, s: &mut Overlay| {
+            s.frame_watchdog = None;
+            if s.frame_pending && s.live.is_some() && !s.callbacks_dead {
+                eprintln!(
+                    "overlay: no wl_surface.frame callback {} ms after the last commit (compositor not presenting the surface, or the driver swallowed it); rendering without waiting for callbacks",
+                    FRAME_CALLBACK_TIMEOUT.as_millis()
+                );
+                s.callbacks_dead = true;
+                s.dirty = true;
+                s.maybe_render();
+            }
+            TimeoutAction::Drop
+        }) {
+            Ok(token) => self.frame_watchdog = Some(token),
+            Err(e) => eprintln!("overlay: frame watchdog timer: {}", e.error),
+        }
+    }
+
+    /// Replace any pending animation timer with one firing after `after` (`None`: cancel).
+    /// A skipped render gets no frame callback, so without this timer nothing would wake us.
+    fn arm_anim_timer(&mut self, after: Option<Duration>) {
+        if let Some(t) = self.anim_timer.take() {
+            self.handle.remove(t);
+        }
+        let Some(after) = after else { return };
+        let timer = Timer::from_duration(after);
+        match self.handle.insert_source(timer, |_, _, s: &mut Overlay| {
+            s.anim_timer = None;
+            s.dirty = true;
+            s.maybe_render(); // if a frame is still pending, its callback renders instead
+            TimeoutAction::Drop
+        }) {
+            Ok(token) => self.anim_timer = Some(token),
+            Err(e) => eprintln!("overlay: animation timer: {}", e.error),
+        }
+    }
+}
+
+impl CompositorHandler for Overlay {
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &WlSurface, _: u32) {
+        if self.live.as_ref().is_some_and(|l| l.layer.wl_surface() == surface) {
+            self.frame_pending = false;
+            if self.callbacks_dead && !self.no_frame_wait {
+                eprintln!("overlay: frame callbacks are arriving again");
+                self.callbacks_dead = false;
+            }
+            self.maybe_render();
+        }
+    }
+    // ponytail: integer/fractional scale ignored (all target monitors are 1080p @1).
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {}
+    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: wl_output::Transform) {}
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
+    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
+}
+
+impl OutputHandler for Overlay {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.outputs
+    }
+    // A new output, or a name arriving late, may be the target we are waiting for.
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {
+        self.ensure_surface(None);
+    }
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {
+        self.ensure_surface(None);
+    }
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: WlOutput) {
+        if self.live.as_ref().is_some_and(|l| l.output == output) {
+            self.destroy_surface();
+            // sctk still lists the dying output during this call, so skip it explicitly.
+            self.ensure_surface(Some(&output));
+        }
+    }
+}
+
+impl LayerShellHandler for Overlay {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        // Compositor withdrew it; wait for the next Show / visible snapshot / output change
+        // rather than fight it.
+        if self.live.as_ref().is_some_and(|l| &l.layer == layer) {
+            eprintln!("overlay: the compositor closed the layer surface; waiting for the next show");
+            self.destroy_surface();
+        }
+    }
+
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, cfg: LayerSurfaceConfigure, _: u32) {
+        let (Some(live), Some(gl)) = (self.live.as_mut(), &self.gl) else { return };
+        if &live.layer != layer {
+            return;
+        }
+        let (w, h) = cfg.new_size;
+        eprintln!("overlay: configure {w}x{h} (first: {})", live.egl.is_none());
+        if w == 0 || h == 0 {
+            eprintln!("overlay: compositor configured a {w}x{h} surface; waiting");
+            return;
+        }
+        live.size = [w, h];
+        match &live.egl {
+            Some(egl) => gl.resize(egl, w, h),
+            None => match gl.create_surface(layer.wl_surface(), w, h) {
+                Ok(egl) => {
+                    live.egl = Some(egl);
+                    eprintln!("overlay: EGL window surface {w}x{h} created");
+                }
+                Err(e) => return self.egl_failed(&e),
+            },
+        }
+        self.dirty = true;
+        self.maybe_render();
+    }
+}
+
+impl ProvidesRegistryState for Overlay {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry
+    }
+    registry_handlers![OutputState];
+}
+
+delegate_compositor!(Overlay);
+delegate_output!(Overlay);
+delegate_layer!(Overlay);
+delegate_registry!(Overlay);

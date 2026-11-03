@@ -17,19 +17,72 @@ gear-ratio table.
   loaded, and moving in a straight line, it extrapolates that gear's
   speed-at-full-redline and keeps a rolling median of the last 10 samples — so a
   bad sample self-corrects instead of locking in.
-- **Reset calibration** — two separate buttons (Automatic Gearbox tab, each
-  always shown but disabled until it has something to clear):
-  - **Clear RPM calibration** wipes the detected redline and engagement; the
-    box goes hands-off until your next manual upshift re-locks the redline. The
-    per-gear speed map is kept. *Why split out:* this is the common "the redline
-    detector locked onto a wrong value" fix — you want to re-learn the redline
-    without throwing away the gear-speed map you already built. The
-    **Reset RPM Calibration** hotkey (default `F`, see [[hotkeys]]) does exactly
-    this button.
-  - **Clear gear map** wipes the per-gear calibrated speeds; the redline is
-    kept, and the box holds each uncalibrated gear to re-sample it.
-  - Each also rewrites the saved per-car profile to match (removing it once
-    nothing's left), so a car reload can't restore what you just cleared.
+- **The exact calibration conditions** (a car "just doesn't calibrate" = one of these
+  fails; the **Debug tab → Derived from telemetry → Calibration checks** shows each one
+  live with its raw value and a green/red dot, see [[debug]]):
+  1. *Max-RPM capture* (`worker.rs` via `calib::next_max_rpm`, `dynamic_max_rpm = max(.., rpm)`):
+     the redline is **not locked** (not yet engaged, or no redline known yet), `is_race_on != 0`,
+     `hand_brake == 0`, and `|slip| <= 0.5` on all four wheels. `power > 0` is deliberately
+     **not** required (commented out in `calib.rs`). Why: cars with a very fast rev limiter
+     report power 0 while bouncing off the limiter, which blocked capture; the check only
+     guarded against mis-shift over-revs, which the current protocol (engage on a manual
+     upshift, gear-map median) makes practically impossible.
+     **The lock.** Once the box is engaged (the same moment as `Calibration done`) the
+     redline is frozen: it only changes through **Clear RPM calibration** (clears
+     engagement + redline, so capture restarts), a car change, or loading a saved per-car
+     calibration (which restores it already locked). **Clear gear map** and the gearbox
+     on/off switch don't touch it. *Why:* the whole point of the calibration procedure is a
+     stable redline; later over-revs (limiter bounce, downshift spikes) must not move the
+     shift point (previously `dynamic_max_rpm` kept rising after engagement). The lock needs
+     a known redline too, so a restored profile that has `engaged` but `max_rpm == 0`
+     (RPM cleared, gear map kept, then saved) still captures instead of locking at 0.
+  2. *Engage* (`dsg.rs`): the first manual upshift between two forward gears: not yet
+     engaged, previous forward gear in 1..=9, current gear in 2..=10, gear > previous.
+  3. *Gear-map sample* (`dsg.rs`): race on, gear 1..=10, a redline is known, `kmh > 5`,
+     `rpm >= 0.60 * redline`, `|slip| < 0.8` and suspension travel `>= 0.1` on all four
+     wheels, and moving straight (`speed > 0.1` and `velocity_z >= 0.95 * speed`).
+  All three are pure fns in `listeners/calib.rs` (`MaxRpmChecks`, `EngageChecks`,
+  `GearMapChecks`); the real logic and the Debug panel both call them, so the display
+  cannot drift from what actually gates calibration.
+- **Calibration messages on the HUD** (when notifications are on): `Calibration
+  started` the moment you press **Clear RPM calibration** or **Clear gear map**
+  (hotkey, controller or tab button; also while paused, then it is kept until the
+  HUD is visible again) and whenever you are driving a car that is not calibrated
+  yet (first car after starting the app and leaving the pause menu, a car
+  change), once per uncalibrated episode; then `Shift at redline` (yellow dot) once
+  gear 1 has *new* gear-map data while still uncalibrated (after a reset: data
+  collected since the reset, so Started is not wiped at once); then
+  `Calibration done: N rpm` once you shift and the box engages. The three share
+  one HUD pill, so a later one replaces an earlier one that is still showing
+  instead of stacking. The middle one fires once per cycle and re-arms on a car
+  change, Clear RPM calibration or Clear gear map. With the box still calibrated
+  (Clear gear map alone) only `Calibration started` appears: no uncalibrated
+  stretch, so no shift hint or Done. Not tied to the gearbox
+  switch (calibration runs with the box off too). See [[overlay]]
+  (Notifications).
+- **The redline detection and engagement run with the box switched off too**
+  (`worker.rs` tracks `dynamic_max_rpm` unconditionally; `DsgListener::update`
+  sets `engaged` before its `dsg_enabled` gate). The in-game HUD reuses them:
+  its shift cue is this box's Shift RPM on the detected redline. See [[overlay]].
+- **Clear RPM calibration** and **Clear gear map** — two buttons (Automatic
+  Gearbox tab; always shown, each disabled until it has something to clear).
+  *Clear RPM calibration* forgets the detected redline + engagement (the box
+  goes hands-off until your next manual upshift re-locks it) and keeps the gear
+  map. *Clear gear
+  map* forgets the per-gear speed map and keeps the redline. Both push the
+  `Calibration started` HUD notification at once (`Notifier::calibration_reset`). Each also has a
+  global hotkey / controller action of the same name (see [[hotkeys]],
+  [[gamepad]]): **Clear RPM calibration** is `HotkeyAction::ResetCalibration`
+  (default `F`; the serde name is kept from the old "Reset RPM Calibration" so
+  saved bindings still load), **Clear gear map** is `HotkeyAction::ClearGearMap`
+  (no default key). Both rewrite the saved per-car profile to match
+  (`persist_calibration`; removed once nothing is left), so a car reload can't
+  restore what you just cleared. Implemented as `Command::ClearRpmCalibration` /
+  `Command::ClearGearMap` and the matching hotkey arms in `listeners/worker.rs`.
+  *Why two again:* the user wants to choose the half to clear, and, since one
+  key or pad button can be bound to several actions, to bind both to one button
+  to get a full reset. (They were briefly merged into one "Clear gearbox
+  calibration".)
 - **Shift decision**, in order, each packet:
   1. **Hard redline upshift** — once RPM reaches **Shift RPM** (% of the
      detected max RPM) and road speed has reached **Upshift min. speed** (%
@@ -55,12 +108,30 @@ gear-ratio table.
   tolerates the brief neutral flash some cars show mid-shift. A timed-out
   shift is treated as a desync: the box accepts the gear it actually landed
   in and pauses briefly before commanding again.
-- **Modes** — **Street**, **Sport**, **Race** — each has its own **Cruise
+- **Modes** — **Manual**, **Street**, **Sport**, **Race** — each has its own **Cruise
   RPM** and **Accelerator gamma** tuning. Race ignores the cruise/downshift
   settings entirely: it always wants the full powerband and only upshifts at
   the redline. **Auto Race mode in races** forces Race mode whenever you're
   in an actual race (race position ≥ P1), then reverts to your chosen mode
   back in free roam.
+  - **Manual** (D25) — the box never shifts and the HUD treats it as the gearbox
+    off (no drive-mode letter). With **Auto Race mode in races** on it still flips
+    to Race in a race and falls back to Manual after. *Why:* the user drives manual
+    in free roam and wants the auto gearbox only in races. The effective mode is
+    re-derived from config + race/drift state on every packet (stateless), so
+    "reverting" is automatic for any selected mode. Manual is serialized by name,
+    so existing configs are unaffected. Manual has no tuning of its own (the
+    Advanced sliders edit Sport's while it's selected).
+  - **Disable in drift events** (D30) — with `dsg_disable_in_drift` on, a detected
+    drift event turns the box off (no shifting, HUD shows it as off) until the event
+    ends. Only applies when Auto Race mode is on or Race is the selected mode.
+    *Why:* drifting wants the driver's own gear choice; the user's condition was
+    scoping it to the race-oriented setups. Detection reuses the HUD's
+    `ModeClassifier` (see [[overlay]], *Race vs drift detection*); `DsgListener`
+    runs its own instance fed every packet, because the HUD tracker's copy only
+    runs while the overlay is enabled. The pure decision is
+    `AppConfig::dsg_resolved_mode(in_race, in_drift) -> Option<GearboxMode>`
+    (`None` = off), used by both the shift loop and the HUD gear label.
 - **Calibration persistence** — with **Remember calibration per car** on,
   each car's measured gear speeds and detected redline are saved to
   `automatic-gearbox-saved-calibrations.json` in the app data dir (keyed by
@@ -75,8 +146,8 @@ gear-ratio table.
   `winit wayland/event_loop/mod.rs:486`), and everything in it — including the
   shift logic — simply stopped. The thread owns the live `DsgListener` and the
   per-car calibrations; the Automatic Gearbox tab reads a copy of its state
-  (`DsgView`) refreshed once a frame, and the **Clear RPM calibration** /
-  **Clear gear map** buttons send it a command. A displayed value can therefore be
+  (`DsgView`) refreshed once a frame, and the **Clear RPM
+  calibration** / **Clear gear map** buttons send it a command. A displayed value can therefore be
   one frame stale, which is fine — nothing shown is critical, and in exchange the
   shift loop is never affected by the UI. See [[overview]] for the mailbox design.
   If that thread ever dies, the status-bar Gearbox indicator reads **Stopped
@@ -92,16 +163,17 @@ gearbox icon plus **Active** (green), **Deactivated** (red), or pastel-amber
 **Uncalibrated** while it's enabled but hasn't engaged yet (before your first
 manual upshift). Backfire sits beside it (Active/Deactivated), separated by a
 divider. The **General** mini-settings page has a *Status bar: show text
-labels* toggle to collapse both down to just the icons.
+labels* toggle to collapse both down to just the icons — the same toggle also makes the
+left side (connection status, Co-Op indicator) icon-only; see [[coop]].
 
 Open the **Automatic Gearbox** tab — controls on the left, a live
 visualization on the right.
 
 - **General** — **Enabled**, **Ignore Backfire input**, **Shift RPM** and
   **Upshift min. speed** sliders, the **Gearbox mode** dropdown
-  (Street/Sport/Race), **Auto Race mode in races**, **Remember calibration
-  per car**, and the **Clear RPM calibration** / **Clear gear map** buttons
-  (see *Reset calibration* above).
+  (Manual/Street/Sport/Race), **Auto Race mode in races**, **Disable in drift events**, **Remember calibration
+  per car**, and the **Clear RPM calibration** / **Clear gear map**
+  buttons (see above).
 - **Advanced Settings** — a **Reset settings** button (resets the sliders
   below to a tuned baseline; leaves modes/toggles alone), **Accelerator
   gamma**, **Gear overlap** (Race only), and — hidden in Race, since Race
@@ -130,8 +202,9 @@ visualization on the right.
 | `dsg_enabled` | off | Master toggle. |
 | `dsg_shift_rpm_pct` | 98% | Redline upshift point, as % of detected max RPM. |
 | `dsg_upshift_speed_pct` | 80% | Minimum % of a gear's calibrated top speed before a redline upshift can fire. |
-| `dsg_gearbox_mode` | Sport | `Street` / `Sport` / `Race`. |
+| `dsg_gearbox_mode` | Sport | `Manual` / `Street` / `Sport` / `Race`. |
 | `dsg_auto_race_mode` | on | Force Race mode whenever an actual race is detected (race position ≥ P1). |
+| `dsg_disable_in_drift` | off | Gearbox off while a drift event is detected (needs Auto Race mode on or Race selected). |
 | `dsg_tuning_street` / `dsg_tuning_sport` / `dsg_tuning_race` | cruise 35% / 50% / 85%, gamma 1.0 each | Per-mode `{ cruise_rpm_pct, accel_gamma }`. |
 | `dsg_kickdown_cooldown_secs` | 5.0 s | How long the lower gear is held after a full-throttle kickdown once you lift off. |
 | `dsg_downshift_deadzone_pct` | 60% | Highest the part-throttle rev target climbs to, as % of the shift point. |

@@ -20,15 +20,22 @@ The navigation reference — read these to move around the source efficiently.
 
 - [Dashboard](features/dashboard.md) — the draggable widget grid, Edit Mode, and every available widget.
 - [Minimap](features/minimap.md) — seasonal map rendering, north-up/heading-up, trails, waypoints.
+- [In-game HUD Overlay](features/overlay.md) — the click-through wlr-layer-shell HUD over FH6 (Linux/Wayland): widgets, race/drift detection, visibility, monitor detection, the Overlay tab, and the overlay thread's architecture.
+- [Navigation](features/navigation.md) — routing core (`src/nav/`): route graph from the nav roads + road types, road-type filters, faster-roads/more-curves cost model, snapping, A*; the runtime (listener-thread tracker, `nav-route` worker, off-route / race / arrival / shared-destination rules, `nav::view()`); the drawing on the maps; the Viewer's navigation sidebar (layout, the N key), the mouse scheme (left marker, middle route, right menu; D108), config bridge, co-op sharing UI.
+- [features/onboarding.md](features/onboarding.md) — first-run setup guide (I17/D33): steps, first-run flag and why existing users don't see it, re-open from Setup, Forza Data Out screenshot
 - [Co-Op](features/coop.md) — shared telemetry over a cloudflared tunnel; remote players on the map.
 - [Backfire](features/backfire.md) — synthetic anti-lag / throttle-blip.
 - [Automatic Gearbox](features/gearbox.md) — DSG-style auto-shifter with per-car calibration.
 - [Power Curve](features/power-curve.md) — live RPM vs power/torque, captured on full-throttle runs.
 - [Engine Swaps](features/engine-swaps.md) — display-only reference table from `engines.csv`.
+- [Debug](features/debug.md) — the Debug tab: raw packet fields (left) and values derived from them, incl. car make/model (right).
 - [Presets & Mini-Settings](features/presets.md) — the config-overlay mechanism, `KEY_GROUPS`, and bundled presets.
 - [Profile Manager](features/profiles.md) — named full-config snapshots, continuous save, selective export/import.
 - [Settings](features/settings.md) — network, units, display, profiles (the Settings tab).
+- [Map tab](features/map-tab.md) — the Map tab: the full-size viewer (pan / zoom / follow, reset when driving again), and its settings mode with the Minimap, Dashboard map & Viewer and Map data pages.
+- [Map editor](features/map-editor.md) — the Map tab → Map data page (was Setup → Map data): opening the road-type editor from the app, start modes (Current / Raw), Save / override / reset / rebuild rules, contributing.
 - [Hotkeys](features/hotkeys.md) — rebindable global + in-app shortcuts, evdev/GetAsyncKeyState capture, window-focus detection.
+- [Gamepad](features/gamepad.md) — controller bindings for the global actions + the right-stick vector; evdev (xpad/xone/xpadneo) and XInput backends, why the physical pad.
 - [Hotkeys — Design Spec](features/hotkeys-design.md) — the design record + rationale behind the hotkeys feature (why evdev, why not a compositor API, the focus-gate rules).
 
 ## protocol/ — the wire format
@@ -38,6 +45,13 @@ The navigation reference — read these to move around the source efficiently.
 ## ui/ — how to build consistent UI
 
 - [Styling Guide](ui/STYLING-GUIDE.md) — cards/categories, control rows, reserved spinner widths, the `theme::` helpers.
+
+## game-data/ — reverse-engineered FH6 game files
+
+- [FH6 Game Files](game-data/fh6-game-files.md) — the data catalogue (what is readable, exact vs approximate, loadable from a user install or creator-dump only), encryption status, and the formats: map imagery (`.swatchbin` BC1 tiles), road graph (`Brio_00.nav`), POIs (trigger zones, locators, `GameObjs.xml`), GeoChunk/PGZP, exact race starts (`RVAN`), race lines (`.owt` layout), speed-limit signs, exact race names + types (`ObjectModelGame.zip`), the seasonal-playlist verdict, open items, the live-game probe, dead ends, and why we read at runtime instead of bundling. Scripts: [`tools/fh6-extract/`](../tools/fh6-extract/README.md).
+- [FH6 Terrain](game-data/fh6-terrain.md) — terrain elevation (`burG` models in GeoChunk0, 0.17 m vs roads) and surface-id collision meshes (`.phys`); the 54-id surface table with each name marked confirmed in-game / seen / reasoned.
+- [FH6 Map Tooling](game-data/fh6-map-tooling.md) — the road editor v2 and its `fh6-road-types` v2 format (new types, user points, split / move), the 2D vanilla-style road preview and the 3D terrain preview, with the why behind the design choices (road height node vs terrain, thickness, hole filling).
+- [FH6 Cars, Names, Regions and Icons](game-data/fh6-cars-names-icons.md) — `CarOrdinal` → make/model from the install alone, landmark and region names in 24 languages, region outlines, and the game's own map icons (BC7 swatchbins, atlas sheets, POI category → icon).
 
 ## claude-instructions/ — mandatory rules for agents
 

@@ -1,6 +1,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Name of the uinput device `InputSender` creates (Linux). The hotkey backend skips it by this
+/// name: it only ever carries our own synthetic presses, never a real keyboard's.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const VIRTUAL_DEVICE_NAME: &str = "Forza Telemetry Input";
+
 /// Shared "synthetic press may still echo in telemetry" window.
 ///
 /// Written by the input WORKER at actual key emission time — not at enqueue
@@ -30,9 +35,11 @@ impl EchoWindow {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TryRecvError};
+    use std::sync::Arc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use evdev::{AttributeSet, EventType, InputEvent, Key};
     use evdev::uinput::VirtualDeviceBuilder;
@@ -47,6 +54,35 @@ mod linux {
         // (or auto-released at `max_hold_ms` if none arrives — e.g. packets stop).
         Hold { key: Key, max_hold_ms: u64, echo_ms: u64 },
         Release,
+        // Wake the worker while its virtual device is missing: retry the build now instead of
+        // at the next 2 s tick (Setup -> Re-check).
+        Retry,
+    }
+
+    /// Readiness of the virtual device (stored in an `AtomicU8`).
+    const PENDING: u8 = 0;
+    const READY: u8 = 1;
+    const FAILED: u8 = 2;
+
+    /// Pure: the `AtomicU8` state as the tri-state the permission check uses.
+    pub(super) fn ready_from_state(state: u8) -> Option<bool> {
+        match state {
+            READY => Some(true),
+            FAILED => Some(false),
+            _ => None,
+        }
+    }
+
+    /// How long the worker waits after a failed build before trying again. *Why retry:* a one-shot
+    /// build left the sender dead until restart even after the user fixed the permission.
+    const RETRY_EVERY: Duration = Duration::from_secs(2);
+
+    fn build_device() -> std::io::Result<evdev::uinput::VirtualDevice> {
+        let mut keys = AttributeSet::<Key>::new();
+        keys.insert(Key::KEY_W);
+        keys.insert(Key::KEY_E);
+        keys.insert(Key::KEY_Q);
+        VirtualDeviceBuilder::new()?.name(super::VIRTUAL_DEVICE_NAME).with_keys(&keys)?.build()
     }
 
     #[derive(Clone)]
@@ -54,6 +90,8 @@ mod linux {
         tx: SyncSender<Cmd>,
         echo: EchoWindow,
         gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// PENDING / READY / FAILED: whether the worker holds a working virtual device.
+        state: Arc<AtomicU8>,
     }
 
     impl InputSender {
@@ -61,22 +99,44 @@ mod linux {
             let (tx, rx) = mpsc::sync_channel::<Cmd>(64);
             let echo = EchoWindow::default();
             let worker_echo = echo.clone();
+            let state = Arc::new(AtomicU8::new(PENDING));
+            let worker_state = state.clone();
             thread::spawn(move || {
-                let mut keys = AttributeSet::<Key>::new();
-                keys.insert(Key::KEY_W);
-                keys.insert(Key::KEY_E);
-                keys.insert(Key::KEY_Q);
-
-                let device = VirtualDeviceBuilder::new()
-                    .and_then(|b| b.name("Forza Telemetry Input").with_keys(&keys))
-                    .and_then(|b| b.build());
-
-                let mut device = match device {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("uinput: could not create virtual device: {e}");
-                        eprintln!("uinput: ensure the current user is in the 'input' group or /dev/uinput is accessible");
-                        return;
+                // Build the virtual device, retrying until it works (or the app is gone).
+                let mut logged = false;
+                let mut device = loop {
+                    match build_device() {
+                        Ok(d) => {
+                            worker_state.store(READY, Ordering::Relaxed);
+                            if logged { eprintln!("uinput: virtual device created, key input works now"); }
+                            break d;
+                        }
+                        Err(e) => {
+                            worker_state.store(FAILED, Ordering::Relaxed);
+                            // Once, not every retry.
+                            if !logged {
+                                logged = true;
+                                eprintln!("uinput: could not create virtual device: {e}");
+                                eprintln!("uinput: ensure the current user is in the 'input' group or /dev/uinput is accessible; retrying every 2 s");
+                            }
+                        }
+                    }
+                    // Wait for the next try; presses are dropped at the sender while not READY, and
+                    // anything that slipped in is discarded here so it can't fire long after.
+                    let until = Instant::now() + RETRY_EVERY;
+                    loop {
+                        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                            Ok(Cmd::Retry) | Err(RecvTimeoutError::Timeout) => break,
+                            Ok(_) => {}
+                            Err(RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    loop {
+                        match rx.try_recv() {
+                            Ok(_) => {}
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => return,
+                        }
                     }
                 };
 
@@ -103,7 +163,8 @@ mod linux {
                     let syn = InputEvent::new(EventType::SYNCHRONIZATION, 0, 0);
                     match cmd {
                         // Timeout or Release: emit key-up for the held key, re-anchor echo.
-                        None | Some(Cmd::Release) => {
+                        // (`Retry` only matters while the device is missing: nothing to do here.)
+                        None | Some(Cmd::Release) | Some(Cmd::Retry) => {
                             if let Some((key, _, echo)) = held.take() {
                                 device.emit(&[InputEvent::new(EventType::KEY, key.code(), 0), syn]).ok();
                                 worker_echo.open(echo);
@@ -143,8 +204,36 @@ mod linux {
                     }
                 }
             });
-            Self { tx, echo, gate: None }
+            let me = Self { tx, echo, gate: None, state };
+            // Give the first build a moment so the startup permission probe sees a real answer
+            // (ms in practice; success and EACCES both return at once) instead of "pending".
+            me.wait_resolved(Duration::from_millis(500));
+            me
         }
+
+        fn wait_resolved(&self, max: Duration) {
+            let end = Instant::now() + max;
+            while self.state.load(Ordering::Relaxed) == PENDING && Instant::now() < end {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        /// Whether the virtual keyboard really exists: `Some(true)` it was created, `Some(false)`
+        /// the last attempt failed (the worker keeps retrying), `None` still starting.
+        pub fn uinput_ready(&self) -> Option<bool> {
+            ready_from_state(self.state.load(Ordering::Relaxed))
+        }
+
+        /// Retry a failed virtual-device build now and wait briefly for the outcome (Setup ->
+        /// Re-check). No-op while the device works.
+        pub fn recheck(&self) {
+            if self.state.compare_exchange(FAILED, PENDING, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                self.tx.try_send(Cmd::Retry).ok();
+                self.wait_resolved(Duration::from_millis(300));
+            }
+        }
+
+        fn is_ready(&self) -> bool { self.state.load(Ordering::Relaxed) == READY }
 
         /// Install a shared focus gate: when set and false, key emission is
         /// suppressed (so synthetic input never leaks into other apps).
@@ -156,7 +245,7 @@ mod linux {
         }
 
         pub fn press(&self, key: Key, hold_ms: u64, gap_ms: u64) {
-            if !self.input_allowed() { return; }
+            if !self.input_allowed() || !self.is_ready() { return; }
             self.tx.send(Cmd::Key { key, hold_ms, gap_ms, echo_ms: None }).ok();
         }
 
@@ -164,7 +253,7 @@ mod linux {
         /// Non-blocking: a full queue drops the press (a skipped backfire pop is
         /// harmless; stalling the UI thread is not).
         pub fn press_tracked(&self, key: Key, hold_ms: u64, gap_ms: u64, echo_ms: u64) {
-            if !self.input_allowed() { return; }
+            if !self.input_allowed() || !self.is_ready() { return; }
             self.tx
                 .try_send(Cmd::Key { key, hold_ms, gap_ms, echo_ms: Some(echo_ms) })
                 .ok();
@@ -174,7 +263,7 @@ mod linux {
         /// after `max_hold_ms` as a stuck-key safety). Non-blocking, like
         /// `press_tracked`. Used for packet-based backfire (hold until next packet).
         pub fn hold_tracked(&self, key: Key, max_hold_ms: u64, echo_ms: u64) {
-            if !self.input_allowed() { return; }
+            if !self.input_allowed() || !self.is_ready() { return; }
             self.tx
                 .try_send(Cmd::Hold { key, max_hold_ms, echo_ms })
                 .ok();
@@ -182,6 +271,7 @@ mod linux {
 
         /// Release a key held via [`Self::hold_tracked`]. Non-blocking.
         pub fn release(&self) {
+            if !self.is_ready() { return; }
             self.tx.try_send(Cmd::Release).ok();
         }
 
@@ -314,6 +404,10 @@ mod windows {
             self.gate.as_ref().map_or(true, |g| g.load(std::sync::atomic::Ordering::Relaxed))
         }
 
+        /// No virtual device to build (enigo): always ready.
+        pub fn uinput_ready(&self) -> Option<bool> { Some(true) }
+        pub fn recheck(&self) {}
+
         pub fn press(&self, key: KeyCode, hold_ms: u64, gap_ms: u64) {
             if !self.input_allowed() { return; }
             self.tx.send(Cmd::Press { key: key.0, hold_ms, gap_ms, echo_ms: None }).ok();
@@ -372,6 +466,8 @@ mod stub {
         pub fn new() -> Self { Self }
         pub fn set_focus_gate(&mut self, _gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
         pub fn input_allowed(&self) -> bool { true }
+        pub fn uinput_ready(&self) -> Option<bool> { Some(true) }
+        pub fn recheck(&self) {}
         pub fn press(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64) {}
         pub fn press_tracked(&self, _key: KeyCode, _hold_ms: u64, _gap_ms: u64, _echo_ms: u64) {}
         pub fn hold_tracked(&self, _key: KeyCode, _max_hold_ms: u64, _echo_ms: u64) {}
@@ -391,9 +487,434 @@ pub use windows::{InputSender, KeyCode, char_to_key};
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use stub::{InputSender, KeyCode, char_to_key};
 
+// ── Permission check (Linux) ───────────────────────────────────────
+// Hotkeys read /dev/input/event*, synthetic input writes /dev/uinput; both silently
+// fail without the right group. `probe()` gathers the facts, `evaluate()` is pure.
+
+/// Raw facts about input access. `Default` = everything fine (what Windows reports).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputProbe {
+    /// A **keyboard** under `/dev/input/event*` is readable *and* the hotkey backend is reading
+    /// at least one (no keyboard at all isn't a permission problem). See [`hotkeys_ok`].
+    pub hotkeys_ok: bool,
+    /// Key sending works: the virtual keyboard was really created ([`uinput_ok`]); before the
+    /// sender has answered, `/dev/uinput` opening for writing stands in.
+    pub uinput_ok: bool,
+    /// `/dev/uinput` exists (else the `uinput` kernel module isn't loaded).
+    pub uinput_exists: bool,
+    /// `/dev/uinput` is group `input` with group rw — otherwise a udev rule is needed.
+    pub uinput_group_input: bool,
+    /// The running process is in the `input` group (effective groups: a `usermod` without a
+    /// re-login does not count yet). Without it a user practically can't read keyboards or write
+    /// `/dev/uinput`, so being outside it counts as **missing** (see [`evaluate`]).
+    pub in_input_group: bool,
+}
+
+impl Default for InputProbe {
+    fn default() -> Self {
+        InputProbe { hotkeys_ok: true, uinput_ok: true, uinput_exists: true, uinput_group_input: true, in_input_group: true }
+    }
+}
+
+pub const LBL_USERMOD: &str = "Add yourself to the input group (hotkeys and key input)";
+pub const LBL_MODPROBE: &str = "Load the uinput kernel module";
+pub const LBL_UDEV: &str = "Let the input group write /dev/uinput (key input)";
+pub const CMD_USERMOD: &str = "sudo usermod -aG input $USER";
+pub const CMD_MODPROBE: &str = "sudo modprobe uinput";
+pub const CMD_UDEV: &str = "echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/99-uinput.rules && sudo udevadm control --reload && sudo udevadm trigger";
+
+/// What is missing and the shell commands that fix it (deduplicated, in run order).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputReport {
+    pub hotkeys_missing: bool,
+    pub uinput_missing: bool,
+    /// Not a member of the `input` group.
+    pub group_missing: bool,
+    /// `(label, command)` pairs; the label is an English `tr()` key.
+    pub commands: Vec<(&'static str, &'static str)>,
+}
+
+impl InputReport {
+    pub fn any_missing(&self) -> bool { self.hotkeys_missing || self.uinput_missing || self.group_missing }
+}
+
+/// Pure: turn probe results into the missing items + fix commands. Not being in the `input` group
+/// is itself "missing" (and offers `usermod`) even while the other two lights are green.
+/// *Why:* the keyboard check alone was unreliable (a gaming mouse's key interface counted as a
+/// working keyboard, so a user whose real keyboard was unreadable got no dialog), and without the
+/// group a user practically can't read keyboards anyway. A false alarm (access set up by ACLs or
+/// udev) is muted with "Don't remind me again".
+pub fn evaluate(p: &InputProbe) -> InputReport {
+    let mut r = InputReport {
+        hotkeys_missing: !p.hotkeys_ok,
+        uinput_missing: !p.uinput_ok,
+        group_missing: !p.in_input_group,
+        commands: Vec::new(),
+    };
+    if r.uinput_missing {
+        if !p.uinput_exists {
+            r.commands.push((LBL_MODPROBE, CMD_MODPROBE));
+        } else if !p.uinput_group_input {
+            r.commands.push((LBL_UDEV, CMD_UDEV));
+        }
+    }
+    if r.group_missing {
+        r.commands.insert(0, (LBL_USERMOD, CMD_USERMOD));
+    }
+    r
+}
+
+/// Pure: the hotkeys light. Permission-denied is red; "readable" but the backend opened zero
+/// **physical** keyboards (`active_keyboards == 0`) is red too — *Why:* it must never stay green
+/// while hotkeys are silently dead (virtual keyboards such as ydotoold's, or a mouse's key
+/// interface, can be readable while the real keyboard isn't, and they don't count). No keyboard
+/// at all is not a permission problem.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn hotkeys_ok(status: crate::hotkeys::HotkeyStatus, active_keyboards: usize) -> bool {
+    use crate::hotkeys::HotkeyStatus::*;
+    match status {
+        NoPermission => false,
+        Ok => active_keyboards > 0,
+        NoDevice | Unsupported => true,
+    }
+}
+
+/// Pure: the "key input" light. The **sender's own readiness** wins: `Some(true)` = the virtual
+/// keyboard was really created, `Some(false)` = building it failed (the worker keeps retrying).
+/// Only while it is still starting (`None`) the plain open-for-write test stands in. *Why:* the
+/// open test alone stayed green while the device build failed and every key press was silently
+/// dropped; and a created device is the proof that sending works, whatever a later open says.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn uinput_ok(open_ok: bool, sender_ready: Option<bool>) -> bool {
+    sender_ready.unwrap_or(open_ok)
+}
+
+/// Pure: should the missing-permissions modal open now? Once per *transition* into "missing"
+/// (or at startup), never repeatedly while it stays missing. `prev_missing` = what the previous
+/// refresh saw (false at launch before the first one), `now_missing` = what this refresh sees.
+/// *Why:* the status is live now, so access that breaks mid-session (a device unplugged, the
+/// sender dying) must tell the user once, but a dismissed dialog must not pop up every 2 s.
+pub fn modal_should_open(prev_missing: bool, now_missing: bool, remind: bool) -> bool {
+    remind && now_missing && !prev_missing
+}
+
+/// Pure: does `/proc/self/status` list `gid` among the process's groups (`getgroups()` / `id -G`
+/// semantics: the supplementary `Groups:` plus the effective gid, `Gid:`'s second field)?
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn status_has_gid(status: &str, gid: u32) -> bool {
+    let nums = |line: &str| -> Vec<u32> { line.split_whitespace().skip(1).filter_map(|g| g.parse().ok()).collect() };
+    status.lines().any(|l| {
+        (l.starts_with("Groups:") && nums(l).contains(&gid))
+            || (l.starts_with("Gid:") && nums(l).get(1) == Some(&gid))
+    })
+}
+
+/// Probe this machine. `active_keyboards` = keyboards the hotkey backend is reading
+/// (`HotkeyListener::active_keyboards`); `uinput_ready` = [`InputSender::uinput_ready`].
+/// Windows (and anything non-Linux) needs no permissions.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn probe(active_keyboards: usize, uinput_ready: Option<bool>) -> InputProbe {
+    #[cfg(target_os = "linux")]
+    {
+        // Dev/testing aid: pretend nothing is permitted so the modal can be reviewed.
+        if std::env::var_os("FORZA_FAKE_NO_INPUT_PERMS").is_some_and(|v| v == "1") {
+            return InputProbe { hotkeys_ok: false, uinput_ok: false, uinput_exists: true, uinput_group_input: false, in_input_group: false };
+        }
+        use std::os::unix::fs::MetadataExt;
+        let input_gid = std::fs::read_to_string("/etc/group").ok().and_then(|g| {
+            g.lines().find_map(|l| {
+                let mut f = l.split(':');
+                if f.next() != Some("input") { return None; }
+                f.nth(1).and_then(|n| n.parse::<u32>().ok())
+            })
+        });
+        // The process's own groups, so a fresh `usermod` without a re-login is correctly still
+        // "not a member".
+        let in_input_group = input_gid.is_some_and(|gid| {
+            std::fs::read_to_string("/proc/self/status").ok().is_some_and(|s| status_has_gid(&s, gid))
+        });
+        let meta = std::fs::metadata("/dev/uinput").ok();
+        InputProbe {
+            hotkeys_ok: hotkeys_ok(crate::hotkeys::probe_status(), active_keyboards),
+            uinput_ok: uinput_ok(std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok(), uinput_ready),
+            uinput_exists: meta.is_some(),
+            uinput_group_input: meta.is_some_and(|m| Some(m.gid()) == input_gid && m.mode() & 0o060 == 0o060),
+            in_input_group,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    { InputProbe::default() }
+}
+
+/// Runs [`probe`] off the UI thread, at most one at a time, and hands the result back by
+/// channel. *Why:* the probe `open()`s every `/dev/input/event*` node (`hotkeys::inventory`);
+/// with ~32 nodes that is ~155 ms (a single RGB-controller node takes ~57 ms), and run on the UI
+/// thread every 2 s it froze the window for that long each time. Besides the visible stutter it
+/// made UI-side timing (packets-per-second, perf-test stopwatches) swing.
+///
+/// State machine: *idle* -> ([`Self::due`]) -> [`Self::spawn`] -> *in flight* (no second probe
+/// starts) -> [`Self::poll`] returns the result and goes back to *idle* with the 2 s throttle
+/// restarting from that moment.
+#[derive(Default)]
+pub struct ProbeTask {
+    rx: Option<std::sync::mpsc::Receiver<InputProbe>>,
+    /// When the last result was taken (or the task cancelled); `None` = never ran.
+    last: Option<std::time::Instant>,
+}
+
+impl ProbeTask {
+    /// Minimum gap between a result and the next probe.
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    pub fn in_flight(&self) -> bool {
+        self.rx.is_some()
+    }
+
+    /// Time for another probe: none in flight and the throttle has run out (or it never ran).
+    pub fn due(&self, now: std::time::Instant) -> bool {
+        !self.in_flight() && self.last.map_or(true, |t| now.duration_since(t) >= Self::EVERY)
+    }
+
+    /// Run `f` (normally `|| probe(..)`) on a fresh `input-probe` thread. No-op while one is
+    /// already in flight.
+    pub fn spawn(&mut self, f: impl FnOnce() -> InputProbe + Send + 'static) {
+        if self.in_flight() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new().name("input-probe".into()).spawn(move || {
+            let _ = tx.send(f());
+        });
+        if spawned.is_ok() {
+            self.rx = Some(rx);
+        }
+    }
+
+    /// The finished probe, if there is one (never blocks). A thread that died without a result
+    /// just ends the flight; the next [`Self::due`] retries.
+    pub fn poll(&mut self, now: std::time::Instant) -> Option<InputProbe> {
+        use std::sync::mpsc::TryRecvError;
+        match self.rx.as_ref()?.try_recv() {
+            Ok(p) => {
+                self.rx = None;
+                self.last = Some(now);
+                Some(p)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.rx = None;
+                self.last = Some(now);
+                None
+            }
+        }
+    }
+
+    /// Forget the one in flight (its result is dropped) and restart the throttle - used when
+    /// the caller just probed synchronously (Re-check), so the older, staler result can't land
+    /// on top of the fresh one.
+    pub fn cancel(&mut self, now: std::time::Instant) {
+        self.rx = None;
+        self.last = Some(now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_task_runs_one_probe_at_a_time_and_applies_the_result_later() {
+        use std::sync::mpsc::channel;
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        assert!(task.due(t0), "never ran: due at once (startup)");
+
+        // The probe blocks until released, like a slow /dev/input scan.
+        let (release, gate) = channel::<()>();
+        let slow = InputProbe { hotkeys_ok: false, ..Default::default() };
+        task.spawn(move || {
+            let _ = gate.recv();
+            slow
+        });
+        assert!(task.in_flight());
+        assert!(!task.due(t0 + Duration::from_secs(60)), "no second probe while one is in flight");
+        assert_eq!(task.poll(t0), None, "UI never blocks on the probe: no result yet");
+        task.spawn(|| panic!("a second probe must not start while one is in flight"));
+
+        release.send(()).unwrap();
+        let got = loop {
+            if let Some(p) = task.poll(t0 + Duration::from_secs(10)) {
+                break p;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(got, slow);
+        assert!(!task.in_flight());
+        // Throttle restarts from when the result was taken.
+        assert!(!task.due(t0 + Duration::from_secs(11)));
+        assert!(task.due(t0 + Duration::from_secs(12)));
+    }
+
+    #[test]
+    fn probe_task_result_feeds_the_modal_rule_once() {
+        use std::time::{Duration, Instant};
+        // tick -> in flight -> result -> modal rule, as `refresh_input_facts` drives it.
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        let mut prev_missing = false;
+        let mut opened = 0;
+        for round in 0..3 {
+            let now = t0 + Duration::from_secs(5 * round);
+            assert!(task.due(now));
+            task.spawn(|| InputProbe { in_input_group: false, ..Default::default() });
+            let p = loop {
+                if let Some(p) = task.poll(now) {
+                    break p;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let missing = evaluate(&p).any_missing();
+            if modal_should_open(prev_missing, missing, true) {
+                opened += 1;
+            }
+            prev_missing = missing;
+        }
+        assert_eq!(opened, 1, "stays missing: the modal opens on the transition only");
+    }
+
+    #[test]
+    fn probe_task_cancel_drops_the_stale_result() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        task.spawn(move || {
+            let _ = gate.recv();
+            InputProbe::default()
+        });
+        task.cancel(t0);
+        assert!(!task.in_flight());
+        let _ = release.send(());
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(task.poll(t0), None);
+        assert!(!task.due(t0 + Duration::from_secs(1)));
+        assert!(task.due(t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn probe_task_survives_a_dead_thread() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut task = ProbeTask::default();
+        task.spawn(|| panic!("probe thread died"));
+        let mut tries = 0;
+        while task.in_flight() && tries < 1000 {
+            assert_eq!(task.poll(t0), None);
+            std::thread::sleep(Duration::from_millis(1));
+            tries += 1;
+        }
+        assert!(!task.in_flight(), "flight ended without a result");
+        assert!(task.due(t0 + Duration::from_secs(2)), "retries after the throttle");
+    }
+
+    #[test]
+    fn evaluate_all_ok_is_empty() {
+        let r = evaluate(&InputProbe::default());
+        assert!(!r.any_missing());
+        assert!(r.commands.is_empty());
+    }
+
+    #[test]
+    fn evaluate_not_in_group_suggests_usermod() {
+        let p = InputProbe { hotkeys_ok: false, uinput_ok: false, in_input_group: false, ..Default::default() };
+        let r = evaluate(&p);
+        assert!(r.hotkeys_missing && r.uinput_missing);
+        assert_eq!(r.commands, vec![(LBL_USERMOD, CMD_USERMOD)]);
+    }
+
+    #[test]
+    fn evaluate_uinput_module_and_udev() {
+        let p = InputProbe { uinput_ok: false, uinput_exists: false, ..Default::default() };
+        assert_eq!(evaluate(&p).commands, vec![(LBL_MODPROBE, CMD_MODPROBE)]);
+        let p = InputProbe { uinput_ok: false, uinput_group_input: false, in_input_group: false, ..Default::default() };
+        assert_eq!(evaluate(&p).commands, vec![(LBL_USERMOD, CMD_USERMOD), (LBL_UDEV, CMD_UDEV)]);
+    }
+
+    #[test]
+    fn evaluate_group_member_only_hotkeys_gives_no_command() {
+        // Already in the group but still can't read: needs a re-login, no command helps.
+        let r = evaluate(&InputProbe { hotkeys_ok: false, ..Default::default() });
+        assert!(r.hotkeys_missing && r.commands.is_empty());
+    }
+
+    #[test]
+    fn hotkeys_light_needs_permission_and_an_open_keyboard() {
+        use crate::hotkeys::HotkeyStatus::*;
+        assert!(!hotkeys_ok(NoPermission, 0));
+        assert!(!hotkeys_ok(NoPermission, 2));
+        assert!(!hotkeys_ok(Ok, 0), "readable but zero keyboards opened must be red");
+        assert!(hotkeys_ok(Ok, 1));
+        assert!(hotkeys_ok(NoDevice, 0));
+    }
+
+    #[test]
+    fn uinput_light_follows_sender_readiness() {
+        // Sender answered: its answer wins over the open test.
+        assert!(!uinput_ok(true, Some(false)), "open ok but device build failed must be red");
+        assert!(uinput_ok(false, Some(true)), "a created device proves sending works");
+        assert!(uinput_ok(true, Some(true)));
+        assert!(!uinput_ok(false, Some(false)));
+        // Still pending: fall back to the open test.
+        assert!(uinput_ok(true, None));
+        assert!(!uinput_ok(false, None));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sender_state_maps_to_tristate() {
+        assert_eq!(linux::ready_from_state(0), None);
+        assert_eq!(linux::ready_from_state(1), Some(true));
+        assert_eq!(linux::ready_from_state(2), Some(false));
+    }
+
+    #[test]
+    fn modal_reshows_once_per_transition_to_missing() {
+        // Startup: missing and reminders on -> open.
+        assert!(modal_should_open(false, true, true));
+        // Still missing (even after the user closed it): no repeat.
+        assert!(!modal_should_open(true, true, true));
+        // Fine -> fine, and recovery: nothing.
+        assert!(!modal_should_open(false, false, true));
+        assert!(!modal_should_open(true, false, true));
+        // Reminders off: never.
+        assert!(!modal_should_open(false, true, false));
+        // OK -> missing -> OK -> missing walks through two openings.
+        let walk = [(false, true), (true, true), (true, false), (false, true)];
+        assert_eq!(walk.iter().filter(|(p, n)| modal_should_open(*p, *n, true)).count(), 2);
+    }
+
+    #[test]
+    fn group_membership_reads_the_process_groups() {
+        let st = "Name:\tx\nGid:\t1000\t1000\t1000\t1000\nGroups:\t10 998 1000\n";
+        assert!(status_has_gid(st, 998), "supplementary group");
+        assert!(status_has_gid(st, 1000), "primary / effective gid");
+        assert!(!status_has_gid(st, 104), "not a member (a fresh usermod without re-login)");
+        assert!(!status_has_gid("Name:\tx\n", 998));
+    }
+
+    #[test]
+    fn not_in_the_input_group_is_missing_on_its_own() {
+        // Other lights green, user not in `input`: missing -> modal, with the usermod command.
+        let r = evaluate(&InputProbe { in_input_group: false, ..Default::default() });
+        assert!(r.group_missing && !r.hotkeys_missing && !r.uinput_missing);
+        assert!(r.any_missing());
+        assert_eq!(r.commands, vec![(LBL_USERMOD, CMD_USERMOD)]);
+        assert!(modal_should_open(false, r.any_missing(), true));
+        // In the group and everything else fine: nothing missing.
+        let r = evaluate(&InputProbe { in_input_group: true, ..Default::default() });
+        assert!(!r.any_missing() && !r.group_missing && r.commands.is_empty());
+    }
 
     #[test]
     fn focus_gate_blocks_when_not_allowed() {

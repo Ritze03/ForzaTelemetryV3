@@ -12,7 +12,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,12 @@ use tungstenite::{Message, WebSocket};
 use uuid::Uuid;
 
 use crate::packet::ForzaPacket;
+
+// Trystero transport: serverless P2P mesh, signalled over public Nostr relays. See
+// docs/features/coop.md (transport section) and the module docs of each file.
+mod mesh;
+mod nostr;
+mod rtc;
 
 /// Local port the host's WS server listens on (and cloudflared points at).
 pub const DEFAULT_COOP_PORT: u16 = 7071;
@@ -57,6 +63,75 @@ enum Control {
     /// show at once. Either direction; the host re-broadcasts with the setter's id.
     /// (Option — not NaN — so it survives JSON, which has no NaN.)
     Waypoint { id: String, pos: Option<[f32; 2]>, hue: f32 },
+    /// Mesh (Trystero) only: sent by each side when its data channel opens and again when
+    /// its identity changes. Binds the channel to that player id + name/colour.
+    Peer { id: String, name: String, hue: f32 },
+    /// The room's shared navigation destination (one per room, last write wins on `(ts, id)`):
+    /// world [x, z], the setter's colour, their road filters as bits ([`DEST_ROAD`]…; unknown
+    /// bits are kept when relaying and ignored by consumers) and curve slider `c` (0..1).
+    /// `pos: None` clears it (a tombstone that keeps its `ts`). `ts` = setter's unix ms.
+    /// A tag of its own, not extra fields on `Waypoint`: see `docs/features/coop.md`.
+    Dest { id: String, pos: Option<[f32; 2]>, hue: f32, f: u8, c: f32, ts: u64 },
+}
+
+/// `Control::Dest.f` filter bits. Higher bits are reserved: ignored on receive
+/// ([`DEST_FILTER_MASK`]), preserved when relaying.
+#[allow(dead_code)]
+pub const DEST_ROAD: u8 = 1;
+#[allow(dead_code)]
+pub const DEST_HIGHWAY: u8 = 2;
+#[allow(dead_code)]
+pub const DEST_DIRT: u8 = 4;
+#[allow(dead_code)]
+pub const DEST_TRAIL: u8 = 8;
+#[allow(dead_code)]
+pub const DEST_CROSS_COUNTRY: u8 = 16;
+#[allow(dead_code)]
+pub const DEST_JUMPS: u8 = 32;
+pub const DEST_FILTER_MASK: u8 = 0b11_1111;
+
+/// The room's shared destination as read by the navigator / UI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedDest {
+    /// Player id of the setter (trusted: connection / channel id). In a mesh a destination
+    /// resent to a late joiner is attributed to the resender.
+    pub setter_id: String,
+    /// Setter's display name from the roster (empty if they left and are not in it).
+    pub setter_name: String,
+    pub x: f32,
+    pub z: f32,
+    pub hue: f32,
+    /// Raw filter bits as received (reserved bits included); use [`SharedDest::filters`].
+    pub filter_bits: u8,
+    /// Curve slider 0..1.
+    pub curve: f32,
+    pub ts: u64,
+}
+
+impl SharedDest {
+    /// The known filter bits only.
+    #[allow(dead_code)]
+    pub fn filters(&self) -> u8 {
+        self.filter_bits & DEST_FILTER_MASK
+    }
+}
+
+/// Stored slot: `pos: None` is the tombstone of a clear.
+#[derive(Clone, Debug)]
+struct DestSlot {
+    setter_id: String,
+    pos: Option<[f32; 2]>,
+    hue: f32,
+    f: u8,
+    c: f32,
+    ts: u64,
+}
+
+impl DestSlot {
+    fn message(&self) -> Message {
+        let c = Control::Dest { id: self.setter_id.clone(), pos: self.pos, hue: self.hue, f: self.f, c: self.c, ts: self.ts };
+        Message::Text(serde_json::to_string(&c).unwrap_or_default())
+    }
 }
 
 /// Per-remote jitter buffer: timestamped packets awaiting playback.
@@ -108,18 +183,188 @@ struct Inner {
     /// Client: outgoing channel to the host.
     client_out: Option<SyncSender<Message>>,
     status: String,
+    /// The session isn't fully up yet (see [`CoopState::is_connecting`]); drives the status
+    /// bar's yellow Co-Op indicator. Mesh: recomputed in `Session::refresh`; Cloudflare: set by
+    /// `start_host` / `start_client` and cleared when the tunnel / socket comes up.
+    connecting: bool,
     error: Option<String>,
     words: Option<String>,
     lan_url: Option<String>,
     buffer_ms: u32,
     /// Per-player map pings, keyed by setter id: (world_x, world_z, setter hue).
     waypoints: HashMap<String, (f32, f32, f32)>,
+    /// The room's shared destination (or its clear tombstone), last write wins on `(ts, id)`.
+    dest: Option<DestSlot>,
+    /// Bumped on every accepted change of `dest` (and when it is dropped), so readers detect
+    /// change with one compare.
+    dest_seq: u64,
     /// Running cloudflared tunnel child. Owned here (not on CoopState) so the
     /// background host-start thread can hand it off and `stop()` can still kill it.
     tunnel: Option<Child>,
     /// cloudflared download in flight: (bytes so far, total if known). `None` when
     /// not downloading; drives the progress indicator in the Co-Op tab.
     download: Option<(u64, Option<u64>)>,
+    /// Trystero mesh mode: every peer is equal, `clients` holds one queue per open data
+    /// channel (keyed by that peer's signalling id) and all sends go through `broadcast`.
+    /// Reset in `stop()`. `role` is `Client` while active (the UI matches exhaustively on it).
+    mesh: bool,
+    /// Our own display identity (mesh: re-sent to peers on open and on change).
+    my_name: String,
+    my_hue: f32,
+    /// Mesh: signalling peer id (channel key) → the player UUID that channel announced.
+    mesh_bound: HashMap<String, String>,
+}
+
+impl Inner {
+    fn new(name: &str, hue: f32, buffer_ms: u32) -> Self {
+        let id = Uuid::new_v4();
+        Inner {
+            role: Role::Off,
+            my_id: id.to_string(),
+            my_id_bytes: *id.as_bytes(),
+            roster: Vec::new(),
+            remote: HashMap::new(),
+            clients: Vec::new(),
+            client_out: None,
+            status: String::new(),
+            connecting: false,
+            error: None,
+            words: None,
+            lan_url: None,
+            buffer_ms,
+            waypoints: HashMap::new(),
+            dest: None,
+            dest_seq: 0,
+            tunnel: None,
+            download: None,
+            mesh: false,
+            my_name: name.to_string(),
+            my_hue: hue,
+            mesh_bound: HashMap::new(),
+        }
+    }
+}
+
+/// Advance every jitter buffer to `now - buffer_ms`. Time-based, so calling it from more
+/// than one thread (the UI each frame, the overlay each HUD frame) is harmless.
+fn tick(inner: &Mutex<Inner>) {
+    let mut inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    let delay = Duration::from_millis(inner.buffer_ms as u64);
+    for buf in inner.remote.values_mut() {
+        buf.advance(delay);
+    }
+}
+
+fn remote_players(inner: &Mutex<Inner>) -> Vec<(PlayerInfo, ForzaPacket)> {
+    let inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut out = Vec::new();
+    for info in &inner.roster {
+        if info.id == inner.my_id {
+            continue;
+        }
+        if let Some(buf) = inner.remote.get(&info.id) {
+            if buf.last_recv.elapsed() < Duration::from_secs(3) {
+                if let Some(pkt) = &buf.current {
+                    out.push((info.clone(), pkt.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Send one locally-received packet to peers. A no-op (one uncontended lock) while co-op is
+/// off. Only `try_send`s under the lock, so it never blocks the caller (the listener thread).
+fn push_local(inner: &Mutex<Inner>, pkt: &ForzaPacket) {
+    let mut inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    if inner.role == Role::Off {
+        return;
+    }
+    let mut frame = Vec::with_capacity(ID_LEN + WIRE_LEN);
+    frame.extend_from_slice(&inner.my_id_bytes);
+    frame.extend_from_slice(&pkt.to_bytes());
+    let msg = Message::Binary(frame);
+    match inner.role {
+        Role::Host => inner.broadcast(msg, None),
+        Role::Client if inner.mesh => inner.broadcast(msg, None),
+        Role::Client => {
+            if let Some(tx) = &inner.client_out {
+                let _ = tx.try_send(msg);
+            }
+        }
+        Role::Off => {}
+    }
+}
+
+/// The packet we relay for `pkt`. A paused game zeroes car class/PI, so while paused carry
+/// over the last live values (same as the Car widget) and peers keep seeing our real class.
+/// `last` is (class, PI) from the last race-on packet; start it at `(-1, 0)`.
+pub fn outgoing(pkt: &ForzaPacket, last: &mut (i32, i32)) -> ForzaPacket {
+    if pkt.is_race_on != 0 {
+        *last = (pkt.car_class, pkt.car_performance_index);
+    }
+    let mut out = pkt.clone();
+    if pkt.is_paused() && last.1 != 0 {
+        (out.car_class, out.car_performance_index) = *last;
+    }
+    out
+}
+
+/// Cheap `Send + Sync` handle on the shared co-op state, for a thread that doesn't own
+/// [`CoopState`]: the HUD overlay reads teammates through it, the listener thread sends our
+/// telemetry through it. The inner `Arc` is never replaced (stop/host/join reuse
+/// it), so a handle taken once stays valid for the app's lifetime.
+#[derive(Clone)]
+pub struct CoopReader(Arc<Mutex<Inner>>);
+
+impl CoopReader {
+    /// Advance the jitter buffers, then snapshot the remote players (as
+    /// [`CoopState::remote_players`]). It advances them itself because the UI's `tick` stops
+    /// while the game covers the window. Empty while co-op is off (`stop` clears them).
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay exists on Linux and Windows only
+    pub fn remote_players(&self) -> Vec<(PlayerInfo, ForzaPacket)> {
+        tick(&self.0);
+        remote_players(&self.0)
+    }
+
+    /// Whether a session is running (role ≠ `Off`): the Minimap's own arrow takes the co-op
+    /// colour and trails are recorded only then, as on the Dashboard map.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub fn in_session(&self) -> bool {
+        self.0.lock().unwrap().role != Role::Off
+    }
+
+    /// The session's shared waypoints as `(setter_id, world_x, world_z, hue)`
+    /// ([`CoopState::waypoints`]).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn waypoints(&self) -> Vec<(String, f32, f32, f32)> {
+        self.0.lock().unwrap().waypoints.iter().map(|(id, &(x, z, h))| (id.clone(), x, z, h)).collect()
+    }
+
+    /// The room's shared destination, `None` if unset / cleared.
+    #[allow(dead_code)] // consumed by the navigator runtime
+    pub fn destination(&self) -> Option<SharedDest> {
+        self.0.lock().unwrap().dest_view()
+    }
+
+    /// Change counter of the shared destination (set, clear, session end): compare to detect
+    /// change without cloning.
+    #[allow(dead_code)] // consumed by the navigator runtime
+    pub fn destination_seq(&self) -> u64 {
+        self.0.lock().unwrap().dest_seq
+    }
+
+    /// Send our locally-received packet to peers (listener thread, every packet — it runs
+    /// while the game covers the window, which the UI loop doesn't). No-op while co-op is off.
+    pub fn push_local(&self, pkt: &ForzaPacket) {
+        push_local(&self.0, pkt);
+    }
+}
+
+impl std::fmt::Debug for CoopReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CoopReader")
+    }
 }
 
 /// Best-effort local LAN IP (the address a same-network peer would reach us on).
@@ -143,6 +388,46 @@ impl Inner {
             !matches!(tx.try_send(msg.clone()), Err(mpsc::TrySendError::Disconnected(_)))
         });
     }
+    /// Last-write-wins on `(ts, id)`; `setter` is the trusted id (never the message's own).
+    /// Returns whether it was accepted (then the caller relays it). Garbage values are refused.
+    fn accept_dest(&mut self, setter: &str, pos: Option<[f32; 2]>, hue: f32, f: u8, c: f32, ts: u64) -> bool {
+        if pos.is_some_and(|[x, z]| !x.is_finite() || !z.is_finite()) || !hue.is_finite() || !c.is_finite() {
+            return false;
+        }
+        if let Some(cur) = &self.dest {
+            if (ts, setter) <= (cur.ts, cur.setter_id.as_str()) {
+                return false;
+            }
+        }
+        self.dest = Some(DestSlot { setter_id: setter.to_string(), pos, hue, f, c: c.clamp(0.0, 1.0), ts });
+        self.dest_seq += 1;
+        true
+    }
+    /// Forget the destination (session over).
+    fn drop_dest(&mut self) {
+        if self.dest.take().is_some() {
+            self.dest_seq += 1;
+        }
+    }
+    fn dest_view(&self) -> Option<SharedDest> {
+        let d = self.dest.as_ref()?;
+        let [x, z] = d.pos?;
+        let setter_name = self.roster.iter().find(|p| p.id == d.setter_id).map(|p| p.name.clone()).unwrap_or_default();
+        Some(SharedDest {
+            setter_id: d.setter_id.clone(),
+            setter_name,
+            x,
+            z,
+            hue: d.hue,
+            filter_bits: d.f,
+            curve: d.c,
+            ts: d.ts,
+        })
+    }
+    /// The live destination as a frame for a late joiner (a tombstone needs no resend).
+    fn dest_resend(&self) -> Option<Message> {
+        self.dest.as_ref().filter(|d| d.pos.is_some()).map(DestSlot::message)
+    }
     fn roster_msg(&self) -> Message {
         let c = Control::Roster { players: self.roster.clone() };
         Message::Text(serde_json::to_string(&c).unwrap_or_default())
@@ -157,26 +442,8 @@ pub struct CoopState {
 
 impl CoopState {
     pub fn new(name: &str, hue: f32, buffer_ms: u32) -> Self {
-        let id = Uuid::new_v4();
-        let inner = Inner {
-            role: Role::Off,
-            my_id: id.to_string(),
-            my_id_bytes: *id.as_bytes(),
-            roster: Vec::new(),
-            remote: HashMap::new(),
-            clients: Vec::new(),
-            client_out: None,
-            status: String::new(),
-            error: None,
-            words: None,
-            lan_url: None,
-            buffer_ms,
-            waypoints: HashMap::new(),
-            tunnel: None,
-            download: None,
-            // seed identity even while Off so the UI preview is stable
-        };
-        let _ = (name, hue);
+        // Identity is seeded even while Off so the UI preview is stable.
+        let inner = Inner::new(name, hue, buffer_ms);
         Self {
             inner: Arc::new(Mutex::new(inner)),
             stop: Arc::new(AtomicBool::new(false)),
@@ -189,6 +456,13 @@ impl CoopState {
     }
     pub fn status(&self) -> String {
         self.inner.lock().unwrap().status.clone()
+    }
+    /// True while a running session isn't fully connected: still coming up (Cloudflare host
+    /// tunnel not ready / client socket not open, mesh relays not reached) or, on the mesh, any
+    /// peer link is mid-handshake. Always false while co-op is off. Cheap (one lock).
+    pub fn is_connecting(&self) -> bool {
+        let i = self.inner.lock().unwrap();
+        i.role != Role::Off && i.connecting
     }
     pub fn error(&self) -> Option<String> {
         self.inner.lock().unwrap().error.clone()
@@ -245,6 +519,7 @@ impl CoopState {
         );
         match inner.role {
             Role::Host => inner.broadcast(msg, None),
+            Role::Client if inner.mesh => inner.broadcast(msg, None),
             Role::Client => {
                 if let Some(tx) = &inner.client_out {
                     let _ = tx.try_send(msg);
@@ -254,18 +529,57 @@ impl CoopState {
         }
     }
 
-    /// Push the locally-received telemetry packet out to peers.
-    pub fn push_local(&self, pkt: &ForzaPacket) {
+    /// The room's shared destination, `None` if unset / cleared ([`CoopReader::destination`]).
+    #[allow(dead_code)] // consumed by the navigator runtime / navigation tab
+    pub fn destination(&self) -> Option<SharedDest> {
+        self.inner.lock().unwrap().dest_view()
+    }
+
+    /// While the room's destination is cleared: the id of the player who cleared it (`None` while
+    /// one is set, or nothing was set / cleared in this session). The Navigation tab uses it to
+    /// drop this player's own copy of a destination a teammate cleared for everyone.
+    pub fn cleared_by(&self) -> Option<String> {
+        let i = self.inner.lock().unwrap();
+        i.dest.as_ref().filter(|d| d.pos.is_none()).map(|d| d.setter_id.clone())
+    }
+
+    /// Change counter of the shared destination ([`CoopReader::destination_seq`]).
+    #[allow(dead_code)]
+    pub fn destination_seq(&self) -> u64 {
+        self.inner.lock().unwrap().dest_seq
+    }
+
+    /// Set the room's destination (world `x, z`) with my colour, road filter bits
+    /// (`DEST_*`) and curve slider 0..1; replaces whoever's it was. No-op outside a session.
+    /// Its `ts` is the wall clock, bumped past the stored one so my write always wins locally.
+    #[allow(dead_code)] // called by the navigation tab
+    pub fn set_destination(&self, pos: (f32, f32), hue: f32, filters: u8, curve: f32) {
+        self.write_destination(Some([pos.0, pos.1]), hue, filters, curve);
+    }
+
+    /// Clear the room's destination for everyone. No-op outside a session.
+    #[allow(dead_code)] // called by the navigation tab
+    pub fn clear_destination(&self) {
+        self.write_destination(None, 0.0, 0, 0.0);
+    }
+
+    fn write_destination(&self, pos: Option<[f32; 2]>, hue: f32, filters: u8, curve: f32) {
         let mut inner = self.inner.lock().unwrap();
         if inner.role == Role::Off {
             return;
         }
-        let mut frame = Vec::with_capacity(ID_LEN + WIRE_LEN);
-        frame.extend_from_slice(&inner.my_id_bytes);
-        frame.extend_from_slice(&pkt.to_bytes());
-        let msg = Message::Binary(frame);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let ts = inner.dest.as_ref().map_or(now, |d| now.max(d.ts + 1));
+        let my_id = inner.my_id.clone();
+        if !inner.accept_dest(&my_id, pos, hue, filters, curve, ts) {
+            return; // non-finite input
+        }
+        let msg = inner.dest.as_ref().expect("just stored").message();
         match inner.role {
             Role::Host => inner.broadcast(msg, None),
+            Role::Client if inner.mesh => inner.broadcast(msg, None),
             Role::Client => {
                 if let Some(tx) = &inner.client_out {
                     let _ = tx.try_send(msg);
@@ -279,7 +593,18 @@ impl CoopState {
     pub fn update_identity(&self, name: &str, hue: f32) {
         let mut inner = self.inner.lock().unwrap();
         let my_id = inner.my_id.clone();
+        inner.my_name = name.to_string();
+        inner.my_hue = hue;
         match inner.role {
+            Role::Client if inner.mesh => {
+                // Mesh: our roster entry is local; tell every peer directly.
+                if let Some(p) = inner.roster.iter_mut().find(|p| p.id == my_id) {
+                    p.name = name.to_string();
+                    p.hue = hue;
+                }
+                let msg = mesh::peer_msg(&inner);
+                inner.broadcast(msg, None);
+            }
             Role::Host => {
                 if let Some(p) = inner.roster.iter_mut().find(|p| p.id == my_id) {
                     p.name = name.to_string();
@@ -300,30 +625,18 @@ impl CoopState {
 
     /// Advance every jitter buffer; call once per frame before rendering.
     pub fn tick(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let delay = Duration::from_millis(inner.buffer_ms as u64);
-        for buf in inner.remote.values_mut() {
-            buf.advance(delay);
-        }
+        tick(&self.inner);
     }
 
     /// Snapshot of remote players that have a recent packet, for the minimap.
     pub fn remote_players(&self) -> Vec<(PlayerInfo, ForzaPacket)> {
-        let inner = self.inner.lock().unwrap();
-        let mut out = Vec::new();
-        for info in &inner.roster {
-            if info.id == inner.my_id {
-                continue;
-            }
-            if let Some(buf) = inner.remote.get(&info.id) {
-                if buf.last_recv.elapsed() < Duration::from_secs(3) {
-                    if let Some(pkt) = &buf.current {
-                        out.push((info.clone(), pkt.clone()));
-                    }
-                }
-            }
-        }
-        out
+        remote_players(&self.inner)
+    }
+
+    /// A handle for another thread (the listener's outgoing packets, the HUD overlay's
+    /// teammate markers).
+    pub fn reader(&self) -> CoopReader {
+        CoopReader(self.inner.clone())
     }
 
     pub fn stop(&mut self) {
@@ -334,6 +647,8 @@ impl CoopState {
         }
         inner.download = None;
         inner.role = Role::Off;
+        inner.mesh = false;
+        inner.mesh_bound.clear();
         inner.clients.clear();
         inner.client_out = None;
         inner.remote.clear();
@@ -341,7 +656,9 @@ impl CoopState {
         inner.words = None;
         inner.lan_url = None;
         inner.waypoints.clear();
+        inner.drop_dest();
         inner.status = "Stopped".into();
+        inner.connecting = false;
         inner.error = None;
     }
 
@@ -357,6 +674,7 @@ impl CoopState {
             inner.role = Role::Host;
             inner.buffer_ms = buffer_ms;
             inner.status = "Starting server…".into();
+            inner.connecting = true; // until the tunnel is ready (or fails → LAN only)
             inner.error = None;
             inner.words = None;
             inner.lan_url = local_ip().map(|ip| format!("ws://{ip}:{port}"));
@@ -415,6 +733,7 @@ impl CoopState {
                 Err(e) => {
                     i.error = Some(format!("cloudflared: {e}"));
                     i.status = "Server up (LAN only — no tunnel)".into();
+                    i.connecting = false;
                 }
             }
         });
@@ -431,6 +750,7 @@ impl CoopState {
             inner.role = Role::Client;
             inner.buffer_ms = buffer_ms;
             inner.status = "Connecting…".into();
+            inner.connecting = true;
             inner.error = None;
             inner.words = Some(words.clone());
             inner.remote.clear();
@@ -444,6 +764,71 @@ impl CoopState {
         let name = name.to_string();
         std::thread::spawn(move || client_loop(url, name, hue, inner, stop));
     }
+}
+
+impl CoopState {
+    /// Join (or create) a Trystero mesh room: serverless P2P, peers find each other by the
+    /// shared Room ID over public Nostr relays, then talk over WebRTC data channels. Every
+    /// peer is equal (no host). Non-blocking: spawns the relay + WebRTC threads and returns
+    /// (it runs from `ForzaApp::new` for auto-connect). Never touches port/tunnel/lan_url.
+    pub fn start_trystero(&mut self, room: &str, name: &str, hue: f32, buffer_ms: u32) {
+        if let Some(room) = self.begin_trystero(room, name, hue, buffer_ms) {
+            mesh::Session::start(self.inner.clone(), self.stop.clone(), &room);
+        }
+    }
+
+    /// `start_trystero` minus the threads (so tests can cover the state reset without touching
+    /// the network). Returns the normalised room, or `None` if it's empty.
+    fn begin_trystero(&mut self, room: &str, name: &str, hue: f32, buffer_ms: u32) -> Option<String> {
+        let room = normalize_room(room);
+        if room.is_empty() {
+            return None;
+        }
+        self.stop();
+        self.stop = Arc::new(AtomicBool::new(false));
+        {
+            let mut inner = self.inner.lock().unwrap();
+            // A fresh player id per join: a rejoin (new signalling id) must not look like a
+            // second channel claiming our old id to peers that haven't noticed the old link die.
+            let id = Uuid::new_v4();
+            inner.my_id = id.to_string();
+            inner.my_id_bytes = *id.as_bytes();
+            inner.buffer_ms = buffer_ms;
+            inner.remote.clear();
+            inner.clients.clear();
+            inner.client_out = None;
+            inner.waypoints.clear();
+            inner.drop_dest();
+            inner.mesh_bound.clear();
+            mesh::initial_role_state(&mut inner, &room, name, hue);
+        }
+        Some(room)
+    }
+}
+
+/// Canonical form of a typed Room ID: lowercase, no whitespace anywhere, so `K7F2-9QZM-X4PD`,
+/// ` k7f2-9qzm-x4pd ` and a copy-paste with a stray line break all name the same room (the ID
+/// is hashed into the room's topics and encryption key, so any difference is a different room).
+pub fn normalize_room(room: &str) -> String {
+    room.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+}
+
+/// A fresh shareable Room ID: eight groups of four lowercase Crockford-base32 characters
+/// (32 chars, 160 bits, so the ID doubles as the room's encryption secret, can't be guessed and
+/// shared public rooms practically never collide; no `i l o u`, so it survives being read out
+/// loud). Older, shorter IDs typed by hand still work: `normalize_room` accepts any string.
+pub fn generate_room_id() -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let mut bytes = [0u8; 32];
+    nostr::fill_random(&mut bytes);
+    let mut out = String::with_capacity(39);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && i % 4 == 0 {
+            out.push('-');
+        }
+        out.push(ALPHABET[(b & 31) as usize] as char);
+    }
+    out
 }
 
 impl Drop for CoopState {
@@ -517,6 +902,10 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
         let _ = ws.write(Message::Text(
             serde_json::to_string(&welcome).unwrap_or_default(),
         ));
+        // Late joiner: the room's current destination (waypoints are not resent).
+        if let Some(m) = g.dest_resend() {
+            let _ = ws.write(m);
+        }
         let msg = g.roster_msg();
         g.broadcast(msg, None);
         g.status = format!("{} player(s)", g.roster.len());
@@ -575,6 +964,14 @@ fn host_client(stream: TcpStream, inner: Arc<Mutex<Inner>>, stop: Arc<AtomicBool
                             .unwrap_or_default(),
                     );
                     g.broadcast(msg, Some(&id)); // to the other clients
+                }
+                Ok(Control::Dest { pos, hue, f, c, ts, .. }) => {
+                    // Connection id is authoritative; relay only what won (stale = dropped).
+                    let mut g = inner.lock().unwrap();
+                    if g.accept_dest(&id, pos, hue, f, c, ts) {
+                        let msg = g.dest.as_ref().expect("just stored").message();
+                        g.broadcast(msg, Some(&id));
+                    }
                 }
                 _ => {}
             },
@@ -773,12 +1170,16 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
             std::thread::sleep(Duration::from_millis(500));
             continue 'reconnect;
         }
+        // Push it out now: the host waits at most 10 s for Hello, and without telemetry (game
+        // not running) nothing else would flush it. A would-block is left to the loop's flush.
+        let _ = ws.flush();
 
         let (tx, rx) = mpsc::sync_channel::<Message>(256);
         {
             let mut g = inner.lock().unwrap();
             g.client_out = Some(tx);
             g.status = "Connected".into();
+            g.connecting = false;
             g.error = None;
             g.remote.clear();
         }
@@ -839,6 +1240,10 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
                                 None => { g.waypoints.remove(&id); }
                             }
                         }
+                        // The host stamps the setter's connection id (as for waypoints).
+                        Ok(Control::Dest { id, pos, hue, f, c, ts }) => {
+                            g.accept_dest(&id, pos, hue, f, c, ts);
+                        }
                         _ => {}
                     }
                 }
@@ -860,6 +1265,7 @@ fn client_loop(url: String, name: String, hue: f32, inner: Arc<Mutex<Inner>>, st
             g.client_out = None;
             g.remote.clear();
             g.status = "Reconnecting…".into();
+            g.connecting = true;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -925,7 +1331,16 @@ fn spawn_tunnel(
                     let mut g = inner.lock().unwrap();
                     g.words = Some(words);
                     g.status = "Tunnel ready".into();
+                    g.connecting = false;
                 }
+            }
+            // The pipe closed (cloudflared exited) before it printed a URL: the LAN server is
+            // still up, so say so instead of "Starting tunnel…" forever.
+            let mut g = inner.lock().unwrap();
+            if !stop.load(Ordering::Relaxed) && g.role == Role::Host && g.words.is_none() && g.connecting {
+                g.error = Some("cloudflared exited without a tunnel".into());
+                g.status = "Server up (LAN only — no tunnel)".into();
+                g.connecting = false;
             }
         });
     }
@@ -1079,6 +1494,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn outgoing_carries_class_pi_over_pause() {
+        let mut last = (-1, 0);
+        // Paused before any live packet: nothing cached, sent as-is.
+        let paused = ForzaPacket::default();
+        assert_eq!(outgoing(&paused, &mut last).car_performance_index, 0);
+        // Live packet: sent as-is, and cached.
+        let live = ForzaPacket {
+            is_race_on: 1,
+            car_class: 5,
+            car_performance_index: 900,
+            position_x: 10.0,
+            ..Default::default()
+        };
+        let out = outgoing(&live, &mut last);
+        assert_eq!((out.car_class, out.car_performance_index), (5, 900));
+        assert_eq!(last, (5, 900));
+        // Paused (zeroed class/PI, at origin): the cached values are substituted.
+        let out = outgoing(&paused, &mut last);
+        assert_eq!((out.car_class, out.car_performance_index), (5, 900));
+        // Not paused but race off (menu with a position): untouched, cache kept.
+        let menu = ForzaPacket { position_x: 1.0, ..Default::default() };
+        let out = outgoing(&menu, &mut last);
+        assert_eq!((out.car_class, out.car_performance_index), (0, 0));
+        assert_eq!(last, (5, 900));
+    }
+
+    #[test]
     fn parse_tunnel_words() {
         let line = "2026-07-09T10:00:00Z INF |  https://blue-fox-rapid-owl.trycloudflare.com  |";
         assert_eq!(extract_words(line).as_deref(), Some("blue-fox-rapid-owl"));
@@ -1148,11 +1590,351 @@ mod tests {
             Control::Waypoint { id: "abc".into(), pos: None, hue: 0.0 },
             Control::Hello { name: "Guest".into(), hue: 30.0 },
             Control::Update { name: "Guest2".into(), hue: 140.0 },
+            Control::Peer { id: "0b7e4c1e-6f0e-4c58-9a51-3d1f2a9b8c77".into(), name: "Zoë".into(), hue: 210.5 },
         ] {
             let s = serde_json::to_string(&c).expect("serialize");
             let back: Control = serde_json::from_str(&s).expect("deserialize");
             // Control isn't PartialEq; compare by re-serialising.
             assert_eq!(serde_json::to_string(&back).unwrap(), s);
         }
+        // The new variant is additive: it has its own tag and old variants still parse.
+        let s = serde_json::to_string(&Control::Peer { id: "i".into(), name: "n".into(), hue: 1.0 }).unwrap();
+        assert_eq!(s, r#"{"t":"Peer","id":"i","name":"n","hue":1.0}"#);
+    }
+
+    #[test]
+    fn room_normalisation() {
+        assert_eq!(normalize_room("  K7F2-9QZM-x4pd\n"), "k7f2-9qzm-x4pd");
+        assert_eq!(normalize_room("k7f2 9qzm\tx4pd"), "k7f29qzmx4pd");
+        assert_eq!(normalize_room(" \t "), "");
+        let id = generate_room_id();
+        assert_eq!(normalize_room(&id), id, "generated IDs are already canonical");
+        let mut st = CoopState::new("Me", 10.0, 0);
+        let before = st.my_id();
+        assert_eq!(st.begin_trystero(" AbC-Def ", "Me", 10.0, 0).as_deref(), Some("abc-def"));
+        assert_eq!(st.words().as_deref(), Some("abc-def"));
+        assert_ne!(st.my_id(), before, "a new join gets a fresh player id");
+        assert_eq!(st.roster()[0].id, st.my_id());
+        assert_eq!(st.begin_trystero("  ", "Me", 10.0, 0), None);
+        st.stop();
+    }
+
+    #[test]
+    fn room_id_format() {
+        for _ in 0..50 {
+            let id = generate_room_id();
+            let groups: Vec<&str> = id.split('-').collect();
+            assert_eq!(groups.len(), 8, "{id}");
+            assert_eq!(id.len(), 39, "{id}");
+            for g in groups {
+                assert_eq!(g.len(), 4, "{id}");
+                assert!(g.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()), "{id}");
+            }
+        }
+        assert_ne!(generate_room_id(), generate_room_id());
+        // Old 12-char IDs still normalise and join unchanged.
+        assert_eq!(normalize_room("K7F2-9QZM-X4PD"), "k7f2-9qzm-x4pd");
+        let mut st = CoopState::new("Me", 10.0, 0);
+        assert_eq!(st.begin_trystero("K7F2-9QZM-X4PD", "Me", 10.0, 0).as_deref(), Some("k7f2-9qzm-x4pd"));
+        st.stop();
+    }
+
+    /// Mesh-mode plumbing of the public API on a bare state (no threads, no network).
+    #[test]
+    fn mesh_mode_sends_go_to_every_peer_and_stop_resets() {
+        let mut st = CoopState::new("Me", 10.0, 0);
+        let (tx1, rx1) = mpsc::sync_channel::<Message>(16);
+        let (tx2, rx2) = mpsc::sync_channel::<Message>(16);
+        {
+            let mut i = st.inner.lock().unwrap();
+            mesh::initial_role_state(&mut i, "abcd-efgh-jklm", "Me", 10.0);
+            i.clients.push(("p1".into(), tx1));
+            i.clients.push(("p2".into(), tx2));
+        }
+        assert!(st.role() == Role::Client);
+        assert_eq!(st.words().as_deref(), Some("abcd-efgh-jklm"));
+        assert_eq!(st.lan_url(), None);
+        assert_eq!(st.download(), None);
+        assert_eq!(st.roster().len(), 1);
+
+        st.reader().push_local(&ForzaPacket::default());
+        st.set_waypoint(Some((1.0, 2.0)), 30.0);
+        st.update_identity("Renamed", 99.0);
+        for rx in [&rx1, &rx2] {
+            assert!(matches!(rx.try_recv(), Ok(Message::Binary(b)) if b.len() == ID_LEN + WIRE_LEN));
+            assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Waypoint")));
+            assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains("Peer") && t.contains("Renamed")));
+        }
+        assert_eq!(st.roster()[0].name, "Renamed");
+        assert_eq!(st.waypoints().len(), 1);
+
+        st.stop();
+        assert!(st.role() == Role::Off);
+        let i = st.inner.lock().unwrap();
+        assert!(!i.mesh && i.clients.is_empty() && i.roster.is_empty() && i.words.is_none());
+        assert!(i.waypoints.is_empty() && i.mesh_bound.is_empty());
+    }
+
+    // ── shared destination (Control::Dest) ─────────────────────────────
+
+    /// Today's `Control` minus `Dest`: what an older app's host / client / mesh path parses
+    /// with (each ends in `_ => {}` / ignores a parse error).
+    #[derive(Deserialize)]
+    #[serde(tag = "t")]
+    #[allow(dead_code)]
+    enum OldControl {
+        Hello { name: String, hue: f32 },
+        Welcome { id: String, roster: Vec<PlayerInfo> },
+        Roster { players: Vec<PlayerInfo> },
+        Update { name: String, hue: f32 },
+        Waypoint { id: String, pos: Option<[f32; 2]>, hue: f32 },
+        Peer { id: String, name: String, hue: f32 },
+    }
+
+    #[test]
+    fn dest_json_set_clear_and_filter_bits_round_trip() {
+        let set = Control::Dest { id: "abc".into(), pos: Some([1.5, -2.5]), hue: 200.0, f: 0b1000_0101, c: 0.25, ts: 1_700_000_000_123 };
+        let s = serde_json::to_string(&set).unwrap();
+        assert_eq!(s, r#"{"t":"Dest","id":"abc","pos":[1.5,-2.5],"hue":200.0,"f":133,"c":0.25,"ts":1700000000123}"#);
+        let clear = Control::Dest { id: "abc".into(), pos: None, hue: 0.0, f: 0, c: 0.0, ts: 7 };
+        let s2 = serde_json::to_string(&clear).unwrap();
+        assert_eq!(s2, r#"{"t":"Dest","id":"abc","pos":null,"hue":0.0,"f":0,"c":0.0,"ts":7}"#);
+        match serde_json::from_str::<Control>(&s).unwrap() {
+            Control::Dest { pos: Some([x, z]), f, c, ts, .. } => {
+                assert_eq!((x, z, f, c, ts), (1.5, -2.5, 133, 0.25, 1_700_000_000_123));
+            }
+            _ => panic!("set"),
+        }
+        assert!(matches!(serde_json::from_str::<Control>(&s2).unwrap(), Control::Dest { pos: None, ts: 7, .. }));
+    }
+
+    #[test]
+    fn old_apps_ignore_dest_in_every_path() {
+        // The host, client and mesh handlers of an older app all do
+        // `match serde_json::from_str::<Control>(&t) { Ok(known…) => …, _ => {} }`: an unknown
+        // tag must be a parse error (ignored), and the messages they do know must still parse.
+        let dest = serde_json::to_string(&Control::Dest { id: "x".into(), pos: Some([1.0, 2.0]), hue: 1.0, f: 3, c: 0.5, ts: 9 }).unwrap();
+        assert!(serde_json::from_str::<OldControl>(&dest).is_err());
+        let wp = serde_json::to_string(&Control::Waypoint { id: "x".into(), pos: None, hue: 1.0 }).unwrap();
+        assert!(serde_json::from_str::<OldControl>(&wp).is_ok());
+    }
+
+    #[test]
+    fn dest_last_write_wins_on_ts_then_id() {
+        let mut i = Inner::new("Me", 10.0, 0);
+        assert!(i.accept_dest("b", Some([1.0, 1.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(i.dest_seq, 1);
+        // Older loses (out-of-order arrival), equal ts with smaller / equal id loses.
+        assert!(!i.accept_dest("z", Some([9.0, 9.0]), 1.0, 0, 0.0, 99));
+        assert!(!i.accept_dest("a", Some([9.0, 9.0]), 1.0, 0, 0.0, 100));
+        assert!(!i.accept_dest("b", Some([9.0, 9.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(i.dest_seq, 1);
+        assert_eq!(i.dest_view().unwrap().setter_id, "b");
+        // Equal ts, larger id wins.
+        assert!(i.accept_dest("c", Some([2.0, 2.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(i.dest_view().unwrap().x, 2.0);
+        // Convergence: both arrival orders of two simultaneous setters end the same.
+        let mut j = Inner::new("Me", 10.0, 0);
+        assert!(j.accept_dest("c", Some([2.0, 2.0]), 1.0, 0, 0.0, 100));
+        assert!(!j.accept_dest("b", Some([1.0, 1.0]), 1.0, 0, 0.0, 100));
+        assert_eq!(j.dest_view().unwrap().setter_id, "c");
+        // A clear is a tombstone with its ts: a stale set cannot resurrect, a newer one can.
+        assert!(i.accept_dest("a", None, 0.0, 0, 0.0, 150));
+        assert!(i.dest_view().is_none() && i.dest.is_some());
+        assert!(!i.accept_dest("z", Some([5.0, 5.0]), 1.0, 0, 0.0, 120));
+        assert!(i.dest_view().is_none());
+        assert!(i.dest_resend().is_none(), "a tombstone is not resent");
+        assert!(i.accept_dest("a", Some([5.0, 5.0]), 1.0, 0, 0.0, 151));
+        assert_eq!(i.dest_view().unwrap().x, 5.0);
+        // Garbage is refused; the curve is clamped.
+        assert!(!i.accept_dest("a", Some([f32::NAN, 0.0]), 1.0, 0, 0.0, 999));
+        assert!(!i.accept_dest("a", Some([0.0, 0.0]), 1.0, 0, f32::INFINITY, 999));
+        assert!(i.accept_dest("a", Some([0.0, 0.0]), 1.0, 0, 7.0, 999));
+        assert_eq!(i.dest_view().unwrap().curve, 1.0);
+    }
+
+    #[test]
+    fn dest_unknown_filter_bits_are_ignored_but_preserved() {
+        let mut i = Inner::new("Me", 10.0, 0);
+        assert!(i.accept_dest("a", Some([1.0, 2.0]), 1.0, DEST_ROAD | DEST_JUMPS | 0x80, 0.5, 1));
+        let d = i.dest_view().unwrap();
+        assert_eq!(d.filters(), DEST_ROAD | DEST_JUMPS, "consumers see known bits only");
+        assert_eq!(d.filter_bits, 0b1010_0001);
+        // …but a relay / resend carries the raw byte on.
+        match i.dest_resend() {
+            Some(Message::Text(t)) => assert!(t.contains(r#""f":161"#), "{t}"),
+            _ => panic!("expected a resend frame"),
+        }
+    }
+
+    #[test]
+    fn destination_api_syncs_resets_on_stop_and_wins_locally() {
+        let mut st = CoopState::new("Me", 10.0, 0);
+        st.set_destination((1.0, 2.0), 30.0, DEST_ROAD, 0.5);
+        assert!(st.destination().is_none(), "no-op outside a session");
+        let (tx, rx) = mpsc::sync_channel::<Message>(16);
+        {
+            let mut i = st.inner.lock().unwrap();
+            mesh::initial_role_state(&mut i, "abcd-efgh-jklm", "Me", 10.0);
+            i.clients.push(("p1".into(), tx));
+        }
+        let seq0 = st.destination_seq();
+        st.set_destination((1.0, 2.0), 30.0, DEST_ROAD | DEST_DIRT, 0.5);
+        let d = st.destination().unwrap();
+        assert_eq!((d.x, d.z, d.hue, d.filters(), d.curve), (1.0, 2.0, 30.0, 5, 0.5));
+        assert_eq!((d.setter_id.as_str(), d.setter_name.as_str()), (st.my_id().as_str(), "Me"));
+        assert_eq!(st.destination_seq(), seq0 + 1);
+        assert_eq!(st.reader().destination(), Some(d.clone()));
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains(r#""t":"Dest""#) && t.contains(r#""f":5"#)));
+        // A remote write from the future is beaten by our next one even with a skewed clock.
+        {
+            let mut i = st.inner.lock().unwrap();
+            let ts = i.dest.as_ref().unwrap().ts + 1_000_000;
+            assert!(i.accept_dest("zzz", Some([7.0, 7.0]), 1.0, 0, 0.0, ts));
+        }
+        st.clear_destination();
+        assert!(st.destination().is_none(), "my clear wins over the skewed remote set");
+        assert!(matches!(rx.try_recv(), Ok(Message::Text(t)) if t.contains(r#""pos":null"#)));
+        st.set_destination((3.0, 4.0), 30.0, 0, 0.0);
+        assert!(st.destination().is_some());
+        st.stop();
+        assert!(st.destination().is_none());
+        assert!(st.inner.lock().unwrap().dest.is_none(), "tombstone dropped too");
+    }
+
+    // ── loopback: the real Cloudflare host and client paths ────────────
+
+    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(10);
+        while !cond() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    type RawWs = WebSocket<MaybeTlsStream<TcpStream>>;
+
+    /// A bare client: Hello, then read until Welcome; returns the socket and its host-given id.
+    fn raw_join(port: u16, name: &str) -> (RawWs, String) {
+        let (mut ws, _) = tungstenite::connect(format!("ws://127.0.0.1:{port}")).unwrap();
+        set_client_timeout(&mut ws, Some(Duration::from_secs(5)));
+        let hello = Control::Hello { name: name.into(), hue: 1.0 };
+        ws.send(Message::Text(serde_json::to_string(&hello).unwrap())).unwrap();
+        loop {
+            if let Message::Text(t) = ws.read().unwrap() {
+                if let Ok(Control::Welcome { id, .. }) = serde_json::from_str::<Control>(&t) {
+                    return (ws, id);
+                }
+            }
+        }
+    }
+
+    /// Next `Dest` frame (other frames skipped).
+    fn next_dest(ws: &mut RawWs) -> (String, Option<[f32; 2]>, u8, u64) {
+        loop {
+            if let Message::Text(t) = ws.read().expect("a Dest frame") {
+                if let Ok(Control::Dest { id, pos, f, ts, .. }) = serde_json::from_str::<Control>(&t) {
+                    return (id, pos, f, ts);
+                }
+            }
+        }
+    }
+
+    fn send_dest(ws: &mut RawWs, id: &str, pos: Option<[f32; 2]>, f: u8, ts: u64) {
+        let c = Control::Dest { id: id.into(), pos, hue: 5.0, f, c: 0.5, ts };
+        ws.send(Message::Text(serde_json::to_string(&c).unwrap())).unwrap();
+    }
+
+    #[test]
+    fn host_relays_dest_by_connection_id_and_resends_to_late_joiners() {
+        let st = CoopState::new("Host", 10.0, 0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        st.inner.lock().unwrap().role = Role::Host;
+        {
+            let (inner, stop) = (st.inner.clone(), stop.clone());
+            std::thread::spawn(move || host_accept_loop(listener, inner, stop));
+        }
+        st.set_destination((10.0, 20.0), 30.0, DEST_ROAD, 0.0);
+
+        // A joins late: gets the host's destination right after Welcome, with the host's id.
+        let (mut a, a_id) = raw_join(port, "A");
+        let (id, pos, _, _) = next_dest(&mut a);
+        assert_eq!((id.as_str(), pos), (st.my_id().as_str(), Some([10.0, 20.0])));
+        let (mut b, b_id) = raw_join(port, "B");
+        assert_eq!(next_dest(&mut b).1, Some([10.0, 20.0]));
+
+        // B sets one with a forged id and a reserved filter bit: host stores it under B's
+        // connection id and relays that (not the forged one), raw bits intact, to A and itself.
+        let host_ts = st.destination().unwrap().ts;
+        send_dest(&mut b, "forged", Some([1.0, 2.0]), DEST_JUMPS | 0x40, host_ts + 10);
+        let (id, pos, f, ts) = next_dest(&mut a);
+        assert_eq!((id.as_str(), pos, f, ts), (b_id.as_str(), Some([1.0, 2.0]), DEST_JUMPS | 0x40, host_ts + 10));
+        let d = st.destination().unwrap();
+        assert_eq!((d.setter_id.as_str(), d.setter_name.as_str()), (b_id.as_str(), "B"));
+
+        // A stale write (older ts) is neither stored nor relayed; A's clear is, to B.
+        send_dest(&mut a, "a", Some([9.0, 9.0]), 0, host_ts + 5);
+        send_dest(&mut a, "a", None, 0, host_ts + 20);
+        let (id, pos, _, _) = next_dest(&mut b);
+        assert_eq!((id.as_str(), pos), (a_id.as_str(), None), "the stale frame was not relayed");
+        assert!(st.destination().is_none());
+
+        // The host's own clear reaches both; a client joining after a clear gets nothing.
+        st.set_destination((3.0, 3.0), 30.0, 0, 0.0);
+        assert_eq!(next_dest(&mut a).1, Some([3.0, 3.0]));
+        assert_eq!(next_dest(&mut b).1, Some([3.0, 3.0]));
+        st.clear_destination();
+        assert_eq!(next_dest(&mut a).1, None);
+        let (mut c, _) = raw_join(port, "C");
+        set_client_timeout(&mut c, Some(Duration::from_millis(300)));
+        let got_dest = (0..5).any(|_| match c.read() {
+            Ok(Message::Text(t)) => matches!(serde_json::from_str::<Control>(&t), Ok(Control::Dest { .. })),
+            _ => false,
+        });
+        assert!(!got_dest, "a cleared destination is not resent");
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn real_client_loop_adopts_and_sends_dest() {
+        let host = CoopState::new("Host", 10.0, 0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        host.inner.lock().unwrap().role = Role::Host;
+        {
+            let (inner, stop) = (host.inner.clone(), stop.clone());
+            std::thread::spawn(move || host_accept_loop(listener, inner, stop));
+        }
+        host.set_destination((10.0, 20.0), 30.0, DEST_HIGHWAY, 0.75);
+
+        let mut guest = Inner::new("Guest", 50.0, 0);
+        guest.role = Role::Client;
+        let guest = Arc::new(Mutex::new(guest));
+        {
+            let (g, stop) = (guest.clone(), stop.clone());
+            let url = format!("ws://127.0.0.1:{port}");
+            std::thread::spawn(move || client_loop(url, "Guest".into(), 50.0, g, stop));
+        }
+        // Hello is flushed on its own: no telemetry / waypoint is needed for the host to welcome
+        // the client (the host gives up after 10 s without one).
+        let st = CoopState { inner: guest.clone(), stop: stop.clone(), port: 0 };
+        wait_for("client connects", || guest.lock().unwrap().client_out.is_some());
+        // Late-join resend, taken over by the client path with the host's id.
+        wait_for("client adopts the host's destination", || guest.lock().unwrap().dest_view().is_some());
+        let d = guest.lock().unwrap().dest_view().unwrap();
+        assert_eq!((d.x, d.z, d.filters(), d.curve, d.setter_id.as_str()), (10.0, 20.0, DEST_HIGHWAY, 0.75, host.my_id().as_str()));
+
+        // The client's own write goes up to the host (stored under the connection id).
+        let my_id = guest.lock().unwrap().my_id.clone();
+        st.set_destination((7.0, 8.0), 50.0, DEST_TRAIL, 0.1);
+        wait_for("host receives the client's destination", || host.destination().is_some_and(|d| d.x == 7.0));
+        assert_eq!(host.destination().unwrap().setter_id, my_id);
+        // …and a clear from the host comes back down.
+        host.clear_destination();
+        wait_for("client sees the clear", || guest.lock().unwrap().dest_view().is_none());
+        stop.store(true, Ordering::Relaxed);
     }
 }

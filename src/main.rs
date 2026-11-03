@@ -5,7 +5,11 @@ mod config;
 mod coop;
 mod engines;
 mod focus;
+mod gamepad;
+mod gamedata;
 mod hotkeys;
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // drawn only by the overlay (Linux, Windows)
+mod hud;
 mod i18n;
 mod iconcache;
 mod icons;
@@ -13,7 +17,13 @@ mod input;
 mod keymap;
 mod labels;
 mod listeners;
+mod mapedit;
+mod maprender;
+mod minimap;
+mod nav;
 mod network;
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay runtime is Linux + Windows
+mod overlay;
 mod packet;
 mod telemetry;
 mod theme;
@@ -22,6 +32,11 @@ mod ui;
 use app::ForzaApp;
 
 fn main() -> eframe::Result<()> {
+    // Dev only: FORZA_OVERLAY_TEST=1 [FORZA_OVERLAY_OUTPUT=DP-1 | DISPLAY2 on Windows]. Held
+    // until the window closes.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let _overlay = overlay::spawn_dev_test();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Forza Telemetry V3")

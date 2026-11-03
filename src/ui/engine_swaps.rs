@@ -4,12 +4,6 @@ use crate::app::ForzaApp;
 use crate::i18n::tr;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
-    ui.label(
-        RichText::new(tr("Display-only reference table. All engines available in Forza Horizon 6."))
-            .color(Color32::GRAY),
-    );
-    ui.add_space(8.0);
-
     ui.horizontal(|ui| {
         ui.label(format!("{} {}", crate::icons::SEARCH, tr("Search")));
         ui.text_edit_singleline(&mut app.engine_search);

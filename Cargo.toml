@@ -1,7 +1,8 @@
 [package]
 name = "forza-telemetry"
-version = "0.2.4"
+version = "0.7.3"
 edition = "2021"
+rust-version = "1.91"
 
 [[bin]]
 name = "forza-telemetry"
@@ -12,15 +13,47 @@ eframe = { version = "0.33", features = ["default_fonts"] }
 egui = "0.33"
 egui_plot = "0.34"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 csv = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 dirs = "5"
 tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 uuid = { version = "1", features = ["v4"] }
+# Co-Op "Trystero" transport (src/coop/): serverless WebRTC mesh, signalled over public Nostr
+# relays. No tokio anywhere: webrtc runs on smol. webrtc 0.21 needs rustc >= 1.91.
+webrtc = { version = "0.21", default-features = false, features = ["runtime-smol", "crypto-ring"] }
+smol = "2"
+async-trait = "0.1"
+bytes = "1"
+k256 = { version = "0.14", default-features = false, features = ["schnorr", "std"] }
+sha1 = "0.11"
+sha2 = "0.11"
+aes-gcm = "0.11"
+getrandom = "0.4"
+base64 = "0.22"
+async-channel = "2"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+flate2 = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
+# HUD overlay (src/overlay/): wlr-layer-shell surface + EGL + egui_glow. All already built by
+# eframe's tree; sctk pinned to 0.20 so only one wayland-client 0.31 instance exists.
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+glutin = { version = "0.32", default-features = false, features = ["egl", "wayland"] }
+raw-window-handle = "0.6"
+egui_glow = { version = "0.33", default-features = false }
+# Opt-in X11/XWayland overlay backend (src/overlay/x11.rs). Same version and features winit
+# already builds (libxcb loaded at runtime via dl-libxcb), so nothing new is compiled.
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "dl-libxcb", "randr", "shape"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enigo = "0.6"
-windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_Input_XboxController", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_Security"] }
+# HUD overlay (src/overlay/win32.rs): the same egui_glow painter as Linux, on a WGL context.
+# eframe's glow backend already builds egui_glow on Windows, so nothing new is compiled.
+egui_glow = { version = "0.33", default-features = false }
+
+# Dependencies (egui, image, glow...) optimised in debug builds; the app crate stays at opt-level 0.
+[profile.dev.package."*"]
+opt-level = 2

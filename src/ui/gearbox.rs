@@ -8,7 +8,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
     // Two columns (controls | live viz) with a fixed spacer between them.
     const GAP: f32 = 8.0;
     ui.spacing_mut().item_spacing.x = GAP; // ui.columns uses item_spacing.x as the inter-column gap
-    ui.columns(2, |cols| {
+    crate::theme::columns(ui, 2, |cols| {
     // ── Left column: controls ───────────────────────────────────────
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -88,13 +88,13 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("Shift personality. Street/Sport cruise economically (upshift early, lazy \
                      downshifts); Race holds the full powerband and ignores the cruise/deadzone \
                      settings."),
-                    tr("Street = relaxed, Sport = balanced, Race = aggressive/track."),
+                    tr("Manual = you shift (box off), Street = relaxed, Sport = balanced, Race = aggressive/track."),
                     |ui| {
                         egui::ComboBox::from_id_salt("dsg_mode_combo")
                             .selected_text(app.config.dsg_gearbox_mode.label())
                             .width(ui.available_width())
                             .show_ui(ui, |ui| {
-                                for mode in [GearboxMode::Street, GearboxMode::Sport, GearboxMode::Race] {
+                                for mode in [GearboxMode::Manual, GearboxMode::Street, GearboxMode::Sport, GearboxMode::Race] {
                                     ui.selectable_value(
                                         &mut app.config.dsg_gearbox_mode,
                                         mode,
@@ -109,6 +109,12 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
                     tr("Forces Race mode whenever you're in an actual race (position P1+), and \
                      reverts to your chosen mode in free-roam."),
                     tr("Off to keep your selected mode everywhere."),
+                );
+                hover(
+                    crate::theme::checkbox_row(ui, &mut app.config.dsg_disable_in_drift, tr("Disable in drift events")),
+                    tr("Turns the gearbox off for as long as a drift event is detected, then back on. \
+                     Applies with Auto Race mode in races on, or with Race mode selected."),
+                    tr("Tick it if the gearbox fights you while drifting."),
                 );
                 if app.config.dsg_auto_race_mode {
                     let in_race = app
@@ -161,15 +167,14 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 
             // ── Advanced Settings ────────────────────────────────────────
             crate::theme::card(ui, tr("Advanced Settings"), |ui| {
-                if ui.button(tr("Reset settings")).clicked() {
+                if ui
+                    .button(tr("Reset settings"))
+                    .on_hover_text(tr("Resets the sliders below to the default tune. Modes and toggles are left unchanged."))
+                    .clicked()
+                {
                     app.config.reset_gearbox_numeric();
                     app.config.save();
                 }
-                ui.label(
-                    RichText::new(tr("Resets the sliders below to the default tune. Modes and toggles are left unchanged."))
-                        .size(11.0)
-                        .color(Color32::GRAY),
-                );
                 ui.add_space(4.0);
 
                 slider_row(
@@ -393,7 +398,7 @@ pub fn show_gearbox(ui: &mut Ui, app: &mut ForzaApp) {
 /// A settings row: label (with a What/When hover tooltip) in the left half, control filling the
 /// right half. For a combobox; sliders use `slider_row`.
 fn setting_row(ui: &mut Ui, label: &str, what: &str, when: &str, add: impl FnOnce(&mut Ui)) {
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         hover(crate::theme::row_label(&mut c[0], label), what, when);
         let w = c[1].available_width();
         c[1].spacing_mut().slider_width = (w - 52.0).max(40.0);
@@ -418,7 +423,7 @@ fn slider_row(
     // Wide enough that the DragValue never grows at its widest value ("100.0%"),
     // which would otherwise push the row layout as digits are added.
     const VALUE_W: f32 = 72.0;
-    ui.columns(2, |c| {
+    crate::theme::columns(ui, 2, |c| {
         hover(crate::theme::row_label(&mut c[0], label), what, when);
         c[1].horizontal(|ui| {
             // Pin the fixed-width spinner to the right and let the slider fill the

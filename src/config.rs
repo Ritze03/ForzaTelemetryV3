@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,15 @@ const DEFAULT_CONFIG_JSON: &str = include_str!("../assets/default-config.json");
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub enum Theme {
     Dark,
+}
+
+/// Which transport the Co-Op tab uses: the Cloudflare quick-tunnel relay (host/join
+/// with a word code) or Trystero (serverless WebRTC rooms keyed by a room ID).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum CoopTransport {
+    #[default]
+    Cloudflare,
+    Trystero,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
@@ -49,8 +58,11 @@ pub enum BackfireDynamicMode {
     PacketBased, // hold until the next packet arrives (exact one frame)
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
 pub enum GearboxMode {
+    /// No automatic shifting; the HUD shows the gearbox as off. Serialized by name, so adding
+    /// it first doesn't change the stored value of the other modes.
+    Manual,
     Street,
     #[default]
     Sport,
@@ -60,6 +72,7 @@ pub enum GearboxMode {
 impl GearboxMode {
     pub fn label(&self) -> &'static str {
         crate::i18n::tr(match self {
+            GearboxMode::Manual => "Manual",
             GearboxMode::Street => "Street",
             GearboxMode::Sport  => "Sport",
             GearboxMode::Race   => "Race",
@@ -74,9 +87,16 @@ impl GearboxMode {
 pub enum HotkeyAction {
     ToggleGearbox,
     ToggleBackfire,
+    /// Clear the RPM (redline) calibration. Serde name kept from the old "Reset RPM
+    /// Calibration" so saved bindings still load.
     ResetCalibration,
+    /// Clear the per-gear speed map (appended: no default key).
+    ClearGearMap,
     MiniSettings,
     DashboardEdit,
+    /// Toggle the HUD overlay's visibility (D16). Runtime-only state on the listener
+    /// thread (`ListenerView::hud_hidden`), never saved.
+    HideHud,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,7 +110,9 @@ impl HotkeyAction {
     pub const ALL: &'static [HotkeyAction] = &[
         HotkeyAction::ToggleGearbox,
         HotkeyAction::ResetCalibration,
+        HotkeyAction::ClearGearMap,
         HotkeyAction::ToggleBackfire,
+        HotkeyAction::HideHud,
         HotkeyAction::MiniSettings,
         HotkeyAction::DashboardEdit,
     ];
@@ -98,31 +120,32 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleGearbox
             | HotkeyAction::ToggleBackfire
-            | HotkeyAction::ResetCalibration => HotkeyScope::Global,
+            | HotkeyAction::ResetCalibration
+            | HotkeyAction::ClearGearMap
+            | HotkeyAction::HideHud => HotkeyScope::Global,
             HotkeyAction::MiniSettings | HotkeyAction::DashboardEdit => HotkeyScope::AppFocused,
         }
     }
     /// English label for the settings row.
+    /// Position in [`HotkeyAction::ALL`]: the stable order in which actions sharing one key
+    /// or pad control fire.
+    pub fn order(self) -> usize {
+        Self::ALL.iter().position(|a| *a == self).unwrap_or(usize::MAX)
+    }
     pub fn label(self) -> &'static str {
         match self {
             HotkeyAction::ToggleGearbox => "Toggle Automatic Gearbox",
             HotkeyAction::ToggleBackfire => "Toggle Backfire",
-            HotkeyAction::ResetCalibration => "Reset RPM Calibration",
+            HotkeyAction::ResetCalibration => "Clear RPM calibration",
+            HotkeyAction::ClearGearMap => "Clear gear map",
             HotkeyAction::MiniSettings => "Open mini-settings",
             HotkeyAction::DashboardEdit => "Toggle dashboard edit",
+            HotkeyAction::HideHud => "Hide HUD",
         }
     }
 }
 
-/// How global hotkeys decide the game is focused.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum GateMode {
-    #[default]
-    TelemetryLive,
-    WindowFocus,
-}
-
-/// Which active-window query the WindowFocus gate uses (Linux). Windows always
+/// Which active-window query the focus detector uses (Linux). Windows always
 /// uses GetForegroundWindow and ignores this.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum FocusMethod {
@@ -134,12 +157,43 @@ pub enum FocusMethod {
     Gnome,
 }
 
+/// Pure desktop -> window-detection mapping for a *fresh* config. `current_desktop` is
+/// `XDG_CURRENT_DESKTOP` (colon-separated, any case, e.g. `ubuntu:GNOME`).
+/// Hyprland (signature set or named) -> Hyprland; GNOME -> Gnome; other X11 session -> X11;
+/// anything else (unknown Wayland compositor, nothing set) -> Hyprland, the historical default.
+pub fn focus_method_for_desktop(current_desktop: Option<&str>, session_type: Option<&str>, hyprland_sig: bool) -> FocusMethod {
+    let has = |name: &str| current_desktop.is_some_and(|d| d.split(':').any(|p| p.trim().eq_ignore_ascii_case(name)));
+    if hyprland_sig || has("Hyprland") {
+        FocusMethod::Hyprland
+    } else if has("GNOME") {
+        FocusMethod::Gnome
+    } else if session_type.is_some_and(|t| t.trim().eq_ignore_ascii_case("x11")) {
+        FocusMethod::X11
+    } else {
+        FocusMethod::Hyprland
+    }
+}
+
+/// [`focus_method_for_desktop`] fed from the environment. Windows ignores `FocusMethod`.
+pub fn detect_focus_method() -> FocusMethod {
+    if cfg!(windows) {
+        return FocusMethod::default();
+    }
+    let var = |k: &str| std::env::var(k).ok();
+    focus_method_for_desktop(
+        var("XDG_CURRENT_DESKTOP").as_deref(),
+        var("XDG_SESSION_TYPE").as_deref(),
+        var("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|v| !v.is_empty()),
+    )
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct HotkeyConfig {
     #[serde(default = "default_bindings")]
     pub bindings: HashMap<HotkeyAction, crate::keymap::HotkeyBinding>,
-    #[serde(default)]
-    pub gate_mode: GateMode,
+    // D101: the former `gate_mode` ("Active if": Telemetry live / Game window focused) is gone —
+    // global hotkeys always need the focused game window. Old configs that still carry the key
+    // load fine (serde ignores unknown fields) and it is dropped on the next save.
     #[serde(default)]
     pub focus_method: FocusMethod,
     #[serde(default)]
@@ -150,6 +204,28 @@ pub struct HotkeyConfig {
     pub input_focus_gate: bool,
     #[serde(default = "default_poll_hz")]
     pub focus_poll_hz: f32,
+    /// Actions the user deliberately unbound ("Not set", D28). An action is bound iff it
+    /// has an entry in `bindings` — that map is authoritative; this list only stops
+    /// [`inject_missing_hotkeys`] from re-adding the default on the next load. Edit both
+    /// together through [`HotkeyConfig::bind`] / [`HotkeyConfig::unbind`].
+    #[serde(default)]
+    pub unbound: Vec<HotkeyAction>,
+}
+
+impl HotkeyConfig {
+    /// Bind `action` to `binding` (clears a previous unbind).
+    pub fn bind(&mut self, action: HotkeyAction, binding: crate::keymap::HotkeyBinding) {
+        self.unbound.retain(|a| *a != action);
+        self.bindings.insert(action, binding);
+    }
+
+    /// Unbind `action` ("Not set"); it stays unbound across restarts.
+    pub fn unbind(&mut self, action: HotkeyAction) {
+        self.bindings.remove(&action);
+        if !self.unbound.contains(&action) {
+            self.unbound.push(action);
+        }
+    }
 }
 
 fn default_game_match() -> String { "Forza".to_string() }
@@ -160,7 +236,13 @@ fn default_poll_hz() -> f32 { 4.0 }
 pub fn inject_missing_hotkeys(hk: &mut HotkeyConfig) {
     let defaults = default_bindings();
     for action in HotkeyAction::ALL.iter().copied() {
-        hk.bindings.entry(action).or_insert_with(|| defaults[&action]);
+        if hk.unbound.contains(&action) {
+            continue;
+        }
+        // An action without a default key would simply stay "Not set".
+        if let Some(d) = defaults.get(&action) {
+            hk.bindings.entry(action).or_insert(*d);
+        }
     }
 }
 
@@ -172,6 +254,9 @@ fn default_bindings() -> HashMap<HotkeyAction, crate::keymap::HotkeyBinding> {
     m.insert(HotkeyAction::ResetCalibration, HotkeyBinding { mods: Mods::default(), key: HotKey::F });
     m.insert(HotkeyAction::MiniSettings, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::S });
     m.insert(HotkeyAction::DashboardEdit, HotkeyBinding { mods: Mods { ctrl: true, ..Default::default() }, key: HotKey::E });
+    // Same key as Clear RPM calibration: one press clears both (the tuned setup is "reset everything").
+    m.insert(HotkeyAction::ClearGearMap, HotkeyBinding { mods: Mods::default(), key: HotKey::F });
+    m.insert(HotkeyAction::HideHud, HotkeyBinding { mods: Mods::default(), key: HotKey::J });
     m
 }
 
@@ -179,12 +264,416 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             bindings: default_bindings(),
-            gate_mode: GateMode::default(),
-            focus_method: FocusMethod::default(),
+            focus_method: detect_focus_method(),
             custom_cmd: String::new(),
             game_match: default_game_match(),
             input_focus_gate: false,
             focus_poll_hz: default_poll_hz(),
+            unbound: Vec::new(),
+        }
+    }
+}
+
+// ── Gamepad ──────────────────────────────────────────────────────────────────
+
+/// Controller settings (Setup → Controller). Struct-level `serde(default)`: an older config
+/// or preset without the object (or with missing fields) falls back to these defaults.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct GamepadConfig {
+    /// Read controllers at all (bindings and the right-stick vector). See `docs/features/gamepad.md`.
+    pub enabled: bool,
+    /// Radial deadzone of the sticks, 0..0.5 of full deflection.
+    pub stick_deadzone: f32,
+    /// Trigger deadzone, 0..0.5 of full travel.
+    pub trigger_deadzone: f32,
+    /// Controller input bound to each global action. Absent = not bound (default: only Toggle Gearbox → L3).
+    pub bindings: HashMap<HotkeyAction, crate::gamepad::PadControl>,
+}
+
+impl Default for GamepadConfig {
+    fn default() -> Self {
+        // Tuned default: the gearbox toggle on L3 (stick click).
+        let bindings = HashMap::from([(HotkeyAction::ToggleGearbox, crate::gamepad::PadControl::L3)]);
+        Self { enabled: true, stick_deadzone: 0.27, trigger_deadzone: 0.10, bindings }
+    }
+}
+
+impl GamepadConfig {
+    /// Bind `control` to `action`. Other actions bound to the same control keep it: one press
+    /// fires all of them (see `docs/features/gamepad.md`).
+    pub fn bind(&mut self, action: HotkeyAction, control: crate::gamepad::PadControl) {
+        self.bindings.insert(action, control);
+    }
+}
+
+// ── HUD overlay ──────────────────────────────────────────────────────────────
+
+/// One slot of the HUD's 3×3 screen grid (D19/D26), row-major. Slots are relative to the
+/// screen edges, so a layout survives a resolution change. Modules sharing a slot stack
+/// vertically from the screen edge inward in the order Minimap → cluster → race/drift
+/// (D22; middle row stacks bottom-up, D28).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HudCell {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    Center,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl HudCell {
+    /// All nine slots, row-major (index = `row * 3 + col`).
+    pub const ALL: [HudCell; 9] = [
+        HudCell::TopLeft, HudCell::TopCenter, HudCell::TopRight,
+        HudCell::MiddleLeft, HudCell::Center, HudCell::MiddleRight,
+        HudCell::BottomLeft, HudCell::BottomCenter, HudCell::BottomRight,
+    ];
+    /// 0 = top, 1 = middle, 2 = bottom.
+    pub fn row(self) -> usize {
+        self as usize / 3
+    }
+    /// 0 = left, 1 = centre, 2 = right.
+    pub fn col(self) -> usize {
+        self as usize % 3
+    }
+    /// `None` when `row` or `col` is outside 0..3.
+    pub fn from_row_col(row: usize, col: usize) -> Option<Self> {
+        (row < 3 && col < 3).then(|| Self::ALL[row * 3 + col])
+    }
+}
+
+/// Drive-cluster look (D11/D14).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ClusterStyle {
+    /// D1a: pill with a level rev bar.
+    #[default]
+    Pill,
+    /// D3a′: thick 24-sector ring on a 260° arc.
+    Halo,
+}
+
+/// Shape of the HUD minimap's frame (D75).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum MapShape {
+    /// The M2′ rounded rectangle (`map_width` × `map_height`, `map_corner_radius`).
+    #[default]
+    RoundedRect,
+    /// A true circle of diameter `map_width` (`map_height` is not used).
+    Circle,
+}
+
+/// Drift counter look (task 25).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum DriftStyle {
+    /// Race position in the cap (D15 backdrop), the last window's "+N" counting up on the
+    /// right. why: FH6's own drift score UI can't be hidden, so a second total is redundant.
+    #[default]
+    PositionGain,
+    /// X1′: "+N" chip in the cap, the event total on the right.
+    Total,
+}
+
+/// How the overlay picks its monitor (D18).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum MonitorMethod {
+    /// Built-in: `hyprctl activeworkspace` → `… on monitor <NAME>:`.
+    #[default]
+    Hyprland,
+    /// [`OverlayConfig::monitor_cmd`] prints a monitor name.
+    Custom,
+    /// Always [`OverlayConfig::monitor_fixed`].
+    Fixed,
+}
+
+/// Every HUD overlay setting (Overlay tab, D24–D28). One `AppConfig` key (`overlay`), so it
+/// travels with profiles/presets as a unit; `#[serde(default)]` fills any field an older
+/// config lacks. The Hide HUD binding is **not** here: it is `hotkeys.bindings[HideHud]`,
+/// the one field both the Overlay page and Setup → Hotkey edit (D28). The focus-only flag
+/// is here even though its checkbox sits in Setup → Window Detection (D5).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct OverlayConfig {
+    // ── General ──
+    /// Master switch. Off = the listener does no HUD work at all.
+    pub enabled: bool,
+    /// Global HUD scale, 1.0 = 100 % (mockup slider 50–200 %).
+    pub scale: f32,
+    /// Plate (background) opacity, 0.0–1.0.
+    pub plate_opacity: f32,
+    /// Fade on show/hide (our own fade, D17); off = hard cut. Duration is a HUD const.
+    pub fade: bool,
+    /// D5 "Show overlay only when game window is focused". Needs the focus detector
+    /// enabled (`FocusParams::enabled`); an idle detector reports focused=true.
+    pub focus_only: bool,
+    // ── Monitor detection (D18) ──
+    pub monitor_method: MonitorMethod,
+    /// Command for [`MonitorMethod::Custom`]; prints a monitor name (e.g. "DP-1").
+    pub monitor_cmd: String,
+    /// Output name for [`MonitorMethod::Fixed`]; empty = the first output.
+    pub monitor_fixed: String,
+    // ── Modules on/off ──
+    pub cluster_on: bool,
+    pub minimap_on: bool,
+    pub race_on: bool,
+    pub drift_on: bool,
+    // ── Layout (D19/D26): one slot per module; race and drift share `race_cell` (D25/D27) ──
+    pub cluster_cell: HudCell,
+    pub minimap_cell: HudCell,
+    /// The race block's slot; the drift counter takes its place while drifting.
+    pub race_cell: HudCell,
+    /// Distance from the screen edges, 1080p design px (scaled like the modules).
+    pub margin_px: f32,
+    /// Space between modules stacked in one cell, 1080p design px (scaled like the modules).
+    pub gap_px: f32,
+    // ── Drive cluster ──
+    pub cluster_style: ClusterStyle,
+    /// D13: show live engine RPM (digits only) instead of the static "KM/H" unit label.
+    pub rpm_label: bool,
+    pub shift_flash: bool,
+    pub gear_pulse: bool,
+    /// Redline starts at this fraction of the gearbox's calibrated max rpm, or of
+    /// `engine_max_rpm` before one exists (D21, default 0.85).
+    pub redline_frac: f32,
+    /// Shift cue at this fraction of `engine_max_rpm`, used only until the gearbox's rpm
+    /// calibration exists; then the cue is the gearbox's own Shift RPM (D21, default 0.93).
+    pub shift_frac: f32,
+    /// Refresh the speed number only every [`crate::hud::SPEED_HOLD_SECS`] (gear, rev bar
+    /// and rpm label stay live).
+    pub speed_hold: bool,
+    // ── Minimap ──
+    /// D12 compass on the HUD map.
+    pub compass: bool,
+    /// Metres from centre to edge while stopped (independent of the Dashboard map's).
+    pub zoom_stopped_m: f32,
+    /// Metres from centre to edge while driving.
+    pub zoom_driving_m: f32,
+    /// Lock the HUD map north-up (car arrow turns) instead of heading-up (map turns).
+    pub map_north_up: bool,
+    /// Heading-up only: ease the map to north once the car has been stopped.
+    pub map_north_up_when_stopped: bool,
+    /// Ease the map's rotation instead of snapping it to the heading.
+    pub map_smooth_rotation: bool,
+    /// Heading-up only: rotate to the velocity direction instead of the car's yaw.
+    pub map_use_movement_dir: bool,
+    /// Look-around: rotate the map by the right stick (`minimap::look_offset`).
+    pub map_look_stick: bool,
+    /// Mirror the map past its edges (the Dashboard's "Mirror map at edges"); off = the plain
+    /// backing shows outside the image.
+    pub map_mirror_edges: bool,
+    /// Opacity of the minimap's own plate behind the (dimmed) satellite image, 0.0-1.0 (D62: no
+    /// plate, the game shows through the image). Independent of the global `plate_opacity`,
+    /// which belongs to the other modules; also what the far edge of a tilted map fades into.
+    pub map_plate_opacity: f32,
+    // ── Minimap frame (D75): the module's shape, size, outline and background ──
+    /// Rounded rectangle (default) or circle.
+    pub map_shape: MapShape,
+    /// Frame width in HUD design px (1080p, scaled like the other modules); the diameter of a
+    /// [`MapShape::Circle`]. Default 208.
+    pub map_width: f32,
+    /// Frame height in design px, rounded rectangle only. Default 136.
+    pub map_height: f32,
+    /// Corner radius in design px, rounded rectangle only (clamped to half the shorter side).
+    pub map_corner_radius: f32,
+    /// Outline width in design px, 0 = none. Drawn inside the frame. Default 3.
+    pub map_border_width: f32,
+    /// Outline colour (RGB) and its opacity 0.0-1.0; default `rgba(12,17,27,.88)`.
+    pub map_border_color: [u8; 3],
+    pub map_border_opacity: f32,
+    /// The minimap plate's colour (RGB); its opacity is `map_plate_opacity`. Default the other
+    /// modules' plate colour `rgb(9,13,21)`.
+    pub map_plate_color: [u8; 3],
+    /// What the HUD map draws besides the markers: satellite look, roads, POIs, race lines,
+    /// tilt (`maprender::cfg`). Defaults are the HUD's (D62: dimmed image, tilted).
+    pub map_layers: crate::maprender::cfg::MapLayerConfig,
+    /// "Use Dashboard map settings": the map options above (and the two zooms and the compass)
+    /// follow the Dashboard map's; their controls are hidden. See [`OverlayConfig::effective`].
+    pub map_use_dashboard: bool,
+    /// Allow the 3D map view on Windows (K3/K4): the Windows GL path (WGL overlay, eframe window) is
+    /// untested by the developers, so there 3D (HUD minimap, Dashboard map, Map-tab viewer) is
+    /// treated as Tilted until the user ticks this on the View mode card. One flag for all three
+    /// maps; ignored elsewhere.
+    pub map_3d_windows: bool,
+    pub coop_teammates: bool,
+    /// Draw co-op trails behind each player (own included), like the Dashboard map.
+    pub coop_trails: bool,
+    /// Trail fade by age (s) and by distance behind the player (m); the Dashboard's
+    /// `coop_trail_fade_*`, kept independent.
+    pub coop_trail_fade_secs: f32,
+    pub coop_trail_fade_m: f32,
+    /// Draw the session's shared waypoints (the diamond + distance).
+    pub coop_waypoints: bool,
+    /// "Use Dashboard co-op settings": teammates, trails, trail fade and waypoints follow the
+    /// Dashboard map's. See [`OverlayConfig::effective`].
+    pub coop_use_dashboard: bool,
+    // ── Race block ──
+    pub lap_delta: bool,
+    /// D15 green/red backdrop on a place gained/lost.
+    pub place_colour: bool,
+    // ── Drift counter ──
+    pub drift_style: DriftStyle,
+    /// Length of one "+N" gain window, seconds (mockup slider 1–10).
+    pub drift_chip_secs: f32,
+    /// Show the window's progress bar.
+    pub drift_bar: bool,
+    // ── Notifications (D26) ──
+    /// Master switch for the short on-HUD messages.
+    pub notif_on: bool,
+    /// "Gearbox: ON / OFF" (G hotkey or the Gearbox tab).
+    pub notif_gearbox_toggle: bool,
+    /// "Gearbox mode: Race" (mode picker, or the automatic switch to Race in a race and back).
+    pub notif_gearbox_mode: bool,
+    /// "Backfire: ON / OFF".
+    pub notif_backfire: bool,
+    /// "Calibration started" / "Shift at redline" / "Calibration done — N rpm".
+    pub notif_calibration: bool,
+    /// Anchor of the notification stack on the screen (3×3), default centre.
+    pub notif_cell: HudCell,
+}
+
+impl OverlayConfig {
+    // Default slots: map bottom-left, cluster bottom-centre, race/drift bottom-right.
+    pub const DEFAULT_CLUSTER_CELL: HudCell = HudCell::BottomCenter;
+    pub const DEFAULT_MINIMAP_CELL: HudCell = HudCell::BottomLeft;
+    pub const DEFAULT_RACE_CELL: HudCell = HudCell::BottomRight;
+    /// Distance from the screen edges (1080p design px). The HUD's layout fallback is `hud::layout::MARGIN`.
+    pub const DEFAULT_MARGIN_PX: f32 = 4.0;
+    /// The Minimap frame's default size and corner radius, design px (the M2′ pill; D75).
+    pub const DEFAULT_MAP_W: f32 = 208.0;
+    pub const DEFAULT_MAP_H: f32 = 136.0;
+    pub const DEFAULT_MAP_RADIUS: f32 = 22.0;
+    /// The Overlay tab's size sliders; `hud::minimap::Frame` clamps a hand-edited file to the wider
+    /// `20..=2000` so nothing degenerate reaches the renderer.
+    pub const MAP_SIZE_RANGE: std::ops::RangeInclusive<f32> = 120.0..=600.0;
+
+    /// The Minimap-frame card's Reset: shape, size, corner radius, outline and background back to
+    /// the M2′ pill (the map layers and the other map options are not touched).
+    pub fn reset_map_frame(&mut self) {
+        let d = Self::default();
+        self.map_shape = d.map_shape;
+        self.map_width = d.map_width;
+        self.map_height = d.map_height;
+        self.map_corner_radius = d.map_corner_radius;
+        self.map_border_width = d.map_border_width;
+        self.map_border_color = d.map_border_color;
+        self.map_border_opacity = d.map_border_opacity;
+        self.map_plate_color = d.map_plate_color;
+        self.map_plate_opacity = d.map_plate_opacity;
+    }
+
+    /// The settings the HUD actually draws with: `self`, with the map group (`map_use_dashboard`)
+    /// and/or the co-op group (`coop_use_dashboard`) replaced by the Dashboard map's values from
+    /// `app`. The listener builds the snapshot's `cfg` from this, so the renderer reads one
+    /// config and never branches on the two flags.
+    /// Why: one tick mirrors the Dashboard, separately for the map view and for co-op.
+    /// The Dashboard has no "show teammates / waypoints" switch (always drawn) and always
+    /// records trails in a session, so those follow as `true`.
+    pub fn effective(&self, app: &AppConfig) -> OverlayConfig {
+        let mut c = self.clone();
+        if self.map_use_dashboard {
+            c.compass = app.minimap_show_compass;
+            c.zoom_driving_m = app.minimap_zoom_driving_m;
+            c.zoom_stopped_m = app.minimap_zoom_stopped_m;
+            c.map_north_up = app.minimap_north_up;
+            c.map_north_up_when_stopped = app.minimap_north_up_when_stopped;
+            c.map_smooth_rotation = app.minimap_smooth_rotation;
+            c.map_use_movement_dir = app.minimap_use_movement_dir;
+            c.map_look_stick = app.minimap_look_stick;
+            c.map_mirror_edges = app.minimap_mirror_edges;
+            c.map_layers = app.minimap_layers.clone();
+        }
+        if self.coop_use_dashboard {
+            c.coop_teammates = true;
+            c.coop_trails = true;
+            c.coop_waypoints = true;
+            c.coop_trail_fade_secs = app.coop_trail_fade_secs;
+            c.coop_trail_fade_m = app.coop_trail_fade_m;
+        }
+        c
+    }
+
+    /// Layout card's Reset: put every module back in its default slot.
+    pub fn reset_layout(&mut self) {
+        self.cluster_cell = Self::DEFAULT_CLUSTER_CELL;
+        self.minimap_cell = Self::DEFAULT_MINIMAP_CELL;
+        self.race_cell = Self::DEFAULT_RACE_CELL;
+        self.margin_px = Self::DEFAULT_MARGIN_PX;
+        self.gap_px = crate::hud::layout::GAP;
+    }
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scale: 1.0,
+            plate_opacity: 0.68,
+            fade: true,
+            focus_only: true,
+            monitor_method: MonitorMethod::Hyprland,
+            monitor_cmd: String::new(),
+            monitor_fixed: String::new(),
+            cluster_on: true,
+            minimap_on: true,
+            race_on: true,
+            drift_on: true,
+            cluster_cell: Self::DEFAULT_CLUSTER_CELL,
+            minimap_cell: Self::DEFAULT_MINIMAP_CELL,
+            race_cell: Self::DEFAULT_RACE_CELL,
+            cluster_style: ClusterStyle::Pill,
+            rpm_label: true,
+            shift_flash: true,
+            gear_pulse: true,
+            redline_frac: 0.85,
+            shift_frac: 0.93,
+            margin_px: Self::DEFAULT_MARGIN_PX,
+            gap_px: crate::hud::layout::GAP,
+            speed_hold: false,
+            compass: true,
+            // The HUD minimap's own zoom radii (D107: the user's); the Dashboard map has its own.
+            zoom_stopped_m: 500.0,
+            zoom_driving_m: 100.0,
+            // Tuned defaults (the HUD map rotates to the movement direction and follows the right stick).
+            map_north_up: false,
+            map_north_up_when_stopped: false,
+            map_smooth_rotation: true,
+            map_use_movement_dir: true,
+            map_look_stick: true,
+            // Dashboard default.
+            map_mirror_edges: true,
+            map_plate_opacity: 0.0,
+            map_shape: MapShape::RoundedRect,
+            map_width: Self::DEFAULT_MAP_W,
+            map_height: Self::DEFAULT_MAP_H,
+            map_corner_radius: Self::DEFAULT_MAP_RADIUS,
+            map_border_width: 3.0,
+            map_border_color: [12, 17, 27],
+            map_border_opacity: 0.88,
+            map_plate_color: [9, 13, 21],
+            map_layers: crate::maprender::cfg::MapLayerConfig::hud(),
+            map_use_dashboard: false,
+            map_3d_windows: false,
+            coop_teammates: true,
+            coop_trails: true,
+            coop_trail_fade_secs: 10.0,
+            coop_trail_fade_m: 500.0,
+            coop_waypoints: true,
+            coop_use_dashboard: true,
+            lap_delta: true,
+            place_colour: true,
+            drift_style: DriftStyle::PositionGain,
+            drift_chip_secs: 5.0,
+            drift_bar: true,
+            notif_on: true,
+            notif_gearbox_toggle: true,
+            notif_gearbox_mode: false,
+            notif_backfire: true,
+            notif_calibration: true,
+            notif_cell: HudCell::Center,
         }
     }
 }
@@ -337,10 +826,55 @@ fn car_calibrations_path() -> PathBuf {
 }
 
 pub fn load_car_calibrations() -> HashMap<i32, CarCalibration> {
-    std::fs::read_to_string(car_calibrations_path())
-        .ok()
-        .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_default()
+    let path = car_calibrations_path();
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        if path.exists() {
+            backup_bad_file(&path); // unreadable as text: keep it before a save replaces it
+        }
+        car_calibration_trees().remove(&path);
+        return HashMap::new();
+    };
+    let (map, lossy) = parse_car_calibrations(&data);
+    // A JSON object: entries and fields this build can't read stay in the file (see
+    // `merge_for_save`, applied by `save_car_calibrations`), so nothing is lost and no backup is
+    // needed. Anything else is replaced by the next save: keep the original.
+    let raw = serde_json::from_str::<serde_json::Value>(&data).ok().filter(|v| v.is_object());
+    match (raw, serde_json::to_value(&map)) {
+        (Some(raw), Ok(loaded)) => {
+            car_calibration_trees().insert(path, FwdTrees::new(raw, loaded, &[]));
+        }
+        _ => {
+            car_calibration_trees().remove(&path);
+            if lossy {
+                backup_bad_file(&path);
+            }
+        }
+    }
+    map
+}
+
+/// The save-merge trees of the calibration file (one per path: the tests use their own data
+/// dirs). Process-global because `save_car_calibrations` is a free function.
+fn car_calibration_trees() -> std::sync::MutexGuard<'static, HashMap<PathBuf, FwdTrees>> {
+    static TREES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, FwdTrees>>> = std::sync::OnceLock::new();
+    TREES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Per-entry parse: a bad entry (or a file that isn't a JSON object) loses only itself.
+/// The flag says whether anything was dropped.
+fn parse_car_calibrations(data: &str) -> (HashMap<i32, CarCalibration>, bool) {
+    let Ok(serde_json::Value::Object(m)) = serde_json::from_str::<serde_json::Value>(data) else {
+        return (HashMap::new(), true);
+    };
+    let mut out = HashMap::new();
+    let mut lossy = false;
+    for (k, v) in m {
+        match (k.parse::<i32>(), serde_json::from_value::<CarCalibration>(v)) {
+            (Ok(id), Ok(c)) => { out.insert(id, c); }
+            _ => lossy = true,
+        }
+    }
+    (out, lossy)
 }
 
 pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
@@ -348,13 +882,59 @@ pub fn save_car_calibrations(map: &HashMap<i32, CarCalibration>) {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    if let Ok(data) = serde_json::to_string_pretty(map) {
-        std::fs::write(&path, data).ok();
+    let Ok(cur) = serde_json::to_value(map) else { return };
+    let merged = car_calibration_trees().get(&path).and_then(|t| t.merged(&cur));
+    let text = match &merged {
+        Some(m) => serde_json::to_string_pretty(m),
+        None => serde_json::to_string_pretty(map),
+    };
+    if let Ok(data) = text {
+        if std::fs::write(&path, data).is_ok() {
+            if let Some(t) = car_calibration_trees().get_mut(&path) {
+                t.committed(merged.unwrap_or_else(|| cur.clone()), cur);
+            }
+        }
     }
 }
 
 fn default_true() -> bool { true }
 fn default_profile_name() -> String { "Default".to_string() }
+
+/// The module selector at the top of the Overlay tab (D63): which module's settings the page
+/// shows. Remembered across restarts as the top-level `overlay_page` key, which is in
+/// [`EXPORT_EXCLUDE`]: it is where the user last looked, not a setting, so presets and
+/// profile exports must not carry it (and `overlay` itself stays purely the HUD's settings).
+///
+/// The Minimap and Dashboard map pages moved to the Map tab (D67); a config saved while the
+/// Dashboard map one was selected still loads: the alias maps it to `General`. The Minimap page
+/// is back (D75) as the module's *frame* (shape, size, outline, background); the map layers stay
+/// on the Map tab, so an old saved `minimap` simply selects it.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPage {
+    #[default]
+    #[serde(alias = "dashboard_map")]
+    General,
+    Minimap,
+    Cluster,
+    Race,
+    Notifications,
+}
+
+/// The module selector of the Map tab's settings mode (D67): which map's settings the page
+/// shows. Remembered as the top-level `map_tab_page` key ([`EXPORT_EXCLUDE`], like
+/// [`OverlayPage`]).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MapPage {
+    #[default]
+    Minimap,
+    /// The Dashboard map's settings, which the Viewer shares too (D73). An old saved `viewer`
+    /// page (the page that no longer exists) loads as this one.
+    #[serde(alias = "viewer")]
+    DashboardMap,
+    MapData,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppConfig {
@@ -369,6 +949,21 @@ pub struct AppConfig {
     pub use_bar: bool,
     pub theme: Theme,
     pub always_on_top: bool,
+    /// D29: also treat the garage (level, motionless car, handbrake on) as paused. See `listeners::hud::garage_paused`.
+    pub experimental_pause_detection: bool,
+    /// D13: suppress the startup "input permissions missing" modal (Linux). Machine-specific,
+    /// so excluded from profile export/import.
+    pub input_perm_dont_remind: bool,
+    /// I17/D33: the first-run onboarding guide was finished or skipped. `true` for every config
+    /// that lacks the key (an existing install upgrading must NOT get the guide); only the
+    /// embedded fresh-install default (`assets/default-config.json`) says `false`. Machine-
+    /// specific and not part of a profile: excluded from export/import and kept across a
+    /// profile switch. See `docs/features/onboarding.md`.
+    #[serde(default = "default_true")]
+    pub onboarding_done: bool,
+    /// FH6 install folder for the car-name database (Setup → Game Install). Empty = auto-detect.
+    /// Machine-specific, so excluded from profile export/import.
+    pub fh6_install_dir: String,
     pub surface_rumble_max: f32,
     pub power_curve_step: f32,
     // Alignment
@@ -419,10 +1014,17 @@ pub struct AppConfig {
     // Mini map rotation options
     pub minimap_smooth_rotation: bool,
     pub minimap_use_movement_dir: bool,
+    pub minimap_look_stick: bool, // rotate the map by the right stick (look-around)
     pub minimap_mirror_edges: bool,
     pub minimap_north_up: bool, // lock map north-up instead of heading-up
     pub minimap_north_up_when_stopped: bool, // in heading-up mode, ease to north when stopped
     pub minimap_show_compass: bool, // show the north compass on the map
+    /// Drag to pan and wheel to zoom the Dashboard map; resets once the player drives off (D72).
+    #[serde(default = "default_true")]
+    pub minimap_allow_pan_zoom: bool,
+    // Mini map layers: satellite look, roads by type, POIs, race lines, tilt (shared renderer,
+    // `maprender::cfg`). No settings UI yet: edit the JSON.
+    pub minimap_layers: crate::maprender::cfg::MapLayerConfig,
     // G-Force widget
     pub gforce_show_text: bool,   // show the Current/Peak text column; off = plot fills the widget
     pub gforce_show_labels: bool, // show the "Current:"/"Peak:" header rows above the value rows
@@ -457,6 +1059,8 @@ pub struct AppConfig {
     pub backfire_accel_time_ms: u64,
     pub backfire_dynamic_duration: bool, // key-press length = one frame (from packets/sec) instead of the fixed ms
     pub backfire_dynamic_mode: BackfireDynamicMode, // when dynamic: estimate hold from packets/sec, or hold until next packet
+    pub backfire_limit_duration: bool, // stop a continuous backfire after backfire_max_duration_ms (re-arms on throttle / downshift)
+    pub backfire_max_duration_ms: u32, // 100..=5000
     pub backfire_test_mode: bool,
     pub backfire_disable_standstill: bool,
     pub backfire_drift_detection: bool, // suppress the pop while any wheel's slip ratio magnitude exceeds DRIFT_SLIP_MAX (a slide/wheelspin isn't a clean lift-off)
@@ -464,12 +1068,16 @@ pub struct AppConfig {
     // Hotkeys (global + app-focused rebindable shortcuts + focus detection)
     #[serde(default)]
     pub hotkeys: HotkeyConfig,
+    // Controller (gamepad bindings + deadzones, Setup → Controller)
+    #[serde(default)]
+    pub gamepad: GamepadConfig,
     // DSG automatic gearbox
     pub dsg_enabled: bool,
     pub dsg_shift_rpm_pct: f32,       // Max RPM ceiling: % of max_rpm (calibration + full-throttle shift point)
     pub dsg_upshift_speed_pct: f32,  // upshift only once speed reaches this % of the gear's redline speed
     pub dsg_gearbox_mode: GearboxMode,
     pub dsg_auto_race_mode: bool, // force Race mode whenever in an actual race (race position > P0)
+    pub dsg_disable_in_drift: bool, // gearbox off while a drift event is detected (only with auto-race on or Race selected)
     pub dsg_tuning_street: GearboxTuning,
     pub dsg_tuning_sport: GearboxTuning,
     pub dsg_tuning_race: GearboxTuning,
@@ -500,6 +1108,9 @@ pub struct AppConfig {
     pub coop_buffer_ms: u32,  // jitter buffer for remote players (pacing)
     pub coop_port: u16,       // local host port cloudflared points at
     pub coop_last_code: String, // last join code, prefilled next launch
+    pub coop_transport: CoopTransport, // Cloudflare (host/join code) or Trystero (room ID)
+    pub coop_room: String,      // last Trystero room ID
+    pub coop_autoconnect: bool, // rejoin `coop_room` at startup (Trystero only)
     // Co-Op map: tracer fade + on-map player list
     pub coop_trail_fade_secs: f32, // trail fades out over this many seconds
     pub coop_trail_fade_m: f32,    // …and over this distance behind the player
@@ -508,6 +1119,34 @@ pub struct AppConfig {
     pub coop_list_speed: bool,
     pub coop_list_gear: bool,
     pub coop_list_class: bool,
+    // HUD overlay (Overlay tab); absent in older configs → defaults.
+    #[serde(default)]
+    pub overlay: OverlayConfig,
+    /// Selected module tab of the Overlay tab (UI memory, see [`OverlayPage`]).
+    #[serde(default)]
+    pub overlay_page: OverlayPage,
+    // Map tab (D67). The viewer has no settings of its own (D73): it draws with the Dashboard
+    // map's `minimap_*` keys. Old configs may still carry `viewer_*` keys; serde ignores them
+    // and the next save drops them. `map_tab_*` are UI memory (settings mode on/off, page).
+    /// The Map tab shows its settings instead of the viewer (UI memory, [`EXPORT_EXCLUDE`]).
+    #[serde(default)]
+    pub map_tab_settings: bool,
+    /// Selected page of the Map tab's settings (UI memory, [`EXPORT_EXCLUDE`]).
+    #[serde(default)]
+    pub map_tab_page: MapPage,
+    /// The navigation sidebar on the Map tab's viewer is open (UI memory, [`EXPORT_EXCLUDE`];
+    /// the location-arrow button bottom right and the N key toggle it, D108).
+    #[serde(default)]
+    pub map_nav_open: bool,
+    /// Navigation (phase L, D83-D85): the navigation sidebar's road-type filters, the faster /
+    /// more-curves slider, this player's destination and the two co-op switches. Not exported
+    /// with presets ([`EXPORT_EXCLUDE`]): the destination is a personal trip.
+    #[serde(default)]
+    pub nav: crate::nav::NavConfig,
+    /// What the file held when this config was loaded (forward compatibility, see
+    /// [`merge_for_save`]). Never serialized; cloned along with the config.
+    #[serde(skip)]
+    pub(crate) fwd: ForwardCompat,
 }
 
 impl Default for AppConfig {
@@ -521,6 +1160,10 @@ impl Default for AppConfig {
             use_bar: true,
             theme: Theme::Dark,
             always_on_top: false,
+            experimental_pause_detection: true,
+            input_perm_dont_remind: false,
+            onboarding_done: true,
+            fh6_install_dir: String::new(),
             surface_rumble_max: 3.8,
             power_curve_step: 100.0,
             speed_align: TextAlign::RightPlaceholder,
@@ -549,17 +1192,20 @@ impl Default for AppConfig {
             minimap_px_per_m: 0.3722,
             minimap_world_origin_x: -12540.0,
             minimap_world_origin_z: 10738.0,
-            minimap_zoom_driving_m: 1500.0,
-            minimap_zoom_stopped_m: 3000.0,
+            minimap_zoom_driving_m: 500.0,
+            minimap_zoom_stopped_m: 6000.0,
             minimap_quality: 100.0,
-            minimap_fps_limit: 60.0,
-            minimap_fps_limit_enabled: true,
+            minimap_fps_limit: 120.0,
+            minimap_fps_limit_enabled: false,
             minimap_smooth_rotation: true,
             minimap_use_movement_dir: true,
+            minimap_look_stick: true,
             minimap_mirror_edges: true,
-            minimap_north_up: false,
-            minimap_north_up_when_stopped: false,
-            minimap_show_compass: true,
+            minimap_north_up: true,
+            minimap_north_up_when_stopped: true,
+            minimap_show_compass: false,
+            minimap_allow_pan_zoom: true,
+            minimap_layers: crate::maprender::cfg::MapLayerConfig::dashboard(),
             gforce_show_text: true,
             gforce_show_labels: true,
             hide_widget_titles: false,
@@ -585,16 +1231,20 @@ impl Default for AppConfig {
             backfire_accel_time_ms: 8,
             backfire_dynamic_duration: true,
             backfire_dynamic_mode: BackfireDynamicMode::PacketBased,
+            backfire_limit_duration: true,
+            backfire_max_duration_ms: 1500,
             backfire_test_mode: false,
             backfire_disable_standstill: true,
             backfire_drift_detection: true,
             inputs_filter_backfire_accel: true,
             hotkeys: HotkeyConfig::default(),
+            gamepad: GamepadConfig::default(),
             dsg_enabled: false,
             dsg_shift_rpm_pct: 98.0,
             dsg_upshift_speed_pct: 80.0,
             dsg_gearbox_mode: GearboxMode::Sport,
             dsg_auto_race_mode: true,
+            dsg_disable_in_drift: false,
             dsg_tuning_street: GearboxTuning { cruise_rpm_pct: 35.0, accel_gamma: 1.0 },
             dsg_tuning_sport:  GearboxTuning { cruise_rpm_pct: 50.0, accel_gamma: 1.0 },
             dsg_tuning_race:   GearboxTuning { cruise_rpm_pct: 85.0, accel_gamma: 1.0 },
@@ -621,13 +1271,23 @@ impl Default for AppConfig {
             coop_buffer_ms: 0,
             coop_port: crate::coop::DEFAULT_COOP_PORT,
             coop_last_code: String::new(),
+            coop_transport: CoopTransport::Trystero,
+            coop_room: String::new(),
+            coop_autoconnect: false,
             coop_trail_fade_secs: 10.0,
             coop_trail_fade_m: 500.0,
-            coop_map_playerlist: false,
+            coop_map_playerlist: true,
             coop_list_distance: true,
             coop_list_speed: true,
-            coop_list_gear: true,
-            coop_list_class: false,
+            coop_list_gear: false,
+            coop_list_class: true,
+            overlay: OverlayConfig::default(),
+            overlay_page: OverlayPage::default(),
+            map_tab_settings: false,
+            map_tab_page: MapPage::default(),
+            map_nav_open: false,
+            nav: Default::default(),
+            fwd: Default::default(),
         }
     }
 }
@@ -679,6 +1339,187 @@ pub const PRESET_DATA: &[&str] = &[
     include_str!("../assets/configs/ritze.json"),
 ];
 
+// ── Forward compatibility: settings an older build does not understand survive its save ──
+//
+// The user switches between builds. An older build used to drop every key it does not know
+// (and reset every value it cannot parse, e.g. a new enum variant) on its next save, so going
+// back to the newer build lost those settings. Now the save is a three-way merge of JSON
+// trees, see [`merge_for_save`]. Why JSON-level and not `#[serde(flatten)]` on the ~65 config
+// structs: flatten is invasive and interacts badly with the lenient per-key probe.
+
+/// Settings this build deliberately dropped (full dotted paths). They are not "unknown to an
+/// older build" but "retired by this one", so they are stripped on load instead of being kept
+/// for a build that might want them. Add a path here whenever a field is removed from a config
+/// struct.
+const RETIRED_KEYS: &[&str] = &[
+    // D73: the viewer shares the Dashboard map's settings
+    "viewer_layers", "viewer_north_up", "viewer_mirror_edges", "viewer_show_compass",
+    "viewer_allow_pan_zoom", "viewer_zoom_m",
+    // D101: the "Active if" gate mode
+    "hotkeys.gate_mode",
+    // older removals, found in the repository history
+    "brake_downshift_pct", "car_show_cylinders", "car_widget_show_position",
+    "car_widget_show_rotation", "dashboard_block_width", "dsg_gear_max_speeds",
+    "dsg_kickdown_on_full_throttle", "dsg_max_rpm_type", "dynamic_width", "game_mode",
+    "max_rpm_measured", "modern_bar_content", "tire_slip_style", "upshift_delay_ms",
+    // D88: one race colour per map (the old `circuit_color` is renamed by `migrate_circuit_color`)
+    "minimap_layers.race_lines.sprint_color", "overlay.map_layers.race_lines.sprint_color",
+];
+
+/// Remove [`RETIRED_KEYS`] from a raw config tree.
+fn strip_retired(raw: &mut serde_json::Value) {
+    fn remove(node: &mut serde_json::Value, path: &[&str]) {
+        match path {
+            [] => {}
+            [last] => {
+                if let Some(obj) = node.as_object_mut() {
+                    obj.remove(*last);
+                }
+            }
+            [head, rest @ ..] => {
+                if let Some(child) = node.get_mut(*head) {
+                    remove(child, rest);
+                }
+            }
+        }
+    }
+    for path in RETIRED_KEYS {
+        remove(raw, &path.split('.').collect::<Vec<_>>());
+    }
+}
+
+/// Bring a raw config / profile / preset tree to the current shape: the value fix-ups below,
+/// then [`strip_retired`]. This runs on the tree that is kept as the file's `raw` side of the
+/// save merge, so **a migration that reads an old key must remove it**: a kept `compact_tabs`
+/// would re-run its migration on every load and overwrite the user's `top_bar_style`.
+fn normalize_raw(raw: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = raw else { return };
+    // The now-removed "Light" theme falls back to Dark.
+    if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
+        map.insert("theme".to_string(), serde_json::json!("Dark"));
+    }
+    // Migrate the old `compact_tabs` bool to the `top_bar_style` enum so an existing config
+    // keeps its look (checked -> Simple, unchecked -> Legacy). The old key is then gone.
+    if let Some(old) = map.remove("compact_tabs") {
+        if let Some(compact) = old.as_bool() {
+            map.insert(
+                "top_bar_style".to_string(),
+                serde_json::json!(if compact { "Simple" } else { "Legacy" }),
+            );
+        }
+    }
+    migrate_tire_display_style(map);
+    migrate_circuit_color(map);
+    strip_retired(raw);
+}
+
+/// Does a reset `reset` (path reported by [`from_value_lenient`]: `key`, `key.inner` or
+/// `key[i]`) touch `path`: the same node, an ancestor of it, or an array element inside it?
+fn reset_covers(resets: &[String], path: &str) -> bool {
+    resets.iter().any(|r| {
+        r == path
+            || r.strip_prefix(path).is_some_and(|rest| rest.starts_with('['))
+            || path.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+    })
+}
+
+/// The save merge. `raw` is what the file held at load (after migrations), `loaded` what this
+/// build made of it (`to_value` right after the load), `cur` the live config now. `resets` are
+/// the paths [`from_value_lenient`] could not read and replaced by defaults at load. Returns the
+/// tree to write. Walking the three together (objects recursed, everything else a leaf):
+/// - an object key in `raw` but in neither `loaded` nor `cur` is unknown to this build: kept;
+/// - a leaf in a reset path that the user did not change this session (`cur == loaded`) gets
+///   `raw`'s value back (a value an older build could not parse, e.g. a new enum variant);
+/// - everything else is `cur`: a changed value, a new key, and a key the user deleted this
+///   session (a map entry: in `raw` and `loaded`, not in `cur`, so it stays deleted).
+///
+/// Arrays are leaves: taken whole, `cur` if changed, else `raw` where a reset touched them.
+/// Why a reset list at all: without it every difference between `raw` and `loaded` would win,
+/// and values this build normalized on purpose (the widgets it injects, an `alias`ed old enum
+/// spelling) would be written back in their old form forever.
+pub fn merge_for_save(raw: &serde_json::Value, loaded: &serde_json::Value, cur: &serde_json::Value, resets: &[String]) -> serde_json::Value {
+    merge_at("", raw, loaded, cur, resets)
+}
+
+fn merge_at(path: &str, raw: &serde_json::Value, loaded: &serde_json::Value, cur: &serde_json::Value, resets: &[String]) -> serde_json::Value {
+    use serde_json::Value;
+    let (Value::Object(r), Value::Object(l), Value::Object(c)) = (raw, loaded, cur) else {
+        return if cur == loaded && reset_covers(resets, path) { raw.clone() } else { cur.clone() };
+    };
+    let mut out = serde_json::Map::new();
+    for (k, cv) in c {
+        let sub = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+        let v = match (r.get(k), l.get(k)) {
+            (Some(rv), Some(lv)) => merge_at(&sub, rv, lv, cv, resets),
+            // not in `loaded`: new this session (or a key that was dropped at load and is back)
+            _ => cv.clone(),
+        };
+        out.insert(k.clone(), v);
+    }
+    for (k, rv) in r {
+        if !c.contains_key(k) && !l.contains_key(k) {
+            out.insert(k.clone(), rv.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// The trees behind [`merge_for_save`] for one file. Empty (`raw` not an object) = nothing to
+/// preserve, the save writes the live config as is.
+#[derive(Clone, Default)]
+struct FwdTrees {
+    raw: serde_json::Value,
+    loaded: serde_json::Value,
+    resets: Vec<String>,
+}
+
+impl FwdTrees {
+    /// `raw` is the file's tree, already normalized. `resets` the lenient load's reset paths;
+    /// `<all>` (the whole file was unusable) means there is nothing to preserve.
+    fn new(raw: serde_json::Value, loaded: serde_json::Value, resets: &[String]) -> Self {
+        if !raw.is_object() || resets.iter().any(|k| k == "<all>" || k == "<invalid JSON>") {
+            return Self::default();
+        }
+        // `active_profile` is machine state: a garbage value there is replaced, never kept.
+        let resets = resets.iter().filter(|k| *k != "active_profile").cloned().collect();
+        Self { raw, loaded, resets }
+    }
+
+    /// The tree to write for the live config `cur`; `None` = write `cur` itself (nothing to keep).
+    fn merged(&self, cur: &serde_json::Value) -> Option<serde_json::Value> {
+        if !self.raw.is_object() {
+            return None;
+        }
+        let m = merge_for_save(&self.raw, &self.loaded, cur, &self.resets);
+        (m != *cur).then_some(m)
+    }
+
+    /// After a successful write: the file now holds `written`, the live config was `cur`.
+    fn committed(&mut self, written: serde_json::Value, cur: serde_json::Value) {
+        if self.raw.is_object() {
+            self.raw = written;
+            self.loaded = cur;
+        }
+    }
+}
+
+/// [`FwdTrees`] of a [`AppConfig`]: behind a mutex because `save` takes `&self`. A clone of the
+/// config carries a copy of the trees.
+#[derive(Default)]
+pub struct ForwardCompat(std::sync::Mutex<FwdTrees>);
+
+impl Clone for ForwardCompat {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(self.lock().clone()))
+    }
+}
+
+impl ForwardCompat {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FwdTrees> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// Rewrite the removed `tire_display_style` values ("Separate", "Combined")
 /// onto the surviving "Tires" variant so older saved configs and presets keep
 /// a valid value instead of failing to deserialize.
@@ -688,11 +1529,158 @@ fn migrate_tire_display_style(map: &mut serde_json::Map<String, serde_json::Valu
     }
 }
 
-fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) {
-    if let serde_json::Value::Object(ref mut m) = overlay {
-        migrate_tire_display_style(m);
+/// Race colours (D88). Sprints and circuits used to have a colour each (`circuit_color`,
+/// `sprint_color`); `RaceCfg` now has one, `color`, which reads the old `circuit_color` through a
+/// serde alias (the old `sprint_color` key is simply ignored). Here: the circuit colour used to
+/// default to the road blue (#38bdf8), so a circuit did not stand out (D86); the default is now
+/// orange, so rewrite exactly that old default (a colour the user picked stays) in both map layer
+/// configs. Only the *old* key is rewritten: a `color` of #38bdf8 is the user's own choice. If a
+/// config somehow has both keys, `color` wins (serde rejects a field and its alias together).
+fn migrate_circuit_color(map: &mut serde_json::Map<String, serde_json::Value>) {
+    fn fix(layers: Option<&mut serde_json::Value>) {
+        let Some(race) = layers.and_then(|l| l.get_mut("race_lines")).and_then(|r| r.as_object_mut()) else { return };
+        if race.contains_key("color") {
+            race.remove("circuit_color");
+        } else if let Some(mut c) = race.remove("circuit_color") {
+            if c.as_str().is_some_and(|s| s.eq_ignore_ascii_case("#38bdf8")) {
+                c = serde_json::json!("#f97316");
+            }
+            // Renamed here (the serde alias would read it too) so the old key does not stay in
+            // the kept raw tree next to `color`: serde rejects a field and its alias together.
+            race.insert("color".to_string(), c);
+        }
     }
-    let Ok(mut base) = serde_json::to_value(&*cfg) else { return; };
+    fix(map.get_mut("minimap_layers"));
+    fix(map.get_mut("overlay").and_then(|o| o.get_mut("map_layers")));
+}
+
+/// What [`AppConfig::parse`] had to do to read a config: `json_invalid` (not JSON at all →
+/// all defaults) and/or the settings that were reset (`key` or `key.inner`).
+struct ConfigRecovery {
+    json_invalid: bool,
+    reset_keys: Vec<String>,
+}
+
+/// Deserialize `val` into an [`AppConfig`], recovering per setting instead of all-or-nothing.
+///
+/// If the whole value deserializes, nothing is reset. Otherwise each top-level key is probed
+/// on its own: `fallback` with only that key replaced by the saved value. A key that fails is
+/// reset to `fallback`'s value. If the bad key is an object, its direct fields are probed the
+/// same way, so only the unreadable field resets (`minimap_layers.race_lines`), not the
+/// whole group; if that doesn't fix it, the whole key resets. Returns the config and the
+/// reset keys. Granularity is therefore two levels (top-level key, or its direct field).
+///
+/// *Why:* one value serde can't read (a renamed enum, a number where a bool is expected, a
+/// file from another version) used to make `load()` fall back to defaults for everything,
+/// and the autosave then overwrote the user's file.
+fn from_value_lenient(val: serde_json::Value, fallback: &AppConfig) -> (AppConfig, Vec<String>) {
+    use serde_json::Value;
+    let (Value::Object(saved), Ok(Value::Object(base))) = (&val, serde_json::to_value(fallback)) else {
+        return (fallback.clone(), vec!["<all>".to_string()]);
+    };
+    if let Ok(cfg) = serde_json::from_value::<AppConfig>(val.clone()) {
+        return (cfg, Vec::new());
+    }
+    // Does `fallback` with `key` set to `v` deserialize?
+    let probe = |key: &str, v: &Value| {
+        let mut m = base.clone();
+        m.insert(key.to_string(), v.clone());
+        serde_json::from_value::<AppConfig>(Value::Object(m)).is_ok()
+    };
+    let mut fixed = saved.clone();
+    let mut reset = Vec::new();
+    for (k, v) in saved {
+        let Some(def) = base.get(k) else { continue }; // unknown key: serde ignores it
+        if v == def || probe(k, v) {
+            continue;
+        }
+        // A list with a few unreadable elements (typically a removed `WidgetKind` in
+        // `dashboard_widgets`): drop only those elements. An element is judged on its own
+        // (`[elem]` must deserialize). Fixed-size arrays/tuples fail every such probe, drop
+        // everything, then fail the final probe below and reset as a whole key, as before.
+        if let Value::Array(items) = v {
+            let kept: Vec<Value> = items.iter().filter(|e| probe(k, &Value::Array(vec![(*e).clone()]))).cloned().collect();
+            if kept.len() < items.len() && probe(k, &Value::Array(kept.clone())) {
+                for (i, e) in items.iter().enumerate() {
+                    if !kept.contains(e) {
+                        reset.push(format!("{k}[{i}]"));
+                    }
+                }
+                fixed.insert(k.clone(), Value::Array(kept));
+                continue;
+            }
+        }
+        if let (Value::Object(vo), Value::Object(dobj)) = (v, def) {
+            // Fields missing from the saved object (a struct without `serde(default)`, e.g.
+            // `GearboxTuning` after a field was added) are filled from `fallback` quietly:
+            // not unreadable data, so they are not reported and cause no backup.
+            let mut inner = dobj.clone();
+            inner.extend(vo.clone());
+            let mut inner_reset = Vec::new();
+            for (ik, iv) in vo {
+                let idef = dobj.get(ik);
+                if idef == Some(iv) {
+                    continue;
+                }
+                let mut cand = dobj.clone();
+                cand.insert(ik.clone(), iv.clone());
+                if !probe(k, &Value::Object(cand)) {
+                    match idef {
+                        Some(d) => { inner.insert(ik.clone(), d.clone()); }
+                        None => { inner.remove(ik); }
+                    }
+                    inner_reset.push(format!("{k}.{ik}"));
+                }
+            }
+            if probe(k, &Value::Object(inner.clone())) {
+                fixed.insert(k.clone(), Value::Object(inner));
+                reset.extend(inner_reset);
+                continue;
+            }
+        }
+        fixed.insert(k.clone(), def.clone());
+        reset.push(k.clone());
+    }
+    match serde_json::from_value::<AppConfig>(Value::Object(fixed)) {
+        Ok(cfg) => (cfg, reset),
+        // Keys that only fail in combination: give up on the merge, never on the file.
+        Err(_) => (fallback.clone(), vec!["<all>".to_string()]),
+    }
+}
+
+/// Copy `path` to `<file name>.bad-<unix seconds>` next to it (`-2`, `-3`… if taken) and
+/// return the copy's path. Called before anything can overwrite a file we couldn't fully
+/// read, so the user's data survives. Backups are never deleted by the app.
+fn backup_bad_file(path: &Path) -> Option<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let mut dest = path.with_file_name(format!("{name}.bad-{ts}"));
+    for n in 2.. {
+        if !dest.exists() {
+            break;
+        }
+        dest = path.with_file_name(format!("{name}.bad-{ts}-{n}"));
+    }
+    match std::fs::copy(path, &dest) {
+        Ok(_) => {
+            eprintln!("kept the unreadable file as {}", dest.display());
+            Some(dest)
+        }
+        Err(e) => {
+            eprintln!("could not back up {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Overlay `overlay`'s keys onto `cfg`. Keys whose value can't be read keep `cfg`'s current
+/// value; the returned list names them (empty = everything applied).
+fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) -> Vec<String> {
+    normalize_raw(&mut overlay);
+    let Ok(mut base) = serde_json::to_value(&*cfg) else { return Vec::new(); };
     if let (
         serde_json::Value::Object(base_map),
         serde_json::Value::Object(over),
@@ -700,12 +1688,18 @@ fn apply_preset_overlay(cfg: &mut AppConfig, mut overlay: serde_json::Value) {
     {
         for (k, v) in over { base_map.insert(k, v); }
     }
-    if let Ok(new_cfg) = serde_json::from_value::<AppConfig>(base) {
-        *cfg = new_cfg;
-        inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
-    }
+    let (new_cfg, reset) = from_value_lenient(base, cfg);
+    let fwd = cfg.fwd.clone(); // a preset is not a fresh load: the file's trees stay
+    *cfg = new_cfg;
+    cfg.fwd = fwd;
+    inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
+    // A preset/profile replaces the whole `hotkeys` object; an older one lacks newer
+    // actions (e.g. Hide HUD), so fill them like `load()` does (respects `unbound`).
+    inject_missing_hotkeys(&mut cfg.hotkeys);
+    reset
 }
 
+#[cfg(test)] // the app applies presets through `apply_profile_file` / `import_selected`; kept for the tests
 pub fn apply_preset(cfg: &mut AppConfig, preset_json: &str) {
     if let Ok(overlay) = serde_json::from_str::<serde_json::Value>(preset_json) {
         apply_preset_overlay(cfg, overlay);
@@ -727,9 +1721,9 @@ pub const MINISETTINGS_KEYS: &[&str] = &[
     "gforce_show_labels", "gforce_show_text", "hide_widget_titles", "high_contrast_icons",
     "input_bars_full_width", "input_steer_compact",
     "inputs_filter_backfire_accel",
-    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
-    "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
-    "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_world_origin_x",
+    "max_rpm_mode", "minimap_fps_limit", "minimap_fps_limit_enabled", "minimap_look_stick", "minimap_mirror_edges", "minisettings_transparent", "modern_show_pill",
+    "minimap_layers", "minimap_north_up", "minimap_north_up_when_stopped", "minimap_px_per_m", "minimap_quality", "minimap_show_compass",
+    "minimap_smooth_rotation", "minimap_use_movement_dir", "minimap_allow_pan_zoom", "minimap_world_origin_x",
     "minimap_world_origin_z", "minimap_zoom_driving_m", "minimap_zoom_stopped_m",
     "power_curve_forced_induction", "power_curve_save_fi_state", "power_curve_step",
     "power_graph_compact", "power_graph_show_boost", "power_graph_show_grid", "shift_high_pct", "shift_low_pct", "show_speed_delta",
@@ -751,30 +1745,37 @@ const BACKFIRE_KEYS: &[&str] = &[
     "backfire_interval_rpm", "backfire_accel_time_ms", "backfire_dynamic_duration",
     "backfire_dynamic_mode", "backfire_test_mode", "backfire_disable_standstill",
     "backfire_drift_detection",
+    "backfire_limit_duration", "backfire_max_duration_ms",
 ];
 
 const DSG_KEYS: &[&str] = &[
     "dsg_enabled", "dsg_shift_rpm_pct", "dsg_upshift_speed_pct", "dsg_gearbox_mode",
-    "dsg_auto_race_mode", "dsg_tuning_street", "dsg_tuning_sport", "dsg_tuning_race",
+    "dsg_auto_race_mode", "dsg_disable_in_drift", "dsg_tuning_street", "dsg_tuning_sport", "dsg_tuning_race",
     "dsg_kickdown_cooldown_secs", "dsg_downshift_deadzone_pct", "dsg_full_throttle_pct",
     "dsg_race_gear_overlap_pct", "dsg_downshift_powerband_buffer_pct",
     "dsg_kickdown_powerband_buffer_pct", "dsg_debug", "dsg_log_shifts",
     "dsg_save_calibration", "dsg_ignore_backfire_accel",
 ];
 
-const NETWORK_KEYS: &[&str] = &["listen_port", "fps_limit", "fps_limit_enabled", "always_on_top"];
+const NETWORK_KEYS: &[&str] = &["listen_port", "fps_limit", "fps_limit_enabled", "always_on_top", "experimental_pause_detection"];
 const DISPLAY_KEYS: &[&str] = &[
     "use_mph", "use_fahrenheit", "use_bar", "theme", "top_bar_style",
     "status_bar_show_text", "language", "surface_rumble_max",
 ];
-const COOP_KEYS: &[&str] = &["coop_name", "coop_hue", "coop_buffer_ms", "coop_port", "coop_last_code"];
+const COOP_KEYS: &[&str] = &["coop_name", "coop_hue", "coop_buffer_ms", "coop_port", "coop_last_code",
+    "coop_transport", "coop_room", "coop_autoconnect"];
 const ACCEL_KEYS: &[&str] = &[
     "accel_start_kmh", "accel_end_kmh", "decel_start_kmh", "decel_end_kmh", "decel_dynamic_mode",
 ];
 
+/// HUD overlay: every Overlay-tab setting lives under the one `overlay` key.
+const OVERLAY_KEYS: &[&str] = &["overlay"];
+
 /// Keys never exported (runtime / meta). Referenced only by the partition test.
 #[allow(dead_code)]
-const EXPORT_EXCLUDE: &[&str] = &["active_profile"];
+const EXPORT_EXCLUDE: &[&str] = &[
+    "active_profile", "input_perm_dont_remind", "onboarding_done", "fh6_install_dir", "overlay_page", "map_tab_settings", "map_tab_page", "map_nav_open", "nav",
+];
 
 /// One selectable group in the export/import tree.
 pub struct KeyGroup {
@@ -789,11 +1790,13 @@ pub const KEY_GROUPS: &[KeyGroup] = &[
     KeyGroup { section: "Dashboard", name: "Mini-settings",    keys: MINISETTINGS_KEYS },
     KeyGroup { section: "Settings",  name: "Network",          keys: NETWORK_KEYS },
     KeyGroup { section: "Settings",  name: "Display",          keys: DISPLAY_KEYS },
-    KeyGroup { section: "Settings",  name: "Hotkeys & Input",  keys: &["hotkeys"] },
+    KeyGroup { section: "Settings",  name: "Hotkeys & Input",  keys: &["hotkeys", "gamepad"] },
     KeyGroup { section: "Settings",  name: "Co-Op",            keys: COOP_KEYS },
     KeyGroup { section: "Tuning",    name: "Backfire",         keys: BACKFIRE_KEYS },
     KeyGroup { section: "Tuning",    name: "Automatic Gearbox", keys: DSG_KEYS },
     KeyGroup { section: "Tuning",    name: "Acceleration Tests", keys: ACCEL_KEYS },
+    // Appended last so existing group indices (UI selection vectors) don't shift.
+    KeyGroup { section: "Overlay",   name: "HUD Overlay",      keys: OVERLAY_KEYS },
 ];
 
 /// Keys belonging to the groups selected by index into KEY_GROUPS.
@@ -878,7 +1881,8 @@ impl AppConfig {
     pub fn dsg_active_tuning(&self) -> GearboxTuning {
         match self.dsg_gearbox_mode {
             GearboxMode::Street => self.dsg_tuning_street,
-            GearboxMode::Sport  => self.dsg_tuning_sport,
+            // Manual never shifts; any tuning will do (Sport keeps the UI sliders sane).
+            GearboxMode::Sport | GearboxMode::Manual => self.dsg_tuning_sport,
             GearboxMode::Race   => self.dsg_tuning_race,
         }
     }
@@ -887,7 +1891,7 @@ impl AppConfig {
     pub fn dsg_active_tuning_mut(&mut self) -> &mut GearboxTuning {
         match self.dsg_gearbox_mode {
             GearboxMode::Street => &mut self.dsg_tuning_street,
-            GearboxMode::Sport  => &mut self.dsg_tuning_sport,
+            GearboxMode::Sport | GearboxMode::Manual => &mut self.dsg_tuning_sport,
             GearboxMode::Race   => &mut self.dsg_tuning_race,
         }
     }
@@ -903,25 +1907,133 @@ impl AppConfig {
         }
     }
 
+    /// What the gearbox actually does this packet: `Some(mode)` = shifting with that mode,
+    /// `None` = off (Manual, or a drift event with *Disable in drift events* on). The HUD shows
+    /// `None` exactly like the gearbox switched off. The drift rule applies only when Auto Race
+    /// mode is on or Race is the selected mode. Stateless on purpose: every packet re-derives it,
+    /// so after a race / drift event it falls straight back to the selected mode.
+    pub fn dsg_resolved_mode(&self, in_race: bool, in_drift: bool) -> Option<GearboxMode> {
+        let mode = self.dsg_effective_mode(in_race);
+        let drift_rule = self.dsg_auto_race_mode || self.dsg_gearbox_mode == GearboxMode::Race;
+        if mode == GearboxMode::Manual || (self.dsg_disable_in_drift && drift_rule && in_drift) {
+            None
+        } else {
+            Some(mode)
+        }
+    }
+
     /// Tuning for the mode actually in effect (Race when auto-switched in a race).
     pub fn dsg_effective_tuning(&self, in_race: bool) -> GearboxTuning {
         match self.dsg_effective_mode(in_race) {
             GearboxMode::Street => self.dsg_tuning_street,
-            GearboxMode::Sport  => self.dsg_tuning_sport,
+            // Manual never shifts; any tuning will do (Sport keeps the UI sliders sane).
+            GearboxMode::Sport | GearboxMode::Manual => self.dsg_tuning_sport,
             GearboxMode::Race   => self.dsg_tuning_race,
         }
     }
 
     pub fn load() -> Self {
-        let default = Self::default();
         // No on-disk config yet (fresh install) → start from the embedded
         // "getting started" defaults (a real-world well-rounded config), then run
         // it through the same merge path so any newer field still fills from the
         // code default. Personal Co-Op fields (name/colour/last code) were reset
         // in the snapshot, so they use their neutral defaults. See DEFAULT_CONFIG_JSON.
-        let data = std::fs::read_to_string(Self::path())
-            .unwrap_or_else(|_| DEFAULT_CONFIG_JSON.to_string());
-        let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&data) else { return default; };
+        let path = Self::path();
+        let mut recovered = false; // the file needed any kind of repair
+        let data = match std::fs::read(&path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Not valid UTF-8: salvage everything readable (the replacement characters
+                    // only damage the strings they sit in); the file is backed up below.
+                    eprintln!("config.json is not valid UTF-8; reading it leniently");
+                    recovered = true;
+                    String::from_utf8_lossy(e.as_bytes()).into_owned()
+                }
+            },
+            Err(_) => {
+                // Exists but can't be read at all → recover from the profile mirror below.
+                recovered = path.exists();
+                if recovered { String::new() } else { DEFAULT_CONFIG_JSON.to_string() }
+            }
+        };
+        let (mut cfg, recovery) = Self::parse(&data);
+        let unusable = recovery.json_invalid || recovery.reset_keys.iter().any(|k| k == "<all>");
+        if unusable {
+            eprintln!("config.json is not usable as a whole; recovering from the profile mirror");
+        } else if !recovery.reset_keys.is_empty() {
+            eprintln!("config.json: using defaults for settings this build can't read (kept in the file): {}", recovery.reset_keys.join(", "));
+        }
+        // Unreadable *values* (typically written by a newer build) are not repaired: they stay
+        // in the file (see `merge_for_save`), so they need neither a backup nor a rewrite. A
+        // garbage `active_profile` is replaced by the guess below, that does.
+        recovered |= unusable || recovery.reset_keys.iter().any(|k| k == "active_profile");
+        // `save()` mirrors the live config into profiles/<active>.json, so when config.json is
+        // unusable the last good state is still in the active profile's file. Prefer it over
+        // defaults. The previous active profile's name comes from the broken text, else the
+        // most recently written profile. (A lone unreadable `active_profile` value only needs
+        // the name, the rest of the config is fine.)
+        if unusable || recovery.reset_keys.iter().any(|k| k == "active_profile") {
+            if let Some(name) = guess_active_profile(&data) {
+                if unusable {
+                    if let Some(c) = Self::from_profile_mirror(&name) {
+                        cfg = c;
+                    }
+                }
+                cfg.active_profile = name;
+            }
+        }
+        if cfg.active_profile.trim().is_empty() {
+            cfg.active_profile = default_profile_name();
+        }
+        // Back the originals up BEFORE anything below (or the autosave) can overwrite them:
+        // config.json, and the active profile's file, which the first `save()` rewrites from
+        // the recovered config. Saving right after (below) keeps the next start from finding
+        // the same broken file again and piling up another `.bad-` copy.
+        let mut safe_to_save = true;
+        if recovered {
+            if path.exists() {
+                safe_to_save &= backup_bad_file(&path).is_some();
+            }
+            let pp = profile_path(&cfg.active_profile);
+            if pp.exists() {
+                safe_to_save &= backup_bad_file(&pp).is_some();
+            }
+        }
+        // Seed the Profile Manager: an existing install (or fresh default) that has
+        // no snapshot for its active profile gets one written from the live config,
+        // so `profiles/` is never empty and the active profile always has a file.
+        // If a backup failed, don't write: the broken originals are all that's left.
+        if recovered {
+            if safe_to_save {
+                cfg.save();
+            }
+        } else if !profile_path(&cfg.active_profile).exists() {
+            cfg.save();
+        }
+        cfg
+    }
+
+    /// The config stored in profile `name`'s file (the mirror `save()` writes), read leniently
+    /// from possibly non-UTF-8 text. `None` if the file is missing or itself not a usable config.
+    fn from_profile_mirror(name: &str) -> Option<Self> {
+        let bytes = std::fs::read(profile_path(name)).ok()?;
+        let (cfg, rec) = Self::parse(&String::from_utf8_lossy(&bytes));
+        (!rec.json_invalid && !rec.reset_keys.iter().any(|k| k == "<all>")).then_some(cfg)
+    }
+
+    /// Pure core of [`load`](Self::load) (no IO, unit-testable): config text → config. Fills
+    /// missing keys from the code defaults, applies the migrations, and deserializes
+    /// *leniently* (see [`from_value_lenient`]): one unreadable value resets only itself.
+    fn parse(data: &str) -> (Self, ConfigRecovery) {
+        let default = Self::default();
+        let Ok(mut raw) = serde_json::from_str::<serde_json::Value>(data) else {
+            return (default, ConfigRecovery { json_invalid: true, reset_keys: Vec::new() });
+        };
+        // The migrations run on the file's own tree, which is also what the save merge keeps
+        // (see `normalize_raw`); the defaults are only filled into the copy that is parsed.
+        normalize_raw(&mut raw);
+        let mut val = raw.clone();
         // Merge: fill any missing keys (e.g. newly added fields) with their default values
         // so that adding a new config field never silently resets the entire config.
         if let Ok(def_val) = serde_json::to_value(&default) {
@@ -935,36 +2047,30 @@ impl AppConfig {
                 }
             }
         }
-        // If theme is the now-removed "Light" value, fall back to Dark gracefully
-        if let serde_json::Value::Object(ref mut map) = val {
-            if map.get("theme").and_then(|v| v.as_str()) == Some("Light") {
-                map.insert("theme".to_string(), serde_json::json!("Dark"));
-            }
-            // Migrate the old `compact_tabs` bool to the `top_bar_style` enum so an
-            // existing config keeps its look (checked → Simple, unchecked → Legacy).
-            if let Some(compact) = map.get("compact_tabs").and_then(|v| v.as_bool()) {
-                map.insert(
-                    "top_bar_style".to_string(),
-                    serde_json::json!(if compact { "Simple" } else { "Legacy" }),
-                );
-            }
-            migrate_tire_display_style(map);
-        }
-        let mut cfg: AppConfig = serde_json::from_value(val).unwrap_or(default);
+        let (mut cfg, reset_keys) = from_value_lenient(val, &default);
         // Ensure every widget kind has at least one entry in the layout.
         // New kinds added to WidgetKind won't appear in old saved configs otherwise.
         inject_missing_widget_kinds(&mut cfg.dashboard_widgets);
         inject_missing_hotkeys(&mut cfg.hotkeys);
-        // Seed the Profile Manager: an existing install (or fresh default) that has
-        // no snapshot for its active profile gets one written from the live config,
-        // so `profiles/` is never empty and the active profile always has a file.
-        if cfg.active_profile.trim().is_empty() {
-            cfg.active_profile = default_profile_name();
+        if let Ok(loaded) = serde_json::to_value(&cfg) {
+            *cfg.fwd.lock() = FwdTrees::new(raw, loaded, &reset_keys);
         }
-        if !profile_path(&cfg.active_profile).exists() {
-            cfg.save();
+        (cfg, ConfigRecovery { json_invalid: false, reset_keys })
+    }
+
+    /// What `save` writes: `(file text, tree written, tree of the live config)`. The live
+    /// config merged with what the file held that this build does not know (see
+    /// [`merge_for_save`]); with nothing to keep, plain `to_string_pretty(self)`, so the file
+    /// keeps the struct's field order (a merged tree is written key-sorted).
+    fn render_for_save(&self) -> Option<(String, serde_json::Value, serde_json::Value)> {
+        let cur = serde_json::to_value(self).ok()?;
+        let merged = self.fwd.lock().merged(&cur);
+        let text = match &merged {
+            Some(m) => serde_json::to_string_pretty(m),
+            None => serde_json::to_string_pretty(self),
         }
-        cfg
+        .ok()?;
+        Some((text, merged.unwrap_or_else(|| cur.clone()), cur))
     }
 
     pub fn save(&self) {
@@ -972,8 +2078,10 @@ impl AppConfig {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).ok();
         }
-        if let Ok(data) = serde_json::to_string_pretty(self) {
-            std::fs::write(&path, &data).ok();
+        if let Some((data, written, cur)) = self.render_for_save() {
+            if std::fs::write(&path, &data).is_ok() {
+                self.fwd.lock().committed(written, cur);
+            }
             // Continuous save: mirror the live config into the active profile file so
             // the outgoing profile is always already saved before any switch.
             let pp = profile_path(&self.active_profile);
@@ -997,11 +2105,67 @@ impl AppConfig {
     /// previously-active profile — callers that must preserve it call `save()`
     /// first (see `switch_profile`); callers deleting the active one must not.
     fn load_profile(&mut self, name: &str) {
-        if let Ok(data) = std::fs::read_to_string(profile_path(name)) {
-            apply_preset(self, &data); // full snapshot = overlay every key
-        }
+        self.apply_profile_file(&profile_path(name));
         self.active_profile = name.to_string(); // re-assert (file may store a stale name)
         self.save();
+    }
+
+    /// Overlay the profile snapshot at `path` onto the live config. A snapshot that doesn't
+    /// parse is skipped; one with unreadable values has only those values skipped (they keep
+    /// the live config's value). Either way the file is first copied to `<name>.json.bad-<ts>`
+    /// because the `save()` that follows `load_profile` rewrites it from the live config.
+    /// *Why:* a profile with one bad value used to be ignored whole and then overwritten.
+    fn apply_profile_file(&mut self, path: &Path) {
+        // A profile we can't read as text must not be silently rewritten by the `save()` that
+        // follows `load_profile`: keep a copy. Invalid UTF-8 is salvaged (lossy), not skipped.
+        let mut backed_up = false;
+        let data = match std::fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("profile {}: not valid UTF-8; reading it leniently", path.display());
+                    backup_bad_file(path);
+                    backed_up = true;
+                    String::from_utf8_lossy(e.as_bytes()).into_owned()
+                }
+            },
+            Err(_) => {
+                if path.exists() {
+                    backup_bad_file(path);
+                }
+                return;
+            }
+        };
+        // UI memory, not part of a profile
+        let (page, map_settings, map_page, nav_open) = (self.overlay_page, self.map_tab_settings, self.map_tab_page, self.map_nav_open);
+        let onboarding_done = self.onboarding_done; // machine state: a profile snapshot must not re-open the guide
+        let destination = self.nav.destination; // a trip, not a setting: a profile switch must not bring an old one back
+        let mut raw = None;
+        let reset = match serde_json::from_str::<serde_json::Value>(&data) {
+            // full snapshot = overlay every key
+            Ok(mut overlay) => {
+                normalize_raw(&mut overlay);
+                raw = Some(overlay.clone());
+                apply_preset_overlay(self, overlay)
+            }
+            Err(_) => vec!["<invalid JSON>".to_string()],
+        };
+        (self.overlay_page, self.map_tab_settings, self.map_tab_page, self.map_nav_open) = (page, map_settings, map_page, nav_open);
+        self.onboarding_done = onboarding_done;
+        self.nav.destination = destination;
+        // A profile load is a fresh load: the profile file's own trees are what the next save
+        // keeps (its unknown keys, its values this build could not read).
+        if let (Some(raw), Ok(loaded)) = (raw, serde_json::to_value(&*self)) {
+            *self.fwd.lock() = FwdTrees::new(raw, loaded, &reset);
+        }
+        if !reset.is_empty() {
+            eprintln!("profile {}: could not read: {}", path.display(), reset.join(", "));
+            // Unreadable values stay in the file; only a file that is not applied at all
+            // (invalid JSON, or values that fail in combination) is rewritten by the save.
+            if !backed_up && reset.iter().any(|k| k == "<all>" || k == "<invalid JSON>") {
+                backup_bad_file(path);
+            }
+        }
     }
 
     /// Switch to `target`: flush the current profile, then load the target's
@@ -1019,7 +2183,6 @@ impl AppConfig {
         self.active_profile = name.clone();
         #[cfg(windows)]
         {
-            self.hotkeys.gate_mode = GateMode::WindowFocus;
             self.hotkeys.input_focus_gate = true;
         }
         self.save(); // writes profiles/<name>.json from the current live settings
@@ -1055,6 +2218,42 @@ impl AppConfig {
             }
         }
     }
+}
+
+/// Best guess at the active profile of a config.json we can't parse: the first
+/// `"active_profile": "<name>"` found by a plain text scan (so it works on invalid JSON), if
+/// that profile's file exists; otherwise the most recently modified profile file.
+fn guess_active_profile(broken: &str) -> Option<String> {
+    const KEY: &str = "\"active_profile\"";
+    let mut rest = broken;
+    while let Some(i) = rest.find(KEY) {
+        rest = &rest[i + KEY.len()..];
+        let Some(after) = rest.trim_start().strip_prefix(':') else { continue };
+        let Some(lit) = after.trim_start().strip_prefix('"') else { continue };
+        // Cut at the closing quote (skipping escaped ones) and decode the literal.
+        let mut end = None;
+        let mut esc = false;
+        for (j, c) in lit.char_indices() {
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => { end = Some(j); break; }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { continue };
+        if let Ok(name) = serde_json::from_str::<String>(&format!("\"{}\"", &lit[..end])) {
+            if !name.trim().is_empty() && profile_path(&name).exists() {
+                return Some(name);
+            }
+        }
+    }
+    let mut files: Vec<_> = std::fs::read_dir(profiles_dir()).ok()?.flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    files.sort();
+    files.pop()?.1.file_stem().map(|s| s.to_string_lossy().into_owned())
 }
 
 /// Directory holding one JSON snapshot per profile.
@@ -1104,7 +2303,18 @@ fn unique_profile_name(base: &str) -> String {
 }
 
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test-thread data dir, so tests can run `load()` / `save()` / profile switching
+    /// against a temp dir in parallel without touching the real one (or each other).
+    static TEST_DATA_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 pub fn app_data_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(d) = TEST_DATA_DIR.with(|d| d.borrow().clone()) {
+        return d;
+    }
     // Test/dev override: point the whole app (config, calibrations, map cache, cloudflared)
     // at an alternate dir so a throwaway config can't clobber the real one.
     if let Some(dir) = std::env::var_os("FORZA_DATA_DIR") {
@@ -1115,9 +2325,143 @@ pub fn app_data_dir() -> PathBuf {
         .join("ForzaTelemetryV3")
 }
 
+/// Change-triggered autosave. The UI edits `AppConfig` fields in place (text boxes, sliders,
+/// the Detect button) and most of those edit sites never call `save()`, so without this a
+/// setting only reached disk on a handful of explicit actions or a graceful exit.
+///
+/// `due` is polled once per frame; at most once per `INTERVAL` it compares the config's
+/// compact JSON with the last one written and says whether a `save()` is needed. Comparing
+/// content (instead of a dirty flag set at every edit site) also covers edits made in code
+/// paths that were never wired to a flag. It is a pure decision (no IO) so it is unit-testable.
+pub struct AutoSave {
+    saved: String,
+    last_check: std::time::Instant,
+}
+
+impl AutoSave {
+    /// Longest a changed setting waits before it is written (typing saves at most this often).
+    pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// `cfg` is the config as just loaded, so the first poll doesn't write needlessly.
+    pub fn new(cfg: &AppConfig, now: std::time::Instant) -> Self {
+        Self { saved: serde_json::to_string(cfg).unwrap_or_default(), last_check: now }
+    }
+
+    /// `Some(remaining)` while a check is being held back by the interval: the caller must
+    /// schedule another frame that far ahead (egui is reactive, so with no further input the
+    /// held-back edit would otherwise never be looked at). `None` right when a real check is
+    /// due, so a quiet app wakes at most once after its last frame, not in a 1 Hz loop.
+    /// Call before `due`.
+    pub fn recheck_in(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        Self::INTERVAL.checked_sub(now.duration_since(self.last_check)).filter(|d| !d.is_zero())
+    }
+
+    /// True when `cfg` differs from what was last written and `INTERVAL` has passed since the
+    /// last check; the caller must then `cfg.save()` (the new state is recorded here).
+    pub fn due(&mut self, cfg: &AppConfig, now: std::time::Instant) -> bool {
+        if now.duration_since(self.last_check) < Self::INTERVAL {
+            return false;
+        }
+        self.last_check = now;
+        let Ok(cur) = serde_json::to_string(cfg) else { return false };
+        if cur == self.saved {
+            return false;
+        }
+        self.saved = cur;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn circuit_color_migrates_old_default_only() {
+        let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"circuit_color":"#38bdf8"}},"overlay":{"map_layers":{"race_lines":{"circuit_color":"#123456"}}}}"##);
+        assert_eq!(c.minimap_layers.race_lines.color, crate::maprender::cfg::Rgb::hex(0xf97316));
+        assert_eq!(c.overlay.map_layers.race_lines.color, crate::maprender::cfg::Rgb::hex(0x123456));
+    }
+
+    /// D88: one race colour. The old `circuit_color` is read as `color`, the old `sprint_color` is
+    /// ignored (also when both are set), a `color` already there wins, and a new-style `color` of
+    /// #38bdf8 is the user's own choice (not migrated).
+    #[test]
+    fn one_race_colour_reads_old_configs() {
+        use crate::maprender::cfg::Rgb;
+        let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"circuit_color":"#38bdf8","sprint_color":"#111111"}},"overlay":{"map_layers":{"race_lines":{"sprint_color":"#222222"}}}}"##);
+        assert_eq!(c.minimap_layers.race_lines.color, Rgb::hex(0xf97316), "old default blue -> orange, sprint colour dropped");
+        assert_eq!(c.overlay.map_layers.race_lines.color, Rgb::hex(0xf97316), "a sprint-only config: the default");
+        let (c, _) = AppConfig::parse(r##"{"minimap_layers":{"race_lines":{"color":"#38bdf8","circuit_color":"#123456"}}}"##);
+        assert_eq!(c.minimap_layers.race_lines.color, Rgb::hex(0x38bdf8));
+    }
+
+    #[test]
+    fn dsg_resolved_mode_manual_race_and_drift() {
+        use super::GearboxMode::*;
+        let mut c = AppConfig { dsg_auto_race_mode: true, dsg_disable_in_drift: false, ..Default::default() };
+        // Manual: off in free roam, Race in a race (auto-race), back to off afterwards.
+        c.dsg_gearbox_mode = Manual;
+        assert_eq!(c.dsg_resolved_mode(false, false), None);
+        assert_eq!(c.dsg_resolved_mode(true, false), Some(Race));
+        assert_eq!(c.dsg_resolved_mode(false, false), None);
+        c.dsg_auto_race_mode = false;
+        assert_eq!(c.dsg_resolved_mode(true, false), None);
+        // Drift rule: needs the flag, and auto-race on or Race selected.
+        c.dsg_gearbox_mode = Sport;
+        c.dsg_disable_in_drift = true;
+        assert_eq!(c.dsg_resolved_mode(false, true), Some(Sport)); // neither auto-race nor Race
+        c.dsg_auto_race_mode = true;
+        assert_eq!(c.dsg_resolved_mode(false, true), None);
+        assert_eq!(c.dsg_resolved_mode(false, false), Some(Sport));
+        c.dsg_auto_race_mode = false;
+        c.dsg_gearbox_mode = Race;
+        assert_eq!(c.dsg_resolved_mode(false, true), None);
+        c.dsg_disable_in_drift = false;
+        assert_eq!(c.dsg_resolved_mode(false, true), Some(Race));
+    }
+
+    #[test]
+    fn gearbox_mode_serialization_is_by_name() {
+        assert_eq!(serde_json::to_string(&GearboxMode::Sport).unwrap(), "\"Sport\"");
+        assert_eq!(serde_json::from_str::<GearboxMode>("\"Race\"").unwrap(), GearboxMode::Race);
+        assert!(!AppConfig::default().dsg_disable_in_drift);
+    }
+
     use super::*;
+
+    /// A config saved while the Overlay tab's Minimap / Dashboard map page was selected (those
+    /// pages moved to the Map tab, D67) still loads, on General.
+    #[test]
+    fn old_overlay_page_values_load_as_general() {
+        let p: OverlayPage = serde_json::from_str("\"dashboard_map\"").unwrap();
+        assert_eq!(p, OverlayPage::General);
+        // The Minimap page is back (D75), so a saved `minimap` selects it.
+        let p: OverlayPage = serde_json::from_str("\"minimap\"").unwrap();
+        assert_eq!(p, OverlayPage::Minimap);
+        let p: OverlayPage = serde_json::from_str("\"race\"").unwrap();
+        assert_eq!(p, OverlayPage::Race);
+        // Whole-config round trip with an old value in it.
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["overlay_page"] = serde_json::json!("dashboard_map");
+        let c: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(c.overlay_page, OverlayPage::General);
+    }
+
+    /// The Minimap frame (D75): the defaults are today's pill, an older `overlay` without the keys
+    /// loads them, and a saved partial frame keeps what it has.
+    #[test]
+    fn minimap_frame_defaults_are_the_pill_and_old_configs_load() {
+        let d = OverlayConfig::default();
+        assert_eq!((d.map_shape, d.map_width, d.map_height, d.map_corner_radius), (MapShape::RoundedRect, 208.0, 136.0, 22.0));
+        assert_eq!((d.map_border_width, d.map_border_color, d.map_border_opacity), (3.0, [12, 17, 27], 0.88));
+        assert_eq!((d.map_plate_color, d.map_plate_opacity), ([9, 13, 21], 0.0));
+        let o: OverlayConfig = serde_json::from_str(r#"{ "map_shape": "Circle", "map_width": 260.0 }"#).unwrap();
+        assert_eq!((o.map_shape, o.map_width, o.map_height, o.map_border_width), (MapShape::Circle, 260.0, 136.0, 3.0));
+        // Round trip.
+        let o = OverlayConfig { map_shape: MapShape::Circle, map_border_color: [1, 2, 3], map_plate_opacity: 0.4, ..Default::default() };
+        let back: OverlayConfig = serde_json::from_str(&serde_json::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back, o);
+        assert!(OverlayConfig::MAP_SIZE_RANGE.contains(&OverlayConfig::DEFAULT_MAP_W) && OverlayConfig::MAP_SIZE_RANGE.contains(&OverlayConfig::DEFAULT_MAP_H));
+    }
 
     #[test]
     fn key_groups_partition_all_keys() {
@@ -1168,6 +2512,51 @@ mod tests {
         let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("merge parse");
         assert_eq!(cfg.listen_port, 4321);       // kept from the old config
         assert_eq!(cfg.coop_port, DEFAULT_COOP_PORT_TEST); // filled from default
+        // Trystero fields added later fill from defaults too.
+        assert_eq!(cfg.coop_transport, CoopTransport::Trystero);
+        assert!(cfg.coop_room.is_empty());
+        assert!(!cfg.coop_autoconnect);
+    }
+
+    #[test]
+    fn game_match_survives_serialize_and_merge_load() {
+        // The field itself round-trips through the same merge path `load()` uses, so a lost
+        // title is a missing save, not a (de)serialization problem.
+        let mut cfg = AppConfig::default();
+        cfg.hotkeys.game_match = "steam_app_2483190".to_string();
+        let data = serde_json::to_string_pretty(&cfg).unwrap();
+        let mut val: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let (serde_json::Value::Object(saved), serde_json::Value::Object(defaults)) =
+            (&mut val, serde_json::to_value(AppConfig::default()).unwrap()) else { panic!() };
+        for (k, v) in defaults { saved.entry(k).or_insert(v); }
+        let mut back: AppConfig = serde_json::from_value(val).unwrap();
+        inject_missing_hotkeys(&mut back.hotkeys);
+        assert_eq!(back.hotkeys.game_match, "steam_app_2483190");
+    }
+
+    #[test]
+    fn autosave_flags_a_changed_setting_once_per_interval() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut cfg = AppConfig::default();
+        let mut a = AutoSave::new(&cfg, t0);
+        let tick = Duration::from_millis(100);
+        // Nothing changed: never due, however long we wait.
+        assert!(!a.due(&cfg, t0 + AutoSave::INTERVAL * 5));
+        // The Window Detection title is edited (what the Setup text box / Detect button do).
+        cfg.hotkeys.game_match = "gamescope".to_string();
+        // Polled again before the interval has elapsed: held back (cheap, no save per keystroke).
+        let t_skip = t0 + AutoSave::INTERVAL * 5 + tick;
+        assert_eq!(a.recheck_in(t_skip), Some(AutoSave::INTERVAL - tick), "held back: asks for a re-check");
+        assert!(!a.due(&cfg, t_skip));
+        // Due once the interval has passed since the last check, exactly once.
+        let t1 = t0 + AutoSave::INTERVAL * 6 + tick;
+        assert_eq!(a.recheck_in(t1), None, "real check is due: no extra wake-up requested");
+        assert!(a.due(&cfg, t1));
+        assert!(!a.due(&cfg, t1 + AutoSave::INTERVAL * 2), "unchanged config is not rewritten");
+        // A further edit is picked up again.
+        cfg.hotkeys.game_match = "Forza".to_string();
+        assert!(a.due(&cfg, t1 + AutoSave::INTERVAL * 4));
     }
 
     #[test]
@@ -1225,6 +2614,34 @@ mod tests {
         assert_eq!(cfg.coop_name, "Player");
         assert_eq!(cfg.coop_hue, 205.0);
         assert!(cfg.coop_last_code.is_empty());
+    }
+
+    #[test]
+    fn focus_method_for_desktop_mapping() {
+        use FocusMethod::*;
+        let f = focus_method_for_desktop;
+        assert_eq!(f(Some("GNOME"), Some("x11"), true), Hyprland); // signature wins
+        assert_eq!(f(Some("Hyprland"), Some("wayland"), false), Hyprland);
+        assert_eq!(f(Some("hyprland"), None, false), Hyprland);
+        assert_eq!(f(Some("GNOME"), Some("wayland"), false), Gnome);
+        assert_eq!(f(Some("ubuntu:GNOME"), Some("wayland"), false), Gnome);
+        assert_eq!(f(Some("ubuntu:GNOME"), Some("x11"), false), Gnome);
+        assert_eq!(f(Some("KDE"), Some("x11"), false), X11);
+        assert_eq!(f(Some("KDE"), Some("wayland"), false), Hyprland);
+        assert_eq!(f(None, Some("x11"), false), X11);
+        assert_eq!(f(Some(""), Some(""), false), Hyprland);
+        assert_eq!(f(None, None, false), Hyprland);
+    }
+
+    #[test]
+    fn saved_focus_method_is_kept_regardless_of_env() {
+        for (name, m) in [("X11", FocusMethod::X11), ("Hyprland", FocusMethod::Hyprland), ("Gnome", FocusMethod::Gnome)] {
+            let hk: HotkeyConfig = serde_json::from_str(&format!("{{\"focus_method\":\"{name}\"}}")).unwrap();
+            assert_eq!(hk.focus_method, m);
+        }
+        // Field missing from a saved hotkeys object: serde default (Hyprland), not detection.
+        let hk: HotkeyConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(hk.focus_method, FocusMethod::Hyprland);
     }
 
     #[test]
@@ -1327,6 +2744,153 @@ mod tests {
         }
     }
 
+    /// A non-default overlay config (every group touched) for the round-trip tests.
+    fn custom_overlay() -> OverlayConfig {
+        OverlayConfig {
+            enabled: true,
+            scale: 1.25,
+            focus_only: true,
+            monitor_method: MonitorMethod::Custom,
+            monitor_cmd: "echo DP-2".into(),
+            monitor_fixed: "HDMI-A-1".into(),
+            drift_on: false,
+            cluster_cell: HudCell::TopRight,
+            race_cell: HudCell::MiddleLeft,
+            cluster_style: ClusterStyle::Halo,
+            rpm_label: true,
+            redline_frac: 0.8,
+            zoom_driving_m: 400.0,
+            coop_teammates: false,
+            speed_hold: true,
+            drift_style: DriftStyle::Total,
+            drift_chip_secs: 3.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn overlay_config_and_hide_hud_binding_roundtrip_and_travel_with_profiles() {
+        use crate::keymap::{HotKey, HotkeyBinding, Mods};
+        let mut src = AppConfig { overlay: custom_overlay(), ..Default::default() };
+        src.hotkeys.bind(
+            HotkeyAction::HideHud,
+            HotkeyBinding { mods: Mods { alt: true, ..Default::default() }, key: HotKey::J },
+        );
+
+        // serde round-trip.
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&src).unwrap()).unwrap();
+        assert_eq!(back.overlay, src.overlay);
+        assert_eq!(back.hotkeys, src.hotkeys);
+
+        // A profile snapshot is a full config applied as a preset (`load_profile`).
+        let mut dst = AppConfig::default();
+        apply_preset(&mut dst, &serde_json::to_string_pretty(&src).unwrap());
+        assert_eq!(dst.overlay, src.overlay);
+        assert_eq!(dst.hotkeys.bindings[&HotkeyAction::HideHud].key, HotKey::J);
+
+        // Selective export/import: the Overlay group carries exactly the overlay.
+        let gi = KEY_GROUPS.iter().position(|g| g.keys == OVERLAY_KEYS).expect("overlay group");
+        let mut sel = vec![false; KEY_GROUPS.len()];
+        sel[gi] = true;
+        let json = export_selected(&src, &sel);
+        let mut dst = AppConfig::default();
+        assert!(import_selected(&mut dst, &json, &sel));
+        assert_eq!(dst.overlay, src.overlay);
+        assert_eq!(dst.grid_cols, AppConfig::default().grid_cols, "only the overlay applied");
+        assert!(groups_present(&json)[gi]);
+    }
+
+    #[test]
+    fn old_config_without_overlay_key_deserializes() {
+        // Straight serde (no merge): the `overlay` key missing entirely.
+        let serde_json::Value::Object(mut m) = serde_json::to_value(AppConfig::default()).unwrap()
+        else { panic!() };
+        m.remove("overlay");
+        let cfg: AppConfig = serde_json::from_value(serde_json::Value::Object(m)).expect("parse");
+        assert_eq!(cfg.overlay, OverlayConfig::default());
+        assert!(cfg.overlay.enabled, "overlay is on by default");
+        // A partial overlay object (older build, fewer fields) fills the rest.
+        let o: OverlayConfig = serde_json::from_str(r#"{ "enabled": true }"#).unwrap();
+        assert_eq!(o, OverlayConfig { enabled: true, ..Default::default() });
+        // Task 25 fields missing (pre-0.3 overlay object): the new drift style, speed live.
+        let o: OverlayConfig = serde_json::from_str(r#"{ "enabled": true, "drift_bar": false, "rpm_label": true }"#).unwrap();
+        assert_eq!(o.drift_style, DriftStyle::PositionGain);
+        assert!(!o.speed_hold);
+        assert!(!o.drift_bar && o.rpm_label);
+        let o: OverlayConfig = serde_json::from_str(r#"{ "drift_style": "Total", "speed_hold": true }"#).unwrap();
+        assert_eq!((o.drift_style, o.speed_hold), (DriftStyle::Total, true));
+        // An old hotkeys object without `unbound`/HideHud gets J injected on load.
+        let mut hk: HotkeyConfig =
+            serde_json::from_str(r#"{ "bindings": { "ToggleGearbox": { "mods": { "ctrl": false, "alt": false, "shift": false, "sup": false }, "key": "G" } } }"#)
+                .unwrap();
+        inject_missing_hotkeys(&mut hk);
+        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::J);
+        assert_eq!(hk.bindings[&HotkeyAction::ClearGearMap].key, crate::keymap::HotKey::F);
+    }
+
+    #[test]
+    fn tuned_defaults_apply_to_fresh_and_partial_configs() {
+        use crate::gamepad::PadControl;
+        let c = AppConfig::default();
+        assert!(c.minimap_look_stick && c.backfire_limit_duration && c.experimental_pause_detection);
+        assert_eq!(c.backfire_max_duration_ms, 1500);
+        assert_eq!(c.gamepad.bindings, HashMap::from([(HotkeyAction::ToggleGearbox, PadControl::L3)]));
+        assert_eq!((c.gamepad.stick_deadzone, c.gamepad.trigger_deadzone), (0.27, 0.10));
+        let o = OverlayConfig::default();
+        assert!(o.enabled && o.focus_only && o.rpm_label && o.coop_use_dashboard && !o.notif_gearbox_mode);
+        assert_eq!((o.race_cell, o.notif_cell), (HudCell::BottomRight, HudCell::Center));
+        assert_eq!((o.margin_px, o.zoom_driving_m), (4.0, 100.0)); // D107: the HUD map's 100 m radius (500 m stopped)
+        // An older overlay / gamepad object with only some keys: the rest are the tuned defaults.
+        let o: OverlayConfig = serde_json::from_str(r#"{ "scale": 1.5 }"#).unwrap();
+        assert_eq!((o.scale, o.margin_px, o.race_cell), (1.5, 4.0, HudCell::BottomRight));
+        let g: GamepadConfig = serde_json::from_str(r#"{ "enabled": false }"#).unwrap();
+        assert!(!g.enabled && g.bindings.contains_key(&HotkeyAction::ToggleGearbox));
+        // reset_layout returns to the tuned layout too.
+        let mut o = OverlayConfig { margin_px: 90.0, race_cell: HudCell::TopLeft, ..Default::default() };
+        o.reset_layout();
+        assert_eq!((o.margin_px, o.race_cell), (4.0, HudCell::BottomRight));
+    }
+
+    #[test]
+    fn hide_hud_defaults_to_global_j_and_unbinding_survives_reload() {
+        let mut hk = HotkeyConfig::default();
+        assert_eq!(hk.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::J);
+        assert_eq!(HotkeyAction::HideHud.scope(), HotkeyScope::Global);
+        hk.unbind(HotkeyAction::HideHud);
+        let mut back: HotkeyConfig = serde_json::from_str(&serde_json::to_string(&hk).unwrap()).unwrap();
+        inject_missing_hotkeys(&mut back);
+        assert!(!back.bindings.contains_key(&HotkeyAction::HideHud), "unbind re-injected");
+        // Rebinding clears the unbind.
+        back.bind(HotkeyAction::HideHud, HotkeyConfig::default().bindings[&HotkeyAction::HideHud]);
+        assert!(back.unbound.is_empty());
+    }
+
+    #[test]
+    fn preset_with_old_hotkeys_gets_hide_hud_injected_unless_unbound() {
+        let g = r#"{ "mods": { "ctrl": false, "alt": false, "shift": false, "sup": false }, "key": "G" }"#;
+        // Older profile: hotkeys without HideHud and without `unbound`.
+        let mut cfg = AppConfig::default();
+        apply_preset(&mut cfg, &format!(r#"{{ "hotkeys": {{ "bindings": {{ "ToggleGearbox": {g} }} }} }}"#));
+        assert_eq!(cfg.hotkeys.bindings[&HotkeyAction::HideHud].key, crate::keymap::HotKey::J);
+        // A profile that deliberately unbound HideHud keeps it unbound.
+        let mut cfg = AppConfig::default();
+        apply_preset(
+            &mut cfg,
+            &format!(r#"{{ "hotkeys": {{ "bindings": {{ "ToggleGearbox": {g} }}, "unbound": ["HideHud"] }} }}"#),
+        );
+        assert!(!cfg.hotkeys.bindings.contains_key(&HotkeyAction::HideHud));
+        assert_eq!(cfg.hotkeys.unbound, vec![HotkeyAction::HideHud]);
+    }
+
+    #[test]
+    fn hud_cell_row_col_roundtrip() {
+        for (i, c) in HudCell::ALL.iter().copied().enumerate() {
+            assert_eq!((c.row(), c.col()), (i / 3, i % 3));
+            assert_eq!(HudCell::from_row_col(c.row(), c.col()), Some(c));
+        }
+        assert_eq!(HudCell::from_row_col(3, 0), None);
+    }
+
     #[test]
     fn injected_widgets_appended_not_duplicated() {
         let mut ws = default_widget_layout();
@@ -1341,5 +2905,954 @@ mod tests {
         inject_missing_widget_kinds(&mut ws);
         assert_eq!(ws.len(), after_once, "idempotent");
         assert!(ws.len() > before);
+    }
+
+    #[test]
+    fn effective_overlay_config_follows_dashboard_per_group() {
+        let app = AppConfig {
+            minimap_show_compass: false,
+            minimap_zoom_driving_m: 777.0,
+            minimap_zoom_stopped_m: 4000.0,
+            minimap_north_up: true,
+            minimap_smooth_rotation: false,
+            minimap_use_movement_dir: true,
+            minimap_look_stick: true,
+            minimap_mirror_edges: false,
+            minimap_layers: crate::maprender::cfg::MapLayerConfig {
+                image: crate::maprender::cfg::ImageCfg { opacity: 0.25, ..Default::default() },
+                ..Default::default()
+            },
+            coop_trail_fade_secs: 33.0,
+            coop_trail_fade_m: 1234.0,
+            ..Default::default()
+        };
+        let own = OverlayConfig {
+            map_use_dashboard: false,
+            coop_use_dashboard: false,
+            compass: true,
+            zoom_driving_m: 100.0,
+            coop_teammates: false,
+            coop_trails: false,
+            coop_trail_fade_secs: 5.0,
+            ..Default::default()
+        };
+        // Both off: the HUD's own values, untouched.
+        assert_eq!(own.effective(&app), own);
+
+        // Map group only: map fields come from the Dashboard, co-op fields stay the HUD's.
+        let e = OverlayConfig { map_use_dashboard: true, ..own.clone() }.effective(&app);
+        assert!(!e.compass && e.map_north_up && !e.map_smooth_rotation && e.map_use_movement_dir);
+        assert!(e.map_look_stick && !e.map_mirror_edges);
+        assert_eq!((e.zoom_driving_m, e.zoom_stopped_m), (777.0, 4000.0));
+        assert_eq!(e.map_layers, app.minimap_layers); // the layers follow the Dashboard's too
+        assert!(!e.coop_teammates && !e.coop_trails && e.coop_trail_fade_secs == 5.0);
+
+        // Co-op group only: fade comes from the Dashboard, teammates/trails/waypoints on, the
+        // map fields stay the HUD's.
+        let e = OverlayConfig { coop_use_dashboard: true, ..own.clone() }.effective(&app);
+        assert!(e.coop_teammates && e.coop_trails && e.coop_waypoints);
+        assert_eq!((e.coop_trail_fade_secs, e.coop_trail_fade_m), (33.0, 1234.0));
+        assert!(e.compass && e.zoom_driving_m == 100.0 && !e.map_north_up);
+        assert_eq!(e.map_layers, own.map_layers);
+    }
+
+    /// D62: the Dashboard map starts north-up, without compass, 5 km radius, satellite at full
+    /// strength with layers on; the HUD starts dimmed and tilted. Fresh installs get the
+    /// first four from the embedded default config, a code default covers the rest.
+    #[test]
+    fn map_defaults_follow_the_demo_export() {
+        use crate::maprender::cfg::{MapLayerConfig, RaceLineMode};
+        let mut val: serde_json::Value = serde_json::from_str(DEFAULT_CONFIG_JSON).unwrap();
+        if let (serde_json::Value::Object(m), serde_json::Value::Object(d)) = (&mut val, serde_json::to_value(AppConfig::default()).unwrap()) {
+            for (k, v) in d {
+                m.entry(k).or_insert(v);
+            }
+        }
+        let c: AppConfig = serde_json::from_value(val).unwrap();
+        assert_eq!((c.minimap_zoom_driving_m, c.minimap_zoom_stopped_m), (500.0, 6000.0)); // D107
+        assert_eq!((c.minimap_fps_limit, c.minimap_fps_limit_enabled), (120.0, false)); // D107
+        assert!(c.minimap_north_up_when_stopped && c.minimap_look_stick && c.minimap_smooth_rotation && c.minimap_use_movement_dir && c.minimap_mirror_edges);
+        assert!(c.minimap_north_up && !c.minimap_show_compass);
+        assert_eq!(c.minimap_layers, MapLayerConfig::dashboard());
+        // D107: the Dashboard map starts in 3D.
+        assert!(c.minimap_layers.roads.on && c.minimap_layers.pois.on && c.minimap_layers.tilt.on && c.minimap_layers.tilt.relief.on);
+        assert_eq!(c.minimap_layers.race_lines.mode, RaceLineMode::Current);
+        // The HUD minimap (D62): 500 m radius (D71), heading-up, no plate, the dimmed satellite at
+        // 50 / 50 / 50 and tilted at 55 deg with the car 85 % down, perspective 200 px at the
+        // pill's height. From the embedded default and from the code default alike.
+        for o in [&c.overlay, &OverlayConfig::default()] {
+            assert_eq!((o.zoom_driving_m, o.zoom_stopped_m, o.map_north_up, o.map_plate_opacity), (100.0, 500.0, false, 0.0)); // D107
+            assert_eq!(o.map_layers, MapLayerConfig::hud());
+            let (i, t) = (&o.map_layers.image, &o.map_layers.tilt);
+            assert_eq!((i.opacity, i.brightness, i.saturation), (1.0, 0.5, 0.5)); // D71
+            assert!(t.on && t.angle_deg == 40.0 && t.perspective_px == 200.0 && t.car_y == 0.85 && t.taper);
+            assert_eq!(o.map_layers.pois.size_px, 32.0);
+            assert_eq!((o.map_layers.race_lines.mode, o.map_layers.race_lines.width_px), (RaceLineMode::Current, 4.0));
+        }
+        assert!(c.overlay.compass);
+        // A saved overlay keeps its own values; keys it lacks (an older file) take the new defaults.
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["overlay"] = serde_json::json!({ "zoom_driving_m": 1500.0, "map_north_up": true, "map_plate_opacity": 0.4, "map_layers": { "tilt": { "on": false }, "pois": { "size_px": 20.0 } } });
+        let saved: AppConfig = serde_json::from_value(v).unwrap();
+        let so = &saved.overlay;
+        assert_eq!((so.zoom_driving_m, so.map_north_up, so.map_plate_opacity), (1500.0, true, 0.4));
+        assert!(!so.map_layers.tilt.on && so.map_layers.tilt.angle_deg == 55.0 && so.map_layers.pois.size_px == 20.0);
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["overlay"] = serde_json::json!({ "zoom_driving_m": 500.0 }); // saved before the plate / layers existed
+        let old: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!((old.overlay.zoom_driving_m, old.overlay.map_plate_opacity), (500.0, 0.0));
+        assert_eq!(old.overlay.map_layers, MapLayerConfig::hud());
+        // The layers travel with the mini-settings group (preset export / import).
+        assert!(MINISETTINGS_KEYS.contains(&"minimap_layers"));
+        // A saved Dashboard setting is not touched by the new code defaults (the file wins).
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["minimap_zoom_driving_m"] = 1500.into();
+        v["minimap_north_up"] = false.into();
+        let old: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(old.minimap_zoom_driving_m, 1500.0);
+        assert!(!old.minimap_north_up);
+    }
+}
+
+/// Loading must never lose data: one unreadable value resets only itself, and the original
+/// file is copied to `*.bad-<ts>` before anything can overwrite it. All file IO here uses a
+/// private temp dir (never `app_data_dir()`).
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("forza-cfg-test-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn bad_files(dir: &Path, stem: &str) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{stem}.bad-")))
+            .collect()
+    }
+
+    /// A config JSON with a few non-default values, as a mutable object.
+    fn saved_json() -> serde_json::Map<String, Value> {
+        let mut cfg = AppConfig::default();
+        cfg.grid_cols = 33;
+        cfg.listen_port = 4242;
+        cfg.minimap_layers.roads.on = !cfg.minimap_layers.roads.on;
+        let Value::Object(m) = serde_json::to_value(&cfg).unwrap() else { panic!() };
+        m
+    }
+
+    #[test]
+    fn valid_config_resets_nothing() {
+        let (cfg, rec) = AppConfig::parse(&Value::Object(saved_json()).to_string());
+        assert!(!rec.json_invalid);
+        assert!(rec.reset_keys.is_empty(), "{:?}", rec.reset_keys);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn one_bad_enum_resets_only_that_key() {
+        let def = AppConfig::default();
+        let mut m = saved_json();
+        m.insert("top_bar_style".into(), json!("NoSuchStyle"));
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert!(!rec.json_invalid);
+        assert_eq!(rec.reset_keys, vec!["top_bar_style".to_string()]);
+        assert!(cfg.top_bar_style == def.top_bar_style, "bad key falls back to its default");
+        assert_eq!(cfg.grid_cols, 33, "every other setting survives");
+        assert_eq!(cfg.listen_port, 4242);
+        assert_ne!(cfg.minimap_layers.roads.on, def.minimap_layers.roads.on);
+    }
+
+    #[test]
+    fn wrong_type_resets_only_that_key() {
+        let mut m = saved_json();
+        m.insert("listen_port".into(), json!(true)); // bool where a number is expected
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys, vec!["listen_port".to_string()]);
+        assert_eq!(cfg.listen_port, AppConfig::default().listen_port);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn several_bad_keys_all_reset_the_rest_kept() {
+        let mut m = saved_json();
+        m.insert("top_bar_style".into(), json!("NoSuchStyle"));
+        m.insert("listen_port".into(), json!("x"));
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys.len(), 2);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn nested_bad_value_resets_only_the_inner_field() {
+        let def = AppConfig::default();
+        let mut m = saved_json();
+        // `race_lines.mode` is lowercase ("off"); "Off" is the bug-report case.
+        let Some(Value::Object(layers)) = m.get_mut("minimap_layers") else { panic!() };
+        let Some(Value::Object(race)) = layers.get_mut("race_lines") else { panic!() };
+        race.insert("mode".into(), json!("Off"));
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys, vec!["minimap_layers.race_lines".to_string()]);
+        assert_eq!(cfg.minimap_layers.race_lines, def.minimap_layers.race_lines);
+        assert_ne!(cfg.minimap_layers.roads.on, def.minimap_layers.roads.on, "sibling field of the group kept");
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    #[test]
+    fn invalid_json_gives_defaults_and_is_flagged() {
+        let (cfg, rec) = AppConfig::parse("{ this is not json");
+        assert!(rec.json_invalid);
+        assert_eq!(cfg.grid_cols, AppConfig::default().grid_cols);
+    }
+
+    #[test]
+    fn backup_copies_original_and_never_overwrites_an_earlier_backup() {
+        let dir = temp_dir("backup");
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ broken").unwrap();
+        let b1 = backup_bad_file(&path).expect("backup written");
+        let b2 = backup_bad_file(&path).expect("second backup in the same second");
+        assert_ne!(b1, b2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ broken", "original untouched");
+        assert_eq!(std::fs::read_to_string(&b1).unwrap(), "{ broken");
+        assert_eq!(bad_files(&dir, "config.json").len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_with_one_unreadable_value_applies_the_rest_and_keeps_it_in_the_file() {
+        let dir = temp_dir("profile");
+        let path = dir.join("Racing.json");
+        let mut m = saved_json();
+        m.insert("top_bar_style".into(), json!("NoSuchStyle"));
+        let text = Value::Object(m).to_string();
+        std::fs::write(&path, &text).unwrap();
+
+        let mut cfg = AppConfig::default();
+        let before = cfg.top_bar_style;
+        cfg.apply_profile_file(&path);
+        assert_eq!(cfg.grid_cols, 33, "good values applied");
+        assert!(cfg.top_bar_style == before, "bad value keeps the live config's");
+        // The value is not repaired but kept: the save that follows a profile load writes it back
+        // (forward compatibility), so there is nothing to back up.
+        assert!(bad_files(&dir, "Racing.json").is_empty());
+        let written = cfg.render_for_save().unwrap().1;
+        assert_eq!(written["top_bar_style"], "NoSuchStyle");
+        assert_eq!(written["grid_cols"], 33);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_with_invalid_json_is_skipped_and_backed_up_and_a_good_one_is_not() {
+        let dir = temp_dir("profile-bad");
+        let bad = dir.join("Broken.json");
+        std::fs::write(&bad, "nope").unwrap();
+        let mut cfg = AppConfig::default();
+        cfg.grid_cols = 21;
+        cfg.apply_profile_file(&bad);
+        assert_eq!(cfg.grid_cols, 21, "live config untouched");
+        assert_eq!(bad_files(&dir, "Broken.json").len(), 1);
+
+        let good = dir.join("Good.json");
+        std::fs::write(&good, Value::Object(saved_json()).to_string()).unwrap();
+        cfg.apply_profile_file(&good);
+        assert_eq!(cfg.grid_cols, 33);
+        assert!(bad_files(&dir, "Good.json").is_empty(), "a clean profile makes no backup");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn car_calibrations_bad_entry_loses_only_itself() {
+        let good = json!({ "gear_redline_speeds": [1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0], "max_rpm": 7000.0 });
+        let text = json!({ "100": good, "200": { "max_rpm": "fast" }, "abc": good }).to_string();
+        let (map, lossy) = parse_car_calibrations(&text);
+        assert!(lossy);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&100].max_rpm, 7000.0);
+        let (map, lossy) = parse_car_calibrations(&json!({ "100": good }).to_string());
+        assert!(!lossy && map.len() == 1);
+        let (map, lossy) = parse_car_calibrations("garbage");
+        assert!(lossy && map.is_empty());
+    }
+
+    // ── load() against a temp data dir (thread-local override of `app_data_dir`) ──────────
+
+    /// Point `app_data_dir()` at a fresh temp dir for this test thread.
+    fn use_data_dir(tag: &str) -> PathBuf {
+        let d = temp_dir(tag);
+        TEST_DATA_DIR.with(|c| *c.borrow_mut() = Some(d.clone()));
+        std::fs::create_dir_all(profiles_dir()).unwrap();
+        d
+    }
+
+    /// A full config text for profile `name` with a recognisable `grid_cols`.
+    fn profile_text(name: &str, cols: usize) -> String {
+        let mut cfg = AppConfig::default();
+        cfg.active_profile = name.to_string();
+        cfg.grid_cols = cols;
+        serde_json::to_string_pretty(&cfg).unwrap()
+    }
+
+    /// Number of `.bad-` files in the data dir and its `profiles/` folder.
+    fn count_bad(dir: &Path) -> usize {
+        let n = |d: &Path| {
+            std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".bad-")).count()
+        };
+        n(dir) + n(&dir.join("profiles"))
+    }
+
+    /// Replace the middle byte of `needle` in `bytes` by 0xff (invalid UTF-8).
+    fn corrupt_utf8(bytes: &mut [u8], needle: &[u8]) {
+        let i = bytes.windows(needle.len()).position(|w| w == needle).unwrap();
+        bytes[i + 1] = 0xff;
+    }
+
+    #[test]
+    fn invalid_config_recovers_the_active_profile_and_loses_no_profile() {
+        let dir = use_data_dir("recover");
+        let racing = profile_text("Racing", 17);
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::fs::write(profile_path("Racing"), &racing).unwrap();
+        // Broken JSON that still names the active profile.
+        std::fs::write(AppConfig::path(), "{ \"active_profile\": \"Racing\", \"grid_cols\": ").unwrap();
+
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.active_profile, "Racing");
+        assert_eq!(cfg.grid_cols, 17, "settings recovered from the profile mirror, not defaults");
+        cfg.save(); // what the first autosave / exit does
+        assert_eq!(AppConfig::load().grid_cols, 17);
+        let default_json: Value = serde_json::from_str(&std::fs::read_to_string(profile_path("Default")).unwrap()).unwrap();
+        assert_eq!(default_json["grid_cols"], 23, "the other profile is untouched");
+        assert_eq!(bad_files(&dir, "config.json").len(), 1);
+        let racing_backups = bad_files(&dir.join("profiles"), "Racing.json");
+        assert_eq!(racing_backups.len(), 1, "active profile's file backed up before the save");
+        assert_eq!(std::fs::read_to_string(&racing_backups[0]).unwrap(), racing);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_config_without_a_name_uses_the_newest_profile_and_backs_up_whatever_it_overwrites() {
+        let dir = use_data_dir("recover-newest");
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(profile_path("Racing"), profile_text("Racing", 17)).unwrap();
+        std::fs::write(AppConfig::path(), "[1, 2]").unwrap(); // valid JSON, not an object
+
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.active_profile, "Racing");
+        assert_eq!(cfg.grid_cols, 17);
+        // Whatever the guess, nothing may be overwritten without a .bad- copy.
+        for (name, cols) in [("Default", 23), ("Racing", 17)] {
+            let live: Value = serde_json::from_str(&std::fs::read_to_string(profile_path(name)).unwrap()).unwrap();
+            let kept = live["grid_cols"] == cols
+                || !bad_files(&dir.join("profiles"), &format!("{name}.json")).is_empty();
+            assert!(kept, "{name} lost without a backup");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_config_with_no_profiles_seeds_defaults_and_backs_up_config() {
+        let dir = use_data_dir("recover-none");
+        std::fs::write(AppConfig::path(), "garbage").unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, AppConfig::default().grid_cols);
+        assert_eq!(bad_files(&dir, "config.json").len(), 1);
+        assert!(profile_path(&cfg.active_profile).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wrong_typed_active_profile_keeps_the_rest_and_backs_up_the_profile() {
+        let dir = use_data_dir("active-type");
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::fs::write(profile_path("Racing"), profile_text("Racing", 17)).unwrap();
+        let mut m = saved_json();
+        m.insert("active_profile".into(), json!(5));
+        std::fs::write(AppConfig::path(), Value::Object(m).to_string()).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, 33, "the rest of config.json is kept");
+        // Active profile guessed (newest file); its previous content is backed up before the save.
+        let backups = bad_files(&dir.join("profiles"), &format!("{}.json", cfg.active_profile));
+        assert_eq!(backups.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_that_is_not_utf8_is_backed_up_on_switch() {
+        let dir = use_data_dir("utf8-profile");
+        let mut live = AppConfig::default();
+        live.coop_name = "Rider".into();
+        let mut bytes = serde_json::to_string(&live).unwrap().into_bytes();
+        corrupt_utf8(&mut bytes, b"Rider");
+        std::fs::write(profile_path("Racing"), &bytes).unwrap();
+        let mut cfg = AppConfig::default();
+        cfg.grid_cols = 5;
+        cfg.switch_profile("Racing");
+        let backups = bad_files(&dir.join("profiles"), "Racing.json");
+        assert_eq!(backups.len(), 1, "exactly one backup");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), bytes, "backup is byte-identical");
+        assert_eq!(cfg.grid_cols, AppConfig::default().grid_cols, "rest of the profile was salvaged and applied");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn repeated_loads_after_one_recovery_make_one_backup() {
+        let dir = use_data_dir("spam");
+        std::fs::write(profile_path("Default"), profile_text("Default", 23)).unwrap();
+        std::fs::write(AppConfig::path(), "{ broken").unwrap();
+        AppConfig::load();
+        AppConfig::load();
+        AppConfig::load();
+        assert_eq!(bad_files(&dir, "config.json").len(), 1);
+        assert_eq!(count_bad(&dir), 2, "one config.json copy + one profile copy, no more");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clean_load_makes_no_backup() {
+        let dir = use_data_dir("clean");
+        std::fs::write(AppConfig::path(), Value::Object(saved_json()).to_string()).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, 33);
+        assert_eq!(count_bad(&dir), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_with_invalid_utf8_is_salvaged_and_backed_up() {
+        let dir = use_data_dir("utf8-config");
+        let mut m = saved_json();
+        m.insert("coop_name".into(), json!("Rider"));
+        let mut bytes = Value::Object(m).to_string().into_bytes();
+        corrupt_utf8(&mut bytes, b"Rider");
+        std::fs::write(AppConfig::path(), &bytes).unwrap();
+        let cfg = AppConfig::load();
+        assert_eq!(cfg.grid_cols, 33, "settings salvaged, not replaced by the embedded defaults");
+        assert_eq!(cfg.listen_port, 4242);
+        let backups = bad_files(&dir, "config.json");
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bad_widget_entries_drop_only_themselves() {
+        let mut m = saved_json();
+        let Some(Value::Array(ws)) = m.get_mut("dashboard_widgets") else { panic!() };
+        ws[1]["kind"] = json!("RemovedWidget");
+        ws[2] = json!({ "kind": "Speed", "col": "x" }); // wrong type + missing fields
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert_eq!(rec.reset_keys, vec!["dashboard_widgets[1]".to_string(), "dashboard_widgets[2]".to_string()]);
+        assert_eq!(cfg.grid_cols, 33);
+        // The other widgets keep their saved place; dropped kinds are re-added (parked) by
+        // inject_missing_widget_kinds, so every kind still exists.
+        let def = AppConfig::default().dashboard_widgets;
+        assert_eq!(cfg.dashboard_widgets[0].col, def[0].col);
+        assert_eq!(cfg.dashboard_widgets[1].col, def[3].col, "later widgets keep their saved layout");
+        for w in &def {
+            assert!(cfg.dashboard_widgets.iter().any(|c| c.kind == w.kind), "kind re-added");
+        }
+    }
+
+    #[test]
+    fn missing_nested_field_defaults_only_that_field_silently() {
+        let mut m = saved_json();
+        let Some(Value::Object(t)) = m.get_mut("dsg_tuning_race") else { panic!() };
+        t.insert("cruise_rpm_pct".into(), json!(77.0));
+        t.remove("accel_gamma");
+        let (cfg, rec) = AppConfig::parse(&Value::Object(m).to_string());
+        assert!(rec.reset_keys.is_empty(), "a missing field is not an unreadable one: {:?}", rec.reset_keys);
+        assert_eq!(cfg.dsg_tuning_race.cruise_rpm_pct, 77.0, "the saved sibling field is kept");
+        assert_eq!(cfg.dsg_tuning_race.accel_gamma, AppConfig::default().dsg_tuning_race.accel_gamma);
+        assert_eq!(cfg.grid_cols, 33);
+    }
+
+    // ── I17 / D33: first-run onboarding flag ─────────────────────────────────────────────
+
+    #[test]
+    fn fresh_install_opens_onboarding_and_done_persists() {
+        use_data_dir("onboarding-fresh");
+        let mut cfg = AppConfig::load(); // no config.json on disk: the embedded default
+        assert!(!cfg.onboarding_done, "a fresh install shows the guide");
+        cfg.save(); // an autosave while the guide is open keeps it open for the next launch
+        assert!(!AppConfig::load().onboarding_done);
+        cfg.onboarding_done = true; // finished or skipped
+        cfg.save();
+        assert!(AppConfig::load().onboarding_done, "done persists: it does not reopen");
+    }
+
+    #[test]
+    fn existing_config_without_the_flag_does_not_get_the_guide() {
+        use_data_dir("onboarding-upgrade");
+        // A config written by a version before the flag existed: every key but this one.
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("onboarding_done");
+        std::fs::write(AppConfig::path(), v.to_string()).unwrap();
+        assert!(AppConfig::load().onboarding_done);
+        // ...also a minimal one, and one whose other values are unreadable.
+        assert!(AppConfig::parse("{}").0.onboarding_done);
+        assert!(AppConfig::parse(r#"{"grid_cols":"x"}"#).0.onboarding_done);
+    }
+
+    #[test]
+    fn embedded_default_is_the_only_one_with_the_guide_open() {
+        assert!(!AppConfig::parse(DEFAULT_CONFIG_JSON).0.onboarding_done);
+        assert!(AppConfig::default().onboarding_done);
+    }
+
+    #[test]
+    fn a_profile_snapshot_never_reopens_the_guide() {
+        use_data_dir("onboarding-profile");
+        let mut snapshot = AppConfig::default();
+        snapshot.onboarding_done = false; // e.g. saved while the guide was still open
+        let path = profile_path("Other");
+        std::fs::write(&path, serde_json::to_string(&snapshot).unwrap()).unwrap();
+        let mut live = AppConfig::default();
+        live.apply_profile_file(&path);
+        assert!(live.onboarding_done);
+    }
+
+    // ── navigation (phase L) ────────────────────────────────────────────
+
+    /// An old config without `nav` loads with the defaults (D92, D107): Road / Highway on, Dirt /
+    /// Trail / Cross-country / Jumps off, fastest roads, no destination, both co-op switches on.
+    #[test]
+    fn a_config_without_nav_gets_the_navigation_defaults() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("nav");
+        let (c, reset) = AppConfig::parse(&v.to_string());
+        assert!(reset.reset_keys.is_empty(), "a missing key is not an unreadable one: {:?}", reset.reset_keys);
+        let n = c.nav;
+        assert_eq!((n.filters.road, n.filters.highway, n.filters.dirt), (true, true, false));
+        assert_eq!((n.filters.trail, n.filters.cross_country, n.filters.jumps), (false, false, false));
+        assert_eq!((n.curves, n.destination, n.share_destination, n.follow_shared), (0.0, None, true, true));
+    }
+
+    /// The destination and the filters survive a save / load; a partial `nav` keeps the defaults
+    /// of what it lacks.
+    #[test]
+    fn nav_settings_round_trip_and_partial_nav_keeps_defaults() {
+        let mut c = AppConfig::default();
+        c.nav.destination = Some([1234.5, -678.0]);
+        c.nav.curves = 0.75;
+        c.nav.filters.trail = true;
+        c.nav.filters.road = false;
+        c.nav.share_destination = false;
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.nav, c.nav);
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v["nav"] = serde_json::json!({ "curves": 0.5, "filters": { "jumps": true } });
+        let n = AppConfig::parse(&v.to_string()).0.nav;
+        assert_eq!(n.curves, 0.5);
+        assert!(n.filters.jumps && n.filters.road && n.filters.highway && n.filters.dirt && !n.filters.trail);
+        assert!(n.follow_shared && n.share_destination);
+    }
+
+    /// One unreadable value resets only itself, not the other navigation settings and not the
+    /// rest of the config.
+    #[test]
+    fn a_bad_nav_value_resets_only_that_field() {
+        let mut c = AppConfig::default();
+        c.nav.destination = Some([10.0, 20.0]);
+        c.nav.filters.trail = true;
+        c.nav.curves = 0.3;
+        c.listen_port = 4242;
+        let mut v = serde_json::to_value(&c).unwrap();
+        v["nav"]["curves"] = "lots".into();
+        let (back, reset) = AppConfig::parse(&v.to_string());
+        assert_eq!(reset.reset_keys, vec!["nav.curves".to_string()]);
+        assert_eq!(back.nav.curves, 0.0, "the bad field is back to its default");
+        assert_eq!(back.nav.destination, Some([10.0, 20.0]));
+        assert!(back.nav.filters.trail);
+        assert_eq!(back.listen_port, 4242);
+    }
+
+    /// `nav` (the destination is a personal trip) is not in any export group, and a profile switch
+    /// keeps the live destination while taking the profile's filters.
+    #[test]
+    fn nav_is_not_exported_and_a_profile_keeps_the_live_destination() {
+        assert!(EXPORT_EXCLUDE.contains(&"nav"));
+        let mut c = AppConfig::default();
+        c.nav.destination = Some([1.0, 2.0]);
+        let all = vec![true; KEY_GROUPS.len()];
+        assert!(!export_selected(&c, &all).contains("\"nav\""));
+        use_data_dir("nav-profile");
+        let mut snapshot = AppConfig::default();
+        snapshot.nav.destination = Some([9.0, 9.0]); // an old trip saved in the profile
+        snapshot.nav.filters.jumps = true;
+        let path = profile_path("Other");
+        std::fs::write(&path, serde_json::to_string(&snapshot).unwrap()).unwrap();
+        let mut live = AppConfig::default();
+        live.nav.destination = Some([1.0, 2.0]);
+        live.apply_profile_file(&path);
+        assert_eq!(live.nav.destination, Some([1.0, 2.0]), "the live trip stays");
+        assert!(live.nav.filters.jumps, "the profile's filters apply");
+    }
+}
+
+/// Forward compatibility: what an older build does not understand survives its load -> save
+/// cycle (see [`merge_for_save`]). Most tests go through `parse()` and `render_for_save()`
+/// (no IO); the file tests use a private temp dir.
+#[cfg(test)]
+mod forward_compat_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// The default config as a JSON object, to be edited into "a file a newer build wrote".
+    fn file_tree() -> Value {
+        serde_json::to_value(AppConfig::default()).unwrap()
+    }
+
+    /// The tree `save()` would write for `cfg`.
+    fn saved(cfg: &AppConfig) -> Value {
+        cfg.render_for_save().unwrap().1
+    }
+
+    /// The file text `save()` would write.
+    fn saved_text(cfg: &AppConfig) -> String {
+        cfg.render_for_save().unwrap().0
+    }
+
+    fn load(tree: &Value) -> (AppConfig, Vec<String>) {
+        let (cfg, rec) = AppConfig::parse(&tree.to_string());
+        (cfg, rec.reset_keys)
+    }
+
+    fn use_data_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("forza-fwd-test-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(d.join("profiles")).unwrap();
+        TEST_DATA_DIR.with(|c| *c.borrow_mut() = Some(d.clone()));
+        d
+    }
+
+    fn count_bad(dir: &Path) -> usize {
+        let n = |d: &Path| std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".bad-")).count();
+        n(dir) + n(&dir.join("profiles"))
+    }
+
+    #[test]
+    fn unknown_top_level_and_nested_keys_survive_load_and_save() {
+        let mut t = file_tree();
+        t["test123"] = json!({ "a": [1, 2, 3], "b": "x" });
+        t["overlay"]["test_nested"] = json!(7);
+        t["minimap_layers"]["tilt"]["future_field"] = json!("hello");
+        let (mut cfg, reset) = load(&t);
+        assert!(reset.is_empty(), "{reset:?}");
+        let s = saved(&cfg);
+        assert_eq!(s["test123"], t["test123"]);
+        assert_eq!(s["overlay"]["test_nested"], 7);
+        assert_eq!(s["minimap_layers"]["tilt"]["future_field"], "hello");
+        // A changed known value is saved next to them, and a second generation keeps them too.
+        cfg.grid_cols += 1;
+        let s = saved(&cfg);
+        assert_eq!(s["grid_cols"], cfg.grid_cols);
+        assert_eq!(s["test123"], t["test123"]);
+        let (mut again, reset) = AppConfig::parse(&saved_text(&cfg));
+        assert!(reset.reset_keys.is_empty());
+        again.grid_cols += 1;
+        let s = saved(&again);
+        assert_eq!(s["test123"], t["test123"]);
+        assert_eq!(s["minimap_layers"]["tilt"]["future_field"], "hello");
+        assert_eq!(s["grid_cols"], cfg.grid_cols + 1);
+    }
+
+    #[test]
+    fn a_save_with_nothing_to_keep_is_the_plain_struct_text() {
+        let (cfg, _) = load(&file_tree());
+        assert!(cfg.fwd.lock().merged(&serde_json::to_value(&cfg).unwrap()).is_none());
+        assert_eq!(saved_text(&cfg), serde_json::to_string_pretty(&cfg).unwrap(), "same bytes as before (field order)");
+    }
+
+    #[test]
+    fn an_unknown_enum_value_survives_unless_the_user_changed_that_field() {
+        let mut t = file_tree();
+        t["top_bar_style"] = json!("FutureStyle");
+        let (mut cfg, reset) = load(&t);
+        assert_eq!(reset, vec!["top_bar_style".to_string()]);
+        assert!(cfg.top_bar_style == TopBarStyle::default(), "this build runs on its default meanwhile");
+        assert_eq!(saved(&cfg)["top_bar_style"], "FutureStyle", "kept, not overwritten by the default");
+        // Even a changed neighbour does not touch it.
+        cfg.grid_cols += 1;
+        assert_eq!(saved(&cfg)["top_bar_style"], "FutureStyle");
+        // The user picks a style: that wins, and the file is plain again.
+        cfg.top_bar_style = TopBarStyle::Legacy;
+        let s = saved(&cfg);
+        assert_eq!(s["top_bar_style"], "Legacy");
+        let (cfg2, reset) = load(&s);
+        assert!(reset.is_empty() && cfg2.top_bar_style == TopBarStyle::Legacy);
+    }
+
+    #[test]
+    fn an_unreadable_nested_value_keeps_its_whole_group_but_not_the_users_edits() {
+        let mut t = file_tree();
+        t["minimap_layers"]["race_lines"]["mode"] = json!("FutureMode");
+        t["minimap_layers"]["race_lines"]["color"] = json!("#123456");
+        t["minimap_layers"]["roads"]["on"] = json!(!AppConfig::default().minimap_layers.roads.on);
+        let (mut cfg, reset) = load(&t);
+        assert_eq!(reset, vec!["minimap_layers.race_lines".to_string()]);
+        let s = saved(&cfg);
+        assert_eq!(s["minimap_layers"]["race_lines"]["mode"], "FutureMode");
+        assert_eq!(s["minimap_layers"]["race_lines"]["color"], "#123456", "the group's other values come back too");
+        // The user edits one field of that group: only that field is theirs.
+        cfg.minimap_layers.race_lines.color.0 = [0xab, 0xcd, 0xef];
+        let s = saved(&cfg);
+        assert_eq!(s["minimap_layers"]["race_lines"]["color"], "#abcdef");
+        assert_eq!(s["minimap_layers"]["race_lines"]["mode"], "FutureMode");
+        assert_eq!(s["minimap_layers"]["roads"]["on"], t["minimap_layers"]["roads"]["on"]);
+    }
+
+    #[test]
+    fn an_unreadable_value_makes_no_backup_and_no_rewrite_on_load() {
+        let dir = use_data_dir("noback");
+        let mut t = file_tree();
+        t["top_bar_style"] = json!("FutureStyle");
+        t["test123"] = json!(1);
+        std::fs::write(AppConfig::path(), t.to_string()).unwrap();
+        let cfg = AppConfig::load();
+        AppConfig::load();
+        assert_eq!(count_bad(&dir), 0, "the value stays in the file, nothing to back up");
+        cfg.save();
+        let text = std::fs::read_to_string(AppConfig::path()).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["top_bar_style"], "FutureStyle");
+        assert_eq!(v["test123"], 1);
+        let mirror: Value = serde_json::from_str(&std::fs::read_to_string(profile_path(&cfg.active_profile)).unwrap()).unwrap();
+        assert_eq!(mirror["test123"], 1, "the profile mirror keeps it too");
+        assert_eq!(count_bad(&dir), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_map_entry_the_user_removed_stays_removed() {
+        let (mut cfg, reset) = load(&file_tree());
+        assert!(reset.is_empty());
+        assert!(saved(&cfg)["hotkeys"]["bindings"].get("ToggleGearbox").is_some());
+        cfg.hotkeys.bindings.remove(&HotkeyAction::ToggleGearbox);
+        let s = saved(&cfg);
+        assert!(s["hotkeys"]["bindings"].get("ToggleGearbox").is_none());
+        assert!(s["hotkeys"]["bindings"].get("ToggleBackfire").is_some(), "the others stay");
+        // With an unknown key beside it (so the merge path really runs) it is still gone.
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        let (mut cfg, _) = load(&t);
+        cfg.hotkeys.bindings.remove(&HotkeyAction::ToggleGearbox);
+        let s = saved(&cfg);
+        assert!(s["hotkeys"]["bindings"].get("ToggleGearbox").is_none());
+        assert_eq!(s["test123"], 1);
+    }
+
+    #[test]
+    fn compact_tabs_migrates_once_and_is_gone_so_the_users_choice_sticks() {
+        let mut t = file_tree();
+        t.as_object_mut().unwrap().remove("top_bar_style");
+        t["compact_tabs"] = json!(true);
+        let (mut cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        assert!(cfg.top_bar_style == TopBarStyle::Simple, "migrated");
+        cfg.top_bar_style = TopBarStyle::Legacy; // the user's own choice afterwards
+        let s = saved(&cfg);
+        assert!(s.get("compact_tabs").is_none(), "retired key not written back");
+        assert_eq!(s["top_bar_style"], "Legacy");
+        let (cfg2, _) = load(&s);
+        assert!(cfg2.top_bar_style == TopBarStyle::Legacy, "a kept compact_tabs would have overwritten it");
+    }
+
+    #[test]
+    fn unchanged_migrated_values_are_written_migrated() {
+        let mut t = file_tree();
+        t["tire_display_style"] = json!("Combined");
+        t["theme"] = json!("Light");
+        let (cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        let s = saved(&cfg);
+        assert_eq!(s["tire_display_style"], "Tires");
+        assert_eq!(s["theme"], "Dark");
+    }
+
+    #[test]
+    fn retired_keys_are_not_kept() {
+        let mut t = file_tree();
+        t["viewer_zoom_m"] = json!(2500.0);
+        t["viewer_layers"] = json!({ "x": 1 });
+        t["hotkeys"]["gate_mode"] = json!("WindowFocus");
+        t["minimap_layers"]["race_lines"]["sprint_color"] = json!("#111111");
+        t["test123"] = json!(1);
+        let (cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        let s = saved(&cfg);
+        assert!(s.get("viewer_zoom_m").is_none() && s.get("viewer_layers").is_none());
+        assert!(s["hotkeys"].get("gate_mode").is_none());
+        assert!(s["minimap_layers"]["race_lines"].get("sprint_color").is_none());
+        assert_eq!(s["test123"], 1, "while an unknown one is");
+    }
+
+    #[test]
+    fn the_old_circuit_color_key_is_renamed_not_kept_next_to_color() {
+        let mut t = file_tree();
+        let race = t["minimap_layers"]["race_lines"].as_object_mut().unwrap();
+        race.remove("color");
+        race.insert("circuit_color".into(), json!("#123456"));
+        t["test123"] = json!(1);
+        let (mut cfg, reset) = load(&t);
+        assert!(reset.is_empty());
+        assert_eq!(cfg.minimap_layers.race_lines.color.0, [0x12, 0x34, 0x56]);
+        cfg.grid_cols += 1;
+        let s = saved(&cfg);
+        assert!(s["minimap_layers"]["race_lines"].get("circuit_color").is_none());
+        assert_eq!(s["minimap_layers"]["race_lines"]["color"], "#123456");
+        let (_, reset) = load(&s);
+        assert!(reset.is_empty(), "no field/alias clash on the next load: {reset:?}");
+    }
+
+    #[test]
+    fn the_embedded_default_config_has_nothing_unknown() {
+        let (cfg, rec) = AppConfig::parse(DEFAULT_CONFIG_JSON);
+        assert!(rec.reset_keys.is_empty(), "{:?}", rec.reset_keys);
+        assert!(cfg.fwd.lock().merged(&serde_json::to_value(&cfg).unwrap()).is_none(), "default-config.json holds an unknown or retired key");
+    }
+
+    #[test]
+    fn a_profile_load_is_a_fresh_load_with_its_own_unknown_keys() {
+        let dir = use_data_dir("profile");
+        let mut a = file_tree();
+        a["only_in_a"] = json!(1);
+        a["grid_cols"] = json!(21);
+        let pa = dir.join("profiles").join("A.json");
+        std::fs::write(&pa, a.to_string()).unwrap();
+        let mut b = file_tree();
+        b["only_in_b"] = json!(2);
+        let pb = dir.join("profiles").join("B.json");
+        std::fs::write(&pb, b.to_string()).unwrap();
+
+        let mut cfg = AppConfig::default();
+        cfg.nav.destination = Some([1.0, 2.0]);
+        cfg.apply_profile_file(&pa);
+        let s = saved(&cfg);
+        assert_eq!((&s["only_in_a"], &s["grid_cols"]), (&json!(1), &json!(21)));
+        assert_eq!(s["nav"]["destination"], json!([1.0, 2.0]), "the live trip is not replaced by the profile's");
+        cfg.apply_profile_file(&pb);
+        let s = saved(&cfg);
+        assert_eq!(s["only_in_b"], 2);
+        assert!(s.get("only_in_a").is_none(), "the other profile's unknown keys do not leak across");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_preset_import_keeps_the_loaded_files_unknown_keys() {
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        let (mut cfg, _) = load(&t);
+        apply_preset(&mut cfg, r#"{ "grid_cols": 9 }"#);
+        let s = saved(&cfg);
+        assert_eq!(s["grid_cols"], 9);
+        assert_eq!(s["test123"], 1);
+    }
+
+    #[test]
+    fn a_clone_carries_the_trees() {
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        let (cfg, _) = load(&t);
+        assert_eq!(saved(&cfg.clone())["test123"], 1);
+    }
+
+    #[test]
+    fn an_unusable_file_keeps_nothing() {
+        let (cfg, rec) = AppConfig::parse("{ broken");
+        assert!(rec.json_invalid);
+        assert!(cfg.fwd.lock().merged(&serde_json::to_value(&cfg).unwrap()).is_none());
+    }
+
+    #[test]
+    fn save_commits_the_trees_so_the_next_save_diffs_against_what_was_written() {
+        let dir = use_data_dir("commit");
+        let mut t = file_tree();
+        t["test123"] = json!(1);
+        t["top_bar_style"] = json!("FutureStyle");
+        std::fs::write(AppConfig::path(), t.to_string()).unwrap();
+        let mut cfg = AppConfig::load();
+        cfg.top_bar_style = TopBarStyle::Simple;
+        cfg.save();
+        // Back to the value that equalled the load-time default: still the user's, not the file's.
+        cfg.top_bar_style = TopBarStyle::default();
+        cfg.save();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(AppConfig::path()).unwrap()).unwrap();
+        assert_eq!(v["top_bar_style"], serde_json::to_value(TopBarStyle::default()).unwrap());
+        assert_eq!(v["test123"], 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── the pure merge ──
+
+    #[test]
+    fn merge_keeps_unknown_drops_deleted_and_takes_changed() {
+        let raw = json!({ "keep": 1, "unknown": { "x": 1 }, "gone": 2, "chg": 3, "map": { "a": 1, "b": 2, "zz": 9 } });
+        let loaded = json!({ "keep": 1, "gone": 2, "chg": 3, "map": { "a": 1, "b": 2 } });
+        let cur = json!({ "keep": 1, "chg": 4, "map": { "a": 1 }, "new": true });
+        let m = merge_for_save(&raw, &loaded, &cur, &[]);
+        assert_eq!(m, json!({ "keep": 1, "unknown": { "x": 1 }, "chg": 4, "map": { "a": 1, "zz": 9 }, "new": true }));
+    }
+
+    #[test]
+    fn merge_restores_only_where_a_reset_says_the_load_replaced_the_value() {
+        let raw = json!({ "a": "Future", "b": "Old", "arr": [1, 2, 3], "o": { "x": "Future", "y": 5 } });
+        let loaded = json!({ "a": "Dflt", "b": "Dflt", "arr": [1, 2], "o": { "x": "Dflt", "y": 6 } });
+        let cur = loaded.clone();
+        let resets = vec!["a".to_string(), "arr[2]".to_string(), "o.x".to_string()];
+        let m = merge_for_save(&raw, &loaded, &cur, &resets);
+        assert_eq!(m, json!({ "a": "Future", "b": "Dflt", "arr": [1, 2, 3], "o": { "x": "Future", "y": 6 } }));
+        // A changed array is the user's whole.
+        let mut cur2 = cur.clone();
+        cur2["arr"] = json!([2]);
+        assert_eq!(merge_for_save(&raw, &loaded, &cur2, &resets)["arr"], json!([2]));
+    }
+
+    #[test]
+    fn reset_paths_cover_ancestors_and_array_elements() {
+        let r = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(reset_covers(&r(&["a.b"]), "a.b.c"));
+        assert!(reset_covers(&r(&["a.b"]), "a.b"));
+        assert!(reset_covers(&r(&["w[3]"]), "w"));
+        assert!(!reset_covers(&r(&["a.b"]), "a"));
+        assert!(!reset_covers(&r(&["a.b"]), "a.bc"));
+        assert!(!reset_covers(&r(&["w[3]"]), "ww"));
+    }
+
+    // ── the calibrations file ──
+
+    #[test]
+    fn car_calibrations_keep_unreadable_entries_and_unknown_fields_but_not_removed_cars() {
+        let dir = use_data_dir("cals");
+        let good = json!({ "gear_redline_speeds": [1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0], "max_rpm": 7000.0, "future": "x" });
+        let text = json!({ "100": good, "200": good, "300": { "max_rpm": "fast" }, "abc": 1 }).to_string();
+        std::fs::write(car_calibrations_path(), &text).unwrap();
+        let mut map = load_car_calibrations();
+        assert_eq!(map.len(), 2);
+        assert_eq!(count_bad(&dir), 0, "an object file loses nothing, so no backup");
+        map.get_mut(&100).unwrap().max_rpm = 6500.0;
+        map.remove(&200);
+        save_car_calibrations(&map);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(car_calibrations_path()).unwrap()).unwrap();
+        assert_eq!(v["100"]["max_rpm"], 6500.0);
+        assert_eq!(v["100"]["future"], "x", "unknown field of a known entry");
+        assert!(v.get("200").is_none(), "removed in the session");
+        assert_eq!(v["300"], json!({ "max_rpm": "fast" }), "unreadable entry kept");
+        assert_eq!(v["abc"], 1);
+        // Garbage as a whole is replaced, with a backup.
+        std::fs::write(car_calibrations_path(), "garbage").unwrap();
+        assert!(load_car_calibrations().is_empty());
+        assert_eq!(count_bad(&dir), 1);
+        save_car_calibrations(&HashMap::new());
+        assert_eq!(std::fs::read_to_string(car_calibrations_path()).unwrap().trim(), "{}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Language {
     #[default]
     English,
@@ -36,6 +36,14 @@ pub fn set_language(l: Language) {
     CURRENT.store(l as u8, Ordering::Relaxed);
 }
 
+/// The active UI language as the game's `<LANG>` string-table code (`"EN"` / `"DE"`).
+pub fn language_code() -> &'static str {
+    match current() {
+        Language::English => "EN",
+        Language::German => "DE",
+    }
+}
+
 fn current() -> Language {
     match CURRENT.load(Ordering::Relaxed) {
         1 => Language::German,
@@ -52,21 +60,36 @@ pub fn tr(s: &'static str) -> &'static str {
     }
 }
 
+/// Test helper: run `f` with the UI language set to `l`, then back to English. The language is a
+/// process-wide static and tests run in parallel, so every test that switches it, or asserts on
+/// English text, goes through this lock (one at a time).
+#[cfg(test)]
+pub fn with_language<R>(l: Language, f: impl FnOnce() -> R) -> R {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_language(Language::English); // don't leak state to other tests
+        }
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _reset = Reset;
+    set_language(l);
+    f()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn translate_and_fallback() {
-        set_language(Language::English);
-        assert_eq!(tr("Settings"), "Settings");
-
-        set_language(Language::German);
-        assert_eq!(tr("Settings"), "Einstellungen");
-        // Unknown strings fall back to the English source, never blank.
-        assert_eq!(tr("not a real key"), "not a real key");
-
-        set_language(Language::English); // don't leak state to other tests
+        with_language(Language::English, || assert_eq!(tr("Settings"), "Settings"));
+        with_language(Language::German, || {
+            assert_eq!(tr("Settings"), "Einstellungen");
+            // Unknown strings fall back to the English source, never blank.
+            assert_eq!(tr("not a real key"), "not a real key");
+        });
     }
 }
 
@@ -91,6 +114,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Edit Mode" => "Bearbeitungsmodus",
         "Connected" => "Verbunden",
         "Disconnected" => "Getrennt",
+        "Connecting…" => "Verbinde…",
+        "packets per second" => "Pakete pro Sekunde",
 
         // ── Page-settings tabs / sub-tabs ──────────────────────────────
         "Gearbox" => "Getriebe",
@@ -217,6 +242,8 @@ fn de(s: &str) -> Option<&'static str> {
 
         // ── Mini map ───────────────────────────────────────────────────
         "Render FPS limit" => "Render-FPS-Limit",
+        "Heading-up only: the map eases back to north after the car has stopped, and returns to heading-up when it moves." => "Nur Fahrtrichtung oben: Die Karte dreht nach dem Anhalten sanft nach Norden und zurück, sobald das Auto losfährt.",
+        "Rotate the map to the direction the car is travelling instead of the way it points (differs while drifting)." => "Karte nach der tatsächlichen Fahrtrichtung statt der Fahrzeugausrichtung drehen (unterscheidet sich beim Driften).",
         "Smooth rotation" => "Sanfte Drehung",
         "Use movement direction as rotation" => "Bewegungsrichtung als Drehung verwenden",
         "Mirror map at edges" => "Karte an den Rändern spiegeln",
@@ -270,6 +297,11 @@ fn de(s: &str) -> Option<&'static str> {
         "Maximum RPM" => "Maximale Drehzahl",
         "RPM interval" => "Drehzahl-Intervall",
         "Key press duration" => "Tastendruck-Dauer",
+        "Limit max. duration" => "Max. Dauer begrenzen",
+        "Max. duration" => "Max. Dauer",
+        "Stops backfire after it has run continuously for this long, even if RPM is still in range. Re-arms when you touch the throttle or downshift." =>
+            "Beendet die Fehlzündung, nachdem sie so lange ununterbrochen lief, auch wenn die Drehzahl noch im Bereich liegt. \
+             Wird wieder scharf, sobald du Gas gibst oder herunterschaltest.",
         "Disable if standing still" => "Im Stand deaktivieren",
         "Drift detection (no pop while sliding)" =>
             "Drifterkennung (keine Fehlzündung beim Rutschen)",
@@ -281,8 +313,6 @@ fn de(s: &str) -> Option<&'static str> {
              Gas-Anzeige nur dein echtes Pedal widerspiegelt.",
 
         // ── Engine swaps tab ───────────────────────────────────────────
-        "Display-only reference table. All engines available in Forza Horizon 6." =>
-            "Reine Anzeigetabelle. Alle in Forza Horizon 6 verfügbaren Motoren.",
         "Search" => "Suche",
         "engines" => "Motoren",
         "In-Game Label" => "Spiel-Bezeichnung",
@@ -347,6 +377,56 @@ fn de(s: &str) -> Option<&'static str> {
         "Creating Map Cache" => "Erstelle Kartencache",
         "Processing" => "Verarbeite",
         "Loading map…" => "Lade Karte…",
+        "Map needs your Forza Horizon 6 install" => "Karte benötigt deine Forza-Horizon-6-Installation",
+        "Set it in Setup → Game Install" => "Lege sie unter Setup → Spiel-Installation fest",
+        "Map could not be loaded" => "Karte konnte nicht geladen werden",
+        "Needs your Forza Horizon 6 install — the map is read from it" => "Benötigt deine Forza-Horizon-6-Installation — die Karte wird daraus gelesen",
+
+        // ── Setup: Map data ────────────────────────────────────────────
+        "Map data" => "Kartendaten",
+        "Needs your Forza Horizon 6 install" => "Benötigt deine Forza-Horizon-6-Installation",
+        "Road types" => "Straßentypen",
+        "Your saved file" => "Deine gespeicherte Datei",
+        "Project data" => "Projektdaten",
+        "Project data updated since your save" => "Projektdaten seit deinem Speichern aktualisiert",
+        "Editor" => "Editor",
+        "Not running" => "Läuft nicht",
+        "Preparing" => "Wird vorbereitet",
+        "Running" => "Läuft",
+        "Failed" => "Fehlgeschlagen",
+        "Saved" => "Gespeichert",
+        "edges" => "Kanten",
+        "points" => "Punkte",
+        "Start from" => "Starten mit",
+        "Current: your saved road types, or the project data if you have none. Raw: the game's untouched road network with no road types."
+            => "Aktuell: deine gespeicherten Straßentypen, sonst die Projektdaten. Roh: das unveränderte Straßennetz des Spiels ohne Straßentypen.",
+        "Raw" => "Roh",
+        "Open map editor" => "Karteneditor öffnen",
+        "Stop map editor" => "Karteneditor beenden",
+        "Stops the editor's local server; the open browser tab stops working. Save first." => "Beendet den lokalen Server des Editors; der geöffnete Browser-Tab funktioniert dann nicht mehr. Vorher speichern.",
+        "The map editor is not running." => "Der Karteneditor läuft nicht.",
+        "Opens the road-type editor in your browser: 2D map, Preview mode and live 3D."
+            => "Öffnet den Straßentyp-Editor im Browser: 2D-Karte, Vorschau-Modus und Live-3D.",
+        "Open data folder" => "Datenordner öffnen",
+        "Your saved road types and the cached map data live here."
+            => "Hier liegen deine gespeicherten Straßentypen und die zwischengespeicherten Kartendaten.",
+        "Contribute" => "Beitragen",
+        "How to send your road-type edits back to the project."
+            => "So schickst du deine Straßentyp-Änderungen an das Projekt zurück.",
+        "Delete your saved road types?" => "Deine gespeicherten Straßentypen löschen?",
+        "Reset" => "Zurücksetzen",
+        "Reset road types to project data" => "Straßentypen auf Projektdaten zurücksetzen",
+        "Deletes your saved road types; the project data is used again."
+            => "Löscht deine gespeicherten Straßentypen; die Projektdaten werden wieder verwendet.",
+        "You have no saved road types." => "Du hast keine gespeicherten Straßentypen.",
+        "Reset to project data" => "Auf Projektdaten zurückgesetzt",
+        "Reset to project data. Reopen the map editor." => "Auf Projektdaten zurückgesetzt. Öffne den Karteneditor erneut.",
+        "Could not delete the file" => "Datei konnte nicht gelöscht werden",
+        "Rebuild map data" => "Kartendaten neu erstellen",
+        "Deletes the cached terrain and road data; it is rebuilt the next time the editor opens. Your saved road types are kept."
+            => "Löscht das zwischengespeicherte Gelände und die Straßendaten; sie werden beim nächsten Öffnen des Editors neu erstellt. Deine gespeicherten Straßentypen bleiben erhalten.",
+        "Wait until the map data is prepared." => "Warte, bis die Kartendaten vorbereitet sind.",
+        "Map data cache cleared" => "Kartendaten-Cache gelöscht",
 
         // ── Gearbox tab: General ───────────────────────────────────────
         "Lets the box send shift inputs. Stays hands-off until you do one full \
@@ -392,8 +472,16 @@ fn de(s: &str) -> Option<&'static str> {
             "Schaltcharakter. Street/Sport fahren sparsam (frühes Hochschalten, träges \
              Herunterschalten); Race nutzt das volle Drehzahlband und ignoriert die \
              Cruise-/Totzonen-Einstellungen.",
-        "Street = relaxed, Sport = balanced, Race = aggressive/track." =>
-            "Street = entspannt, Sport = ausgewogen, Race = aggressiv/Rennstrecke.",
+        "Manual = you shift (box off), Street = relaxed, Sport = balanced, Race = aggressive/track." =>
+            "Manual = du schaltest (Getriebe aus), Street = entspannt, Sport = ausgewogen, Race = aggressiv/Rennstrecke.",
+        "Manual" => "Manuell",
+        "Disable in drift events" => "In Drift-Events deaktivieren",
+        "Turns the gearbox off for as long as a drift event is detected, then back on. \
+                     Applies with Auto Race mode in races on, or with Race mode selected." =>
+            "Schaltet das Getriebe aus, solange ein Drift-Event erkannt wird, und danach wieder ein. \
+             Gilt bei aktivem Auto-Race-Modus in Rennen oder wenn Race-Modus gewählt ist.",
+        "Tick it if the gearbox fights you while drifting." =>
+            "Aktivieren, wenn das Getriebe beim Driften stört.",
         "Auto Race mode in races" => "Auto-Race-Modus in Rennen",
         "Forces Race mode whenever you're in an actual race (position P1+), and \
                      reverts to your chosen mode in free-roam." =>
@@ -578,6 +666,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Map" => "Karte",
         "Power Graph" => "Leistungsdiagramm",
         "Boost Graph" => "Ladedruckdiagramm",
+        "No boost detected" => "Kein Ladedruck erkannt",
 
         // ── Settings: Load Preset ──────────────────────────────────────
         "Load Preset" => "Voreinstellung laden",
@@ -599,6 +688,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Tire temp unit" => "Reifentemperatur-Einheit",
         "Boost / pressure" => "Ladedruck / Druck",
         "FPS limit" => "FPS-Limit",
+        "Experimental pause detection" => "Experimentelle Pausenerkennung",
+        "Detects your garage: the car is within 25 m of one of your houses with the handbrake fully on and first gear selected. Needs the map data (Game Install)."
+            => "Erkennt deine Garage: Das Auto ist höchstens 25 m von einem deiner Häuser entfernt, die Handbremse ist voll angezogen und der erste Gang eingelegt. Braucht die Kartendaten (Spielinstallation).",
         "Always on top" => "Immer im Vordergrund",
 
         // ── Settings: Hotkeys ──────────────────────────────────────────
@@ -608,13 +700,39 @@ fn de(s: &str) -> Option<&'static str> {
         "Press a key…" => "Taste drücken…",
         "Toggle Automatic Gearbox" => "Automatikgetriebe umschalten",
         "Toggle Backfire" => "Fehlzündung umschalten",
-        "Reset RPM Calibration" => "Drehzahl-Kalibrierung zurücksetzen",
         "Open mini-settings" => "Mini-Einstellungen öffnen",
         "Toggle dashboard edit" => "Dashboard-Bearbeitung umschalten",
         "Window Detection" => "Fenster-Erkennung",
+        "Input Permissions" => "Eingabe-Berechtigungen",
+        "Game Install" => "Spiel-Installation",
+        "Auto (Steam)" => "Automatisch (Steam)",
+        "Auto-detect" => "Automatisch erkennen",
+        "Detect from running game" => "Aus laufendem Spiel erkennen",
+        "Start Forza first" => "Starte zuerst Forza",
+        "Found through Steam" => "Über Steam gefunden",
+        "Found from the running game" => "Im laufenden Spiel gefunden",
+        "Not found. Enter the path manually." => "Nicht gefunden. Pfad manuell eingeben.",
+        "Forza Horizon 6 is not running" => "Forza Horizon 6 läuft nicht",
+        "Checking..." => "Prüfe...",
+        "Found but not readable (permissions)" => "Gefunden, aber nicht lesbar (Berechtigungen)",
+        "media folder not found" => "media-Ordner nicht gefunden",
+        "Input permissions missing" => "Eingabe-Berechtigungen fehlen",
+        "Hotkeys: cannot read keyboard devices in /dev/input" => "Hotkeys: Tastaturgeräte in /dev/input nicht lesbar",
+        "Gearbox / Backfire key input: cannot write /dev/uinput" => "Tasteneingabe für Getriebe / Fehlzündung: /dev/uinput nicht beschreibbar",
+        "Hotkeys: read keyboard devices (/dev/input)" => "Hotkeys: Tastaturgeräte lesen (/dev/input)",
+        "Key input: write /dev/uinput" => "Tasteneingabe: /dev/uinput schreiben",
+        "Member of the input group" => "Mitglied der Gruppe input",
+        "Not a member of the input group" => "Kein Mitglied der Gruppe input",
+        "Add yourself to the input group (hotkeys and key input)" => "Dich zur Gruppe input hinzufügen (Hotkeys und Tasteneingabe)",
+        "Load the uinput kernel module" => "Das Kernelmodul uinput laden",
+        "Let the input group write /dev/uinput (key input)" => "Der Gruppe input Schreibzugriff auf /dev/uinput geben (Tasteneingabe)",
+        "Run all commands above, then log out and back in." => "Alle Befehle oben ausführen, dann ab- und wieder anmelden.",
+        "Log out and back in for it to take effect." => "Zum Übernehmen ab- und wieder anmelden.",
+        "Don't remind me again" => "Nicht mehr erinnern",
+        "Remind me on startup" => "Beim Start erinnern",
+        "Show the missing-permissions dialog at launch while something is missing." => "Zeigt beim Start den Dialog für fehlende Berechtigungen, solange etwas fehlt.",
+        "Re-check" => "Erneut prüfen",
         "Send Input" => "Eingabe senden",
-        "Active if" => "Aktiv wenn",
-        "Telemetry live" => "Telemetrie aktiv",
         "Game window focused" => "Spielfenster im Fokus",
         "Window Detection Method" => "Fenster-Erkennungsmethode",
         "Custom" => "Benutzerdefiniert",
@@ -624,6 +742,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Command" => "Befehl",
         "Test" => "Test",
         "Game Window Title" => "Spielfenster-Titel",
+        "Hotkeys and controller buttons that act on the game only work while this window is in front. Detect fills the title in from the window you click into." => "Hotkeys und Controller-Tasten, die auf das Spiel wirken, funktionieren nur, solange dieses Fenster im Vordergrund ist. „Erkennen“ trägt den Titel des Fensters ein, in das du klickst.",
         "Detect" => "Erkennen",
         "Detecting…" => "Erkenne…",
         "Only send inputs when game focused" => "Eingaben nur bei fokussiertem Spiel senden",
@@ -635,9 +754,9 @@ fn de(s: &str) -> Option<&'static str> {
         "Repository" => "Repository",
         "Repository / Credits" => "Repository / Danksagung",
         "Credits" => "Mitwirkende",
-        "Le0_X8 — seasonal map images" => "Le0_X8 — saisonale Kartenbilder",
         "Geist font — Vercel (OFL)" => "Geist-Schrift — Vercel (OFL)",
         "Nerd Fonts — Ryan L McIntyre (MIT)" => "Nerd Fonts — Ryan L McIntyre (MIT)",
+        "Trystero — Dan Motzenbecker (MIT), P2P co-op design" => "Trystero — Dan Motzenbecker (MIT), P2P-Koop-Design",
         "Font licences: assets/fonts/" => "Schrift-Lizenzen: assets/fonts/",
         "Save Settings" => "Einstellungen speichern",
         "Settings are also auto-saved on exit." =>
@@ -654,8 +773,8 @@ fn de(s: &str) -> Option<&'static str> {
         "Player color" => "Spielerfarbe",
         "Player" => "Spieler",
         "Colour" => "Farbe",
-        "Others see this name + colour; your own map arrow uses the colour only." =>
-            "Andere sehen diesen Namen + Farbe; dein eigener Kartenpfeil nutzt nur die Farbe.",
+        "Auto-starts on deceleration, aborts if re-accelerating for >500 ms." =>
+            "Startet automatisch beim Verzögern, bricht ab, wenn länger als 500 ms wieder beschleunigt wird.",
         "Pacing" => "Taktung",
         "Packet Buffer Size" => "Paketpuffergröße",
         "Delays remote players by this much to smooth out network jitter.\n\
@@ -681,6 +800,15 @@ fn de(s: &str) -> Option<&'static str> {
         "Same network? Lower latency with" => "Gleiches Netzwerk? Geringere Latenz mit",
         "players" => "Spieler",
         "Host port" => "Host-Port",
+        "Cloudflare" => "Cloudflare",
+        "Trystero" => "Trystero",
+        "Room ID" => "Raum-ID",
+        "Generate" => "Generieren",
+        "Join Room" => "Raum beitreten",
+        "Room" => "Raum",
+        "Auto-connect on startup" => "Beim Start automatisch verbinden",
+        "Anyone with this ID can join. Treat it like a password." =>
+            "Jeder mit dieser ID kann beitreten. Behandle sie wie ein Passwort.",
         "Local port the tunnel points at. Change only if it clashes with another app." =>
             "Lokaler Port, auf den der Tunnel zeigt. Nur ändern, wenn er mit einer anderen App kollidiert.",
 
@@ -690,7 +818,6 @@ fn de(s: &str) -> Option<&'static str> {
         "Host or join from the Co-Op tab." => "Im Koop-Tab hosten oder beitreten.",
         "Speed Trace" => "Geschwindigkeitsverlauf",
         "Collecting…" => "Sammle…",
-        "Boost" => "Ladedruck",
         "peak" => "Spitze",
         "Session Stats" => "Sitzungsstatistik",
         "Top Speed" => "Höchstgeschw.",
@@ -702,6 +829,7 @@ fn de(s: &str) -> Option<&'static str> {
         "Max RPM" => "Max. U/min",
         "Lock map north-up" => "Karte nach Norden ausrichten",
         "Show compass" => "Kompass anzeigen",
+        "Rotate with right stick" => "Mit rechtem Stick drehen",
         "Show per line" => "Pro Zeile anzeigen",
         "Current values" => "Aktuelle Werte",
         "Max values" => "Maximalwerte",
@@ -721,14 +849,14 @@ fn de(s: &str) -> Option<&'static str> {
         "Compact: draws the current value inside a full-width bar, with the peak in parentheses below."
             => "Kompakt: zeichnet den aktuellen Wert in eine Leiste über die volle Breite, den Höchstwert in Klammern darunter.",
         "Adds an \"Electric\" or cylinder-count caption under the values."
-            => "Zeigt „Elektrisch\" oder die Zylinderanzahl unter den Werten an.",
+            => "Zeigt „Elektrisch“ oder die Zylinderanzahl unter den Werten an.",
         "G-Force" => "G-Kraft",
         "Show text" => "Text anzeigen",
         "Current/Peak G-force readout beside the plot. Off = the plot fills the whole widget."
             => "Aktuell-/Spitzen-Anzeige neben dem Diagramm. Aus = das Diagramm füllt das ganze Widget.",
         "Show labels" => "Beschriftungen anzeigen",
         "Show the \"Current:\"/\"Peak:\" header rows. Off = only the value rows."
-            => "Zeigt die Kopfzeilen „Aktuell:\"/„Spitze:\". Aus = nur die Wertzeilen.",
+            => "Zeigt die Kopfzeilen „Aktuell:“/„Spitze:“. Aus = nur die Wertzeilen.",
         "Hide widget titles" => "Widget-Titel ausblenden",
         "Hide every widget's title row so the content gets the space."
             => "Blendet die Titelzeile jedes Widgets aus, damit der Inhalt mehr Platz bekommt.",
@@ -753,9 +881,589 @@ fn de(s: &str) -> Option<&'static str> {
         "Tracers fade out with whichever comes first — age or distance behind the player."
             => "Spuren blenden aus – je nachdem, was zuerst eintritt: Alter oder Distanz hinter dem Spieler.",
         "Show player list on map" => "Spielerliste auf der Karte anzeigen",
+        "Show Dashboard map" => "Dashboard-Karte anzeigen",
+        "Whether the Dashboard has its Map module. The Viewer on this tab is always there."
+            => "Ob das Dashboard sein Karten-Modul hat. Der Viewer in diesem Tab ist immer da.",
         "Columns" => "Spalten",
         "Distance" => "Distanz",
         "Car class" => "Fahrzeugklasse",
+
+        // ── HUD overlay (drawn in-game) ────────────────────────────────
+        "KM/H" => "KM/H",
+        "MPH" => "MPH",
+        "LAP" => "RUNDE",
+        "LAST LAP" => "LETZTE RUNDE",
+        "DRIFT" => "DRIFT",
+        "Overlay" => "Overlay",
+        "Derived from telemetry" => "Aus Telemetrie abgeleitet",
+        "no" => "nein",
+        "off" => "aus",
+        "Race off (is_race_on = 0)" => "Rennen aus (is_race_on = 0)",
+        "No max RPM (engine_max_rpm <= 0)" => "Keine Max-Drehzahl (engine_max_rpm <= 0)",
+        "Zero attitude (yaw = pitch = roll = 0)" => "Nulllage (Yaw = Pitch = Roll = 0)",
+        "Garage rule (house within 25 m + handbrake 255 + gear 1)" => "Garagen-Regel (Haus innerhalb 25 m + Handbremse 255 + 1. Gang)",
+        "Nearest house" => "Nächstes Haus",
+        "none (map data not loaded)" => "keins (Kartendaten nicht geladen)",
+        "Paused" => "Pausiert",
+        "Pause reason" => "Pausengrund",
+        "In race (race position set)" => "Im Rennen (Rennposition gesetzt)",
+        "Gearbox: selected mode" => "Getriebe: gewählter Modus",
+        "Gearbox: effective mode" => "Getriebe: effektiver Modus",
+        "Gearbox: resolved" => "Getriebe: aufgelöst",
+        "HUD mode" => "HUD-Modus",
+        "Drift" => "Drift",
+        "Race / free roam" => "Rennen / freies Fahren",
+        "Calibrated max RPM" => "Kalibrierte Max-Drehzahl",
+        "Calibration checks" => "Kalibrierungs-Prüfungen",
+        "1. Max RPM capture" => "1. Max-Drehzahl erfassen",
+        "capturing now" => "erfasst gerade",
+        "not capturing" => "erfasst nicht",
+        "Redline not locked" => "Drehzahlgrenze nicht gesperrt",
+        "capturing" => "erfasst",
+        "locked (Clear RPM calibration to re-capture)" => "gesperrt (RPM-Kalibrierung zurücksetzen zum Neuerfassen)",
+        "locked" => "gesperrt",
+        "Race on" => "Rennen läuft",
+        "Engine power" => "Motorleistung",
+        "ignored" => "ignoriert",
+        "Handbrake released" => "Handbremse gelöst",
+        "Tyre slip" => "Reifenschlupf",
+        "Max RPM so far" => "Max-Drehzahl bisher",
+        "none yet" => "noch keine",
+        "2. Calibrated (box engages)" => "2. Kalibriert (Getriebe rückt ein)",
+        "engaged" => "eingerückt",
+        "not engaged yet" => "noch nicht eingerückt",
+        "Previous forward gear" => "Vorheriger Vorwärtsgang",
+        "Upshift" => "Hochschalten",
+        "3. Gear-map sample" => "3. Gangkarten-Messwert",
+        "sampling now" => "misst gerade",
+        "not sampling" => "misst nicht",
+        "In a forward gear" => "In einem Vorwärtsgang",
+        "Redline known" => "Drehzahlgrenze bekannt",
+        "capture it first" => "zuerst erfassen",
+        "Moving" => "In Bewegung",
+        "RPM high enough" => "Drehzahl hoch genug",
+        "Suspension travel" => "Federweg",
+        "Moving straight" => "Geradeausfahrt",
+        "Gear map" => "Gangkarte",
+        "no samples yet" => "noch keine Messwerte",
+        "Samples" => "Messwerte",
+        "Redline speed" => "Geschwindigkeit bei Drehzahlgrenze",
+        "not calibrated" => "nicht kalibriert",
+        "Season (wall clock)" => "Jahreszeit (Uhrzeit)",
+        "Loading car names from the game install..." => "Autonamen werden aus der Spielinstallation geladen...",
+        "Car names unavailable (FH6 install not found?)" => "Autonamen nicht verfügbar (FH6-Installation nicht gefunden?)",
+        "Ordinal" => "Ordinal",
+        "Make" => "Marke",
+        "Media name" => "Medienname",
+        "unknown" => "unbekannt",
+        "not in the car database" => "nicht in der Auto-Datenbank",
+        "Install" => "Installation",
+        "cars" => "Autos",
+        "cache" => "Cache",
+        "install scan" => "Installations-Scan",
+        "Raw Telemetry" => "Rohdaten",
+        "No telemetry yet" => "Noch keine Telemetrie",
+        "HUD Overlay" => "HUD-Overlay",
+        "Hide HUD" => "HUD ausblenden",
+        "The overlay needs a Wayland or X11 session (neither WAYLAND_DISPLAY nor DISPLAY is set)."
+            => "Das Overlay braucht eine Wayland- oder X11-Sitzung (weder WAYLAND_DISPLAY noch DISPLAY ist gesetzt).",
+        "Couldn't connect to the Wayland compositor:" => "Verbindung zum Wayland-Compositor fehlgeschlagen:",
+        "Your compositor doesn't support wlr-layer-shell (e.g. GNOME) and the X11 fallback is switched off (FORZA_OVERLAY_BACKEND=wayland). Unset it to try the experimental X11/XWayland fallback."
+            => "Dein Compositor unterstützt wlr-layer-shell nicht (z. B. GNOME), und der X11-Fallback ist abgeschaltet (FORZA_OVERLAY_BACKEND=wayland). Entferne die Variable, um den experimentellen X11/XWayland-Fallback zu nutzen.",
+        "Couldn't set up OpenGL (EGL) for the overlay:" => "OpenGL (EGL) für das Overlay konnte nicht eingerichtet werden:",
+        "The X11 overlay needs an X display (DISPLAY is not set)."
+            => "Das X11-Overlay braucht ein X-Display (DISPLAY ist nicht gesetzt).",
+        "Couldn't use the X display for the overlay:" => "Das X-Display konnte für das Overlay nicht genutzt werden:",
+        "Couldn't set up OpenGL (WGL) for the overlay:" => "OpenGL (WGL) für das Overlay konnte nicht eingerichtet werden:",
+        "Couldn't create the overlay window:" => "Das Overlay-Fenster konnte nicht erstellt werden:",
+
+        // ── Overlay tab ────────────────────────────────────────────────
+        "Enable overlay" => "Overlay aktivieren",
+        "The in-game overlay needs Linux (Wayland or X11) or Windows."
+            => "Das Ingame-Overlay braucht Linux (Wayland oder X11) oder Windows.",
+        "Windows (experimental): Borderless or Windowed only — exclusive fullscreen can't be overlaid."
+            => "Windows (experimentell): nur Rahmenlos oder Fenstermodus — exklusiver Vollbildmodus lässt sich nicht überlagern.",
+        "DISPLAY2, \\\\.\\DISPLAY2 or just 2. Empty = the primary monitor."
+            => "DISPLAY2, \\\\.\\DISPLAY2 oder einfach 2. Leer = der Hauptmonitor.",
+        "Active window (built in)" => "Aktives Fenster (integriert)",
+        "Uses the monitor the focused window is on." => "Nutzt den Monitor, auf dem das fokussierte Fenster liegt.",
+        "Overlay off" => "Overlay aus",
+        "Overlay starting…" => "Overlay startet…",
+        "Overlay running" => "Overlay läuft",
+        "The overlay stopped. Turn it off and on again to retry."
+            => "Das Overlay wurde beendet. Zum erneuten Versuch aus- und wieder einschalten.",
+        "Not set" => "Nicht belegt",
+        "Esc cancels. Backspace or Delete clears the binding." => "Esc bricht ab. Rücktaste oder Entf entfernt die Belegung.",
+        "Hotkey" => "Hotkey",
+        "Controller" => "Controller",
+        "Enable controller input" => "Controller-Eingabe aktivieren",
+        "Controller input is off" => "Controller-Eingabe ist aus",
+        "Can't read /dev/input (see Input Permissions)" => "Kann /dev/input nicht lesen (siehe Eingabe-Berechtigungen)",
+        "No controller detected" => "Kein Controller erkannt",
+        "Stick deadzone" => "Stick-Totzone",
+        "Trigger deadzone" => "Trigger-Totzone",
+        "Bindings" => "Belegungen",
+        "Press a controller button…" => "Controller-Taste drücken…",
+        "Back" => "Zurück",
+        "D-pad Up" => "Steuerkreuz oben",
+        "D-pad Down" => "Steuerkreuz unten",
+        "D-pad Left" => "Steuerkreuz links",
+        "D-pad Right" => "Steuerkreuz rechts",
+        "Right stick Up" => "Rechter Stick oben",
+        "Right stick Down" => "Rechter Stick unten",
+        "Right stick Left" => "Rechter Stick links",
+        "Right stick Right" => "Rechter Stick rechts",
+        "Info" => "Info",
+        "The HUD is hidden. Press the Hide HUD key again to show it."
+            => "Das HUD ist ausgeblendet. Drücke die „HUD ausblenden“-Taste erneut, um es zu zeigen.",
+        "Only when game window is focused" => "Nur wenn das Spielfenster im Fokus ist",
+        "Hides the HUD while another window is focused. Uses the Window Detection method set in Setup."
+            => "Blendet das HUD aus, solange ein anderes Fenster im Fokus ist. Nutzt die in Setup eingestellte Fenster-Erkennung.",
+        "Scale" => "Skalierung",
+        "Plate opacity" => "Hintergrund-Deckkraft",
+        "Fade on show / hide" => "Beim Ein-/Ausblenden überblenden",
+        "The HUD hides by itself while the game is paused."
+            => "Während das Spiel pausiert ist, blendet sich das HUD von selbst aus.",
+        "Monitor Detection" => "Monitor-Erkennung",
+        "Method" => "Methode",
+        "Hyprland (built in)" => "Hyprland (integriert)",
+        "Custom command" => "Eigener Befehl",
+        "Fixed monitor" => "Fester Monitor",
+        "Runs hyprctl activeworkspace and reads the monitor it names."
+            => "Führt hyprctl activeworkspace aus und liest den genannten Monitor.",
+        "prints a monitor name" => "gibt einen Monitornamen aus",
+        "Must print one monitor name, e.g. DP-1." => "Muss genau einen Monitornamen ausgeben, z. B. DP-1.",
+        "Monitor" => "Monitor",
+        "first monitor" => "erster Monitor",
+        "The output name, e.g. DP-1. Empty = the first monitor." => "Der Ausgangsname, z. B. DP-1. Leer = erster Monitor.",
+        "Read only while Forza is the active window. Otherwise the HUD stays where it was."
+            => "Wird nur gelesen, solange Forza das aktive Fenster ist. Sonst bleibt das HUD, wo es war.",
+        "error" => "Fehler",
+        "the first monitor" => "dem ersten Monitor",
+        "Monitor detection needs Linux or Windows." => "Die Monitor-Erkennung braucht Linux oder Windows.",
+        "Detection is off while the overlay is disabled." => "Die Erkennung ist aus, solange das Overlay deaktiviert ist.",
+        "HUD pinned to" => "HUD fest auf",
+        "Game on" => "Spiel auf",
+        "Game window not focused, keeping" => "Spielfenster nicht im Fokus, bleibt auf",
+        "Monitor detection failed" => "Monitor-Erkennung fehlgeschlagen",
+        "Minimap" => "Minikarte",
+        "Drive cluster" => "Fahranzeige",
+        "Race / Drift" => "Rennen / Drift",
+        "Drag a module onto a cell. Or select one, then click a cell or use the arrow keys."
+            => "Ziehe ein Modul auf eine Zelle. Oder wähle eines aus und klicke dann eine Zelle an oder nutze die Pfeiltasten.",
+        "Modules in one cell stack from the screen edge inward: Minimap, then Drive cluster, then Race / Drift."
+            => "Module in einer Zelle stapeln sich vom Bildschirmrand nach innen: Minikarte, dann Fahranzeige, dann Rennen / Drift.",
+        "Edge margin" => "Randabstand",
+        "Module spacing" => "Modulabstand",
+        "In pixels at 1080p. Both scale with the resolution and the HUD scale."
+            => "In Pixeln bei 1080p. Beide skalieren mit der Auflösung und der HUD-Skalierung.",
+        "Reset layout" => "Layout zurücksetzen",
+        "Minimap frame" => "Kartenrahmen",
+        "Shape" => "Form",
+        "Rounded" => "Abgerundet",
+        "Circle" => "Kreis",
+        "A circle takes its diameter from the width alone." => "Ein Kreis nimmt seinen Durchmesser allein aus der Breite.",
+        "Diameter" => "Durchmesser",
+        "Width" => "Breite",
+        "Height" => "Höhe",
+        "Corner radius" => "Eckenradius",
+        "Background" => "Hintergrund",
+        "Background colour" => "Hintergrundfarbe",
+        "Background opacity" => "Deckkraft des Hintergrunds",
+        "Behind the map image. At 0 the game shows through; the far edge of a tilted map fades into it."
+            => "Hinter dem Kartenbild. Bei 0 scheint das Spiel durch; der ferne Rand einer geneigten Karte blendet hinein aus.",
+        "Reset frame" => "Rahmen zurücksetzen",
+        "Minimap rendering" => "Kartendarstellung",
+        "Show race lines" => "Rennlinien anzeigen",
+        "Advanced settings…" => "Erweiterte Einstellungen…",
+        "Everything else the map shows (road widths and colours, points of interest by category, 3D options, co-op fades) is set on the Map tab → Minimap."
+            => "Alles Weitere, was die Karte zeigt (Straßenbreiten und -farben, Orte von Interesse nach Kategorie, 3D-Optionen, Koop-Ausblendzeiten), stellst du im Karten-Tab → Minikarte ein.",
+        "Drive Cluster" => "Fahranzeige",
+        "Pill" => "Pill",
+        "Halo" => "Halo",
+        "Show engine RPM instead of KM/H label" => "Motordrehzahl statt KM/H-Beschriftung zeigen",
+        "Show engine RPM instead of MPH label" => "Motordrehzahl statt MPH-Beschriftung zeigen",
+        "The speed stays. Only the unit text changes." => "Die Geschwindigkeit bleibt. Nur die Einheit wird ersetzt.",
+        "Shift flash" => "Schaltblitz",
+        "Gear-change pulse" => "Puls beim Gangwechsel",
+        "Redline at (max rpm)" => "Roter Bereich ab (max. Drehzahl)",
+        "The shift cue is the gearbox's own shift point (Gearbox → Shift RPM), taken from the max rpm the gearbox calibrates for each car. This works with the automatic gearbox off too. To calibrate again, use the \"Clear RPM calibration\" hotkey (Setup → Hotkey) or Gearbox → \"Clear RPM calibration\"."
+            => "Das Schaltsignal ist der Schaltpunkt des Getriebes (Getriebe → Schaltdrehzahl), berechnet aus der max. Drehzahl, die das Getriebe für jedes Auto kalibriert. Das funktioniert auch bei ausgeschaltetem Automatikgetriebe. Neu kalibrieren: Hotkey „Drehzahl-Kalibrierung löschen“ (Setup → Hotkey) oder Getriebe → „Drehzahl-Kalibrierung löschen“.",
+        "Shift cue before calibration" => "Schaltsignal vor der Kalibrierung",
+        "Until the first full pull and manual upshift in a car, both use the game's max rpm and this fallback."
+            => "Bis zum ersten Ausdrehen mit manuellem Hochschalten in einem Auto nutzen beide die max. Drehzahl des Spiels und diesen Ersatzwert.",
+        "Compass" => "Kompass",
+        "Zoom when stopped" => "Zoom im Stand",
+        "Zoom when driving" => "Zoom während der Fahrt",
+        "Show co-op teammates" => "Koop-Mitspieler anzeigen",
+        "Use Dashboard map settings" => "Karteneinstellungen des Dashboards verwenden",
+        "Use Dashboard co-op settings" => "Koop-Einstellungen des Dashboards verwenden",
+        "Show shared waypoints" => "Gemeinsame Wegpunkte anzeigen",
+        "Show trails" => "Spuren anzeigen",
+        "Race Block" => "Rennanzeige",
+        "Lap delta chip" => "Rundendifferenz-Chip",
+        "Place-change colour" => "Farbe bei Platzwechsel",
+        "Green fade when you gain a place, red when you lose one."
+            => "Grün, wenn du einen Platz gewinnst, rot, wenn du einen verlierst.",
+        "Swaps to the drift counter by itself when drifting is detected. Placed as Race / Drift in Layout."
+            => "Wechselt von selbst zum Driftzähler, sobald Driften erkannt wird. Im Layout als Rennen / Drift platziert.",
+        "Update speed only every 0.5 s" => "Geschwindigkeit nur alle 0,5 s aktualisieren",
+        "Calmer to read. Gear and revs stay live." => "Ruhiger abzulesen. Gang und Drehzahl bleiben live.",
+        "Drift Counter" => "Driftzähler",
+        "Position + Gain" => "Position + Punkte",
+        "Total score" => "Gesamtpunkte",
+        "Position + Gain shows your place and the points of the last interval, counting up. Total shows the event score, which Forza also shows itself."
+            => "Position + Punkte zeigt deinen Platz und die hochzählenden Punkte des letzten Intervalls. Gesamtpunkte zeigt die Event-Punktzahl, die Forza auch selbst anzeigt.",
+        "Gain chip interval" => "Intervall des Punkte-Chips",
+        "Progress bar" => "Fortschrittsbalken",
+        "Replaces the race block automatically while you drift, in the same spot."
+            => "Ersetzt beim Driften automatisch die Rennanzeige an derselben Stelle.",
+        "Notifications" => "Benachrichtigungen",
+        "Show notifications" => "Benachrichtigungen anzeigen",
+        "Gearbox on / off" => "Getriebe an / aus",
+        "Gearbox mode changed" => "Getriebemodus geändert",
+        "Backfire on / off" => "Fehlzündung an / aus",
+        "Calibration started / shift / done" => "Kalibrierung gestartet / schalten / fertig",
+        "ON" => "AN",
+        "OFF" => "AUS",
+        "Calibration started" => "Kalibrierung gestartet",
+        "Calibration done" => "Kalibrierung fertig",
+        "Shift at redline" => "Am Begrenzer schalten",
+
+        // ── Map tab (D67): viewer, settings mode ───────────────────────
+        // The Viewer shares the Dashboard map's settings (D73), so the page is named after both.
+        "Dashboard map & Viewer" => "Dashboard-Karte & Viewer",
+        "Follow car" => "Fahrzeug folgen",
+        // Co-op player list on the GUI maps (D105): click a teammate to follow their car.
+        "Follow" => "Folgen",
+        "Click to follow this player's car" => "Klicken, um dem Fahrzeug dieses Spielers zu folgen",
+        "Following this player. Click to follow your own car again"
+            => "Du folgst diesem Spieler. Klicken, um wieder deinem eigenen Fahrzeug zu folgen",
+        "Click to follow your own car again" => "Klicken, um wieder deinem eigenen Fahrzeug zu folgen",
+        "Allow pan and zoom" => "Verschieben und Zoomen erlauben",
+        "Drag the map to pan, scroll to zoom and Shift+drag to rotate and tilt it. The pan and zoom go back to the car once you start driving again; the rotation stays until you click the compass."
+            => "Karte ziehen zum Verschieben, scrollen zum Zoomen, Shift+Ziehen zum Drehen und Kippen. Verschiebung und Zoom springen zurück zum Fahrzeug, sobald du wieder losfährst; die Drehung bleibt, bis du auf den Kompass klickst.",
+        "Shift+drag to rotate and tilt the map. Click to reset."
+            => "Shift+Ziehen dreht und kippt die Karte. Klicken setzt sie zurück.",
+        "Back to map" => "Zurück zur Karte",
+        "Off: the map turns with the car's heading." => "Aus: Die Karte dreht sich mit der Fahrtrichtung des Fahrzeugs.",
+
+        // ── Overlay tab: module tabs, map layer settings (D63) ─────────
+        "The map follows the Dashboard map's settings." => "Die Karte folgt den Einstellungen der Dashboard-Karte.",
+        "Reset map layers" => "Kartenebenen zurücksetzen",
+        // ── Map tab: "Copy to …" (D68) and the in-race focus (D66) ─────
+        "Copy to…" => "Kopieren nach…",
+        "Overwrite this card's settings on the other map(s) with the ones shown here."
+            => "Überschreibt die Einstellungen dieser Karte auf der anderen Karte (den anderen Karten) mit den hier gezeigten.",
+        "The Minimap follows the Dashboard map's settings. Turn that off on the Minimap page to copy into it."
+            => "Die Minikarte folgt den Einstellungen der Dashboard-Karte. Schalte das auf der Seite der Minikarte aus, um hineinzukopieren.",
+        "In a race" => "Im Rennen",
+        "Other roads" => "Andere Straßen",
+        "Normal" => "Normal",
+        "Muted" => "Gedämpft",
+        "Hidden" => "Ausgeblendet",
+        "Muted colour" => "Farbe gedämpft",
+        "Muted opacity" => "Deckkraft gedämpft",
+        "Muted width" => "Breite gedämpft",
+        "Width of the muted roads relative to their normal width." => "Breite der gedämpften Straßen im Verhältnis zur normalen Breite.",
+        "Hide points of interest in a race" => "Orte von Interesse im Rennen ausblenden",
+        "Applies only in the Current race mode, while the car is in a race and a race line was detected. Otherwise the map stays as it is."
+            => "Gilt nur im Modus „Aktuelles Rennen“, solange das Fahrzeug in einem Rennen ist und eine Rennlinie erkannt wurde. Sonst bleibt die Karte unverändert.",
+        "The view options and all layer settings follow the Dashboard map. Only the map plate opacity stays its own."
+            => "Die Ansichtsoptionen und alle Ebeneneinstellungen folgen der Dashboard-Karte. Nur die Deckkraft der Kartenplatte bleibt eigenständig.",
+        "No Forza Horizon 6 install found. Roads, points of interest and race lines need it."
+            => "Keine Forza-Horizon-6-Installation gefunden. Straßen, Orte von Interesse und Rennlinien brauchen sie.",
+        "Loading map layers…" => "Kartenebenen werden geladen…",
+        "Map layers loaded" => "Kartenebenen geladen",
+        "Map layers failed:" => "Kartenebenen fehlgeschlagen:",
+        "Metres from the centre of the map to its edge." => "Meter von der Kartenmitte bis zum Rand.",
+        "Image" => "Bild",
+        "Satellite image" => "Satellitenbild",
+        "Opacity" => "Deckkraft",
+        "Brightness" => "Helligkeit",
+        "Saturation" => "Sättigung",
+        "Approximate: the app can't desaturate the image, so a grey veil stands in for it."
+            => "Näherung: Die App kann das Bild nicht entsättigen, daher liegt ein grauer Schleier darüber.",
+        "Map plate opacity" => "Deckkraft der Kartenplatte",
+        "A plate behind the minimap's image; the far edge of a tilted map fades into it. Not the same as the General tab's Plate opacity."
+            => "Eine Platte hinter dem Bild der Minikarte; der ferne Rand einer geneigten Karte blendet in sie über. Nicht dasselbe wie die Plattendeckkraft im Reiter Allgemein.",
+        "View mode" => "Ansicht",
+        "Flat" => "Flach",
+        "Tilted" => "Geneigt",
+        "3D" => "3D",
+        "Uses your graphics card; falls back to Tilted if it isn't supported."
+            => "Nutzt deine Grafikkarte; fällt auf Geneigt zurück, wenn sie das nicht unterstützt.",
+        "Only for the Tilted view: the 3D view sets the line widths itself."
+            => "Nur für die geneigte Ansicht: Die 3D-Ansicht bestimmt die Linienbreiten selbst.",
+        "Loading terrain…" => "Gelände wird geladen…",
+        "3D not available:" => "3D nicht verfügbar:",
+        "3D (experimental)" => "3D (experimentell)",
+        "Allow 3D on Windows" => "3D unter Windows erlauben",
+        "The 3D map has not been tested on Windows yet. Tick this to try it; if the map misbehaves, untick it to get the Tilted view back."
+            => "Die 3D-Karte wurde unter Windows noch nicht getestet. Aktiviere das Kästchen zum Ausprobieren; wenn die Karte sich komisch verhält, deaktiviere es, um die geneigte Ansicht zurückzubekommen.",
+        "switched off on Windows until you allow it above" => "unter Windows ausgeschaltet, bis du es oben erlaubst",
+        "no Forza Horizon 6 install found (the terrain comes from the game files)"
+            => "keine Forza-Horizon-6-Installation gefunden (das Gelände stammt aus den Spieldateien)",
+        "this system has no 3D map renderer" => "dieses System hat keinen 3D-Kartenrenderer",
+        "Road height" => "Straßenhöhe",
+        "Node heights" => "Knotenhöhen",
+        "On the terrain" => "Auf dem Gelände",
+        "Where the roads get their height. Node heights: bridges and ramps float at the height the game's road network has. On the terrain: every road is laid on the ground. Cross-country is always laid on the ground, jumps are a taut string between take-off and landing."
+            => "Woher die Straßen ihre Höhe bekommen. Knotenhöhen: Brücken und Rampen schweben auf der Höhe, die das Straßennetz des Spiels vorgibt. Auf dem Gelände: Jede Straße liegt auf dem Boden. Querfeldein liegt immer auf dem Boden, Sprünge sind eine gespannte Schnur zwischen Absprung und Landung.",
+        "Deck thickness" => "Fahrbahndicke",
+        "How thick the road bodies are. 0 = paper-thin ribbons."
+            => "Wie dick die Straßenkörper sind. 0 = hauchdünne Bänder.",
+        "Height exaggeration" => "Höhenüberhöhung",
+        "Stretches the hills and valleys; 1 = true to scale."
+            => "Streckt Hügel und Täler; 1 = maßstabsgetreu.",
+        "Hill shading" => "Hangschattierung",
+        "Light and shadow on the slopes over the satellite image."
+            => "Licht und Schatten an den Hängen über dem Satellitenbild.",
+        "Car marker" => "Fahrzeugmarker",
+        "Arrow" => "Pfeil",
+        "Car orientation" => "Fahrzeuglage",
+        "Tilts your 3D car or arrow, and your teammates', with the pitch and roll the game reports, so it sits on slopes and banks into corners. Off: it only turns with the heading."
+            => "Neigt dein 3D-Fahrzeug bzw. deinen Pfeil und die deiner Mitspieler mit Nick- und Rollwinkel aus dem Spiel, sodass es an Hängen auf der Straße liegt und sich in Kurven neigt. Aus: es dreht sich nur mit der Fahrtrichtung.",
+        "How your car is drawn in the 3D view: a 3D arrow or a small car model. Both sit at the car's real position and height, also in tunnels."
+            => "Wie dein Fahrzeug in der 3D-Ansicht gezeichnet wird: als 3D-Pfeil oder als kleines Automodell. Beide sitzen an der echten Position und Höhe des Fahrzeugs, auch in Tunneln.",
+        "Angle" => "Winkel",
+        "Perspective" => "Perspektive",
+        "The eye distance for a view as tall as the HUD minimap (136 px). A taller map scales it, so both maps look alike. Smaller = stronger perspective."
+            => "Der Augenabstand für eine Ansicht so hoch wie die HUD-Minikarte (136 px). Eine höhere Karte skaliert ihn, damit beide Karten gleich aussehen. Kleiner = stärkere Perspektive.",
+        "Car position" => "Fahrzeugposition",
+        "Where the car sits on the map's height: 0 % = top, 100 % = bottom."
+            => "Wo das Fahrzeug auf der Kartenhöhe sitzt: 0 % = oben, 100 % = unten.",
+        "Thinner lines in the distance" => "Dünnere Linien in der Ferne",
+        "Race lines" => "Rennlinien",
+        "Race line style" => "Rennlinien-Stil",
+        "Line" => "Linie",
+        "Race road only" => "Nur die Rennstraße",
+        "Road: the race is drawn as a road of its own in the race colour (outline, rounded ends, as wide as a highway); in 3D a real road at the race's own heights. Line: a thin line on top of the map."
+            => "Straße: Das Rennen wird als eigene Straße in der Rennfarbe gezeichnet (Umrandung, runde Enden, so breit wie eine Autobahn); in 3D eine echte Straße in den Höhen des Rennens. Linie: eine dünne Linie über der Karte.",
+        "Only for the Line style: a race road has its own width and is opaque."
+            => "Nur für den Stil Linie: Eine Rennstraße hat eine eigene Breite und ist deckend.",
+        "In a race, nothing of the road network is drawn, only the race road. Needs the Road style; with the Line style it hides the other roads instead."
+            => "In einem Rennen wird nichts vom Straßennetz gezeichnet, nur die Rennstraße. Braucht den Stil Straße; beim Stil Linie werden stattdessen die anderen Straßen ausgeblendet.",
+        "Limits how often the Dashboard map takes the car's position and heading. Off = every frame."
+            => "Begrenzt, wie oft die Dashboard-Karte Position und Fahrtrichtung des Autos übernimmt. Aus = jedes Bild.",
+        "Map image" => "Kartenbild",
+        "Builds the map image again, at the quality above." => "Erstellt das Kartenbild neu, in der oben eingestellten Qualität.",
+        "Deletes the cached map images and builds them again." => "Löscht die zwischengespeicherten Kartenbilder und erstellt sie neu.",
+        "Show everything and fade the trails like the Dashboard map does." => "Alles anzeigen und die Spuren wie die Dashboard-Karte ausblenden.",
+        "Current race is a best guess from where the car is and which way it drives: the game doesn't say which race it is. Nearest and Near use the search radius."
+            => "Aktuelles Rennen ist eine Schätzung aus Position und Fahrtrichtung des Fahrzeugs: Das Spiel verrät nicht, um welches Rennen es geht. Nächste und In der Nähe nutzen den Suchradius.",
+        "Show" => "Anzeigen",
+        "Search radius" => "Suchradius",
+        "Line width" => "Linienbreite",
+        "Race colour" => "Rennfarbe",
+        "Start / finish marks" => "Start-/Zielmarken",
+        "Road" => "Straße",
+        "Highway" => "Autobahn",
+        "Off-road" => "Gelände",
+        "Other" => "Sonstige",
+        "Trail" => "Pfad",
+        "Cross-country" => "Querfeldein",
+        "Tunnel" => "Tunnel",
+        "Jump line" => "Sprunglinie",
+        "Roads" => "Straßen",
+        "Show roads" => "Straßen anzeigen",
+        "Scale width with zoom" => "Breite mit dem Zoom skalieren",
+        "On: the line width follows the zoom, kept between the minimum and maximum. Off: one fixed width."
+            => "An: Die Linienbreite folgt dem Zoom, zwischen Minimum und Maximum. Aus: eine feste Breite.",
+        "Road width" => "Straßenbreite",
+        "How wide a road is drawn in metres at the map's scale, before the minimum and maximum."
+            => "Wie breit eine Straße in Metern im Maßstab der Karte gezeichnet wird, vor Minimum und Maximum.",
+        "Minimum width" => "Mindestbreite",
+        "Maximum width" => "Höchstbreite",
+        "The thinnest a road gets when zoomed far out." => "So schmal wird eine Straße höchstens, wenn weit herausgezoomt ist.",
+        "The widest a road gets when zoomed far in. Raise it to let roads keep growing with the zoom."
+            => "So breit wird eine Straße höchstens, wenn weit hineingezoomt ist. Erhöhe den Wert, damit Straßen mit dem Zoom weiter wachsen.",
+        "Outline width" => "Breite der Umrandung",
+        "Extra width of the dark outline under each line." => "Zusätzliche Breite der dunklen Umrandung unter jeder Linie.",
+        "Outline opacity" => "Deckkraft der Umrandung",
+        "By type" => "Nach Typ",
+        "Reset road styles" => "Straßenstile zurücksetzen",
+        "Outline colour" => "Farbe der Umrandung",
+        "Line colour" => "Linienfarbe",
+        "Width relative to the base road width" => "Breite relativ zur Grundbreite der Straße",
+        "Line pattern" => "Linienmuster",
+        "Outline" => "Umrandung",
+        "Touge event" => "Touge-Event",
+        "Landmark" => "Wahrzeichen",
+        "Barn find" => "Scheunenfund",
+        "Barn find hint" => "Scheunenfund-Hinweis",
+        "Car meet" => "Autotreff",
+        "Drag meet" => "Dragster-Treff",
+        "Drag meet finish" => "Ziel des Dragster-Treffs",
+        "Estate" => "Anwesen",
+        "Estate entrance" => "Anwesen-Eingang",
+        "Fast travel" => "Schnellreise",
+        "Festival site" => "Festivalgelände",
+        "House" => "Haus",
+        "Aftermarket spot" => "Tuning-Werkstatt",
+        "Aftermarket board" => "Tuning-Tafel",
+        "Horizon job" => "Horizon-Job",
+        "Horizon story" => "Horizon-Story",
+        "Job start" => "Job-Start",
+        "Story start" => "Story-Start",
+        "Special event" => "Spezial-Event",
+        "Rush event" => "Rush-Event",
+        "Showcase" => "Showcase",
+        "Treasure car" => "Schatz-Auto",
+        "Upsell" => "Upsell",
+        "Piñata" => "Piñata",
+        "Eliminator" => "Eliminator",
+        "Parking area" => "Parkplatz",
+        "Creature zone" => "Tierzone",
+        "Flag rush flag" => "Flaggenjagd-Flagge",
+        "Treasure chest board" => "Schatztruhen-Tafel",
+        "Treasure chest" => "Schatztruhe",
+        "Current treasure chest" => "Aktuelle Schatztruhe",
+        "XP board" => "XP-Tafel",
+        "Mascot" => "Maskottchen",
+        "Speed trap" => "Blitzer",
+        "Speed zone" => "Geschwindigkeitszone",
+        "Trailblazer" => "Trailblazer",
+        "Drift zone" => "Driftzone",
+        "Danger sign" => "Gefahrenschild",
+        "Points of interest" => "Orte von Interesse",
+        "Show points of interest" => "Orte von Interesse anzeigen",
+        "Icon size" => "Symbolgröße",
+        "Max zoom radius" => "Max. Zoomradius",
+        "Points of interest are hidden while the map shows a radius larger than this. The Dashboard map's default radius (5 km) is above the default 3 km, so zoom in to see them."
+            => "Orte von Interesse sind ausgeblendet, solange die Karte einen größeren Radius zeigt. Der Standardradius der Dashboard-Karte (5 km) liegt über den standardmäßigen 3 km: Zoome hinein, um sie zu sehen.",
+        "Only near the car" => "Nur in der Nähe des Fahrzeugs",
+        "Radius around the car" => "Radius um das Fahrzeug",
+        "Gate lines" => "Torlinien",
+        "Draw the line across the road for speed zones, trailblazers, drift zones and speed traps."
+            => "Zeichnet die Linie quer über die Straße für Geschwindigkeitszonen, Trailblazer, Driftzonen und Blitzer.",
+        "None" => "Keine",
+        "All" => "Alle",
+        "Off" => "Aus",
+        "Current race" => "Aktuelles Rennen",
+        "Nearest line" => "Nächste Linie",
+        "Near the car" => "In der Nähe",
+        "All lines" => "Alle Linien",
+        "Solid" => "Durchgezogen",
+        "Dashed" => "Gestrichelt",
+        "Short dashes" => "Kurze Striche",
+        "Dotted" => "Gepunktet",
+        "Events" => "Events",
+        "Zones and gates" => "Zonen und Tore",
+        "Places" => "Orte",
+        "Collectibles" => "Sammelobjekte",
+
+        // ── First-run setup guide (I17) ──
+        "Setup guide" => "Einrichtungsassistent",
+        "Skip the guide" => "Assistent überspringen",
+        "Getting started" => "Erste Schritte",
+        "Open setup guide" => "Einrichtungsassistent öffnen",
+        "Skip" => "Überspringen",
+        "Next" => "Weiter",
+        "Finish" => "Fertig",
+        "Step" => "Schritt",
+        "Forza in-game setup" => "Einrichtung in Forza",
+        "The basics" => "Die Grundlagen",
+        "On" => "An",
+        "Enter in the game" => "Im Spiel eingeben",
+        "Packets arriving?" => "Kommen Pakete an?",
+        "Mini-Settings" => "Mini-Einstellungen",
+        "Where to find things" => "Wo du was findest",
+        "Open Setup" => "Setup öffnen",
+        "(game and app on the same PC)" => "(Spiel und App auf demselben PC)",
+        "(the app's listen port)" => "(der Listen-Port der App)",
+        "The app reads car names and the map from your Forza Horizon 6 install. Steam installs are found automatically. Otherwise start the game and use \"Detect from running game\", or enter the folder yourself."
+            => "Die App liest Fahrzeugnamen und die Karte aus deiner Forza-Horizon-6-Installation. Steam-Installationen werden automatisch gefunden. Sonst starte das Spiel und nutze \"Aus laufendem Spiel erkennen\" oder gib den Ordner selbst ein.",
+        "Hotkeys and the gearbox / backfire key presses need access to your keyboard devices. Green means ready. If something is red, run the commands, then log out and back in and press Re-check."
+            => "Hotkeys und die Tastendrücke für Getriebe / Backfire brauchen Zugriff auf deine Tastaturgeräte. Grün heißt bereit. Ist etwas rot, führe die Befehle aus, melde dich ab und wieder an und drücke Erneut prüfen.",
+        "Hotkeys and the overlay only react while the game window is in front, so the app has to read the active window. Pick the method for your desktop, then press Test: it shows the window that is active right now. Use Detect and click into the game within 3 seconds to set the game window title."
+            => "Hotkeys und das Overlay reagieren nur, solange das Spielfenster vorne ist, daher muss die App das aktive Fenster lesen. Wähle die Methode für deinen Desktop und drücke Test: Es zeigt das gerade aktive Fenster. Mit Detect und einem Klick ins Spiel innerhalb von 3 Sekunden setzt du den Spielfenstertitel.",
+        "Hotkeys and the overlay only react while the game window is in front. Press Test: it shows the window that is active right now. Use Detect and click into the game within 3 seconds to set the game window title."
+            => "Hotkeys und das Overlay reagieren nur, solange das Spielfenster vorne ist. Drücke Test: Es zeigt das gerade aktive Fenster. Mit Detect und einem Klick ins Spiel innerhalb von 3 Sekunden setzt du den Spielfenstertitel.",
+        "Tell the game to send its telemetry to this app. In Forza Horizon 6 open SETTINGS > HUD AND GAMEPLAY > Data Out and set the three values below. The screenshot shows how that screen looks."
+            => "Sage dem Spiel, dass es seine Telemetrie an diese App sendet. Öffne in Forza Horizon 6 EINSTELLUNGEN > HUD UND GAMEPLAY > Data Out und stelle die drei Werte unten ein. Der Screenshot zeigt, wie dieser Bildschirm aussieht.",
+        "Game on another PC? Use this PC's address instead:" => "Spiel auf einem anderen PC? Nimm stattdessen die Adresse dieses PCs:",
+        "Game on another PC? Use this PC's address in your network instead." => "Spiel auf einem anderen PC? Nimm stattdessen die Adresse dieses PCs in deinem Netzwerk.",
+        "The port in the screenshot is only an example: the game's port must equal the listen port above. Change it under Setup → Network."
+            => "Der Port im Screenshot ist nur ein Beispiel: Der Port im Spiel muss dem Listen-Port oben entsprechen. Ändere ihn unter Setup → Network.",
+        "Waiting for packets. Check the three values in the game, then start driving."
+            => "Warte auf Pakete. Prüfe die drei Werte im Spiel und fahre dann los.",
+        "That is the setup done. A few pointers for getting around:" => "Die Einrichtung ist fertig. Ein paar Hinweise zur Orientierung:",
+        "The cog wheel at the right end of the status bar (bottom) opens the Mini-Settings: the settings of the tab you are on, such as a Dashboard widget's options."
+            => "Das Zahnrad am rechten Ende der Statusleiste (unten) öffnet die Mini-Einstellungen: die Einstellungen des aktuellen Tabs, etwa die Optionen eines Dashboard-Widgets.",
+        "Setup → Hotkey lists every key binding, for example Hide HUD. Click a binding and press a key; Esc cancels, Backspace clears it."
+            => "Setup → Hotkey listet alle Tastenbelegungen auf, zum Beispiel HUD ausblenden. Klicke eine Belegung an und drücke eine Taste; Esc bricht ab, Rücktaste löscht sie.",
+        "Dashboard: your live telemetry widgets. Edit the layout to move or add them."
+            => "Dashboard: deine Live-Telemetrie-Widgets. Bearbeite das Layout, um sie zu verschieben oder hinzuzufügen.",
+        "Overlay: the in-game HUD (minimap, drive cluster, race block)."
+            => "Overlay: das HUD im Spiel (Minimap, Fahrzeuganzeige, Rennblock).",
+        "Map: the full-size map and all map settings." => "Karte: die Vollbild-Karte und alle Karteneinstellungen.",
+        "Setup → Profiles: save and switch whole setups." => "Setup → Profiles: ganze Einrichtungen speichern und wechseln.",
+        "This guide: Setup → Getting started → Open setup guide."
+            => "Dieser Assistent: Setup → Erste Schritte → Einrichtungsassistent öffnen.",
+
+        // ── Navigation sidebar (phase L, D108) ─────────────────────────
+        "Route" => "Route",
+        "Time" => "Zeit",
+        "Middle-click the map to set a destination" => "Klicke mit der mittleren Maustaste auf die Karte, um ein Ziel zu setzen",
+        "Left click: place a marker (co-op)" => "Linksklick: Markierung setzen (Koop)",
+        "Middle click: route to this point" => "Mittelklick: Route zu diesem Punkt",
+        "Right click: menu" => "Rechtsklick: Menü",
+        "Shift+drag: rotate and tilt" => "Umschalt+Ziehen: drehen und neigen",
+        "N: show or hide this panel" => "N: dieses Panel ein- oder ausblenden",
+        "Set marker here" => "Markierung hier setzen",
+        "Navigate here" => "Hierhin navigieren",
+        "Clear marker" => "Markierung löschen",
+        "Waiting for the car's position" => "Warte auf die Position des Fahrzeugs",
+        "Calculating…" => "Berechne…",
+        "On route" => "Auf der Route",
+        "No road near the car" => "Keine Straße in der Nähe des Fahrzeugs",
+        "No road near the destination" => "Keine Straße in der Nähe des Ziels",
+        "No route with these road types" => "Keine Route mit diesen Straßentypen",
+        "No road data (needs your Forza Horizon 6 install)" => "Keine Straßendaten (braucht deine Forza-Horizon-6-Installation)",
+        "Paused during a race" => "Während eines Rennens pausiert",
+        "Arrived" => "Angekommen",
+        "Set by" => "Gesetzt von",
+        "you" => "dir",
+        "a teammate" => "einem Mitspieler",
+        "Clear route" => "Route löschen",
+        "Clear for everyone" => "Für alle löschen",
+        "Clear route for everyone" => "Route für alle löschen",
+        "Clears the destination for the whole co-op room." => "Löscht das Ziel für den ganzen Koop-Raum.",
+        "Clears the destination and its route." => "Löscht das Ziel und seine Route.",
+        "Dirt" => "Schotter",
+        "Jumps" => "Sprünge",
+        "Paved roads, also those of another or unknown type. Tunnels are driven when Road or Highway is on. Turnaround crossovers are never used."
+            => "Asphaltstraßen, auch die von anderem oder unbekanntem Typ. Tunnel werden befahren, wenn Straße oder Autobahn an ist. Wendeübergänge werden nie benutzt.",
+        "Motorways. Tunnels are also driven when this is on." => "Autobahnen. Tunnel werden auch befahren, wenn das an ist.",
+        "Dirt and off-road tracks." => "Schotter- und Geländepisten.",
+        "Small game trails." => "Kleine Wildpfade.",
+        "Straight lines across country that are no road in the game." => "Gerade Linien querfeldein, die im Spiel keine Straße sind.",
+        "One-way jumps from take-off to landing. Risky: the landing can wreck the car."
+            => "Einbahn-Sprünge vom Absprung zur Landung. Riskant: Die Landung kann das Auto zerlegen.",
+        "Preference" => "Vorliebe",
+        "Faster roads" => "Schnelle Straßen",
+        "More curves" => "Mehr Kurven",
+        "Left: the fastest roads. Right: the most winding roads. The route is always the best one under the chosen road types."
+            => "Links: die schnellsten Straßen. Rechts: die kurvigsten Straßen. Die Route ist immer die beste unter den gewählten Straßentypen.",
+        "Not in a co-op session" => "Nicht in einer Koop-Sitzung",
+        "Share my destination" => "Mein Ziel teilen",
+        "Follow shared destinations" => "Geteilten Zielen folgen",
+        "Send the destination you set to your co-op room. Teammates who follow shared destinations navigate there with your road types."
+            => "Sendet das Ziel, das du setzt, an deinen Koop-Raum. Mitspieler, die geteilten Zielen folgen, navigieren mit deinen Straßentypen dorthin.",
+        "Navigate to the destination a teammate sets, from your own car and with their road types. Off: keep your own destination."
+            => "Navigiere zum Ziel, das ein Mitspieler setzt, von deinem eigenen Auto aus und mit seinen Straßentypen. Aus: behalte dein eigenes Ziel.",
+        "Shared destination set by" => "Geteiltes Ziel gesetzt von",
+        "No shared destination" => "Kein geteiltes Ziel",
+        "Navigation: the route, road types and the map controls (N)."
+            => "Navigation: die Route, Straßentypen und die Kartensteuerung (N).",
+        "Zoom to the treasure chest" => "Auf die Schatztruhe zoomen",
+        "The map's settings (the Dashboard map & Viewer page of the Map tab)."
+            => "Die Karteneinstellungen (die Seite Dashboard-Karte & Viewer im Karten-Tab).",
+        "Navigation route" => "Navigationsroute",
+        "Draw the navigation route and the destination pin on this map. It is hidden during a race."
+            => "Zeichnet die Navigationsroute und den Zielpunkt auf dieser Karte. Während eines Rennens ist sie ausgeblendet.",
+        "1× is a little wider than a highway." => "1× ist etwas breiter als eine Autobahn.",
 
         _ => return None,
     })

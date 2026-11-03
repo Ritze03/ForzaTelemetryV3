@@ -45,8 +45,8 @@ while nobody drained it. A `sync_channel` was rejected because `try_send` drops 
 3. Calls each **UI-side** listener's `update(&pkt, …)` (see table below).
 4. Relays the packet to Co-Op (`self.coop.push_local`), then calls
    `self.telemetry.update(pkt)` (`src/telemetry.rs`), which stores `latest`, flips
-   `is_connected`, and recomputes `packets_per_sec` once per second of wall-clock
-   elapsed.
+   `is_connected`. (`packets_per_sec` comes from the listener thread's own counter, copied in
+   each frame with the rest of `ListenerView`.)
 
 `self.last_packet_time` drives a 2-second-since-last-packet disconnect check right after
 the drain loop.
@@ -129,6 +129,19 @@ key timing. Commands:
 
 Four sender methods wrap these: `press` (untracked, fire-and-forget), `press_tracked`/
 `hold_tracked` (tracked — see below), and `release`.
+
+**No uinput access (Linux).** The worker builds the virtual device (`Forza Telemetry Input`,
+KEY_W/E/Q) in a retry loop and publishes a three-state readiness (`AtomicU8`: pending / ready /
+failed; `InputSender::uinput_ready() -> Option<bool>`, `None` = pending). On failure it logs
+**once** (`uinput: could not create virtual device: …`), discards queued commands, waits 2 s
+(or until `InputSender::recheck()`, sent as `Cmd::Retry` from Setup → Re-check) and tries again;
+it exits only when every sender is dropped. While the state isn't *ready* the sender methods drop
+their key at once, so nothing queues up and the UI thread can't block on the full channel.
+`new()` waits up to 500 ms for the first answer. The Input Permissions "Key input" light and the
+permission modal read this readiness (`input::uinput_ok`), not just `open("/dev/uinput")`.
+*Why:* the worker used to try once and end, so key sending stayed dead after the user fixed the
+permission, while an open-only check could show green with sending dead. See the "What the lights
+mean" note in [[hotkeys]].
 
 **Echo tracking.** Because the synthetic key press makes the game report a fake `accel`
 value back in the very telemetry the app is reading, `EchoWindow` (`src/input.rs:11`) —

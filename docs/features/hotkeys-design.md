@@ -34,7 +34,7 @@ other apps.
   receives the key. Users pick keys the game doesn't use for driving (G, B are safe).
 - Perfect focus detection on every Wayland compositor. We ship Hyprland + X11 + GNOME (via
   the Window Calls extension) + a Custom command escape hatch; others fall back to the
-  Custom option or the telemetry-live gate.
+  Custom option (D101: the telemetry-live gate no longer exists, see below).
 - Hot-plugged keyboards mid-session on Linux (enumerated at startup only).
 - `F10` map-orientation hotkey — **removed** (the mini-settings checkbox remains).
 - `F11` fullscreen — stays hardcoded (Windows-only, not requested for rebinding).
@@ -52,10 +52,11 @@ We sidestep both:
   **read** `/dev/input/event*`, which sits *below* the display server — so it works
   identically on X11, Wayland, and console. This reads, it doesn't grab, so Wayland's
   restriction doesn't apply. No new dependency, no new permission, no D-Bus/portal.
-- **Where they fire:** global hotkeys fire when the game *or* our own window is focused, and
-  are ignored for any third app. "Our window focused" is known instantly from egui; "game
-  focused" comes from either telemetry-is-live or a user-chosen window-focus method. No
-  Wayland-blocked OS foreground query is required in the common path.
+- **Where they fire:** *(D101 supersedes the original design, which fired when the game **or**
+  our own window was focused and took "game focused" from telemetry-is-live or a window-focus
+  method.)* Global hotkeys fire only while the game window is focused, per the user-chosen
+  window-focus method (fail-open on a query error); our own window and third apps are ignored.
+  The method is the only thing that knows; see section 7.
 
 ## 4. Architecture overview
 
@@ -101,6 +102,9 @@ enum HotkeyAction {
     ToggleBackfire,  // Global   — flips config.backfire_enabled
     MiniSettings,    // AppFocused — flips page_settings_open
     DashboardEdit,   // AppFocused — flips config.dashboard_edit_mode (Dashboard tab only)
+    // (also ResetCalibration = "Clear RPM calibration", Global, F; ClearGearMap, Global, no default)
+    HideHud,         // Global, H — toggles the listener's runtime hud_hidden (not config);
+                     // ignored while the overlay is disabled. See features/overlay.md
 }
 
 enum HotkeyScope { Global, AppFocused }   // returned by HotkeyAction::scope(); decides the path
@@ -112,19 +116,21 @@ enum HotKey { A, B, /* … */ Key0, /* … */ F1, /* … */ Space, Esc, /* … *
 
 struct HotkeyBinding { ctrl: bool, alt: bool, shift: bool, sup: bool, key: HotKey }
 
-enum GateMode { TelemetryLive, WindowFocus }        // global-hotkey gating
-enum FocusMethod { Hyprland, X11, Custom, Gnome }    // how WindowFocus reads active window;
+enum FocusMethod { Hyprland, X11, Custom, Gnome }    // how the detector reads the active window;
                                                      // append only: serde names are stored
                                                      // (Windows ignores: uses GetForegroundWindow)
 
 struct HotkeyConfig {
     #[serde(default)] bindings: HashMap<HotkeyAction, HotkeyBinding>, // defaults G, B, Ctrl+S, Ctrl+E
-    #[serde(default)] gate_mode: GateMode,           // default TelemetryLive
-    #[serde(default)] focus_method: FocusMethod,     // default Hyprland
+    // gate_mode (TelemetryLive | WindowFocus) was removed in D101; old configs still load.
+    #[serde(default)] focus_method: FocusMethod,     // default: detected from desktop on a fresh config (see settings.md); serde-missing = Hyprland
     #[serde(default)] custom_cmd: String,            // for FocusMethod::Custom
     #[serde(default)] game_match: String,            // substring, default "Forza"; Detect fills it
     #[serde(default)] input_focus_gate: bool,        // gate synthetic input on focus; default OFF
     #[serde(default)] focus_poll_hz: f32,            // shared poll rate, default 4.0, range 1–20
+    #[serde(default)] unbound: Vec<HotkeyAction>,     // deliberately cleared ("Not set"); stops
+                                                     // inject_missing_hotkeys re-adding the default.
+                                                     // Edit via HotkeyConfig::bind / unbind only
 }
 ```
 
@@ -174,8 +180,12 @@ a human hotkey tap, so a non-issue.
 
 One `FocusDetector` + **one poll thread** at `focus_poll_hz`, caching "is the game focused?"
 in an `Arc<AtomicBool>` (plus an `AtomicU8` status for the light). Two consumers read the
-same cached bool. The thread only runs when a consumer needs it (input gate on, or
-`gate_mode == WindowFocus`).
+same cached bool. The thread only runs when a consumer needs it (a global hotkey or enabled pad
+binding exists (D101, practically always), the input gate is on, or the HUD overlay is enabled
+— its focus-only option and its monitor detection need a real answer, and an idle detector
+fails open). The same thread
+also runs the overlay's monitor detection, acting only on a *confirmed* focused game, never
+the fail-open answer (see `docs/features/overlay.md`).
 
 **Methods** — each returns the active window's identifier string; `game_match` (substring,
 case-insensitive) decides the match:
@@ -209,27 +219,24 @@ reports "focused/allowed" so input and hotkeys keep working, and the settings li
 **red** so the failure is visible rather than silently blocking the feature.
 
 ### Consumer 1 — global hotkey gate (listener thread)
-Global hotkeys fire when **either** the game **or** our own telemetry window is focused, and
-are ignored when a third app is focused. On each global action received
-(`our_window_focused` / `wants_keyboard_input` are pushed over from the UI each frame, since
-only egui knows them):
+*Changed in D101.* Global hotkeys fire **only while the game window is focused** per the
+detector; our own window and third apps are ignored. (The original design fired in our own
+window too, and had a `TelemetryLive` mode — `telemetry.is_connected` — that could not exclude a
+third app while data still flowed; both are gone. *Why:* the user wants hotkeys recognised only
+when the game window is active. The `gate_mode` setting that chose between the two modes was
+removed.) On each global action received
+(`our_window_focused` / `wants_keyboard_input` are still pushed over from the UI each frame):
 
 ```rust
-let allow = if our_window_focused {
-    !ctx.wants_keyboard_input()   // our app focused: fire unless a text field has keyboard focus
-} else {
-    game_focus_signal             // not our app: fire only if the game is focused
-};
+// app::global_hotkey_allowed; game_focused = FocusDetector::hotkeys_ok()
+let allow = game_focused && !(our_window_focused && wants_text);
 ```
 
-`game_focus_signal` is mode-dependent:
-- `TelemetryLive`: `telemetry.is_connected` — no window query (can't exclude a third app while
-  data still flows with auto-pause off; the accepted weakness of this mode).
-- `WindowFocus`: `cached_focus` — the detector's active-window match; excludes third apps.
-
-Our-window-focused is now a *sufficient* condition, so binds work while you're in the app;
-the `wants_keyboard_input()` guard keeps `G` typing normally into a text field instead of
-toggling gearbox.
+`hotkeys_ok()` is fail-open on a query error, and false for our own window (whose title
+contains the default match "Forza"; see [[hotkeys]] "Focus detection"). The text-field guard
+stays as a safety net so `G` typed into a field of ours never toggles the gearbox, for a
+detector that can't tell our window from the game's. Fail-open is deliberate: a user whose
+compositor has no working method keeps their hotkeys (and sees the red status in Setup).
 
 ### Consumer 2 — synthetic input gate (`input.rs`)
 `InputSender` gains an optional focus gate (`Arc<AtomicBool>` clone + `input_focus_gate`
@@ -244,11 +251,14 @@ today's behaviour; opt-in).
   - **In-app:** Mini-settings, Dashboard edit.
 - Each row: `action name | current combo ("Ctrl + E") | [Rebind]`. Click Rebind → row shows
   "Press a key…", captures the next non-modifier key + held modifiers from **egui input**
-  (the app is focused during rebind, so no backend involved), Esc cancels. Simple conflict
-  warning if two bindings collide.
+  (the app is focused during rebind, so no backend involved), Esc cancels. Several actions
+  may share one combo (all fire; no conflict warning, see [[hotkeys]]).
+  - *Update (overlay work):* **Backspace clears** a binding ("Not set"). The capture for
+    every rebind button (Setup → Hotkey and the Overlay tab's Hide HUD row) is one
+    `ForzaApp::capture_rebind` in `app.rs`, run before the tabs; see [[hotkeys]].
 - **Detection settings:**
-  - `Gate mode` dropdown: Telemetry-live / Window-focus.
-  - When Window-focus (Linux): `Method` dropdown (Hyprland / X11 / GNOME / Custom). For GNOME,
+  - *(`Gate mode` dropdown removed in D101; the rows below are always shown.)*
+  - (Linux) `Method` dropdown (Hyprland / X11 / GNOME / Custom). For GNOME,
     a hint naming the Window Calls extension plus an "Active window" **Test** button showing
     the query result (or gdbus's error). For Custom, a command text field with a **live preview** — "Active window: X — matches ✓/✗" — refreshed
     on a "Test" click and while the page is open (at the poll rate).

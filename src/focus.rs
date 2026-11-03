@@ -1,14 +1,19 @@
 //! Shared "is the game the focused window?" detector. One poll thread updates a
-//! cached AtomicBool at the configured rate; the hotkey gate and the synthetic-
-//! input gate both read it. Fail-open: if a query errors, we report focused=true
-//! and surface a red status, so the feature never silently blocks. See spec.
+//! cached AtomicBool at the configured rate; the global-hotkey gate (D101), the synthetic-
+//! input gate and the overlay's focus option all read it. Fail-open: if a query errors, we
+//! report focused=true and surface a red status, so the feature never silently blocks.
+//!
+//! The same thread also runs the HUD overlay's **monitor detection** (D18) while the
+//! overlay is on: it takes the monitor only while the game is the focused window and
+//! pushes changes to the overlay through an [`OutputSink`]. It runs here, never on the UI
+//! thread, because the UI loop stops while the game covers the window.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::config::FocusMethod;
+use crate::config::{FocusMethod, MonitorMethod};
 
 /// Status shown by the settings light.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -19,35 +24,136 @@ pub fn window_matches(active: &str, needle: &str) -> bool {
     !needle.is_empty() && active.to_lowercase().contains(&needle.to_lowercase())
 }
 
+/// The title of our own window (`main.rs`). The default `game_match` ("Forza") is a substring
+/// of it, so our own window would read as "the game" — [`Verdict::own_window`] tells them apart.
+const OWN_WINDOW_TITLE: &str = "Forza Telemetry";
+
+/// What one active-window query means (the poll thread's step, pure so it is unit-tested).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Verdict {
+    /// The cached "game focused?" — **fail-open**: true on a query error.
+    pub focused: bool,
+    /// The active window is this app's own (its title matches the game text too by default).
+    pub own_window: bool,
+    pub status: FocusStatus,
+    /// A real answer, not the fail-open one: `focused` for a successful query (monitor detection needs this).
+    pub confirmed: bool,
+}
+
+impl Verdict {
+    /// Whether a **global hotkey** may fire (D101): only while the game window is focused —
+    /// not while our own window is in front, not while a third app is. A failed query
+    /// (tool missing, bad command, unsupported platform) stays fail-open, so hotkeys keep
+    /// working where detection can't.
+    pub fn hotkeys_ok(&self) -> bool {
+        self.focused && !self.own_window
+    }
+}
+
+/// One query result → its [`Verdict`]. An `Err` is fail-open (`focused`, red status); a
+/// successful answer that is not the game is **not** an error (`focused = false`).
+pub fn evaluate(res: &Result<String, String>, game_match: &str) -> Verdict {
+    match res {
+        Ok(name) => {
+            let own_window = window_matches(name, OWN_WINDOW_TITLE);
+            let focused = window_matches(name, game_match);
+            Verdict { focused, own_window, status: FocusStatus::Ok, confirmed: focused }
+        }
+        Err(_) => Verdict { focused: true, own_window: false, status: FocusStatus::QueryFailed, confirmed: false },
+    }
+}
+
 /// Settings the poll thread reads each tick (cheap clone via Arc<Mutex>).
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct FocusParams {
     pub method: FocusMethod,
     pub custom_cmd: String,
     pub game_match: String,
     pub poll_hz: f32,
     pub enabled: bool, // false → thread idles and reports focused=true
+    /// Overlay monitor detection; `None` = off (overlay disabled).
+    pub monitor: Option<MonitorParams>,
+}
+
+/// How the overlay's monitor is found (D18); mirrors `OverlayConfig::monitor_*`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MonitorParams {
+    pub method: MonitorMethod,
+    /// [`MonitorMethod::Custom`]: run through `sh -c`, prints a monitor name.
+    pub cmd: String,
+    /// [`MonitorMethod::Fixed`]: output name; empty = the first output.
+    pub fixed: String,
+}
+
+/// Receives the overlay's target output (`None` = the first output) whenever it changes.
+/// `app.rs` wraps `OverlaySender::send(OverlayCmd::SetOutput(..))`; must not block.
+pub type OutputSink = Box<dyn Fn(Option<String>) + Send>;
+
+/// Monitor detection state, for the Overlay tab's status dot (I9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MonitorStatus {
+    /// Detection off (overlay disabled).
+    Idle,
+    /// Hyprland/Custom: the game isn't the focused window, so the monitor isn't taken.
+    WaitingForGame,
+    /// Last detection succeeded.
+    Ok,
+    /// Last detection failed (tool missing, command error, unparsable output); the last
+    /// known output is kept. See [`FocusDetector::monitor_error`].
+    Failed,
+}
+
+struct MonitorShared {
+    status: MonitorStatus,
+    error: Option<String>,
+    /// Last detected output: `None` = nothing detected yet, `Some(None)` = the first output.
+    detected: Option<Option<String>>,
+    /// What the sink was last given; reset when a new sink is attached so it gets the
+    /// current output on the next tick.
+    sent: Option<Option<String>>,
+    sink: Option<OutputSink>,
 }
 
 /// Cached detector state shared with consumers.
 pub struct FocusDetector {
     focused: Arc<AtomicBool>,
+    hotkeys_ok: Arc<AtomicBool>,
     status: Arc<AtomicU8>,
     params: Arc<Mutex<FocusParams>>,
+    monitor: Arc<Mutex<MonitorShared>>,
 }
 
 impl FocusDetector {
     pub fn new(params: FocusParams) -> Self {
         let focused = Arc::new(AtomicBool::new(true)); // fail-open default
+        let hotkeys_ok = Arc::new(AtomicBool::new(true)); // fail-open default
         let status = Arc::new(AtomicU8::new(FocusStatus::Idle as u8));
         let params = Arc::new(Mutex::new(params));
-        let d = FocusDetector { focused: focused.clone(), status: status.clone(), params: params.clone() };
-        thread::spawn(move || poll_loop(focused, status, params));
+        let monitor = Arc::new(Mutex::new(MonitorShared {
+            status: MonitorStatus::Idle,
+            error: None,
+            detected: None,
+            sent: None,
+            sink: None,
+        }));
+        let d = FocusDetector {
+            focused: focused.clone(),
+            hotkeys_ok: hotkeys_ok.clone(),
+            status: status.clone(),
+            params: params.clone(),
+            monitor: monitor.clone(),
+        };
+        thread::spawn(move || poll_loop(focused, hotkeys_ok, status, params, monitor));
         d
     }
 
     /// Latest cached "game focused?" (fail-open true when disabled/erroring).
     pub fn focused(&self) -> bool { self.focused.load(Ordering::Relaxed) }
+    /// Whether a global hotkey may fire right now (D101, [`Verdict::hotkeys_ok`]): the game
+    /// window is focused and it is not our own window. Fail-open like [`focused`](Self::focused).
+    pub fn hotkeys_ok(&self) -> bool {
+        self.hotkeys_ok.load(Ordering::Relaxed)
+    }
     pub fn status(&self) -> FocusStatus {
         match self.status.load(Ordering::Relaxed) {
             0 => FocusStatus::Ok, 1 => FocusStatus::ToolMissing,
@@ -63,30 +169,163 @@ impl FocusDetector {
         let p = self.params.lock().unwrap().clone();
         query_active_window(p.method, &p.custom_cmd)
     }
+
+    /// Attach (`Some`) or detach the overlay's output sink. A new sink is sent the last
+    /// known output on the next poll tick.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))] // the overlay exists on Linux and Windows only
+    pub fn set_output_sink(&self, sink: Option<OutputSink>) {
+        let mut m = lock(&self.monitor);
+        m.sink = sink;
+        m.sent = None;
+    }
+
+    /// Last detected overlay output (`None` = none yet, or the first output).
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    pub fn monitor_output(&self) -> Option<String> {
+        lock(&self.monitor).detected.clone().flatten()
+    }
+
+    pub fn monitor_status(&self) -> MonitorStatus {
+        lock(&self.monitor).status
+    }
+
+    /// Why the last detection failed (with [`MonitorStatus::Failed`]).
+    pub fn monitor_error(&self) -> Option<String> {
+        lock(&self.monitor).error.clone()
+    }
 }
 
-fn poll_loop(focused: Arc<AtomicBool>, status: Arc<AtomicU8>, params: Arc<Mutex<FocusParams>>) {
+/// Poison-tolerant lock: the guarded state stays valid even if a holder panicked.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn poll_loop(
+    focused: Arc<AtomicBool>,
+    hotkeys_ok: Arc<AtomicBool>,
+    status: Arc<AtomicU8>,
+    params: Arc<Mutex<FocusParams>>,
+    monitor: Arc<Mutex<MonitorShared>>,
+) {
     loop {
         let p = params.lock().unwrap().clone();
         if !p.enabled {
             focused.store(true, Ordering::Relaxed);
+            hotkeys_ok.store(true, Ordering::Relaxed);
             status.store(FocusStatus::Idle as u8, Ordering::Relaxed);
+            monitor_idle(&monitor);
             thread::sleep(Duration::from_millis(250));
             continue;
         }
-        match query_active_window(p.method, &p.custom_cmd) {
-            Ok(name) => {
-                focused.store(window_matches(&name, &p.game_match), Ordering::Relaxed);
-                status.store(FocusStatus::Ok as u8, Ordering::Relaxed);
-            }
-            Err(_) => {
-                // Fail-open: allow input/hotkeys, but flag the failure.
-                focused.store(true, Ordering::Relaxed);
-                status.store(FocusStatus::QueryFailed as u8, Ordering::Relaxed);
-            }
+        // The real answer, not the fail-open one: monitor detection must only act on a
+        // confirmed "the game is focused".
+        let v = evaluate(&query_active_window(p.method, &p.custom_cmd), &p.game_match);
+        hotkeys_ok.store(v.hotkeys_ok(), Ordering::Relaxed);
+        focused.store(v.focused, Ordering::Relaxed);
+        status.store(v.status as u8, Ordering::Relaxed);
+        let game_focused = v.confirmed;
+        match &p.monitor {
+            Some(m) => monitor_tick(&monitor, m, game_focused),
+            None => monitor_idle(&monitor),
         }
         let hz = p.poll_hz.clamp(1.0, 20.0);
         thread::sleep(Duration::from_secs_f32(1.0 / hz));
+    }
+}
+
+fn monitor_idle(monitor: &Mutex<MonitorShared>) {
+    let mut s = lock(monitor);
+    s.status = MonitorStatus::Idle;
+    s.error = None;
+}
+
+/// One detection step (D18). Fixed always applies; Hyprland/Custom only run while the game
+/// is focused, since only then is the focused monitor the game's monitor. A failure keeps
+/// the last known output. The sink hears only changes.
+fn monitor_tick(monitor: &Mutex<MonitorShared>, m: &MonitorParams, game_focused: bool) {
+    let result = match m.method {
+        MonitorMethod::Fixed => Some(Ok(Some(m.fixed.trim().to_string()).filter(|s| !s.is_empty()))),
+        _ if !game_focused => None,
+        method => Some(query_monitor(method, &m.cmd).map(Some)),
+    };
+    let mut s = lock(monitor);
+    match result {
+        None => s.status = MonitorStatus::WaitingForGame,
+        Some(Ok(name)) => {
+            s.status = MonitorStatus::Ok;
+            s.error = None;
+            s.detected = Some(name);
+        }
+        Some(Err(e)) => {
+            // Logged once per distinct error, not every poll.
+            if s.error.as_deref() != Some(e.as_str()) {
+                eprintln!("overlay monitor detection: {e}");
+            }
+            s.status = MonitorStatus::Failed;
+            s.error = Some(e);
+        }
+    }
+    if s.detected.is_some() && s.detected != s.sent {
+        if let Some(sink) = &s.sink {
+            sink(s.detected.clone().flatten());
+            s.sent = s.detected.clone();
+        }
+    }
+}
+
+/// First line of `hyprctl activeworkspace`, e.g. `workspace ID 1 (1) on monitor DP-1:` →
+/// `DP-1`. `None` for anything else.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn parse_hyprland_monitor(out: &str) -> Option<String> {
+    let line = out.lines().next()?;
+    let (_, rest) = line.rsplit_once(" on monitor ")?;
+    let name = rest.trim_end().strip_suffix(':')?.trim();
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then(|| name.to_string())
+}
+
+/// A custom command's stdout → monitor name: its first non-blank line, trimmed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn trim_monitor_name(out: &str) -> Option<String> {
+    out.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
+}
+
+/// Run the built-in/Custom monitor query (Fixed never gets here). Linux: `hyprctl` or the
+/// custom command; Windows: the foreground window's monitor. Also the Overlay tab's
+/// synchronous Test / Detect.
+pub fn query_monitor(method: MonitorMethod, cmd: &str) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let out = match method {
+            MonitorMethod::Custom => {
+                if cmd.trim().is_empty() {
+                    return Err("empty monitor command".into());
+                }
+                Command::new("sh").arg("-c").arg(cmd).output().map_err(|e| format!("custom: {e}"))?
+            }
+            _ => Command::new("hyprctl").arg("activeworkspace").output().map_err(|e| format!("hyprctl: {e}"))?,
+        };
+        if !out.status.success() {
+            return Err(format!("monitor command exited {}", out.status));
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let name = match method {
+            MonitorMethod::Custom => trim_monitor_name(&text),
+            _ => parse_hyprland_monitor(&text),
+        };
+        name.ok_or_else(|| format!("no monitor name in {:?}", text.lines().next().unwrap_or("")))
+    }
+    // Windows has no Hyprland/Custom: every non-Fixed method means the built-in query, the
+    // monitor the foreground window is on (the Overlay tab only offers that one + Fixed).
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (method, cmd);
+        crate::overlay::foreground_monitor_name().ok_or_else(|| "no foreground window".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = (method, cmd);
+        Err("unsupported platform".into())
     }
 }
 
@@ -232,11 +471,87 @@ mod tests {
         assert!(!window_matches("Firefox", "Forza"));
     }
 
+    fn ok(name: &str) -> Result<String, String> { Ok(name.to_string()) }
+
+    #[test]
+    fn verdict_game_focused_fires_hotkeys() {
+        let v = evaluate(&ok("steam_app_1 Forza Horizon 6"), "Forza");
+        assert!(v.focused && v.confirmed && v.hotkeys_ok());
+        assert_eq!(v.status, FocusStatus::Ok);
+    }
+
+    #[test]
+    fn verdict_third_app_drops_hotkeys() {
+        let v = evaluate(&ok("firefox Mozilla Firefox"), "Forza");
+        assert!(!v.focused && !v.confirmed && !v.hotkeys_ok());
+        assert_eq!(v.status, FocusStatus::Ok, "a successful non-game answer is not an error");
+    }
+
+    #[test]
+    fn verdict_own_window_drops_hotkeys_despite_default_match() {
+        // Our title contains "Forza": it matches the game text, but must not count as the game.
+        for name in ["Forza Telemetry V3", "Forza Telemetry V3 Forza Telemetry V3"] {
+            let v = evaluate(&ok(name), "Forza");
+            assert!(v.focused, "still 'focused' for the overlay's own option");
+            assert!(v.own_window && !v.hotkeys_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn verdict_query_error_fails_open() {
+        let v = evaluate(&Err("hyprctl: not found".into()), "Forza");
+        assert!(v.focused && v.hotkeys_ok() && !v.confirmed);
+        assert_eq!(v.status, FocusStatus::QueryFailed);
+    }
+
+    #[test]
+    fn verdict_empty_match_never_fires() {
+        assert!(!evaluate(&ok("Forza Horizon 6"), "").hotkeys_ok());
+    }
+
     #[test]
     fn empty_match_string_never_matches() {
         // An empty game_match would match everything; treat it as "no match" so
         // hotkeys aren't accidentally allowed for every window.
         assert!(!window_matches("Forza", ""));
+    }
+
+    #[test]
+    fn hyprland_monitor_from_first_line() {
+        let out = "workspace ID 1 (1) on monitor DP-1:\n\tmonitorID: 0\n\twindows: 2\n";
+        assert_eq!(parse_hyprland_monitor(out), Some("DP-1".into()));
+        assert_eq!(parse_hyprland_monitor("workspace ID 3 (3) on monitor DP-3:"), Some("DP-3".into()));
+    }
+
+    #[test]
+    fn hyprland_monitor_names_with_dashes_and_named_workspaces() {
+        assert_eq!(
+            parse_hyprland_monitor("workspace ID 4 (4) on monitor HDMI-A-1:\n"),
+            Some("HDMI-A-1".into())
+        );
+        // A workspace name containing the marker: the last one is the monitor.
+        assert_eq!(
+            parse_hyprland_monitor("workspace ID 7 (x on monitor y) on monitor eDP-1:"),
+            Some("eDP-1".into())
+        );
+    }
+
+    #[test]
+    fn hyprland_monitor_rejects_garbage() {
+        assert_eq!(parse_hyprland_monitor(""), None);
+        assert_eq!(parse_hyprland_monitor("HYPRLAND_INSTANCE_SIGNATURE not set"), None);
+        assert_eq!(parse_hyprland_monitor("workspace ID 1 (1) on monitor :"), None);
+        assert_eq!(parse_hyprland_monitor("workspace ID 1 (1) on monitor DP-1"), None);
+        // Only the first line counts.
+        assert_eq!(parse_hyprland_monitor("error\nworkspace ID 1 (1) on monitor DP-1:"), None);
+    }
+
+    #[test]
+    fn custom_monitor_output_is_trimmed() {
+        assert_eq!(trim_monitor_name("DP-2\n"), Some("DP-2".into()));
+        assert_eq!(trim_monitor_name("  \n\t HDMI-A-1  \nextra\n"), Some("HDMI-A-1".into()));
+        assert_eq!(trim_monitor_name(""), None);
+        assert_eq!(trim_monitor_name(" \n\n"), None);
     }
 
     #[test]

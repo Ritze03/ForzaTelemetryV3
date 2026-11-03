@@ -16,9 +16,10 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
   stream or is pure UI/session state, none of it serialized:
   - **Session maxima** (`ForzaApp` fields, comment `// Session maxima (reset on car
     change)`): `max_power_ps`, `max_torque_nm`, `max_boost_psi`, `max_speed_kmh`,
-    `cached_engine_max_rpm`, `fi_detected`, `dynamic_max_rpm` (the dynamically detected
+    `cached_engine_max_rpm`, `dynamic_max_rpm` (the dynamically detected
     redline), `wheel_radius_est` (per-wheel EMA-smoothed tire radius). All zeroed and
-    recomputed from scratch on a car change — see the `pkt.car_ordinal !=
+    recomputed from scratch on a car change (the forced-induction latch lives in
+    `PowerCapture::fi_detected`, reset by `on_car_changed`) — see the `pkt.car_ordinal !=
     self.last_car_ordinal` branch around `app.rs:838`.
   - **Session stats structs**: `suspension_stats: SuspensionStats` (`app.rs:223`, a
     rolling min/max + short history) and `gforce_stats: GForceStats` (`app.rs:265`,
@@ -41,9 +42,9 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
 - **`src/telemetry.rs` — `TelemetryState`.** Connection state, held at
   `ForzaApp::telemetry`: `latest: Option<ForzaPacket>` (most recent packet),
   `is_connected: bool`, `packets_per_sec: f32`. `TelemetryState::update()` is called
-  per received packet; it flips `is_connected = true` and recomputes
-  `packets_per_sec` once per second from a rolling `packet_count`/`last_pps_update`
-  window. There is no disconnect detection here — `is_connected` only ever goes
+  per received packet; it flips `is_connected = true`. `packets_per_sec` is not counted
+  here: `ForzaApp::adopt_listener_view` copies the listener thread's `ListenerView::pps` into it
+  every frame (see `architecture/overview.md`). There is no disconnect detection here — `is_connected` only ever goes
   true; `ForzaApp::last_packet_time: Option<Instant>` is what the UI uses elsewhere to
   notice a stall.
 
@@ -65,17 +66,56 @@ purpose-built struct (telemetry connection) owned by `ForzaApp`.
 2. **Mutate** — the UI (Settings tab, dashboard mini-settings cog popup, per-tab
    controls) writes directly into `app.config.*` fields; there's no central "set and
    save" wrapper.
-3. **Save** — `AppConfig::save()` serializes the whole struct back to pretty JSON and
-   writes `config.json` **and** mirrors the same bytes into
+3. **Save** — `AppConfig::save()` serializes the whole struct back to pretty JSON (merged with
+   what the file held that this build does not know, see [[settings]] "Forward compatibility")
+   and writes `config.json` **and** mirrors the same bytes into
    `profiles/<active_profile>.json` (the Profile Manager's continuous-save — see
-   [[profiles]]). It is **not** autosaved every frame; call sites trigger it explicitly
-   after a change that should stick — e.g. `src/ui/settings.rs`, `src/ui/dashboard.rs`,
-   `src/ui/gearbox.rs`, `src/ui/coop.rs`, several spots in `app.rs`'s mini-settings popup
-   — plus unconditionally in `ForzaApp::on_exit` as a final catch-all.
+   [[profiles]]). Triggers: (a) **autosave** — `config::AutoSave::due`, polled each frame
+   from `ForzaApp::update`, compares the config's compact JSON with the last written copy at
+   most once per second and `save()`s on a difference (so an edit that never calls `save()`
+   itself, like the Window Detection title, still lands within ~1 s; *why:* before this, only
+   explicit call sites and `on_exit` saved, and a non-graceful close lost every other edit).
+   While a check is held back by the 1 s interval, `AutoSave::recheck_in` returns the time left
+   and `update()` schedules `ctx.request_repaint_after(wait)`, so the check runs even when no
+   other frame is drawn (egui is reactive; otherwise an edit <1 s after the last check waited
+   for the next input). Caveat: a minimised window may get no redraws, so not guaranteed there;
+   `on_exit` still saves;
+   (b) explicit calls after a change that should stick — `src/ui/settings.rs`,
+   `src/ui/dashboard.rs`, `src/ui/gearbox.rs`, `src/ui/coop.rs`, `app.rs` (closing
+   Mini-Settings, Reset Layout, ...) and the profile operations in `config.rs`; (c)
+   unconditionally in `ForzaApp::on_exit`. It is not written every frame.
 4. **Profiles** — a profile is a full `AppConfig` snapshot at `profiles/<name>.json`;
    `active_profile` (in `config.json`) names the live one. `load()` seeds a file for the
    active profile if none exists, so `profiles/` is never empty. CRUD +
    switch/export/import live in `config.rs`; see [[profiles]].
+
+## Defaults: where they live, and what a fresh install gets
+
+A missing key always resolves to the code default, in exactly one place per kind:
+`AppConfig::default()` for top-level keys (`load()` merges them in), struct-level
+`#[serde(default)]` + `Default` for `OverlayConfig` / `GamepadConfig` / `HotkeyConfig` (a
+partial nested object fills per field), `default_bindings()` for keyboard hotkeys
+(`inject_missing_hotkeys` fills missing actions, skipping `HotkeyConfig::unbound`). A fresh
+install additionally starts from the bundled `assets/default-config.json` (older "getting
+started" snapshot, no overlay/gamepad/hotkeys keys), so features added since that snapshot take
+their defaults from the code. Keys the snapshot names (the `minimap_*` scalars, `coop_list_*`, the
+overlay's zoom radii) must agree with the code defaults: the snapshot wins on a fresh install.
+
+**Map and navigation defaults (0.7.2, D107).** The Map tab's settings (both maps' layers, view
+options, FPS limit, Co-Op list) and `AppConfig.nav` (without the destination) default to the user's
+own values of 2026-10-16; details and the *Why* in [[minimap]] ("Defaults") and [[navigation]].
+
+**Tuned defaults (0.4.1).** The settings added in this release (the whole Overlay tab,
+gamepad, backfire duration limit, look-around stick, Trystero co-op transport, the Hide HUD /
+Clear gear map keys) default to the user's own values rather than neutral ones. *Why:* the
+user asked that their current setup be what an unconfigured install gets. Per-machine and
+personal values are deliberately **not** copied: `fh6_install_dir`, `input_perm_dont_remind`
+(also in `EXPORT_EXCLUDE`), the overlay's monitor settings, window-detection settings
+(`hotkeys.focus_method`, `game_match`, ...), co-op identity (name, colour, room,
+last code), window geometry, port, profile selection. The per-feature docs list each value
+([[overlay]], [[hotkeys]], [[gamepad]], [[backfire]], [[coop]]).
+
+**Auto-connect stays off by default** (`coop_autoconnect = false`). *Why:* it is opt-in; joining a room automatically on start should be the user's choice.
 
 ## The migration pattern (renaming/removing a config field or enum value)
 
@@ -95,13 +135,15 @@ are the templates to copy:
 - **Field replaced by a different field/type** — the `compact_tabs: bool` →
   `top_bar_style: TopBarStyle` fix-up in `load()` (`config.rs:699`): if the old bool key
   is present, translate it into the new enum's string value (`true` → `"Simple"`,
-  `false` → `"Legacy"`) and insert that under the new key. The old key is simply left
-  in the map afterward (harmless — `AppConfig` has no field for it, so serde ignores
-  unknown keys on deserialize).
+  `false` → `"Legacy"`) and insert that under the new key, **and remove the old key**
+  (`normalize_raw`): the raw tree is kept for the save merge ([[settings]] "Forward
+  compatibility"), and a kept `compact_tabs` would re-run on every load.
 
 **Checklist when you remove/rename a field or enum value:**
-1. Add a migration in `AppConfig::load()` (raw-JSON rewrite, following the patterns
-   above).
+1. Add a migration in `normalize_raw` (raw-JSON rewrite, following the patterns
+   above; run by `parse()`, `apply_preset_overlay` and the profile load). It must **remove**
+   the old key it reads. A removed field also goes into `RETIRED_KEYS` (otherwise it is
+   kept in the file as "unknown" forever).
 2. If the same field/value can appear in a preset, also handle it in
    `apply_preset_overlay` (`config.rs:543`) — `migrate_tire_display_style` is applied
    there specifically because presets are hand-edited/shared JSON, not just
@@ -144,7 +186,9 @@ preset overlay/export machinery (`apply_preset_overlay`, `export_preset`,
   effect. Both bundled presets (`PRESET_NAMES`/`PRESET_DATA`, backed by
   `assets/configs/ale.json` / `ritze.json`) and the Config sub-tab's Export/Import
   paste box go through the same `apply_preset_overlay` — see [[presets]] for the
-  user-facing flow and the `apply_preset_overlay` step order.
+  user-facing flow and the `apply_preset_overlay` step order. After the merge it runs
+  `inject_missing_widget_kinds` and `inject_missing_hotkeys` (same as `load()`), so an
+  older profile/preset gains newly added widgets and hotkey actions such as Hide HUD.
 
 ## See also
 

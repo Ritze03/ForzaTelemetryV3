@@ -38,7 +38,9 @@ export/import). This page documents the underlying overlay + key lists.
    invalid enum variant), the whole operation is a no-op — the live config is untouched.
 4. `inject_missing_widget_kinds` runs afterward so a preset from an older version — one
    missing a widget kind added since — gets that widget parked below the grid instead of
-   disappearing.
+   disappearing. `inject_missing_hotkeys` runs too: a preset/profile replaces the whole
+   `hotkeys` object, and an older one lacks newer actions (e.g. Hide HUD), which would
+   otherwise stay "Not set" until the next launch. It respects `hotkeys.unbound`.
 5. `migrate_tire_display_style` rewrites the removed `"Separate"`/`"Combined"`
    `tire_display_style` values onto the surviving `"Tires"` variant first, so old presets
    still deserialize.
@@ -52,6 +54,9 @@ of `KeyGroup { section, name, keys }`:
 - **Dashboard** → *Layout* (`LAYOUT_KEYS`) / *Mini-settings* (`MINISETTINGS_KEYS`)
 - **Settings** → *Network* / *Display* / *Hotkeys & Input* / *Co-Op*
 - **Tuning** → *Backfire* / *Automatic Gearbox* / *Acceleration Tests*
+- **Overlay** → *HUD Overlay* (`OVERLAY_KEYS` = the single `overlay` key, every Overlay-tab
+  setting). Appended last so existing index-based selection vectors don't shift. The Hide
+  HUD binding travels with *Hotkeys & Input* (`hotkeys`), not here.
 
 Every serialized `AppConfig` key is in **exactly one** group or the `EXPORT_EXCLUDE`
 list (`active_profile`). The `key_groups_partition_all_keys` test enforces this — add a

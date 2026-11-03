@@ -4,11 +4,6 @@ use crate::app::ForzaApp;
 
 pub fn show(ui: &mut Ui, app: &mut ForzaApp) {
     ui.heading("Acceleration Test");
-    ui.label(
-        RichText::new("Configure a speed range, then accelerate through it.")
-            .color(Color32::GRAY),
-    );
-    ui.add_space(8.0);
 
     ui.horizontal(|ui| {
         ui.label("Start");

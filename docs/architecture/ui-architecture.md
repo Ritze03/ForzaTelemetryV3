@@ -9,8 +9,11 @@ covers the architecture that makes those rules possible.
 
 ## Tab structure & dispatch
 
-`Tab` (`src/app.rs:345-355`) is a plain `PartialEq, Clone, Copy` enum: `Dashboard,
-Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog`. There is no
+`Tab` (`src/app.rs`) is a plain `PartialEq, Clone, Copy` enum: `Dashboard, Overlay,
+Backfire, Gearbox, PowerCurve, EngineSwaps, Coop, Settings, Changelog, Debug` (`Overlay` →
+`ui::overlay_tab::show`, see [[overlay]]; `Debug` → `ui::debug_tab::show`, just left
+of Setup, see [[debug]]; `Settings` is labelled **Setup**). The line
+numbers below predate the Overlay tab and have drifted; search by symbol. There is no
 `Tab::ALL` array or `impl Tab` — instead the top tab bar and the dispatch match each
 enumerate the variants by hand, so adding a tab means touching both by name.
 
@@ -18,14 +21,15 @@ enumerate the variants by hand, so adding a tab means touching both by name.
   matches `self.current_tab` and calls one function per tab (`src/app.rs:2267-2276`):
   `crate::ui::dashboard::show`, `ui::backfire::show_backfire`, `ui::gearbox::show_gearbox`,
   `ui::power_curve::show`, `ui::engine_swaps::show`, `ui::coop::show`, `ui::settings::show`,
-  `ui::changelog::show`. Every tab body lives in its own module under `src/ui/`
+  `ui::changelog::show`, `ui::debug_tab::show`. Every tab body lives in its own module under `src/ui/`
   (`src/ui/mod.rs` just declares them: `backfire`, `changelog`, `coop`, `dashboard`,
-  `engine_swaps`, `gearbox`, `power_curve`, `settings`) — one module per tab, each
+  `debug_tab`, `engine_swaps`, `gearbox`, `overlay_tab`, `power_curve`, `settings`) — one module per tab, each
   exposing a `show(ui, app: &mut ForzaApp)`-shaped entry point that owns everything
   drawn in that tab.
 - **Tab bar** — drawn inline (no dedicated function) in the top panel
   (`src/app.rs:1355-1435`). Two hand-written arrays, `left` (Dashboard/PowerCurve/Coop/
-  Backfire/Gearbox/EngineSwaps, `src/app.rs:1362-1369`) and `right` (Settings/Changelog,
+  Backfire/Gearbox/EngineSwaps, `src/app.rs:1362-1369`) and `right` (Settings/Debug/Changelog — laid out right-to-left, so the bar reads
+  "What's New | Debug | Setup" with Setup kept at the far-right edge,
   `src/app.rs:1370-1373`), pair each `Tab` with an icon glyph from `icons.rs` and feed
   the shared `tab_button` helper (`src/app.rs:370-423`) once per entry, under whichever
   `TopBarStyle` (`Legacy | Simple | Modern`) is active. `tab_title(tab: Tab)`
@@ -93,8 +97,8 @@ disables the fade — when off the target opacity is pinned to 1.0.
   main `Tab` enum.
 - **`DashboardSubTab`** (`src/app.rs:460-479`, `Default = General`) — one variant per
   Dashboard widget group: `General, Modules, Kmh, Gear, Rpm, SprintTimes, Tires,
-  Suspension, Shift, Engine, GForce, Inputs, Boost, Graphs, MiniMap, Config`. A nested
-  `MiniMapTab` (`General | Coop`, `src/app.rs:482-487`) further splits the MiniMap page.
+  Suspension, Shift, Engine, GForce, Inputs, Boost, Graphs, Config`. (The former `MiniMap`
+  sub-tab and its nested `MiniMapTab` are gone: map settings are on the Map tab only, D79.)
 - **No `page_settings_*` functions exist** — the whole popup body is one large inline
   `match` inside `if self.page_settings_open { … }` (`src/app.rs:1519-2265`): first
   `match self.page_settings_tab` (`src/app.rs:1550`) picks `General`
