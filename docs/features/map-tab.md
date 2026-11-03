@@ -269,7 +269,8 @@ returns. A **module selector** (the Overlay tab's control: `theme::segmented` in
   shifts). Their values are **not migrated**: the user wants the Dashboard map's look. An old
   `config.json` / profile that still has them loads normally: `AppConfig` has no
   `deny_unknown_fields`, so serde ignores them (no `.bad-` backup, nothing reset, see
-  `config::from_value_lenient`), and the next save writes the file without them. An old preset that
+  `config::from_value_lenient`), and the next save writes the file without them (they are in
+  `config::RETIRED_KEYS`, so the forward-compatibility merge does not keep them as "unknown"). An old preset that
   has them imports with the keys ignored. Test: `map_tab::tests::an_old_config_with_viewer_keys_still_loads`.
 - The viewer's co-op trails (fade time / distance) and player list follow the Dashboard map's
   co-op settings (the Dashboard map & Viewer page's Co-Op card), as they always did.

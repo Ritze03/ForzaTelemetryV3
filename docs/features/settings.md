@@ -148,11 +148,14 @@ fill keys missing from it with code defaults → migrations → `from_value_leni
   `Default` would be one value for all three modes, but their defaults differ; filling from the
   `AppConfig` default per key gives the right one.
 - **Backup before overwrite, save after:** if the file is not valid JSON / UTF-8, can't be read,
-  or any key was reset, the original is copied to `config.json.bad-<unix seconds>` (`-2`, `-3`…
+  is not usable as a whole, or its `active_profile` is unreadable, the original is copied to
+  `config.json.bad-<unix seconds>` (`-2`, `-3`…
   on a clash) **before** anything can write, and the repaired config is then saved right away,
   so killing the app before the first change doesn't pile up another `.bad-` copy on every start
   (if a backup could not be written, nothing is saved). The reset keys are logged with
-  `eprintln!`. The app never deletes these backups.
+  `eprintln!`. The app never deletes these backups. A merely *unreadable value* (some other
+  reset key) makes **no** backup and no rewrite since the forward-compatibility merge below
+  keeps it in the file (a `.bad-` copy on every start of an older build would pile up).
 - **Invalid UTF-8:** `config.json` and profiles are read as bytes and decoded lossily; the
   replacement characters only damage the strings they sit in, everything else is salvaged. The
   file is backed up either way.
@@ -169,19 +172,81 @@ fill keys missing from it with code defaults → migrations → `from_value_leni
   `<name>.json.bad-<ts>` before the first `save()` rewrites it, so no profile content is ever
   overwritten without a copy.
 - **Profiles** (`profiles/<name>.json`) load through the same lenient path
-  (`apply_profile_file`): bad values keep the live config's value, an unparsable file is skipped,
-  and the file is backed up as `<name>.json.bad-<ts>` first (the `.bad-` suffix keeps it out of
-  the profile list, which lists `*.json`). A profile that can't be read as text at all (read
-  error) is backed up and skipped; invalid UTF-8 is salvaged and backed up. Preset / import
+  (`apply_profile_file`): bad values keep the live config's value, an unparsable file is skipped
+  and backed up as `<name>.json.bad-<ts>` first (the `.bad-` suffix keeps it out of
+  the profile list, which lists `*.json`). Unreadable *values* are kept in the file (see
+  *Forward compatibility*), so they make no backup. A profile that can't be read as text at all
+  (read error) is backed up and skipped; invalid UTF-8 is salvaged and backed up. Preset / import
   overlays use the same lenient merge.
 - **Gearbox calibrations** (`automatic-gearbox-saved-calibrations.json`) parse per car entry; a
-  broken entry loses only itself and the file is backed up.
+  broken entry is not applied but stays in the file (forward compatibility); a file that is not
+  a JSON object is backed up and replaced.
 
 *Why:* a single value serde could not read (a renamed or differently cased enum, a number where
 a bool is expected, a file written by another version) made `load()` fall back to defaults for
 **everything**, and the ~1 s autosave then overwrote `config.json` with them: all settings lost
 silently. There is no in-app notice yet (the app has no toast mechanism); the stderr log and the
 `.bad-` file are the only trace.
+
+## Forward compatibility (an older build must not eat a newer build's settings)
+
+*Why:* the user switches between builds. An older build used to drop every key it did not know
+(serde ignores them, `to_string_pretty(self)` never wrote them back) and to reset every value it
+could not parse (a new enum variant such as a new view mode), then wrote that to `config.json`:
+going back to the newer build had lost those settings. It must never throw away what a newer
+build wrote. **This protects only from this version on**: builds released before keep their old
+behaviour on load.
+
+How (`config.rs`, `merge_for_save`): the save is a three-way merge of JSON trees, not
+`#[serde(flatten)]` on the ~65 config structs (invasive, and flatten interacts badly with the
+lenient per-key probe).
+- At load the config keeps (in `AppConfig.fwd`, a `#[serde(skip)]` field behind a mutex because
+  `save` takes `&self`; clones carry it) **`raw`** = the file's tree after the migrations and
+  **`loaded`** = `to_value(config)` right after the load, plus **`resets`** = the paths the
+  lenient load could not read (`from_value_lenient`'s `reset_keys`).
+- At save, `cur = to_value(config)` is merged with them, walking objects recursively: an object
+  key in `raw` but in neither `loaded` nor `cur` is unknown to this build and **kept**; a leaf
+  under a reset path that the user did not change this session (`cur == loaded`) gets `raw`'s
+  value back (an unreadable new enum value); anything else is `cur` (a changed value, a new key,
+  and a map entry the user deleted this session: it is in `raw` and `loaded`, so it is not
+  "unknown" and stays deleted). Arrays are taken whole (`cur` if changed, else `raw` where a reset
+  touched them).
+- After a successful write, `raw` := what was written and `loaded` := `cur`, so the next save
+  diffs against the file as it is now.
+- With nothing to keep the save is plain `to_string_pretty(self)` (struct field order, as
+  before); a merged tree is written key-sorted.
+- A profile load (`apply_profile_file`) is a fresh load: `raw` is the profile file's tree, so
+  switching profiles carries the right unknown keys. A preset import (`import_selected`,
+  `apply_preset`) keeps the loaded file's trees. A clone keeps them.
+- `resets` is why the merge does not restore *every* difference between `raw` and `loaded`:
+  values this build normalizes on purpose (injected widgets, an aliased old enum spelling, the
+  trip `nav.destination` that a profile switch deliberately keeps) must be written as this build
+  has them.
+
+Rules that follow for anyone changing config structs:
+- **A migration that reads an old key must remove it from the raw tree** (`normalize_raw`:
+  `compact_tabs` is removed after it set `top_bar_style`; `circuit_color` is renamed to `color`
+  in the raw tree, because the serde alias would otherwise leave both keys, which serde rejects).
+  A kept `compact_tabs` would otherwise re-run on every load and overwrite the user's choice.
+- **A field you remove goes into `RETIRED_KEYS`** (dotted path). Without it an older key is
+  "unknown" and would be written back forever. `strip_retired` runs on every raw tree (config,
+  profile, preset). The unit test `the_embedded_default_config_has_nothing_unknown` catches a
+  retired key in `assets/default-config.json`.
+- A new enum variant needs nothing: an older build keeps the new value in the file.
+
+Known limits: the user changing a value that this build could not read counts as their choice
+(the new value wins; the old unreadable one is gone); setting a field back to the default this
+build substituted for an unreadable value cannot be told from "untouched" and keeps the file's
+value; a changed array replaces the file's whole array (a widget kind only a newer build knows is
+lost once the user moves a widget); a hand-edited garbage value now stays in the file until the
+user changes that setting (it is logged on every start).
+
+Other files: `automatic-gearbox-saved-calibrations.json` uses the same merge
+(`save_car_calibrations`: unknown fields of an entry and entries this build can't read stay, a
+car removed in the session is dropped). Not covered, on purpose: the road-type override
+(`map_editor/fh6-road-types.user.json`, a versioned export format that rejects other versions and is
+written only by the editor's Save), and caches (map tiles, terrain, car data, the editor's port
+file, the cloudflared binary), which are regenerated.
 
 ## Save
 
