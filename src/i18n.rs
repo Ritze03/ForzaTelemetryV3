@@ -1073,9 +1073,11 @@ fn de(s: &str) -> Option<&'static str> {
         "Behind the map image. At 0 the game shows through; the far edge of a tilted map fades into it."
             => "Hinter dem Kartenbild. Bei 0 scheint das Spiel durch; der ferne Rand einer geneigten Karte blendet hinein aus.",
         "Reset frame" => "Rahmen zurücksetzen",
-        "Map layers…" => "Kartenebenen…",
-        "What the map shows (image, roads, POIs, race lines, tilt) and how it moves is set on the Map tab → Minimap."
-            => "Was die Karte zeigt (Bild, Straßen, POIs, Rennlinien, Neigung) und wie sie sich bewegt, stellst du im Karten-Tab → Minikarte ein.",
+        "Minimap rendering" => "Kartendarstellung",
+        "Show race lines" => "Rennlinien anzeigen",
+        "Advanced settings…" => "Erweiterte Einstellungen…",
+        "Everything else the map shows (road widths and colours, points of interest by category, 3D options, co-op fades) is set on the Map tab → Minimap."
+            => "Alles Weitere, was die Karte zeigt (Straßenbreiten und -farben, Orte von Interesse nach Kategorie, 3D-Optionen, Koop-Ausblendzeiten), stellst du im Karten-Tab → Minikarte ein.",
         "Drive Cluster" => "Fahranzeige",
         "Pill" => "Pill",
         "Halo" => "Halo",

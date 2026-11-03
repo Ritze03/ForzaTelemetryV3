@@ -202,6 +202,11 @@ pub fn view_rows(ui: &mut Ui, v: &mut ViewCfg) {
     theme::checkbox_row(ui, &mut v.mirror_edges, tr("Mirror map at edges"));
     theme::checkbox_row(ui, &mut v.look_stick, tr("Rotate with right stick"));
     theme::checkbox_row(ui, &mut v.compass, tr("Show compass"));
+    zoom_rows(ui, v);
+}
+
+/// The two zoom sliders of [`view_rows`] (also on the Overlay tab's "Minimap rendering" card, D110).
+pub fn zoom_rows(ui: &mut Ui, v: &mut ViewCfg) {
     let zoom_tip = tr("Metres from the centre of the map to its edge.");
     theme::slider_row(ui, tr("Zoom when driving"), &mut v.zoom_driving_m, 50.0..=6000.0, 50.0, 0, " m").on_hover_text(zoom_tip);
     theme::slider_row(ui, tr("Zoom when stopped"), &mut v.zoom_stopped_m, 50.0..=6000.0, 50.0, 0, " m").on_hover_text(zoom_tip);
@@ -506,26 +511,7 @@ fn image_card(ui: &mut Ui, c: &mut ImageCfg, plate: Option<(&mut f32, bool)>, en
 fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx, win3d: Option<&mut bool>) {
     theme::card(ui, tr("View mode"), |ui| {
         ui.add_enabled_ui(enabled, |ui| {
-            view_mode_picker(ui, c);
-            let mode = c.view_mode();
-            if mode == ViewMode::Relief {
-                let mut allowed = true;
-                if cfg!(windows) {
-                    ui.add_space(4.0);
-                    let mut local = false;
-                    let flag = win3d.unwrap_or(&mut local);
-                    theme::checkbox_row(ui, flag, tr("Allow 3D on Windows")).on_hover_text(tr(
-                        "The 3D map has not been tested on Windows yet. Tick this to try it; if the map misbehaves, untick it to get the Tilted view back.",
-                    ));
-                    allowed = *flag;
-                }
-                ui.add_space(4.0);
-                if allowed {
-                    status_3d_row(ui, &live_status_3d());
-                } else {
-                    status_3d_row(ui, &Some(Status3d::Unavailable(tr("switched off on Windows until you allow it above").to_string())));
-                }
-            }
+            let mode = view_mode_control(ui, c, win3d);
             ui.add_space(4.0);
             ui.add_enabled_ui(mode != ViewMode::Flat, |ui| {
                 theme::slider_row(ui, tr("Angle"), &mut c.angle_deg, 5.0..=80.0, 1.0, 0, "°");
@@ -553,6 +539,33 @@ fn tilt_card(ui: &mut Ui, c: &mut TiltCfg, enabled: bool, cp: &CopyCtx, win3d: O
         });
         card_copy_row(ui, cp, LayerCategory::Tilt);
     });
+}
+
+/// The Flat / Tilted / 3D control with, while 3D is picked, the Windows opt-in checkbox and the
+/// 3D status line (the one "3D not available" hint, wherever the control sits). Returns the mode.
+/// Shared by the View mode card and the Overlay tab's "Minimap rendering" card (D110).
+pub fn view_mode_control(ui: &mut Ui, c: &mut TiltCfg, win3d: Option<&mut bool>) -> ViewMode {
+    view_mode_picker(ui, c);
+    let mode = c.view_mode();
+    if mode == ViewMode::Relief {
+        let mut allowed = true;
+        if cfg!(windows) {
+            ui.add_space(4.0);
+            let mut local = false;
+            let flag = win3d.unwrap_or(&mut local);
+            theme::checkbox_row(ui, flag, tr("Allow 3D on Windows")).on_hover_text(tr(
+                "The 3D map has not been tested on Windows yet. Tick this to try it; if the map misbehaves, untick it to get the Tilted view back.",
+            ));
+            allowed = *flag;
+        }
+        ui.add_space(4.0);
+        if allowed {
+            status_3d_row(ui, &live_status_3d());
+        } else {
+            status_3d_row(ui, &Some(Status3d::Unavailable(tr("switched off on Windows until you allow it above").to_string())));
+        }
+    }
+    mode
 }
 
 /// The Flat / Tilted / 3D control. The tooltip sits on the 3D segment only (`theme::segmented`
@@ -649,6 +662,22 @@ fn route_label(r: RouteStyle) -> &'static str {
         RouteStyle::Road => "Road",
         RouteStyle::Line => "Line",
     })
+}
+
+/// "Show race lines" as a plain on / off (D110) over `RaceCfg::mode`, which has no bool: off is
+/// `Off`; on restores the mode that was on before it was switched off (kept in egui's temp memory,
+/// per session), else the default mode.
+pub fn race_lines_toggle(ui: &mut Ui, c: &mut RaceCfg) {
+    let id = egui::Id::new("race_lines_toggle_last_mode");
+    let mut on = c.mode != RaceLineMode::Off;
+    if theme::checkbox_row(ui, &mut on, tr("Show race lines")).changed() {
+        if on {
+            c.mode = ui.data(|d| d.get_temp(id)).unwrap_or(RaceCfg::default().mode);
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, c.mode));
+            c.mode = RaceLineMode::Off;
+        }
+    }
 }
 
 fn race_lines_card(ui: &mut Ui, c: &mut RaceCfg, enabled: bool, cp: &CopyCtx) {

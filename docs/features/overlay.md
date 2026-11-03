@@ -401,8 +401,9 @@ Default since D107: **3D** (it was Tilted); the view falls back to Tilted by its
 
 The module's **frame** (shape, size, outline, background) is set on the **Overlay tab → Minimap** page
 (`overlay_tab::minimap_card`), not the Map tab: it is the HUD module's look, like the Drive cluster's
-style, while the Map tab keeps what the map *shows* (layers, view, zoom; D67). The card has a
-"Map layers…" button that jumps to the Map tab's Minimap page. *Why (D75):* the user asked, "In the Overlay
+style, while the Map tab keeps what the map *shows* (layers, view, zoom; D67). Under it sits the
+**Minimap rendering** card (D110, below), whose **Advanced settings…** button jumps to the Map tab's
+Minimap page (it was this card's "Map layers…" button until D110). *Why (D75):* the user asked, "In the Overlay
 tab, let me change the minimap size (width and height) + edit the outline/background of it. A second
 style that is a circle would also be neat."
 
@@ -885,7 +886,7 @@ Tabs (`config::OverlayPage`):
 | Tab | Cards |
 |---|---|
 | **General** | General, Monitor Detection, Layout (three columns from 1100 px, otherwise two with Layout first) |
-| **Minimap** | Minimap frame (D75: shape, size, corner radius, outline, background, Reset frame, "Map layers…") |
+| **Minimap** | Minimap frame (D75: shape, size, corner radius, outline, background, Reset frame) + Minimap rendering (D110: the essential map settings, "Advanced settings…") |
 | **Drive cluster** | Drive Cluster |
 | **Race / Drift** | Race Block, Drift Counter |
 | **Notifications** | Notifications |
@@ -912,6 +913,28 @@ Moved to the **Map tab** (D67): the Minimap and Dashboard map pages and the `lay
 (Image, Roads, Points of interest, Race lines, View mode) are described in
 [map-tab.md](map-tab.md). The HUD minimap's own options (`overlay.map_*`, `map_layers`,
 `map_use_dashboard`, `map_plate_opacity`) are unchanged and still stored in the `overlay` key.
+
+**Minimap rendering card (D110)** (`overlay_tab::minimap_rendering_card`, under *Minimap frame* on
+the Minimap page): a handful of map settings for a new user, in this order: **View mode**
+(Flat / Tilted / 3D, `maprender::ui::view_mode_control`, the same control as the Map tab's card
+including the Windows 3D opt-in checkbox and the "3D not available" line), **Zoom when driving /
+stopped** (`zoom_rows`), **Lock map north-up**, **Satellite image** + **Opacity**, **Show roads**,
+**Show race lines**, **Show points of interest**, then **Co-Op**: **Show co-op teammates** and
+**Show trails**, and the **Advanced settings…** button (opens Map tab → Minimap). Every control edits
+the *same field* as its Map-tab twin (`overlay.map_layers`, `overlay.map_*`, `overlay.coop_*`), so
+there is no sync code. *Show race lines* is a plain on/off over `RaceCfg::mode` (no bool exists):
+off = `Off`, on = the mode that was on before it was switched off (egui temp memory, this session),
+else the default (`Current`; `race_lines_toggle`). A plain `theme::card`, not `module_card`: the
+module's on/off is the frame card's; the card is greyed with the overlay or the module off.
+
+- **Follow flags.** *Use Dashboard map settings* / *Use Dashboard co-op settings* are **not** here
+  (they stay on the Map tab). While the first is on, the map rows are greyed and show what the minimap
+  really draws (the Dashboard's layers and view, as `map_tab::minimap_page` does) under a faint
+  "The map follows the Dashboard map's settings." line; the Co-Op rows likewise show "everything on"
+  while *Use Dashboard co-op settings* is on (`OverlayConfig::effective`).
+- *Why (D110):* new users only need a handful of map settings on the HUD page; wading through the Map
+  tab's full set (road widths, per-category POIs, 3D relief, co-op fades) to turn roads off or zoom
+  out was too much. The full set stays on Map tab → Minimap, which the button opens.
 
 ### Other cards
 
