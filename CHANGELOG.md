@@ -6,6 +6,9 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 
 ## [0.7.3] – 2026-11-03
 
+### Added
+- **Minimap rendering card on the Overlay tab** — under *Minimap frame* (Overlay → Minimap) a short card with the map settings most people need: view mode (Flat / Tilted / 3D), zoom when driving / stopped, lock north-up, the satellite image and its opacity, roads, race lines, points of interest, and the co-op teammates and trails. They are the same settings as on the Map tab → Minimap, which the new **Advanced settings…** button (the old *Map layers…* button) opens for everything else. While the minimap follows the Dashboard map's settings, the rows are greyed and show the Dashboard's values.
+
 ### Fixed
 - **Switching between app versions no longer loses settings** — an older version used to throw away every setting it did not know (and reset every value it could not read, such as a new option of a drop-down) the next time it saved, so going back to the newer version found them gone. Settings an older version does not understand now stay in `config.json`, your profiles and the saved gearbox calibrations untouched, and a version that does understand them uses them again. This protects your settings starting with this version: versions released before it still drop them when they save, so if you switch back to one of those, back up your settings folder first.
 
@@ -16,8 +19,6 @@ features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 - **Navigation sidebar on the Map tab** — a small location-arrow button in the viewer's bottom right (where *Set destination* was) or the **N** key opens a side panel next to the map with the route status, distance and time, the road types, the faster-roads / more-curves slider and the co-op switches, with a short hint of the mouse controls at its bottom. It remembers whether it was open.
 
 - **Treasure-chest button on the Map-tab viewer** — a small button with the game's chest icon in the bottom right (left of the navigation button) zooms the viewer to this week's treasure chest at a 500 m view radius; *Follow car* takes you back. It only appears while the current treasure chest is actually drawn on the map: with POIs, the *Current treasure chest* category or the viewer's *Allow pan and zoom* switched off, or the chest outside the *Only near the car* radius, there is no button.
-
-- **Minimap rendering card on the Overlay tab** — under *Minimap frame* (Overlay → Minimap) a short card with the map settings most people need: view mode (Flat / Tilted / 3D), zoom when driving / stopped, lock north-up, the satellite image and its opacity, roads, race lines, points of interest, and the co-op teammates and trails. They are the same settings as on the Map tab → Minimap, which the new **Advanced settings…** button (the old *Map layers…* button) opens for everything else. While the minimap follows the Dashboard map's settings, the rows are greyed and show the Dashboard's values.
 
 ### Removed
 - **The Navigation tab and the viewer's Set destination / Clear route buttons** — everything the tab had is in the new sidebar on the Map tab; the destination is set with the middle mouse button or the right-click menu, and cleared in the sidebar or the menu.
