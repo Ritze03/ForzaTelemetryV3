@@ -402,9 +402,9 @@ user's install at runtime). The shared map renderer consumes them (`src/maprende
   without `_3D`); its position is the mean of the **first model group containing `constructionbrd`**, else the cones, else the ramp (`bm_05` has only a ramp).
   The test compares all 15 positions with `geochunk_pois.json` of the Python (≤ 0.011 m, i.e. rounding). **Cost: ~0.13 s warm in release (up to ~0.5 s cold)** —
   the 411 013-line name list and the 10 MB PGZP index, not the 15 entries — which is why it is **not** part of `Pois::load` (10 ms): the renderer loads it lazily /
-  on a worker thread and `items.extend`s the result. `Pois::load` does not know `DangerSign` (its count test stays 5561).
-- **Current treasure chest — `Pois::current_treasure_chest(week)`** with `week_index_at(unix)` / `week_index_now()` / `treasure_chest_number(week)` (I28b): picks the
-  Ribbon chest (`TreasureChest`) or stripped board (`TreasureChestBoard`) whose number is `week − 53`; the reasoning and the inference's weak spot are under
+  on a worker thread and `items.extend`s the result. `Pois::load` does not know `DangerSign` (its count test stays 5564).
+- **Current treasure chest — `Pois::current_treasure_chest(week)`** with `week_index_at(unix)` / `week_index_now()` (I28b): picks the
+  Ribbon chest (`TreasureChest`) or stripped board (`TreasureChestBoard`) numbered `newest − (3 / 2 / 1 / 0 for Summer / Autumn / Winter / Spring)`; the reasoning and the inference's weak spot are under
   [GameObjs.xml](#gameobjsxml--exact-gameplay-props) ("Which treasure chest is the current one").
 - **No XML parser.** All inputs are machine-written with a fixed attribute order, so a forward `str::find` scan is enough (all POI sources ≈ 18 ms in a release build). A game update that reorders attributes would lose items, not corrupt them; the real-install tests catch it by count.
 
@@ -418,12 +418,12 @@ re-run the Python extractors, check the diff, then update the tests and this tab
 | StoryActivation / JobActivation | 11 / 6 | EstateEntrance / TreasureChest | 37 / 3 |
 | CreatureZone | 47 | SpeedTrap | 30 |
 | House / FastTravel / FestivalSite / Estate | 8 / 11 / 2 / 4 | SpeedZone / Trailblazer / DriftZone (gates) | 60 / 24 / 40 |
-| CarMeet (one is `carmeet_test`) | 6 | TreasureChestBoard (004-019) / FlagRushFlag | 16 / 6 |
+| CarMeet (one is `carmeet_test`) | 6 | TreasureChestBoard (004-022) / FlagRushFlag | 19 / 6 |
 | DragMeet / DragMeetFinish | 3 / 3 | BarnFind / BarnFindHint | 15 / 15 |
 | AftermarketSpot / AftermarketBoard | 44 / 44 | Showcase / RushEvent / SpecialEvent | 2 / 3 / 3 |
 | TreasureCar | 10 | HorizonJob / HorizonStory / Upsell | 5 / 9 / 5 |
 
-Total 5561 items + 10 region outlines. **11 parking areas lie off the map** (z ≈ 18.2-18.4 km, the same band as race routes 102 / 103). Race lines: 170 routes
+Total 5564 items + 10 region outlines. **11 parking areas lie off the map** (z ≈ 18.2-18.4 km, the same band as race routes 102 / 103). Race lines: 170 routes
 (127 point-to-point + 43 circuits, 43/43 closed < 3 m), 171 564 points at 5 m (130 126 + 41 438; 514 463 at step 0), total 1033.2 km, longest 5555 (85.4 km),
 multi-section files 132, 281, 351, 1181, 1281, 8008; point-to-point lines end < 3 m from their finish line. Race pins: 167 (36 sphere, 1 touge-only, 130 start line).
 Speed (debug build, warm cache): POIs 57 ms, race lines 440 ms (release ≈ 18 ms each, measured on the prototype).
@@ -463,19 +463,27 @@ was wrong: only 27 `ANIM_*` / `STADIUM_FLOOR` objects sit at the origin.)
 | `DRIFTZONEMARKER_NN_{LEFT,RIGHT}_{1,2}` | 20 zones × 2 gates | **drift zones** |
 | `MASCOTS_REGION_R_NNN` | 200 | mascots (region number kept) |
 | `ESTATE_ENTRANCE_NN` | 37 | estate entrances |
-| `DISCOUNT_BOARD_TREASURE_CHEST_N` | 3 | treasure-chest boards (N = 001-003; `Stripped/gs/brio/gameobjs.xml` holds N = 004-019, the 6 Oct 2026 update added 016-019) |
+| `DISCOUNT_BOARD_TREASURE_CHEST_N` | 3 | treasure-chest boards (N = 001-003; `Stripped/gs/brio/gameobjs.xml` holds N = 004-022; the 6 Oct 2026 update added 016-019, the 3 Nov one 020-022) |
 | `BARN_FIND_*` | some | barn-find objects (not extracted by the script) |
 | `ANIM_*`, `STADIUM_FLOOR…` | 27 | at 0,0,0 — ignore |
 
 **Which treasure chest is the current one.** One chest is current per game week and the viewer / app highlights it
-(`treasure_chest_current`, on by default; drawn bigger). The files have **no date or season field** for it, so the mapping is inferred (and should be re-verified
-the next time a chest changes): the user found the current chest in game on 2026-10-08 just after 14:30 UTC (week 69) at (3137.8, −4126.4) = `DISCOUNT_BOARD_TREASURE_CHEST_017` at (3149, −4153) in `gameobjs.xml` (one data point; an earlier "015 seen on 3 Oct" came from stale viewer data and is wrong); the Festival Playlist series run 28 days (`FestivalPassSeriesData.str`: 21 May, 18 Jun,
-16 Jul, 13 Aug, 10 Sep, 8 Oct 2026) and the file holds exactly four new chests after the update of 6 Oct (016-019, shipped early). Reading that as four chests per
-series (inferred: 004-007 from 16 Jul, 008-011 from 13 Aug, 012-015 from 10 Sep, **016-019 from 8 Oct**) gives one per week, rolling over **Thursday 14:30 UTC**
-like the map-skin season (`minimap::current_season`, epoch `1_749_738_600`). 017 is then week 69 of that epoch (from 2026-10-08 14:30 UTC; 016 = week 68), so **chest number = week index − 52** (`poi::treasure_chest_number`,
-`Pois::current_treasure_chest(week)`; falls back to the highest chest below the wanted number if the install is older).
-*Why not "the highest number":* that was the rule of the map viewer (`build_viewer.py`, written when 015 was the highest and the current one) and is wrong since the
-6 Oct update, which put 016-019 in the file ahead of their weeks. *Check:* 018 should become current at 2026-10-15 14:30 UTC (week 70); if the in-game chest is not 018 then, the offset (52) or the 4-per-series assumption is wrong.
+(`treasure_chest_current`, on by default; drawn bigger). The files have **no date or season field** for it, so the mapping is inferred. **The rule (user's
+decision, 2026-11-06):** every game update brings new chests, and each 28-day Festival Playlist series (`FestivalPassSeriesData.str`: 16 Jul, 13 Aug, 10 Sep, 8 Oct,
+5 Nov 2026) starts on a Summer week (`week % 4 == 1`, the same weekly epoch `1_749_738_600` and Thursday 14:30 UTC rollover as the map-skin season
+`minimap::current_season`). The **newest four chests in the map data are that series' Summer, Autumn, Winter, Spring, oldest to newest**. So
+`newest` = the highest chest number over the Ribbon chests (`TreasureChest`) and the stripped boards (`TreasureChestBoard`), and the current chest is `newest − back`
+with `back` = 3 / 2 / 1 / 0 for a Summer / Autumn / Winter / Spring week (`(−week).rem_euclid(4)`); if no chest has exactly that number the highest below it is
+taken (a tie goes to the board), `None` if there is none (`Pois::current_treasure_chest(week)`).
+*Why:* the user's words were that each season brings the four most recent chests in the map data; the app showed the Spring one (021) while it is Summer, so it
+should be three weeks back. *Confirmed* 2026-11-06 in game: **019 is live in week 73** (Summer, from 2026-11-05 14:30 UTC) at (−512.4, 3516.5); `gameobjs.xml` (updated
+2026-11-03) holds boards 004-022 and the Ribbon 001-003, so 22 chests: week 74 = 020, 75 = 021, 76 = 022. *Why not "the highest number":* that was the rule of the map viewer
+(`build_viewer.py`, written when 015 was the highest and the current one) and is wrong because the newest four are ahead of their weeks except in Spring.
+*Replaced rule:* until 0.7.3 the app used chest number = week − 52 (from one sighting: 017 in week 69, 2026-10-08, with the 6 Oct update's 016-019 read as four chests of one
+series). That sighting **does not fit the new rule** (it gives 016 from the file of that time); the user chose the new rule knowing that. Also the 3 Nov update added only
+three chests (020-022), so its newest four (019-022) overlap the previous group (019 was already in the 6 Oct file).
+*Known limit* (`ponytail:` comment in `poi.rs`): updates land about two days before the Thursday rollover (3 Nov, 6 Oct), so on those days of the Spring week the newest four
+are already the next series and the pick is wrong until Thursday 14:30 UTC. Upgrade path: anchor on the file's date or a recorded series.
 
 Notes:
 - Speed traps, speed zones, trailblazers and photo spots exist **only** here (and photo spots not even here) — they are in no `.pgeo`.

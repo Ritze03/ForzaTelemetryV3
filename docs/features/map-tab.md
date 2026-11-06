@@ -101,7 +101,7 @@ and `viewer_*` (own look, `viewer_zoom_m` = 1500 m); those are gone, see *Settin
   tiny next to the glyph buttons), a gem glyph (`icons::GEM`) when the atlas has none.
   Tooltip "Zoom to the treasure chest".
   - **Which chest:** `PoiLayer::current_chest(week_index_now())`, the one `treasure_chest_current`
-    draws (chest number = week - 52, see `docs/features/minimap.md`). Always exactly one (or none
+    draws (newest chest minus 3 / 2 / 1 / 0 for Summer / Autumn / Winter / Spring, see `docs/features/minimap.md`). Always exactly one (or none
     before the first chest); older chests are never a target, so no nearest-to-centre pick exists.
   - **Shown only while that chest is actually drawn** (`map_scene::chest_target`, tested by
     `chest_button_shows_only_while_the_chest_is_drawn`; it repeats `paint2d::draw_pois`' conditions

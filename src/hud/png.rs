@@ -20,7 +20,7 @@ use crate::config::{ClusterStyle, DriftStyle, OverlayConfig};
 use crate::hud::map_shared::Remote;
 use crate::hud::minimap::{CoopLayer, MapAnim, MapTex, Scene3dIn};
 use crate::hud::prims::Xf;
-use crate::gamedata::poi::{week_index_now, treasure_chest_number, Poi, PoiKind};
+use crate::gamedata::poi::{week_index_now, Poi, PoiKind};
 use crate::hud::{cluster, drift, minimap, race};
 use crate::maprender::cfg::{MapLayerConfig, ViewMode};
 use crate::maprender::data::{Chain, MapLayers, PoiLayer};
@@ -201,7 +201,6 @@ fn tile_on(r: &mut Renderer, size: Vec2, s: f32, bg: Color32, mut draw: impl FnM
 /// current treasure chest). With `icons` the synthetic atlas rides along like the store's.
 fn harness_layers(icons: bool) -> Arc<MapLayers> {
     let mut m = MapLayers::synthetic();
-    let chest_no = treasure_chest_number(week_index_now()).max(1) as u32;
     let p = |kind, name: &str, n: u32, x: f32, z: f32, gate| Poi { kind, x, z, y: 0.0, name: name.into(), n, gate };
     let gate = |x: f32, z: f32, dx: f32, dz: f32| Some([[x - dx, z - dz], [x + dx, z + dz]]);
     m.pois = Arc::new(PoiLayer::from_items([
@@ -218,8 +217,10 @@ fn harness_layers(icons: bool) -> Arc<MapLayers> {
         p(PoiKind::HorizonStory, "story", 0, 90.0, -60.0, None),
         p(PoiKind::XpBoard, "xp", 1, 10.0, -60.0, None),
         p(PoiKind::AftermarketSpot, "am", 0, 40.0, 220.0, None),
-        p(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{chest_no:03}"), chest_no, -60.0, 60.0, None),
-    ]));
+    ].into_iter().chain(
+        // four chests on one spot: whatever the week, the current-chest rule (newest minus 0..3) finds one
+        (1..=4).map(|n| p(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{n:03}"), n, -60.0, 60.0, None)),
+    )));
     // A road along the race ring (5 m outside it): the "relevant" road of the in-race focus, in
     // colour among the muted cross roads (D66).
     let ring: Vec<[f32; 2]> = (0..=64)

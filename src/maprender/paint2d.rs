@@ -2224,13 +2224,14 @@ mod tests {
     }
 
     /// The current treasure chest: of the chests only the one the week names is drawn, bigger,
-    /// and it moves on when the week rolls.
+    /// and it moves on when the week rolls (Summer 016, Autumn 017, Winter 018, Spring 019 of the
+    /// newest four, west to east here).
     #[test]
     fn the_current_chest_follows_the_week_and_is_drawn_bigger() {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 300.0));
         let cam = flat_cam(rect, (0.0, 0.0), 0.0, 1000.0);
         let chest = |n: u32, x: f32| poi(PoiKind::TreasureChest, &format!("DISCOUNT_BOARD_TREASURE_CHEST_{n:03}"), n, x, 0.0, None);
-        let layers = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([chest(16, -100.0), chest(17, 100.0)])), ..Default::default() };
+        let layers = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([chest(16, -150.0), chest(17, -50.0), chest(18, 50.0), chest(19, 150.0)])), ..Default::default() };
         let cfg = only_pois(&["treasure_chest_current"]);
         let mut atlas = IconAtlas::new(TextureId::Managed(5));
         atlas.set("treasure_chest_current", Rect::from_min_max(pos2(0.0, 0.0), pos2(0.5, 0.5)));
@@ -2244,8 +2245,9 @@ mod tests {
             });
             (st.pois, shapes)
         };
-        // Chest number = week - 52: week 68 -> chest 016 (west), week 69 -> chest 017 (east).
-        for (week, west) in [(68, true), (69, false)] {
+        // Week 69 = Summer -> 016 (westmost) ... week 72 = Spring -> 019 (eastmost); 73 is Summer again.
+        let mut xs = vec![];
+        for week in [69, 70, 71, 72, 73] {
             let (n, shapes) = at_week(week, Some(&atlas));
             assert_eq!(n, 1, "week {week}");
             let m = meshes(&shapes);
@@ -2253,13 +2255,21 @@ mod tests {
             let v = &m[0].vertices;
             let (w, cx) = (v[1].pos.x - v[0].pos.x, (v[1].pos.x + v[0].pos.x) / 2.0);
             assert!((w - 32.0 * style::CURRENT_CHEST_SCALE).abs() < 1e-3, "icon is {w} px wide");
-            assert_eq!(cx < 150.0, west, "week {week}: icon at x {cx}");
+            xs.push(cx);
         }
-        // Without an atlas the shape marker stands in; a week before every chest draws none.
+        assert!(xs[..4].windows(2).all(|w| w[0] < w[1]), "west to east over the four seasons: {xs:?}");
+        assert_eq!(xs[4], xs[0], "the series repeats every four weeks");
+        // Without an atlas the shape marker stands in; with no chest at all nothing is drawn.
         assert_eq!(at_week(68, None).1.len(), 1);
-        assert_eq!(at_week(10, Some(&atlas)).0, 0);
+        let none = MapLayers { pois: Arc::new(crate::maprender::data::PoiLayer::from_items([])), ..Default::default() };
+        assert_eq!(paint(rect, |p| {
+            let mut c = ctx(p, &cam);
+            c.week = Some(69);
+            c.icons = Some(&atlas);
+            assert_eq!(draw_layers(&c, &none, &cfg).pois, 0);
+        }).len(), 0);
         // The plain chest category is not turned on by the current one.
-        let (n, _) = at_week(68, None);
+        let (n, _) = at_week(69, None);
         assert_eq!(n, 1);
         // Off: nothing.
         let mut off = cfg.clone();
