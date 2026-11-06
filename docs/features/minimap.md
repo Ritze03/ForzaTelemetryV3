@@ -307,7 +307,7 @@ and the map is the image alone, as before.
 the one the data was loaded for, the loader thread re-reads *everything* from the install (nav, POIs,
 danger signs, race lines, icons) and rebuilds the roads; the old `Arc` stays drawn until the new one is
 ready and `rev` goes up. *Why (the user: "on season change, it should re-read those"):* game updates
-add things to the files (the 6 Oct update added treasure chests 016-019), and the app keeps running for
+add things to the files (the 6 Oct and 3 Nov updates added treasure chests), and the app keeps running for
 days; re-reading weekly picks them up without a restart. *Why everything, not only POIs:* the nav is the
 bulk of the ~70 ms and a full reload is the simplest correct thing (one key, one code path); it runs on
 the loader thread, so nothing stalls. A failed re-read keeps the old data on screen and is not retried
@@ -363,13 +363,15 @@ the navigation destination pin, compass.
 - **Current treasure chest** (`treasure_chest_current`): of the ~20 chests only the one the week names
   is drawn, with the chest icon 1.5x bigger and on top; `PoiLayer::current_chest(week_index_now())` is
   asked every frame (a few dozen items), so the Thursday 14:30 UTC rollover needs no timer. **The
-  weekly rule is inferred from one in-game sighting**: chest number = week index - 52 (the week of
-  Thursday 14:30 UTC; week 68 = 016, week 69 = 017). Evidence: the user found the current chest in game
-  on 2026-10-08 just after 14:30 UTC (week 69) and it was chest 017; the Festival Playlist series are 28
-  days with four chests each (`Pois::current_treasure_chest`, `docs/game-data/fh6-game-files.md`). The
-  install has no date field to confirm it. **Next check:** chest 018 should go live on 2026-10-15
-  14:30 UTC. *Why not "the highest number" like the map viewer:* since the 6 Oct update the file holds
-  016-019 ahead of time.
+  weekly rule is inferred** (user's decision, confirmed in game 2026-11-06: 019 live in week 73): the newest
+  four chests in the map data are the 28-day Festival Playlist series' Summer, Autumn, Winter, Spring, so
+  the current chest is `newest - 3 / 2 / 1 / 0` for a Summer / Autumn / Winter / Spring week (week % 4 as
+  in `minimap::current_season`; the Thursday 14:30 UTC rollover). With chests 001-022: week 73 = 019,
+  74 = 020, 75 = 021, 76 = 022 (`Pois::current_treasure_chest`, `docs/game-data/fh6-game-files.md`, which
+  also holds the evidence, the replaced "week - 52" rule and the 2026-10-08 sighting that does not fit
+  the new one). *Why not "the highest number" like the map viewer:* the newest four are ahead of their
+  weeks except in Spring. **Known limit:** updates land about two days before the Thursday rollover, so
+  then the pick is wrong until Thursday 14:30 UTC.
 - **Image look**: opacity and brightness are the mesh vertex colour. **Saturation is approximate:**
   egui cannot desaturate a texture, so below 1 a grey veil (alpha `0.6 * (1 - saturation)`) is drawn
   over the same shape.

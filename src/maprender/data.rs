@@ -483,8 +483,9 @@ impl PoiLayer {
 
 impl PoiLayer {
     /// The treasure chest that is current in game week `week` (`week_index_now()`), by the
-    /// weekly rule of `Pois::current_treasure_chest`: week - 52, confirmed once in game on
-    /// 2026-10-08 (chest 017 in week 69); see `docs/features/minimap.md`. Cheap (a few dozen chests), so the renderer asks every frame
+    /// weekly rule of `Pois::current_treasure_chest` (the newest four chests are the series' Summer to
+    /// Spring, so Summer = newest - 3 ... Spring = newest; confirmed in game 2026-11-06: 019 in week 73);
+    /// see `docs/features/minimap.md`. Cheap (a few dozen chests), so the renderer asks every frame
     /// and picks up the Thursday 14:30 UTC rollover without any timer.
     pub fn current_chest(&self, week: i64) -> Option<&Poi> {
         self.chests.current_treasure_chest(week)
@@ -888,23 +889,23 @@ mod tests {
         let p = |kind, name: &str, x| Poi { kind, x, z: 0.0, y: 0.0, name: name.into(), n: 0, gate: None };
         let l = PoiLayer::from_items([
             p(PoiKind::DangerSign, "bm_01", 10.0),
-            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_016", -50.0),
-            p(PoiKind::TreasureChestBoard, "treasure_chest_board_017", 50.0),
-            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_018", 99_999.0), // off the map
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_015", -50.0),
+            p(PoiKind::TreasureChestBoard, "treasure_chest_board_016", 50.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_017", -10.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_018", -20.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_019", 99_999.0), // off the map
         ]);
         let cats: Vec<&str> = l.cat.iter().map(|&c| super::super::style::POI_CATS[c as usize].id).collect();
-        assert_eq!(cats, ["danger_sign", "treasure_chest", "treasure_chest_board"]);
-        assert_eq!(l.chests.items.len(), 2);
-        // chest number = week - 52 (68 -> 016, 69 -> 017; 018 is off the map and dropped); the board wins a tie, a week past the newest chest keeps the newest.
-        assert_eq!(l.current_chest(68).map(|c| c.x), Some(-50.0));
-        assert_eq!(l.current_chest(69).map(|c| c.x), Some(50.0));
-        assert_eq!(l.current_chest(80).map(|c| c.x), Some(50.0));
-        assert!(l.current_chest(10).is_none());
-        // The weekly rollover: the Thursday 14:30 UTC the chest numbers move on (week 68 -> 69).
+        assert_eq!(cats, ["danger_sign", "treasure_chest", "treasure_chest_board", "treasure_chest", "treasure_chest"]);
+        assert_eq!(l.chests.items.len(), 4);
+        // The newest chest on the map is 018 (019 is off the map and dropped), so Summer = 015, Autumn = 016 (the board), Winter = 017, Spring = 018.
+        let at = |week| l.current_chest(week).map(|c| c.x);
+        assert_eq!([at(69), at(70), at(71), at(72), at(73)], [Some(-50.0), Some(50.0), Some(-10.0), Some(-20.0), Some(-50.0)]);
+        // The weekly rollover: the Thursday 14:30 UTC the chest moves on (week 69 -> 70).
         use crate::gamedata::poi::{week_index_at, WEEK_EPOCH};
-        let thu = WEEK_EPOCH + 69 * 604_800;
-        assert_eq!((week_index_at(thu - 1), week_index_at(thu)), (68, 69));
-        assert_eq!((l.current_chest(week_index_at(thu - 1)).map(|c| c.x), l.current_chest(week_index_at(thu)).map(|c| c.x)), (Some(-50.0), Some(50.0)));
+        let thu = WEEK_EPOCH + 70 * 604_800;
+        assert_eq!((week_index_at(thu - 1), week_index_at(thu)), (69, 70));
+        assert_eq!((at(week_index_at(thu - 1)), at(week_index_at(thu))), (Some(-50.0), Some(50.0)));
     }
 
     #[test]

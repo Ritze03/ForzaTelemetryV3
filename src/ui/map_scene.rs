@@ -1715,13 +1715,16 @@ mod tests {
 
     // ── the treasure-chest button (D109) ─────────────────────────────────────────────────────
 
-    /// Week 69 = chest 017 (the board east at x = 3000); 016 (x = -50) is the older one.
+    /// The newest four chests are 016-019; week 69 (Summer) = 016 (the board east at x = 3000),
+    /// week 72 (Spring) = 019 (x = -70).
     fn chest_pois() -> crate::maprender::data::PoiLayer {
         use crate::gamedata::poi::{Poi, PoiKind};
         let p = |kind, name: &str, x| Poi { kind, x, z: 0.0, y: 0.0, name: name.into(), n: 0, gate: None };
         crate::maprender::data::PoiLayer::from_items([
-            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_016", -50.0),
-            p(PoiKind::TreasureChestBoard, "treasure_chest_board_017", 3000.0),
+            p(PoiKind::TreasureChestBoard, "treasure_chest_board_016", 3000.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_017", -50.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_018", -60.0),
+            p(PoiKind::TreasureChest, "DISCOUNT_BOARD_TREASURE_CHEST_019", -70.0),
         ])
     }
 
@@ -1731,13 +1734,15 @@ mod tests {
         let pois = chest_pois();
         let on = MapLayerConfig::dashboard();
         assert!(on.pois.on && on.pois.categories.iter().any(|c| c == "treasure_chest_current"), "the default shows it");
-        // On: the current chest (017), not the older one.
+        // On: the current chest (Summer week 69 = 016), not the newer ones.
         assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 69, false), Some((3000.0, 0.0)));
-        // The week moves on the Thursday rollover: 68 is chest 016.
-        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 68, false), Some((-50.0, 0.0)));
-        // Not loaded: no map data, or no chest for that week.
+        // The week moves on the Thursday rollover: Autumn 70 = 017, Winter 71 = 018, Spring 72 = 019.
+        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 70, false), Some((-50.0, 0.0)));
+        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 71, false), Some((-60.0, 0.0)));
+        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 72, false), Some((-70.0, 0.0)));
+        // Not loaded: no map data, or no chest at all.
         assert_eq!(chest_target(&on, None, (0.0, 0.0), 69, false), None);
-        assert_eq!(chest_target(&on, Some(&pois), (0.0, 0.0), 10, false), None);
+        assert_eq!(chest_target(&on, Some(&crate::maprender::data::PoiLayer::from_items([])), (0.0, 0.0), 69, false), None);
         // POIs off.
         let mut c = on.clone();
         c.pois.on = false;

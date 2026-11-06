@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.7.4] – 2026-11-06
+
+### Fixed
+- **Treasure chest of the week**: the map now shows the treasure chest that is actually live this week (chest 019 in this Summer week, then 020, 021 and 022 in the following weeks) instead of a chest three weeks too new.
+
 ## [0.7.3] – 2026-11-03
 
 ### Added
