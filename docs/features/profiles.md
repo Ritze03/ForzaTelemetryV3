@@ -56,8 +56,8 @@ One **PROFILES** card (`profiles_card`) in the left column, holding everything:
   active-profile dropdown), a four-button row New / Duplicate / Rename / Delete, and an
   **Export / Import** button row. New / Duplicate / Rename / Delete open the small
   `profile_dialog_modal` (text field / confirm; Enter confirms, Esc/backdrop cancels).
-  Export / Import open the large `profile_io_modal` (below). The green status line sits at
-  the bottom of the card. Both modals render at the end of `settings::show`, floating over
+  Export / Import open the large `profile_io_modal` (below). The status line sits at the
+  bottom of the card — green, or red (`theme::DANGER`) for the invalid-JSON error. Both modals render at the end of `settings::show`, floating over
   the whole tab.
 
 Left column: `PROFILES`, `HOTKEY`. Right column: `REPOSITORY / CREDITS`, `DISPLAY`,
@@ -80,8 +80,15 @@ use `theme::section_label` (the category-blue uppercase style).
 - **Preview** — `json_preview` (read-only) shows exactly what will be written, filtered by
   the ticked groups (`config::export_selected` for export, `config::filter_selected` over
   the source for import).
-- **Bottom** — a big accent **Export** / **Import** button (`theme::primary_button`) plus
-  **Cancel**. Esc or a backdrop-click also cancels.
+- **Bottom** — a big accent action button (`theme::primary_button`) — **Copy to clipboard**
+  on Export, **Import** on Import — plus **Cancel**. Esc or a backdrop-click also cancels.
+- **Import validates first** — the Import action checks `config::parses_to_object` on the
+  source *before* it creates the new profile or switches to the destination. Not a JSON
+  object (garbage, an array): nothing is created or switched, the status line says
+  "Invalid JSON — nothing imported." in red and the modal closes. An empty source does
+  nothing (the modal stays open). *Why:* `new_profile` / `switch_profile` used to run
+  before `import_selected` validated, so bad input still made a copy of the current
+  settings as a new profile (or switched profile) while reporting that nothing was imported.
 
 The outlined tree/preview boxes (`tree_box` / `json_preview`) use a rounded frame with
 enough top/bottom inner margin that scrolled content clears the rounded corners.
@@ -97,7 +104,9 @@ greyed out; `recompute_import_present` refreshes that when the source changes.
 Transient (not persisted): `profile_dialog`
 (`ProfileDialog`: None/New/Duplicate/Rename/ConfirmDelete/Export/Import),
 `profile_dialog_focus` (focus the dialog text field next frame), `profile_name_buf`,
-`profile_io_status`, `profile_export_sel` / `profile_import_sel` (bool masks aligned to
+`profile_io_status` + `profile_io_error` (the status line is shown red; always set both
+through `ForzaApp::set_profile_status(msg, error)` so a red can't outlive its message —
+every setter passes `false` except the invalid-JSON import), `profile_export_sel` / `profile_import_sel` (bool masks aligned to
 `KEY_GROUPS`), `profile_import_present`, `profile_import_buf`, `profile_import_builtin`
 (source: `Some(preset)` / `None` = paste), and the import-target fields (`profile_import_new`,
 `profile_import_new_name`, `profile_import_overwrite`).

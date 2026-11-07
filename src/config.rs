@@ -1831,6 +1831,12 @@ pub fn filter_selected(json: &str, selected: &[bool]) -> String {
     serde_json::to_string_pretty(&serde_json::Value::Object(m)).unwrap_or_default()
 }
 
+/// Whether `json` parses to a JSON object — the only shape an import accepts. Lets the
+/// import UI reject bad input before it creates or switches to a destination profile.
+pub fn parses_to_object(json: &str) -> bool {
+    matches!(serde_json::from_str::<serde_json::Value>(json), Ok(serde_json::Value::Object(_)))
+}
+
 /// Overlay only the selected groups' keys from `json` onto `target`.
 /// Returns false (nothing applied) if the JSON doesn't parse to an object.
 pub fn import_selected(target: &mut AppConfig, json: &str, selected: &[bool]) -> bool {
@@ -3854,5 +3860,15 @@ mod forward_compat_tests {
         save_car_calibrations(&HashMap::new());
         assert_eq!(std::fs::read_to_string(car_calibrations_path()).unwrap().trim(), "{}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Import accepts only JSON objects: an array, garbage or empty text is rejected.
+    #[test]
+    fn parses_to_object_only_for_objects() {
+        assert!(parses_to_object(r#"{"a": 1}"#));
+        assert!(parses_to_object("{}"));
+        assert!(!parses_to_object("[1, 2]"));
+        assert!(!parses_to_object("not json"));
+        assert!(!parses_to_object(""));
     }
 }

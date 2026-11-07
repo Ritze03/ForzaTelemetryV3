@@ -27,8 +27,9 @@ export/import). This page documents the underlying overlay + key lists.
   Co-Op list columns, power-curve settings, etc.). This list is **hand-maintained** — a
   new mini-setting that should travel with a preset must be added here explicitly, or it
   silently won't export/import.
-- Anything not in either list (e.g. `listen_port`, `coop_name`, DSG/backfire tuning) is
-  local machine/session state and never exports.
+- Everything else is in one of the other `KEY_GROUPS` (Network, Display, Co-Op, Tuning,
+  Overlay … — e.g. `listen_port` is *Network*, `coop_name` is *Co-Op*, DSG/backfire tuning is
+  *Tuning*) or in `EXPORT_EXCLUDE`; see "Selective export / import" below.
 
 ## Applying a preset — `apply_preset_overlay`
 
@@ -59,7 +60,9 @@ of `KeyGroup { section, name, keys }`:
   HUD binding travels with *Hotkeys & Input* (`hotkeys`), not here.
 
 Every serialized `AppConfig` key is in **exactly one** group or the `EXPORT_EXCLUDE`
-list (`active_profile`). The `key_groups_partition_all_keys` test enforces this — add a
+list (`active_profile`, `input_perm_dont_remind`, `onboarding_done`, `fh6_install_dir`,
+`overlay_page`, `map_tab_settings`, `map_tab_page`, `map_nav_open`, `nav` — runtime / UI
+memory / personal state). The `key_groups_partition_all_keys` test enforces this — add a
 new field without categorising it and the test fails, so nothing silently drops out of
 export. This replaces the old include-mini-settings checkbox with per-group ticks.
 
@@ -97,5 +100,6 @@ hand-written file — they're just regular exports checked into the repo.
   `AppConfig::load` (see the `Theme::Light` → `Dark` and `compact_tabs` → `top_bar_style`
   fix-ups in `config.rs`) plus updates to the bundled presets, or old configs/presets fail
   to parse and silently no-op instead of applying.
-- See also [[coop]] for `coop_*` fields that are part of `MINISETTINGS_KEYS` (name/hue
-  are deliberately excluded — session identity, not a preset value).
+- See also [[coop]] for the `coop_*` fields: the connection / identity ones (`coop_name`,
+  `coop_hue`, `coop_room`, …) are the *Co-Op* group (`COOP_KEYS`); only the display ones
+  (`coop_list_*`, `coop_map_playerlist`, `coop_trail_fade_*`) are in `MINISETTINGS_KEYS`.
