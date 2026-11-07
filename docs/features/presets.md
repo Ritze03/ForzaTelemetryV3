@@ -3,11 +3,11 @@
 A **preset** is not a separate format — it's a partial `AppConfig` serialized as JSON.
 Whatever keys are present in the JSON overwrite the live config; every key it omits is
 left exactly as it was. This means new config fields never need a preset-format bump:
-they just don't travel until someone adds them to the relevant key list.
+they just don't travel until someone adds them to a `KEY_GROUPS` group.
 
 The overlay mechanism here is the foundation the **Profile Manager** builds on — see
 [[profiles]] for the user-facing feature (named full-config snapshots + selective
-export/import). This page documents the underlying overlay + key lists.
+export/import). This page documents the underlying overlay + key groups.
 
 ## Where it lives
 
@@ -17,16 +17,21 @@ export/import). This page documents the underlying overlay + key lists.
   group-tree + clipboard/paste). The old mini-settings **Config** sub-tab is gone.
 - `assets/configs/*.json` — the bundled presets, baked into the binary via `include_str!`.
 
-## The two key lists
+## The key lists
+
+Two of the lists feed the *Dashboard* groups of `KEY_GROUPS`. Both are ordinary,
+**selectable** groups: the user can tick or untick *Layout* on export and on import like
+any other group (a profile import with only *Layout* ticked is valid). Nothing is
+mandatory.
 
 - **`LAYOUT_KEYS`** — dashboard layout: `grid_cols`, `grid_rows`, `dashboard_widgets`,
   `dashboard_edit_mode`, `dashboard_show_grid`, `dashboard_show_outlines`,
-  `disabled_modules`. **Always** part of a preset — there's no toggle to exclude these.
+  `disabled_modules`. The *Layout* group.
 - **`MINISETTINGS_KEYS`** — every other per-widget tuning knob exposed in the cog popup
   (tire style, shift %, boost display, minimap calibration, G-Force widget toggles,
-  Co-Op list columns, power-curve settings, etc.). This list is **hand-maintained** — a
-  new mini-setting that should travel with a preset must be added here explicitly, or it
-  silently won't export/import.
+  Co-Op list columns, power-curve settings, etc.). The *Mini-settings* group. This list is
+  **hand-maintained** — a new mini-setting that should travel with a preset must be added
+  here explicitly, or it silently won't export/import.
 - Everything else is in one of the other `KEY_GROUPS` (Network, Display, Co-Op, Tuning,
   Overlay … — e.g. `listen_port` is *Network*, `coop_name` is *Co-Op*, DSG/backfire tuning is
   *Tuning*) or in `EXPORT_EXCLUDE`; see "Selective export / import" below.
@@ -73,7 +78,9 @@ export. This replaces the old include-mini-settings checkbox with per-group tick
   `false` (nothing applied) on non-object JSON. `groups_present(json)` reports which
   groups the pasted JSON actually contains, used to pre-check and disable the tree rows.
 - Both reuse `apply_preset_overlay`, so hand-edited or swapped-between-users JSON behaves
-  identically to a bundled preset.
+  identically to a bundled preset. Bundled presets are not applied whole either: they are
+  just an import source (see below) and go through `import_selected` with the same group
+  selection.
 
 ## Bundled presets
 

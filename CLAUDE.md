@@ -41,9 +41,6 @@ Every other doc above is a plain link: an optional, on-demand read.
   before acting on an undefined term, and keep it current.
 - **Documentation discipline** — @docs/claude-instructions/documentation.md — read before you
   touch, update after you change, and record design rationale (the *why*).
-- **Sub-agent orchestration** — @docs/claude-instructions/sub-agent-orchestration.md — when/how
-  to fan out, partition edits, worktree isolation, model/effort, the 4-agent cap. Read before
-  dispatching any sub-agent work.
 - **Changelog — required** — every user-facing change **must** get a bullet in the top
   `## [version]` section of the repo-root `CHANGELOG.md`, in the same commit. Format &
   versioning: @docs/claude-instructions/changelog.md.
