@@ -237,7 +237,7 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
         });
     if let Some(name) = switch_to {
         app.config.switch_profile(&name);
-        app.profile_io_status = format!("{} {}", tr("Loaded profile"), name);
+        app.set_profile_status(format!("{} {}", tr("Loaded profile"), name), false);
     }
 
     ui.add_space(6.0);
@@ -279,7 +279,8 @@ fn profiles_card(ui: &mut Ui, app: &mut ForzaApp) {
 
     if !app.profile_io_status.is_empty() {
         ui.add_space(6.0);
-        ui.label(RichText::new(&app.profile_io_status).size(11.0).color(Color32::from_rgb(120, 200, 120)));
+        let color = if app.profile_io_error { crate::theme::DANGER } else { Color32::from_rgb(120, 200, 120) };
+        ui.label(RichText::new(&app.profile_io_status).size(11.0).color(color));
     }
 }
 
@@ -693,19 +694,19 @@ fn profile_dialog_modal(ui: &mut Ui, app: &mut ForzaApp) {
         match dialog {
             ProfileDialog::New => {
                 let n = app.config.new_profile(&name);
-                app.profile_io_status = format!("{} {}", tr("Created profile"), n);
+                app.set_profile_status(format!("{} {}", tr("Created profile"), n), false);
             }
             ProfileDialog::Duplicate => {
                 let n = app.config.duplicate_profile_as(&active, &name);
-                app.profile_io_status = format!("{} {}", tr("Created profile"), n);
+                app.set_profile_status(format!("{} {}", tr("Created profile"), n), false);
             }
             ProfileDialog::Rename => {
                 let n = app.config.rename_active_profile(&name);
-                app.profile_io_status = format!("{} {}", tr("Renamed to"), n);
+                app.set_profile_status(format!("{} {}", tr("Renamed to"), n), false);
             }
             ProfileDialog::ConfirmDelete => {
                 app.config.delete_profile(&active);
-                app.profile_io_status = format!("{} {}", tr("Deleted profile"), active);
+                app.set_profile_status(format!("{} {}", tr("Deleted profile"), active), false);
             }
             ProfileDialog::None | ProfileDialog::Export | ProfileDialog::Import => {}
         }
@@ -966,35 +967,39 @@ fn profile_io_modal(ui: &mut Ui, app: &mut ForzaApp) {
     if do_action {
         if is_export {
             ctx.copy_text(config::export_selected(&app.config, &app.profile_export_sel));
-            app.profile_io_status = tr("Copied to clipboard.").to_string();
+            app.set_profile_status(tr("Copied to clipboard.").to_string(), false);
             app.profile_dialog = ProfileDialog::None;
         } else {
             let src = import_source_json(app);
             if !src.trim().is_empty() {
-                // Land on the target profile, then overlay only the ticked groups.
-                if app.profile_import_new {
-                    let base = if app.profile_import_new_name.trim().is_empty() {
-                        "Imported".to_string()
-                    } else {
-                        app.profile_import_new_name.clone()
-                    };
-                    app.config.new_profile(&base);
+                // Validate before touching the destination: bad input must not create or switch.
+                if !config::parses_to_object(&src) {
+                    app.set_profile_status(tr("Invalid JSON — nothing imported.").to_string(), true);
+                    app.profile_dialog = ProfileDialog::None;
                 } else {
-                    let target = app.profile_import_overwrite.clone();
-                    if !target.is_empty() {
-                        app.config.switch_profile(&target);
+                    // Land on the target profile, then overlay only the ticked groups.
+                    if app.profile_import_new {
+                        let base = if app.profile_import_new_name.trim().is_empty() {
+                            "Imported".to_string()
+                        } else {
+                            app.profile_import_new_name.clone()
+                        };
+                        app.config.new_profile(&base);
+                    } else {
+                        let target = app.profile_import_overwrite.clone();
+                        if !target.is_empty() {
+                            app.config.switch_profile(&target);
+                        }
                     }
-                }
-                if config::import_selected(&mut app.config, &src, &app.profile_import_sel) {
+                    config::import_selected(&mut app.config, &src, &app.profile_import_sel);
                     app.config.save();
                     if app.profile_import_builtin.is_none() {
                         app.profile_import_buf.clear();
                     }
-                    app.profile_io_status = format!("{} {}", tr("Imported into"), app.config.active_profile);
-                } else {
-                    app.profile_io_status = tr("Invalid JSON — nothing imported.").to_string();
+                    let status = format!("{} {}", tr("Imported into"), app.config.active_profile);
+                    app.set_profile_status(status, false);
+                    app.profile_dialog = ProfileDialog::None;
                 }
-                app.profile_dialog = ProfileDialog::None;
             }
         }
     }

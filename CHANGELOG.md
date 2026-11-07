@@ -4,6 +4,11 @@ All notable user-facing changes, newest first. Categories: **Added** (new
 features), **Fixed** (bug/behaviour fixes), **Removed** (things taken out),
 **Info** (notes worth knowing).
 
+## [0.7.5] – 2026-11-07
+
+### Fixed
+- **Importing invalid JSON no longer creates or switches a profile**: pasting something that is not valid settings JSON now leaves your profiles exactly as they were, and the "Invalid JSON — nothing imported." message is shown in red instead of green.
+
 ## [0.7.4] – 2026-11-06
 
 ### Fixed

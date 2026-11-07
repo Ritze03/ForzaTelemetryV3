@@ -551,6 +551,7 @@ pub struct ForzaApp {
     pub profile_dialog_focus: bool,          // request focus on the dialog's text field next frame
     pub profile_name_buf: String,            // name field for New / Duplicate / Rename
     pub profile_io_status: String,
+    pub profile_io_error: bool,              // the status line is an error (shown red); only set via set_profile_status
     pub profile_export_sel: Vec<bool>,
     pub profile_import_buf: String,
     pub profile_import_builtin: Option<usize>, // import source: Some(i) = bundled preset i, None = paste buffer
@@ -749,6 +750,13 @@ fn trace_step(dt_wall: Option<f32>, t_active: f32) -> Option<f32> {
 }
 
 impl ForzaApp {
+    /// Set the Profiles card's status line. `error` shows it red instead of green; every
+    /// setter goes through here so a stale error colour can't outlive its message.
+    pub fn set_profile_status(&mut self, msg: String, error: bool) {
+        self.profile_io_status = msg;
+        self.profile_io_error = error;
+    }
+
     /// The Dashboard map's yaw without the look-around offset: 0 when locked north-up, else the
     /// (eased) heading-up yaw. The drawn view yaw is `minimap_look.view_yaw(this)`.
     pub fn minimap_base_yaw(&self) -> f32 {
@@ -933,6 +941,7 @@ impl ForzaApp {
             profile_dialog_focus: false,
             profile_name_buf: String::new(),
             profile_io_status: String::new(),
+            profile_io_error: false,
             profile_export_sel: vec![true; crate::config::KEY_GROUPS.len()],
             profile_import_buf: String::new(),
             profile_import_builtin: None,
