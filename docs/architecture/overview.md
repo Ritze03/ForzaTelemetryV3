@@ -259,7 +259,7 @@ might produce.
 | `network.rs` | UDP receive thread + `NetworkHandle` (stop flag, `Drop`-based shutdown). See [[networking]]. |
 | `packet.rs` | 324-byte FH6 packet: `ForzaPacket` struct, `from_bytes`/`to_bytes`, helpers (`is_paused`, `power_ps`, `car_class_str`, …). See [[forza-fh6-packet-format]]. |
 | `telemetry.rs` | `TelemetryState`: latest packet, connection flag, packets-per-second. |
-| `config.rs` | `AppConfig` (serialised to `config.json`), enums, `MINISETTINGS_KEYS`/`LAYOUT_KEYS`, presets (`apply_preset`/`export_preset`/`import_preset`), `default_widget_layout`, `app_data_dir`. See [[state-and-config]]. |
+| `config.rs` | `AppConfig` (serialised to `config.json`), enums, `KEY_GROUPS` (incl. `LAYOUT_KEYS`/`MINISETTINGS_KEYS`), presets (`export_selected`/`import_selected`/`apply_preset_overlay`), `default_widget_layout`, `app_data_dir`. See [[state-and-config]]. |
 | `theme.rs` | "Graphite" theme: role colour tokens + egui style, `card`/`slider_row`/`checkbox_row` helpers. See [[ui-architecture]]. |
 | `i18n.rs` | `tr(...)` translation (English keys → German), `set_language`. |
 | `icons.rs` | Nerd-Font icon codepoint constants. |

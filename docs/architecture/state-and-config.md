@@ -145,50 +145,42 @@ are the templates to copy:
    the old key it reads. A removed field also goes into `RETIRED_KEYS` (otherwise it is
    kept in the file as "unknown" forever).
 2. If the same field/value can appear in a preset, also handle it in
-   `apply_preset_overlay` (`config.rs:543`) — `migrate_tire_display_style` is applied
+   `apply_preset_overlay` — `migrate_tire_display_style` is applied
    there specifically because presets are hand-edited/shared JSON, not just
    locally-saved config.
 3. Update the bundled presets (`assets/configs/ale.json`, `assets/configs/ritze.json`)
    if they reference the old name/value directly.
-4. If the field/value was listed in `LAYOUT_KEYS` or `MINISETTINGS_KEYS`, update the
-   key name there too.
+4. If the field/value was listed in `LAYOUT_KEYS`, `MINISETTINGS_KEYS` or any other
+   `KEY_GROUPS` group (or `EXPORT_EXCLUDE`), update the key name there too — the
+   `key_groups_partition_all_keys` test fails on an unknown or uncategorised key.
 
 Skipping step 1 doesn't crash the app — `serde_json::from_value` failure is caught
 (`.unwrap_or(default)` in `load()`, an `if let Ok(...)` in the preset path) — but it
 silently discards the *entire* saved config or the *entire* preset overlay, which is
 much worse than a partial migration and easy to miss in testing.
 
-## `LAYOUT_KEYS` vs `MINISETTINGS_KEYS`
+## Preset key groups — `KEY_GROUPS`
 
-Both are `&[&str]` lists of `AppConfig` field names in `config.rs`, used only by the
-preset overlay/export machinery (`apply_preset_overlay`, `export_preset`,
-`import_preset`) — not by `load()`/`save()`, which always read/write every field.
+Presets, profile export/import and the bundled presets all work on a partial `AppConfig`
+JSON overlaid by `apply_preset_overlay`; they are not used by `load()`/`save()`, which
+always read/write every field. Which keys travel is decided by `KEY_GROUPS` in
+`config.rs`, an ordered list of groups (`LAYOUT_KEYS` = *Layout*, hand-maintained
+`MINISETTINGS_KEYS` = *Mini-settings*, plus Network, Display, Co-Op, Tuning, Overlay …).
 
-- **`LAYOUT_KEYS`** (`config.rs:568`) — dashboard grid + widget placement:
-  `grid_cols`, `grid_rows`, `dashboard_widgets`, `dashboard_edit_mode`,
-  `dashboard_show_grid`, `dashboard_show_outlines`, `disabled_modules`. **Always**
-  included in an export and always applied on import — there is no toggle to exclude
-  these.
-- **`MINISETTINGS_KEYS`** (`config.rs:575`) — every other per-widget tuning knob
-  exposed in the cog mini-settings popup (tire display style, shift RPM %, G-Force
-  widget toggles, minimap calibration, Co-Op list columns, power-curve settings, …).
-  **Hand-maintained**: a field only travels with a preset/export if its key string is
-  in this list. Adding a new mini-setting that should be preset-portable means adding
-  both the `AppConfig` field *and* its key string here — forgetting the second step
-  fails silently (no compile error, the setting just never exports/imports).
-- Anything **not** in either list (`listen_port`, `coop_name`, `coop_last_code`, DSG
-  numeric tuning, backfire tuning, etc.) is local machine/session state and never
-  travels with a preset, no matter which toggle is set.
-- `export_preset(cfg, include_minisettings)` always pulls `LAYOUT_KEYS`, plus
-  `MINISETTINGS_KEYS` when the flag is set. `import_preset(cfg, json,
-  include_minisettings)` does the mirror: if the flag is off, `MINISETTINGS_KEYS` are
-  stripped from the incoming JSON before the overlay is applied, so only layout takes
-  effect. Both bundled presets (`PRESET_NAMES`/`PRESET_DATA`, backed by
-  `assets/configs/ale.json` / `ritze.json`) and the Config sub-tab's Export/Import
-  paste box go through the same `apply_preset_overlay` — see [[presets]] for the
-  user-facing flow and the `apply_preset_overlay` step order. After the merge it runs
+- **Every** serialized key is in exactly one group or in `EXPORT_EXCLUDE` (runtime / UI
+  memory / personal state, never exported). `key_groups_partition_all_keys` enforces it, so
+  a new field must be categorised or the test fails.
+- `export_selected(cfg, &sel)` serializes only the ticked groups; `filter_selected` and
+  `import_selected(target, json, &sel)` restrict incoming JSON to the ticked groups and
+  then run `apply_preset_overlay`. No group, including *Layout*, is mandatory.
+- Bundled presets (`PRESET_NAMES`/`PRESET_DATA`, backed by `assets/configs/ale.json` /
+  `ritze.json`) are only an import source in the Profiles card, so they too go through
+  `import_selected`. After the merge `apply_preset_overlay` runs
   `inject_missing_widget_kinds` and `inject_missing_hotkeys` (same as `load()`), so an
   older profile/preset gains newly added widgets and hotkey actions such as Hide HUD.
+
+User-facing flow, the group tree and the `apply_preset_overlay` step order are in
+[[presets]]; not repeated here.
 
 ## See also
 
