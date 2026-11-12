@@ -41,6 +41,7 @@ Every other doc above is a plain link: an optional, on-demand read.
   before acting on an undefined term, and keep it current.
 - **Documentation discipline** — @docs/claude-instructions/documentation.md — read before you
   touch, update after you change, and record design rationale (the *why*).
-- **Changelog — required** — every user-facing change **must** get a bullet in the top
-  `## [version]` section of the repo-root `CHANGELOG.md`, in the same commit. Format &
-  versioning: @docs/claude-instructions/changelog.md.
+- **Version policy** — @docs/claude-instructions/documentation-version-policy.md — date-based:
+  dated blocks, no version numbers.
+- **Changelog** — @docs/claude-instructions/changelog.md — every user-facing change adds a
+  dated entry to `CHANGELOG.md` in the same commit.
