@@ -66,6 +66,15 @@ fn strip_bold(s: &str) -> String {
     s.replace("**", "")
 }
 
+/// True for a bare `YYYY-MM-DD` date.
+fn is_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+}
+
 /// Parse the changelog markdown into newest-first sections.
 pub fn parse(md: &str) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
@@ -74,7 +83,15 @@ pub fn parse(md: &str) -> Vec<Section> {
     for line in md.lines() {
         let trimmed = line.trim_end();
 
-        if let Some(rest) = trimmed.strip_prefix("## [") {
+        if let Some(rest) = trimmed.strip_prefix("## ").filter(|r| is_date(r.trim())) {
+            // Date-only header: `## YYYY-MM-DD`; the date doubles as the version label.
+            current_cat = None;
+            sections.push(Section {
+                version: rest.trim().to_string(),
+                date: None,
+                entries: Vec::new(),
+            });
+        } else if let Some(rest) = trimmed.strip_prefix("## [") {
             // Version header: `## [x.y.z] – YYYY-MM-DD`
             current_cat = None;
             let (version, tail) = match rest.split_once(']') {
@@ -221,4 +238,22 @@ pub fn show(ui: &mut egui::Ui, app: &mut crate::app::ForzaApp) {
             }
             ui.add_space(12.0);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_date_only_and_legacy_headings() {
+        let md = "## 2026-11-12\n\n### Added\n- **A**: new thing.\n\n## [1.2.3] – 2026-01-02\n\n### Fixed\n- **B**: fixed.\n";
+        let s = parse(md);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].version, "2026-11-12");
+        assert_eq!(s[0].date, None);
+        assert_eq!(s[0].entries.len(), 1);
+        assert_eq!(s[1].version, "1.2.3");
+        assert_eq!(s[1].date.as_deref(), Some("2026-01-02"));
+        assert_eq!(s[1].entries.len(), 1);
+    }
 }

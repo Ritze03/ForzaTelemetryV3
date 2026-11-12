@@ -56,7 +56,8 @@ The navigation reference — read these to move around the source efficiently.
 ## claude-instructions/ — mandatory rules for agents
 
 - [Working with the Docs](claude-instructions/documentation.md) — read before you touch, update after you change, record the *why*, and the `@` force-load convention. Linked from the repo-root `CLAUDE.md`.
-- [Changelog Maintenance](claude-instructions/changelog.md) — how to keep the user-facing `CHANGELOG.md` current and when to bump the version.
+- [Changelog Maintenance](claude-instructions/changelog.md) — how to keep the user-facing `CHANGELOG.md` current (dated blocks, plain language).
+- [Documentation Version Policy](claude-instructions/documentation-version-policy.md) — date-based: no version numbers on docs or changelog blocks.
 
 ## meta/
 
