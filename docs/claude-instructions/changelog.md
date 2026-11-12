@@ -40,10 +40,3 @@ understands.
   adds no block.
 - **Anonymize**: no hostnames, usernames, emails, real names, absolute home paths or
   private project names.
-
-## Known gap: the in-app viewer
-
-`src/ui/changelog.rs` only recognises `## [version] – date` headers, so a date-only
-`## YYYY-MM-DD` block is not shown in the viewer until the parser accepts it. The
-`version` in `Cargo.toml` is a release-management marker and is out of scope for
-changelog edits.
